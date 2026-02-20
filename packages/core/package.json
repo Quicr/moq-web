@@ -1,0 +1,28 @@
+{
+  "name": "@web-moq/core",
+  "version": "0.1.0",
+  "description": "Core MOQT protocol types, encoding, state management, and transport layer",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "vitest": "^1.0.0"
+  }
+}

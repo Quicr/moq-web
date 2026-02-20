@@ -1,0 +1,165 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-100 dark:bg-gray-800;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 dark:bg-gray-600 rounded;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-400 dark:bg-gray-500;
+}
+
+/* Custom components */
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-md font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500;
+  }
+
+  .btn-secondary {
+    @apply btn bg-gray-200 text-gray-900 hover:bg-gray-300 focus:ring-gray-500 dark:bg-gray-700 dark:text-gray-100 dark:hover:bg-gray-600;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700 focus:ring-red-500;
+  }
+
+  .btn-success {
+    @apply btn bg-green-600 text-white hover:bg-green-700 focus:ring-green-500;
+  }
+
+  .btn-sm {
+    @apply px-3 py-1.5 text-sm;
+  }
+
+  .btn-icon {
+    @apply p-2 rounded-full;
+  }
+
+  .input {
+    @apply w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1;
+  }
+
+  .card {
+    @apply bg-white dark:bg-gray-800 rounded-lg shadow-md p-4;
+  }
+
+  .panel {
+    @apply bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg;
+  }
+
+  .panel-header {
+    @apply px-4 py-3 border-b border-gray-200 dark:border-gray-700 font-semibold text-gray-900 dark:text-gray-100;
+  }
+
+  .panel-body {
+    @apply p-4;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-green {
+    @apply badge bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200;
+  }
+
+  .badge-red {
+    @apply badge bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200;
+  }
+
+  .badge-yellow {
+    @apply badge bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200;
+  }
+
+  .badge-blue {
+    @apply badge bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200;
+  }
+
+  .stat-card {
+    @apply bg-gray-50 dark:bg-gray-900 rounded-lg p-3;
+  }
+
+  .stat-label {
+    @apply text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider;
+  }
+
+  .stat-value {
+    @apply text-lg font-semibold text-gray-900 dark:text-gray-100 mt-1;
+  }
+}
+
+/* Video container aspect ratio */
+.video-container {
+  @apply relative w-full bg-black rounded-lg overflow-hidden;
+  padding-bottom: 56.25%; /* 16:9 */
+}
+
+.video-container video {
+  @apply absolute inset-0 w-full h-full object-contain;
+}
+
+/* Chat message animation */
+.chat-message-enter {
+  animation: slideIn 0.2s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Status indicator pulse */
+.status-pulse {
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Connection status colors */
+.status-connected {
+  @apply bg-green-500;
+}
+
+.status-connecting {
+  @apply bg-yellow-500 status-pulse;
+}
+
+.status-disconnected {
+  @apply bg-gray-400;
+}
+
+.status-error {
+  @apply bg-red-500;
+}

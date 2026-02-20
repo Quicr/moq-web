@@ -1,0 +1,48 @@
+{
+  "name": "@web-moq/media",
+  "version": "0.1.0",
+  "description": "WebCodecs encoding/decoding with LOC container format",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./encode-worker": {
+      "types": "./dist/workers/encode-worker.d.ts",
+      "import": "./dist/workers/encode-worker.js"
+    },
+    "./decode-worker": {
+      "types": "./dist/workers/decode-worker.d.ts",
+      "import": "./dist/workers/decode-worker.js"
+    },
+    "./codec-encode-worker": {
+      "types": "./dist/workers/codec-encode-worker.d.ts",
+      "import": "./dist/workers/codec-encode-worker.js"
+    },
+    "./codec-decode-worker": {
+      "types": "./dist/workers/codec-decode-worker.d.ts",
+      "import": "./dist/workers/codec-decode-worker.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@web-moq/core": "workspace:*",
+    "@web-moq/session": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^1.0.0"
+  }
+}

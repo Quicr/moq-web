@@ -1,0 +1,36 @@
+{
+  "name": "@web-moq/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web application for MOQT publish/subscribe/chat",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "lint": "eslint src --ext .ts,.tsx",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@web-moq/core": "workspace:*",
+    "@web-moq/media": "workspace:*",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.4.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-basic-ssl": "1.1.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.3.6",
+    "vite": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}

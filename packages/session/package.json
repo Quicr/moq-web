@@ -1,0 +1,35 @@
+{
+  "name": "@web-moq/session",
+  "version": "0.1.0",
+  "description": "Generic MOQT session management - protocol layer without media",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/workers/transport-worker.d.ts",
+      "import": "./dist/workers/transport-worker.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@web-moq/core": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^1.0.0"
+  }
+}

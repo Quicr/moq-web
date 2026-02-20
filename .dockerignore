@@ -1,0 +1,41 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Build outputs
+**/dist
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test
+coverage
+.nyc_output
+
+# Docs (not needed in production)
+docs/
+
+# Local dev files
+ssl/
+deploy/
+
+# Misc
+*.md
+!packages/*/README.md
+.env*

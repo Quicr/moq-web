@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#6366f1;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad3" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="95" fill="#0f172a"/>
+
+  <!-- Outer ring - QUIC transport -->
+  <circle cx="100" cy="100" r="90" fill="none" stroke="url(#grad1)" stroke-width="2" stroke-dasharray="8 4"/>
+
+  <!-- Web of connections - CDN/relay network -->
+  <!-- Outer ring connections -->
+  <g stroke="#6366f1" stroke-width="1" opacity="0.4">
+    <!-- Connect outer nodes to each other -->
+    <line x1="100" y1="20" x2="165" y2="50"/>
+    <line x1="165" y1="50" x2="180" y2="100"/>
+    <line x1="180" y1="100" x2="165" y2="150"/>
+    <line x1="165" y1="150" x2="100" y2="180"/>
+    <line x1="100" y1="180" x2="35" y2="150"/>
+    <line x1="35" y1="150" x2="20" y2="100"/>
+    <line x1="20" y1="100" x2="35" y2="50"/>
+    <line x1="35" y1="50" x2="100" y2="20"/>
+  </g>
+
+  <!-- Inner web mesh - connections to center relay -->
+  <g stroke="#22d3ee" stroke-width="1" opacity="0.3">
+    <!-- Radial connections to center -->
+    <line x1="100" y1="100" x2="100" y2="20"/>
+    <line x1="100" y1="100" x2="165" y2="50"/>
+    <line x1="100" y1="100" x2="180" y2="100"/>
+    <line x1="100" y1="100" x2="165" y2="150"/>
+    <line x1="100" y1="100" x2="100" y2="180"/>
+    <line x1="100" y1="100" x2="35" y2="150"/>
+    <line x1="100" y1="100" x2="20" y2="100"/>
+    <line x1="100" y1="100" x2="35" y2="50"/>
+    <!-- Cross connections -->
+    <line x1="35" y1="50" x2="165" y2="150"/>
+    <line x1="165" y1="50" x2="35" y2="150"/>
+    <line x1="100" y1="20" x2="100" y2="180"/>
+    <line x1="20" y1="100" x2="180" y2="100"/>
+  </g>
+
+  <!-- Secondary connection layer - mid-ring nodes -->
+  <g stroke="#8b5cf6" stroke-width="0.8" opacity="0.25">
+    <line x1="60" y1="45" x2="140" y2="45"/>
+    <line x1="140" y1="45" x2="160" y2="100"/>
+    <line x1="160" y1="100" x2="140" y2="155"/>
+    <line x1="140" y1="155" x2="60" y2="155"/>
+    <line x1="60" y1="155" x2="40" y2="100"/>
+    <line x1="40" y1="100" x2="60" y2="45"/>
+    <!-- Connect to outer -->
+    <line x1="60" y1="45" x2="35" y2="50"/>
+    <line x1="140" y1="45" x2="165" y2="50"/>
+    <line x1="160" y1="100" x2="180" y2="100"/>
+    <line x1="140" y1="155" x2="165" y2="150"/>
+    <line x1="60" y1="155" x2="35" y2="150"/>
+    <line x1="40" y1="100" x2="20" y2="100"/>
+  </g>
+
+  <!-- MOQ text in center -->
+  <g font-family="Arial, sans-serif" font-weight="bold" fill="url(#grad3)">
+    <text x="100" y="108" text-anchor="middle" font-size="32">MOQ</text>
+  </g>
+
+  <!-- Central relay node (the O in MOQ is also the hub) -->
+  <circle cx="100" cy="100" r="38" fill="none" stroke="url(#grad2)" stroke-width="2" opacity="0.5"/>
+
+  <!-- Outer endpoint nodes - browsers/clients -->
+  <g fill="#22d3ee">
+    <circle cx="100" cy="20" r="5"/>
+    <circle cx="165" cy="50" r="5"/>
+    <circle cx="180" cy="100" r="5"/>
+    <circle cx="165" cy="150" r="5"/>
+    <circle cx="100" cy="180" r="5"/>
+    <circle cx="35" cy="150" r="5"/>
+    <circle cx="20" cy="100" r="5"/>
+    <circle cx="35" cy="50" r="5"/>
+  </g>
+
+  <!-- Mid-ring CDN/relay nodes -->
+  <g fill="#8b5cf6">
+    <circle cx="60" cy="45" r="4"/>
+    <circle cx="140" cy="45" r="4"/>
+    <circle cx="160" cy="100" r="4"/>
+    <circle cx="140" cy="155" r="4"/>
+    <circle cx="60" cy="155" r="4"/>
+    <circle cx="40" cy="100" r="4"/>
+  </g>
+
+  <!-- Small streaming particles - data in transit -->
+  <g fill="#22d3ee" opacity="0.8">
+    <circle cx="75" cy="60" r="1.5"/>
+    <circle cx="130" cy="75" r="1.5"/>
+    <circle cx="85" cy="140" r="1.5"/>
+    <circle cx="120" cy="130" r="1.5"/>
+    <circle cx="55" cy="100" r="1.5"/>
+    <circle cx="145" cy="100" r="1.5"/>
+  </g>
+
+  <!-- Animated-style pulse rings around center -->
+  <circle cx="100" cy="100" r="25" fill="none" stroke="#22d3ee" stroke-width="0.5" opacity="0.3"/>
+  <circle cx="100" cy="100" r="50" fill="none" stroke="#6366f1" stroke-width="0.5" opacity="0.2"/>
+</svg>
