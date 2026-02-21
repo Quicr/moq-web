@@ -958,7 +958,7 @@ describe('ObjectCodec', () => {
         0x40, 0x64, // trackAlias = 100 (2-byte varint: 0x40 | high, low)
         0x05, // groupId = 5 (1-byte varint)
         0x02, // subgroupId = 2 (1-byte varint)
-        0x40, 0x80, // publisherPriority = 128 (2-byte varint)
+        0x80, // publisherPriority = 128 (single byte, not varint)
       ]);
 
       const [decoded] = ObjectCodec.decodeSubgroupHeader(buffer);

@@ -329,17 +329,16 @@ export class JitterBuffer<T> {
   }
 
   /**
-   * Find insertion index for sorted order
-   * Sorts by sequence number (objectId) to ensure correct decode order
-   * This is critical for H.264 where delta frames depend on previous frames
+   * Find insertion index for sorted order by timestamp
+   * Sorts by timestamp for correct playback/presentation order
    */
-  private findInsertIndex(_timestamp: number, sequence: number): number {
+  private findInsertIndex(timestamp: number, _sequence: number): number {
     let low = 0;
     let high = this.frames.length;
 
     while (low < high) {
       const mid = Math.floor((low + high) / 2);
-      if (this.frames[mid].sequence < sequence) {
+      if (this.frames[mid].timestamp < timestamp) {
         low = mid + 1;
       } else {
         high = mid;
