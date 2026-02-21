@@ -621,7 +621,7 @@ export class MessageCodec {
     if (parameters) {
       if (IS_DRAFT_16) {
         // Draft-16: Sort by key ascending, delta encode keys
-        // Even keys = value directly, Odd keys = length + bytes
+        // All parameters use length + bytes format
         const sortedEntries = Array.from(parameters.entries()).sort((a, b) => a[0] - b[0]);
         let previousKey = 0;
 
@@ -631,14 +631,9 @@ export class MessageCodec {
           writer.writeVarInt(deltaKey);
           previousKey = key;
 
-          if (key % 2 === 0) {
-            // Even key: write value bytes directly (no length prefix)
-            writer.writeBytes(value);
-          } else {
-            // Odd key: write length + bytes
-            writer.writeVarInt(value.length);
-            writer.writeBytes(value);
-          }
+          // All parameters use length + bytes format
+          writer.writeVarInt(value.length);
+          writer.writeBytes(value);
         }
       } else {
         // Draft-14: All parameters use length + bytes format, no delta encoding
@@ -735,25 +730,19 @@ export class MessageCodec {
     const parameters = new Map<RequestParameter, Uint8Array>();
 
     if (IS_DRAFT_16) {
-      // Draft-16: Delta encoded keys, even = varint value, odd = length + bytes
+      // Draft-16: Delta encoded keys, all parameters use length + bytes
       let previousKey = 0;
       for (let i = 0; i < count; i++) {
         const deltaKey = reader.readVarIntNumber();
         const key = (previousKey + deltaKey) as RequestParameter;
         previousKey = key;
 
-        if (key % 2 === 0) {
-          // Even key: read value as varint directly, convert to bytes for storage
-          const value = reader.readVarIntNumber();
-          parameters.set(key, VarInt.encode(value));
-        } else {
-          // Odd key: read length + bytes
-          const length = reader.readVarIntNumber();
-          if (length > MessageCodec.MAX_STRING_LENGTH) {
-            throw new MessageCodecError(`Parameter value too long: ${length}`);
-          }
-          parameters.set(key, reader.readBytes(length));
+        // All parameters use length + bytes format
+        const length = reader.readVarIntNumber();
+        if (length > MessageCodec.MAX_STRING_LENGTH) {
+          throw new MessageCodecError(`Parameter value too long: ${length}`);
         }
+        parameters.set(key, reader.readBytes(length));
       }
     } else {
       // Draft-14: No delta encoding, all parameters use length + bytes format
