@@ -43,6 +43,7 @@ jobs:
         run: pnpm run build
         env:
           BASE_URL: /${{ github.event.repository.name }}/
+          MOQT_VERSION: draft-16
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
