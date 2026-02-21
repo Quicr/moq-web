@@ -7,13 +7,13 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "pnpm -r run build",
-    "build:draft-16": "MOQT_VERSION=draft-16 pnpm -r run build",
-    "test": "pnpm -r run test",
-    "test:draft-16": "MOQT_VERSION=draft-16 pnpm -r run test",
+    "build": "MOQT_VERSION=draft-16 pnpm -r run build",
+    "build:draft-14": "MOQT_VERSION=draft-14 pnpm -r run build",
+    "test": "MOQT_VERSION=draft-16 pnpm -r run test",
+    "test:draft-14": "MOQT_VERSION=draft-14 pnpm -r run test",
     "lint": "pnpm -r run lint",
-    "dev": "pnpm --filter @web-moq/client run dev",
-    "dev:draft-16": "MOQT_VERSION=draft-16 pnpm --filter @web-moq/client run dev",
+    "dev": "MOQT_VERSION=draft-16 pnpm --filter @web-moq/client run dev",
+    "dev:draft-14": "MOQT_VERSION=draft-14 pnpm --filter @web-moq/client run dev",
     "clean": "pnpm -r run clean"
   },
   "devDependencies": {

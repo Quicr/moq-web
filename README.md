@@ -43,15 +43,15 @@ Built on WebTransport and WebCodecs for low-latency video/audio delivery.
 
 | Draft | Status | Notes |
 |-------|--------|-------|
-| Draft-14 | Default | Full support |
+| Draft-16 | Default | Full support |
 | Draft-15 | Included with Draft-16 | ALPN negotiation |
-| Draft-16 | Build-time flag | Full support |
+| Draft-14 | Build-time flag | Full support |
 
-Build for draft-16:
+Build for draft-14:
 
 ```bash
-pnpm build:draft-16
-pnpm dev:draft-16
+pnpm build:draft-14
+pnpm dev:draft-14
 ```
 
 ## Architecture
@@ -107,7 +107,7 @@ packages/
 
 ```bash
 pnpm test              # Run all tests
-pnpm test:draft-16     # Test with draft-16
+pnpm test:draft-14     # Test with draft-14
 ```
 
 ## License
