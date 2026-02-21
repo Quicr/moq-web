@@ -610,7 +610,7 @@ export class MessageCodec {
    * Encode request parameters
    *
    * Draft-16: Even parameter keys encode value directly (varint bytes),
-   * odd keys use length + bytes format.
+   * odd keys use length + bytes format. Keys are delta encoded.
    */
   private static encodeRequestParameters(
     writer: BufferWriter,
@@ -621,7 +621,7 @@ export class MessageCodec {
     if (parameters) {
       if (IS_DRAFT_16) {
         // Draft-16: Sort by key ascending, delta encode keys
-        // All parameters use length + bytes format
+        // Even keys = value directly, Odd keys = length + bytes
         const sortedEntries = Array.from(parameters.entries()).sort((a, b) => a[0] - b[0]);
         let previousKey = 0;
 
@@ -631,9 +631,14 @@ export class MessageCodec {
           writer.writeVarInt(deltaKey);
           previousKey = key;
 
-          // All parameters use length + bytes format
-          writer.writeVarInt(value.length);
-          writer.writeBytes(value);
+          if (key % 2 === 0) {
+            // Even key: write value bytes directly (no length prefix)
+            writer.writeBytes(value);
+          } else {
+            // Odd key: write length + bytes
+            writer.writeVarInt(value.length);
+            writer.writeBytes(value);
+          }
         }
       } else {
         // Draft-14: All parameters use length + bytes format, no delta encoding
@@ -730,19 +735,26 @@ export class MessageCodec {
     const parameters = new Map<RequestParameter, Uint8Array>();
 
     if (IS_DRAFT_16) {
-      // Draft-16: Delta encoded keys, all parameters use length + bytes
+      // Draft-16: Delta encoded keys
+      // Even keys = value directly (varint), Odd keys = length + bytes
       let previousKey = 0;
       for (let i = 0; i < count; i++) {
         const deltaKey = reader.readVarIntNumber();
         const key = (previousKey + deltaKey) as RequestParameter;
         previousKey = key;
 
-        // All parameters use length + bytes format
-        const length = reader.readVarIntNumber();
-        if (length > MessageCodec.MAX_STRING_LENGTH) {
-          throw new MessageCodecError(`Parameter value too long: ${length}`);
+        if (key % 2 === 0) {
+          // Even key: read value as varint directly, store as encoded bytes
+          const value = reader.readVarIntNumber();
+          parameters.set(key, VarInt.encode(value));
+        } else {
+          // Odd key: read length + bytes
+          const length = reader.readVarIntNumber();
+          if (length > MessageCodec.MAX_STRING_LENGTH) {
+            throw new MessageCodecError(`Parameter value too long: ${length}`);
+          }
+          parameters.set(key, reader.readBytes(length));
         }
-        parameters.set(key, reader.readBytes(length));
       }
     } else {
       // Draft-14: No delta encoding, all parameters use length + bytes format
@@ -851,35 +863,39 @@ export class MessageCodec {
       writer.writeVarInt(message.requestId);
       MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
 
-      // Build parameters: subscriberPriority, subscriptionFilter, groupOrder
-      // Keys: 0x20 (even), 0x21 (odd), 0x22 (even)
-      const params = new Map<number, Uint8Array>(message.parameters ?? []);
+      // DEBUG: Send empty parameters to test server parsing
+      // TODO: Re-enable parameters once server compatibility is confirmed
+      writer.writeVarInt(0); // Empty parameters count
 
-      // Add subscriber priority (0x20, even) - encode as varint bytes
-      if (message.subscriberPriority !== undefined) {
-        params.set(0x20, VarInt.encode(message.subscriberPriority));
-      }
+      // // Build parameters: subscriberPriority, subscriptionFilter, groupOrder
+      // // Keys: 0x20 (even), 0x21 (odd), 0x22 (even)
+      // const params = new Map<number, Uint8Array>(message.parameters ?? []);
 
-      // Add subscription filter (0x21, odd) - encode as length + bytes
-      // Filter format: filterType [startGroup startObject] [endGroup]
-      const filterWriter = new BufferWriter();
-      filterWriter.writeVarInt(message.filterType);
-      if (message.filterType === FilterType.ABSOLUTE_START ||
-          message.filterType === FilterType.ABSOLUTE_RANGE) {
-        filterWriter.writeVarInt(message.startGroup ?? 0);
-        filterWriter.writeVarInt(message.startObject ?? 0);
-      }
-      if (message.filterType === FilterType.ABSOLUTE_RANGE) {
-        filterWriter.writeVarInt(message.endGroup ?? 0);
-      }
-      params.set(0x21, filterWriter.toUint8Array());
+      // // Add subscriber priority (0x20, even) - encode as varint bytes
+      // if (message.subscriberPriority !== undefined) {
+      //   params.set(0x20, VarInt.encode(message.subscriberPriority));
+      // }
 
-      // Add group order (0x22, even) - encode as varint bytes
-      if (message.groupOrder !== undefined) {
-        params.set(0x22, VarInt.encode(message.groupOrder));
-      }
+      // // Add subscription filter (0x21, odd) - encode as length + bytes
+      // // Filter format: filterType [startGroup startObject] [endGroup]
+      // const filterWriter = new BufferWriter();
+      // filterWriter.writeVarInt(message.filterType);
+      // if (message.filterType === FilterType.ABSOLUTE_START ||
+      //     message.filterType === FilterType.ABSOLUTE_RANGE) {
+      //   filterWriter.writeVarInt(message.startGroup ?? 0);
+      //   filterWriter.writeVarInt(message.startObject ?? 0);
+      // }
+      // if (message.filterType === FilterType.ABSOLUTE_RANGE) {
+      //   filterWriter.writeVarInt(message.endGroup ?? 0);
+      // }
+      // params.set(0x21, filterWriter.toUint8Array());
 
-      MessageCodec.encodeRequestParameters(writer, params);
+      // // Add group order (0x22, even) - encode as varint bytes
+      // if (message.groupOrder !== undefined) {
+      //   params.set(0x22, VarInt.encode(message.groupOrder));
+      // }
+
+      // MessageCodec.encodeRequestParameters(writer, params);
     } else {
       // Draft-14 SUBSCRIBE format:
       // Request ID, Track Namespace, Track Name, Subscriber Priority, Group Order,
