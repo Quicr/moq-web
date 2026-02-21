@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Quicr/moq-web/actions/workflows/ci.yml"><img src="https://github.com/Quicr/moq-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/Quicr/moq-web/actions/workflows/deploy.yml"><img src="https://github.com/Quicr/moq-web/actions/workflows/deploy.yml/badge.svg" alt="Deploy"></a>
+  <a href="https://github.com/Quicr/moq-web/actions/workflows/ci.yml"><img src="https://github.com/Quicr/moq-web/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/Quicr/moq-web/actions/workflows/deploy.yml"><img src="https://github.com/Quicr/moq-web/actions/workflows/deploy.yml/badge.svg?branch=main" alt="Deploy"></a>
 </p>
 
 # MOQ Web
