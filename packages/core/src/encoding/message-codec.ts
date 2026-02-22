@@ -340,9 +340,11 @@ export class MessageCodec {
         message = MessageCodec.decodeSubscribeUpdatePayload(reader);
         break;
       case MessageType.SUBSCRIBE_OK:
+        console.log('[SUBSCRIBE_OK] Raw bytes:', Array.from(buffer.slice(offset)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         message = MessageCodec.decodeSubscribeOkPayload(reader);
         break;
       case MessageType.SUBSCRIBE_ERROR:
+        console.log('[SUBSCRIBE_ERROR] Raw bytes:', Array.from(buffer.slice(offset)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         message = MessageCodec.decodeSubscribeErrorPayload(reader);
         break;
       case MessageType.UNSUBSCRIBE:
@@ -506,10 +508,19 @@ export class MessageCodec {
     parameters: Map<SetupParameter, number | string>
   ): void {
     writer.writeVarInt(parameters.size);
-    for (const [key, value] of parameters) {
-      writer.writeVarInt(key);
-      if (IS_DRAFT_16) {
-        // Draft-16: Even keys = varint value, Odd keys = length + bytes
+
+    if (IS_DRAFT_16) {
+      // Draft-16: Delta-encoded keys, even keys = varint value, odd keys = length + bytes
+      // Sort entries by key for delta encoding
+      const sortedEntries = Array.from(parameters.entries()).sort((a, b) => a[0] - b[0]);
+      let previousKey = 0;
+
+      for (const [key, value] of sortedEntries) {
+        // Delta encode key
+        const deltaKey = key - previousKey;
+        writer.writeVarInt(deltaKey);
+        previousKey = key;
+
         if (key % 2 === 0) {
           // Even key: write value as varint directly
           if (typeof value === 'number') {
@@ -529,8 +540,11 @@ export class MessageCodec {
             writer.writeBytes(encoded);
           }
         }
-      } else {
-        // Draft-14: All parameters use length + bytes format
+      }
+    } else {
+      // Draft-14: No delta encoding, all parameters use length + bytes format
+      for (const [key, value] of parameters) {
+        writer.writeVarInt(key);
         if (typeof value === 'string') {
           writer.writeString(value);
         } else {
@@ -549,7 +563,7 @@ export class MessageCodec {
   /**
    * Decode setup parameters
    *
-   * Draft-16: Even parameter keys have varint value directly,
+   * Draft-16: Delta-encoded keys, even keys have varint value directly,
    * odd keys use length + bytes format.
    */
   private static decodeSetupParameters(
@@ -564,11 +578,15 @@ export class MessageCodec {
 
     const parameters = new Map<SetupParameter, number | string>();
 
-    for (let i = 0; i < count; i++) {
-      const key = reader.readVarIntNumber() as SetupParameter;
+    if (IS_DRAFT_16) {
+      // Draft-16: Delta-encoded keys, even keys = varint value, odd keys = length + bytes
+      let previousKey = 0;
 
-      if (IS_DRAFT_16) {
-        // Draft-16: Even keys = varint value, Odd keys = length + bytes
+      for (let i = 0; i < count; i++) {
+        const deltaKey = reader.readVarIntNumber();
+        const key = (previousKey + deltaKey) as SetupParameter;
+        previousKey = key;
+
         if (key % 2 === 0) {
           // Even key: read value as varint directly
           const value = reader.readVarIntNumber();
@@ -583,8 +601,11 @@ export class MessageCodec {
           // Odd keys are typically strings (PATH, ENDPOINT_ID, etc.)
           parameters.set(key, new TextDecoder().decode(bytes));
         }
-      } else {
-        // Draft-14: All parameters use length + bytes format
+      }
+    } else {
+      // Draft-14: No delta encoding, all parameters use length + bytes format
+      for (let i = 0; i < count; i++) {
+        const key = reader.readVarIntNumber() as SetupParameter;
         const valueLength = reader.readVarIntNumber();
         if (valueLength > MessageCodec.MAX_STRING_LENGTH) {
           throw new MessageCodecError(`Parameter value too long: ${valueLength}`);
@@ -940,6 +961,10 @@ export class MessageCodec {
         groupOrder: GroupOrder.ASCENDING,
         filterType: FilterType.LATEST_GROUP, // Default, may be overridden from parameters
       };
+
+      // DEBUG: Log remaining bytes for parameter parsing
+      const remainingBytes = reader.peekRemaining();
+      console.log('[SUBSCRIBE] Remaining bytes for parameters:', Array.from(remainingBytes).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
 
       message.parameters = MessageCodec.decodeRequestParameters(reader);
 

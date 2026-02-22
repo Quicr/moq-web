@@ -7,8 +7,8 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 import path from 'path';
 
 // MOQT version selection at build time
-// Default to 'draft-14', can be set via MOQT_VERSION env var
-const moqtVersion = process.env.MOQT_VERSION || 'draft-14';
+// Default to 'draft-16', can be set via MOQT_VERSION env var
+const moqtVersion = process.env.MOQT_VERSION || 'draft-16';
 console.log(`Building with MOQT_VERSION=${moqtVersion}`);
 
 export default defineConfig({
