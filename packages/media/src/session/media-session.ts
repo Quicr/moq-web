@@ -422,7 +422,7 @@ export class MediaSession {
         sampleRate: 48000,
         numberOfChannels: 2,
       } : undefined,
-      jitterBufferDelay: 50, // Reduced for lower latency
+      jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
     });

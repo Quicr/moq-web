@@ -30,6 +30,8 @@ export const SettingsPanel: React.FC = () => {
     setUseAnnounceFlow,
     enableStats,
     setEnableStats,
+    jitterBufferDelay,
+    setJitterBufferDelay,
     varIntType,
     setVarIntType,
   } = useStore();
@@ -207,6 +209,26 @@ export const SettingsPanel: React.FC = () => {
                 />
               </button>
             </label>
+          </div>
+
+          {/* Jitter Buffer Delay */}
+          <div>
+            <label className="label">
+              Jitter Buffer: {jitterBufferDelay}ms
+            </label>
+            <input
+              type="range"
+              min="50"
+              max="300"
+              step="10"
+              value={jitterBufferDelay}
+              onChange={(e) => setJitterBufferDelay(Number(e.target.value))}
+              className="w-full"
+            />
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>50ms (low latency)</span>
+              <span>300ms (smooth)</span>
+            </div>
           </div>
 
           {/* MOQT VarInt Encoding Toggle */}

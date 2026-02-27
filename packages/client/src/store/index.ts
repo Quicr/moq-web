@@ -240,6 +240,8 @@ interface SettingsSlice {
   useAnnounceFlow: boolean;
   /** Enable jitter/network stats collection and display */
   enableStats: boolean;
+  /** Jitter buffer delay in milliseconds */
+  jitterBufferDelay: number;
   /** VarInt encoding type (QUIC or MOQT) */
   varIntType: VarIntType;
 
@@ -254,6 +256,7 @@ interface SettingsSlice {
   setUseWorkers: (value: boolean) => void;
   setUseAnnounceFlow: (value: boolean) => void;
   setEnableStats: (value: boolean) => void;
+  setJitterBufferDelay: (value: number) => void;
   setVarIntType: (type: VarIntType) => void;
 }
 
@@ -612,7 +615,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -622,6 +625,7 @@ export const useStore = create<AppStore>()(
           audioBitrate,
           videoResolution,
           enableStats,
+          jitterBufferDelay,
         };
 
         const subscriptionId = await session.subscribe(
@@ -832,6 +836,7 @@ export const useStore = create<AppStore>()(
       useWorkers: true, // Default to using workers for better performance
       useAnnounceFlow: false, // Default to direct PUBLISH flow
       enableStats: false, // Default to off for performance
+      jitterBufferDelay: 100, // Default 100ms jitter buffer
       varIntType: VarIntType.QUIC, // Default to QUIC varints for compatibility
 
       setTheme: (theme) => {
@@ -859,6 +864,7 @@ export const useStore = create<AppStore>()(
       setUseWorkers: (value) => set({ useWorkers: value }),
       setUseAnnounceFlow: (value) => set({ useAnnounceFlow: value }),
       setEnableStats: (value) => set({ enableStats: value }),
+      setJitterBufferDelay: (value) => set({ jitterBufferDelay: value }),
       setVarIntType: (type) => {
         set({ varIntType: type });
         // Apply to the global VarInt codec
@@ -881,6 +887,7 @@ export const useStore = create<AppStore>()(
         useWorkers: state.useWorkers,
         useAnnounceFlow: state.useAnnounceFlow,
         enableStats: state.enableStats,
+        jitterBufferDelay: state.jitterBufferDelay,
         varIntType: state.varIntType,
       }),
     }

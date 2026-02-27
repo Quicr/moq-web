@@ -306,7 +306,7 @@ export class SubscribePipeline {
 
     // Set up event handlers for decoded frames
     this.decodeWorkerClient.on('video-frame', (response) => {
-      log.info('Pipeline received video-frame from worker', {
+      log.trace('Pipeline received video-frame from worker', {
         pipelineChannelId: this.channelId,
         responseChannelId: response.channelId,
         width: response.result.frame.displayWidth,
@@ -316,10 +316,6 @@ export class SubscribePipeline {
     });
 
     this.decodeWorkerClient.on('audio-data', (response) => {
-      log.trace('Worker emitting audio-data event', {
-        channelId: this.channelId,
-        duration: response.result.data.duration,
-      });
       this.emit('audio-data', response.result.data);
     });
 
@@ -353,7 +349,7 @@ export class SubscribePipeline {
             numberOfChannels: this.config.audio.numberOfChannels,
           }
         : undefined,
-      jitterBufferDelay: this.config.jitterBufferDelay ?? 50,
+      jitterBufferDelay: this.config.jitterBufferDelay ?? 100,
       enableStats: this.enableStats,
     });
 
@@ -393,7 +389,7 @@ export class SubscribePipeline {
       await this.videoDecoder.start(this.config.video!);
 
       this.videoBuffer = new JitterBuffer({
-        targetDelay: this.config.jitterBufferDelay ?? 50, // Reduced from 100ms for lower latency
+        targetDelay: this.config.jitterBufferDelay ?? 100,
         maxDelay: 300,
         maxFramesPerCall: 5, // Allow more frames per cycle to reduce delay
       });
@@ -404,11 +400,6 @@ export class SubscribePipeline {
     if (shouldCreateAudioDecoder) {
       this.audioDecoder = new OpusDecoder();
       this.audioDecoder.on('frame', (audioData) => {
-        log.info('Pipeline emitting audio-data event', {
-          duration: audioData.duration,
-          sampleRate: audioData.sampleRate,
-          numberOfChannels: audioData.numberOfChannels,
-        });
         this.emit('audio-data', audioData);
       });
       this.audioDecoder.on('error', (error) => {
@@ -419,7 +410,7 @@ export class SubscribePipeline {
       await this.audioDecoder.start(this.config.audio!);
 
       this.audioBuffer = new JitterBuffer({
-        targetDelay: this.config.jitterBufferDelay ?? 50, // Reduced from 100ms for lower latency
+        targetDelay: this.config.jitterBufferDelay ?? 100,
         maxDelay: 300,
         maxFramesPerCall: 5, // Allow more frames per cycle to reduce delay
       });

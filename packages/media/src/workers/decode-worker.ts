@@ -107,7 +107,7 @@ function handleMessage(event: MessageEvent<DecodeWorkerRequest>): void {
       debug = config.debug ?? false;
       unpackager = new LOCUnpackager();
 
-      const jitterDelay = config.jitterBufferDelay ?? 50; // Reduced for lower latency
+      const jitterDelay = config.jitterBufferDelay ?? 100;
 
       // Create buffers based on media type
       if (config.mediaType !== 'audio') {

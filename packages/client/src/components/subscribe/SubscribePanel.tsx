@@ -95,10 +95,7 @@ export const SubscribePanel: React.FC = () => {
 
       frameUpdateCountRef.current++;
 
-      // Don't close the old frame here - let VideoRenderer close it after rendering
-      // This avoids race conditions where frames are closed before they can be drawn
-
-      // Update ref immediately
+      // Update ref immediately with new frame
       videoFramesRef.current[data.subscriptionId] = data.frame;
 
       // Per-subscription throttle to max 60fps to avoid excessive re-renders
@@ -112,6 +109,9 @@ export const SubscribePanel: React.FC = () => {
           [data.subscriptionId]: data.frame,
         }));
       }
+      // Don't close frames here - VideoRenderer handles frame lifecycle
+      // after rendering. This avoids race conditions where frames are
+      // closed before they can be drawn.
 
       // Log stats every 300 frames to reduce overhead (debug mode only)
       if (isDebugMode() && frameUpdateCountRef.current % 300 === 0) {

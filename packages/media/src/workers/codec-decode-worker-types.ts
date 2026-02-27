@@ -112,6 +112,12 @@ export interface LatencyStatsSample {
   bufferDepth: number;
   /** Time spent in jitter buffer (ms) */
   bufferDelay: number;
+  /** Total frames dropped (late arrivals + buffer overflow) */
+  framesDropped?: number;
+  /** Delta frames dropped while waiting for keyframe */
+  framesDroppedBeforeKeyframe?: number;
+  /** Frames decoded out of sequence order */
+  framesOutOfOrder?: number;
 }
 
 /**

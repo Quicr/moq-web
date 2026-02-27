@@ -14,6 +14,9 @@ interface LatencyStatsSample {
   processingDelay: number;
   bufferDepth: number;
   bufferDelay: number;
+  framesDropped?: number;
+  framesDroppedBeforeKeyframe?: number;
+  framesOutOfOrder?: number;
 }
 
 interface LatencyStatsGraphProps {
@@ -36,6 +39,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const delaySamplesRef = useRef<number[]>([]);
   const depthSamplesRef = useRef<number[]>([]);
+  const droppedRef = useRef<{ total: number; beforeKeyframe: number; outOfOrder: number }>({ total: 0, beforeKeyframe: 0, outOfOrder: 0 });
   const rafIdRef = useRef<number | null>(null);
   const needsDrawRef = useRef(false);
 
@@ -148,6 +152,17 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       delaySamplesRef.current.push(data.stats.processingDelay);
       depthSamplesRef.current.push(data.stats.bufferDepth);
 
+      // Track dropped/out-of-order frames (these are cumulative totals)
+      if (data.stats.framesDropped !== undefined) {
+        droppedRef.current.total = data.stats.framesDropped;
+      }
+      if (data.stats.framesDroppedBeforeKeyframe !== undefined) {
+        droppedRef.current.beforeKeyframe = data.stats.framesDroppedBeforeKeyframe;
+      }
+      if (data.stats.framesOutOfOrder !== undefined) {
+        droppedRef.current.outOfOrder = data.stats.framesOutOfOrder;
+      }
+
       if (delaySamplesRef.current.length > MAX_SAMPLES) {
         delaySamplesRef.current.shift();
         depthSamplesRef.current.shift();
@@ -165,6 +180,8 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
   const latestDelay = delays.length > 0 ? delays[delays.length - 1] : 0;
   const latestDepth = depths.length > 0 ? depths[depths.length - 1] : 0;
   const avgDelay = delays.length > 0 ? delays.reduce((a, b) => a + b, 0) / delays.length : 0;
+  const dropped = droppedRef.current;
+  const totalDropped = dropped.total + dropped.beforeKeyframe;
 
   return (
     <div className="bg-gray-800 rounded p-2">
@@ -187,7 +204,19 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       />
       <div className="flex items-center justify-between mt-1 text-xs text-gray-500">
         <span>Bars: delay</span>
-        <span className="text-blue-400">Line: buffer depth</span>
+        <div>
+          <span className="text-blue-400">Line: buf depth</span>
+          {totalDropped > 0 && (
+            <span className="text-red-400 ml-2" title={`Late: ${dropped.total}, Before KF: ${dropped.beforeKeyframe}`}>
+              drop: {totalDropped}
+            </span>
+          )}
+          {dropped.outOfOrder > 0 && (
+            <span className="text-orange-400 ml-2" title="Frames decoded out of sequence order">
+              ooo: {dropped.outOfOrder}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

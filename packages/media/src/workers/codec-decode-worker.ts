@@ -22,8 +22,9 @@ import type {
   CodecDecodeWorkerConfig,
 } from './codec-decode-worker-types.js';
 
-// Global debug flag - enabled for diagnosing artifacts
-let debug = true;
+// Global debug flag - disabled by default for performance
+// Enable via init message config.debug or set to true here for debugging
+let debug = false;
 
 // Jitter buffer data types
 interface VideoBufferData {
@@ -72,6 +73,8 @@ interface DecodeChannel {
   hasReceivedKeyframe: boolean;
   droppedFramesBeforeKeyframe: number;
   enableStats: boolean;
+  lastDecodedSequence: number;
+  framesOutOfOrder: number;
 }
 
 // Map of channel ID to decode context
@@ -119,11 +122,13 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     hasReceivedKeyframe: false,
     droppedFramesBeforeKeyframe: 0,
     enableStats: config.enableStats ?? false,
+    lastDecodedSequence: -1,
+    framesOutOfOrder: 0,
   };
 
   log(`Channel ${channelId} config`, { enableStats: channel.enableStats, jitterDelay: config.jitterBufferDelay });
 
-  const jitterDelay = config.jitterBufferDelay ?? 50;
+  const jitterDelay = config.jitterBufferDelay ?? 100;
 
   // Initialize video if configured
   if (config.video) {
@@ -180,11 +185,15 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
         const processingDelay = now - meta.arrivedAt;
         const bufferDepth = channel.videoBuffer?.size ?? 0;
         const bufferDelay = channel.videoBuffer?.delay ?? 0;
-        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay });
+        const bufferStats = channel.videoBuffer?.getStats();
+        const framesDropped = bufferStats?.framesDropped ?? 0;
+        const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
+        const framesOutOfOrder = channel.framesOutOfOrder;
+        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
         respond({
           type: 'latency-stats',
           channelId: channel.channelId,
-          stats: { processingDelay, bufferDepth, bufferDelay },
+          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
         });
       }
     },
@@ -317,7 +326,14 @@ function pushData(
         receivedAt: arrivedAt,
       });
 
-      log(`Pushed video (channel ${channel.channelId})`, { groupId, objectId, isKeyframe, bufferSize: channel.videoBuffer.size });
+      log(`Pushed video (channel ${channel.channelId})`, {
+        groupId,
+        objectId,
+        isKeyframe,
+        timestamp: timestamp / 1000, // ms
+        sequence: channel.videoSequence - 1,
+        bufferSize: channel.videoBuffer.size
+      });
     } else if (mediaType === MediaType.AUDIO && channel.audioBuffer) {
       const frame = channel.unpackager.unpackage(data);
 
@@ -372,12 +388,28 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
         });
       }
 
+      // Check for out-of-order decode
+      const expectedSequence = channel.lastDecodedSequence + 1;
+      const isOutOfOrder = channel.lastDecodedSequence >= 0 && frame.sequence !== expectedSequence;
+      if (isOutOfOrder) {
+        channel.framesOutOfOrder++;
+        log(`OUT OF ORDER frame (channel ${channel.channelId})`, {
+          expected: expectedSequence,
+          got: frame.sequence,
+          totalOutOfOrder: channel.framesOutOfOrder,
+        });
+      }
+      channel.lastDecodedSequence = frame.sequence;
+
       // Log every frame being decoded for debugging
       log(`Decoding frame (channel ${channel.channelId})`, {
         groupId: frame.groupId,
         objectId: frame.objectId,
+        sequence: frame.sequence,
+        timestamp: frame.timestamp,
         isKeyframe: frame.data.isKeyframe,
         dataSize: frame.data.data.length,
+        outOfOrder: isOutOfOrder,
       });
 
       try {
@@ -469,6 +501,8 @@ function resetChannel(channel: DecodeChannel): void {
   channel.currentAudioMeta = null;
   channel.hasReceivedKeyframe = false;
   channel.droppedFramesBeforeKeyframe = 0;
+  channel.lastDecodedSequence = -1;
+  channel.framesOutOfOrder = 0;
 
   // Close any pending frames
   for (const { frame } of channel.pendingVideoFrames) {

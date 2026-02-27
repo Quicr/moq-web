@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * @fileoverview Jitter Buffer for Media Playback
+ * @fileoverview Jitter Buffer for Media Decoding
  *
  * Provides a jitter buffer to handle out-of-order and delayed packets
- * for smooth media playback. Reorders frames by timestamp and manages
- * playback timing.
+ * for smooth media decoding. Reorders frames by sequence number (decode order)
+ * and manages buffer timing based on arrival time.
  *
  * @example
  * ```typescript
@@ -91,8 +91,8 @@ export interface JitterBufferStats {
  *
  * @remarks
  * Buffers incoming media frames to handle network jitter and
- * out-of-order delivery. Frames are reordered by timestamp
- * and released for playback after a configurable delay.
+ * out-of-order delivery. Frames are reordered by sequence number
+ * (decode order) and released for decoding after a configurable delay.
  *
  * @typeParam T - Type of frame data
  *
@@ -129,7 +129,7 @@ export interface JitterBufferStats {
 export class JitterBuffer<T> {
   /** Configuration */
   private config: Required<JitterBufferConfig>;
-  /** Buffered frames sorted by timestamp */
+  /** Buffered frames sorted by sequence (decode order) */
   private frames: BufferedFrame<T>[] = [];
   /** Playback start time */
   private playbackStartTime?: number;
@@ -144,8 +144,8 @@ export class JitterBuffer<T> {
     framesDropped: 0,
     framesReordered: 0,
   };
-  /** Last played timestamp */
-  private lastPlayedTimestamp = -1;
+  /** Last played sequence (for decode order tracking) */
+  private lastPlayedSequence = -1;
 
   /**
    * Create a new JitterBuffer
@@ -176,35 +176,24 @@ export class JitterBuffer<T> {
   push(frame: BufferedFrame<T>): boolean {
     this.stats.framesReceived++;
 
-    // Initialize playback timing on first frame
+    // Initialize on first frame
     if (this.firstTimestamp === undefined) {
       this.firstTimestamp = frame.timestamp;
       this.playbackStartTime = performance.now() + this.config.targetDelay;
-      log.info(`Buffer init: firstTs=${Math.round(frame.timestamp)} startTime=${Math.round(this.playbackStartTime)} targetDelay=${this.config.targetDelay}`);
+      log.debug(`Buffer init: firstTs=${Math.round(frame.timestamp)} targetDelay=${this.config.targetDelay}`);
     }
 
-    // Calculate frame's playback time
-    const playbackTime = this.getPlaybackTime(frame.timestamp);
-
-    // Check if frame is too late
-    if (playbackTime < performance.now() - this.config.maxDelay) {
-      log.warn('Dropping LATE frame', {
+    // Check if frame is already played (by sequence - decode order)
+    if (frame.sequence <= this.lastPlayedSequence) {
+      log.debug('Dropping LATE frame (already past this sequence)', {
         groupId: frame.groupId,
         objectId: frame.objectId,
+        sequence: frame.sequence,
+        lastPlayedSequence: this.lastPlayedSequence,
         isKeyframe: frame.isKeyframe,
-        timestamp: frame.timestamp,
-        delayMs: Math.round(performance.now() - playbackTime),
-        maxDelay: this.config.maxDelay,
-        totalDropped: this.stats.framesDropped + 1,
       });
       this.stats.framesDropped++;
       this.config.onLateFrame(frame);
-      return false;
-    }
-
-    // Check if frame is already played
-    if (frame.timestamp <= this.lastPlayedTimestamp) {
-      log.trace('Ignoring already-played frame', { timestamp: frame.timestamp });
       return false;
     }
 
@@ -248,15 +237,16 @@ export class JitterBuffer<T> {
     this.updateBufferDelay();
 
     // Debug: Log every frame push to track buffering
-    log.info(`Frame pushed: g${frame.groupId}/o${frame.objectId} seq=${frame.sequence} ts=${Math.round(frame.timestamp)} buf=${this.frames.length} kf=${frame.isKeyframe}`);
+    log.debug(`Frame pushed: g${frame.groupId}/o${frame.objectId} seq=${frame.sequence} ts=${Math.round(frame.timestamp)} buf=${this.frames.length} kf=${frame.isKeyframe}`);
 
     return true;
   }
 
   /**
-   * Get frames that are ready for playback
+   * Get frames that are ready for decoding
    *
-   * @returns Array of frames ready to play (limited by maxFramesPerCall for pacing)
+   * @returns Array of frames ready to decode (limited by maxFramesPerCall for pacing)
+   * @remarks Releases frames in sequence order (decode order), based on arrival time + targetDelay
    */
   getReadyFrames(): BufferedFrame<T>[] {
     const now = performance.now();
@@ -266,25 +256,27 @@ export class JitterBuffer<T> {
     // Debug: Log buffer state periodically
     if (this.frames.length > 0 && this.stats.framesPlayed % 30 === 0) {
       const firstFrame = this.frames[0];
-      const playbackTime = this.getPlaybackTime(firstFrame.timestamp);
-      const waitingMs = Math.round(playbackTime - now);
-      log.info(`Buffer state: size=${this.frames.length} g${firstFrame.groupId}/o${firstFrame.objectId} waitMs=${waitingMs} played=${this.stats.framesPlayed}`);
+      const releaseTime = firstFrame.receivedAt + this.config.targetDelay;
+      const waitingMs = Math.round(releaseTime - now);
+      log.debug(`Buffer state: size=${this.frames.length} g${firstFrame.groupId}/o${firstFrame.objectId} seq=${firstFrame.sequence} waitMs=${waitingMs} played=${this.stats.framesPlayed}`);
     }
 
     while (this.frames.length > 0 && ready.length < maxFrames) {
       const frame = this.frames[0];
-      const playbackTime = this.getPlaybackTime(frame.timestamp);
+      // Release based on arrival time + targetDelay (not presentation timestamp)
+      // This ensures frames are decoded in sequence order with proper buffering
+      const releaseTime = frame.receivedAt + this.config.targetDelay;
 
-      if (playbackTime <= now) {
+      if (releaseTime <= now) {
         this.frames.shift();
         ready.push(frame);
-        this.lastPlayedTimestamp = frame.timestamp;
+        this.lastPlayedSequence = frame.sequence;
         this.stats.framesPlayed++;
       } else {
         // Log when frames are waiting (first time per batch only)
         if (ready.length === 0 && this.stats.framesReceived % 10 === 0) {
-          const waitMs = Math.round(playbackTime - now);
-          log.info(`Frame waiting: g${frame.groupId}/o${frame.objectId} waitMs=${waitMs} firstTs=${Math.round(this.firstTimestamp || 0)} frameTs=${Math.round(frame.timestamp)}`);
+          const waitMs = Math.round(releaseTime - now);
+          log.debug(`Frame waiting: g${frame.groupId}/o${frame.objectId} seq=${frame.sequence} waitMs=${waitMs}`);
         }
         break;
       }
@@ -329,16 +321,16 @@ export class JitterBuffer<T> {
   }
 
   /**
-   * Find insertion index for sorted order by timestamp
-   * Sorts by timestamp for correct playback/presentation order
+   * Find insertion index for sorted order by sequence
+   * Sorts by sequence for correct H.264 decode order (not presentation order)
    */
-  private findInsertIndex(timestamp: number, _sequence: number): number {
+  private findInsertIndex(_timestamp: number, sequence: number): number {
     let low = 0;
     let high = this.frames.length;
 
     while (low < high) {
       const mid = Math.floor((low + high) / 2);
-      if (this.frames[mid].timestamp < timestamp) {
+      if (this.frames[mid].sequence < sequence) {
         low = mid + 1;
       } else {
         high = mid;
@@ -369,8 +361,7 @@ export class JitterBuffer<T> {
     this.frames = [];
     this.playbackStartTime = undefined;
     this.firstTimestamp = undefined;
-    this.lastPlayedTimestamp = -1;
-    // Group ID tracking removed - was unused = -1;
+    this.lastPlayedSequence = -1;
 
     log.debug('JitterBuffer reset');
   }
@@ -409,11 +400,10 @@ export class JitterBuffer<T> {
     const dropped = this.frames.splice(0, keyframeIndex);
     this.stats.framesDropped += dropped.length;
 
-    // Update last played state
+    // Update last played state (by sequence for decode order)
     if (dropped.length > 0) {
       const lastDropped = dropped[dropped.length - 1];
-      this.lastPlayedTimestamp = lastDropped.timestamp;
-      // Group ID tracking removed - was unused = lastDropped.groupId;
+      this.lastPlayedSequence = lastDropped.sequence;
     }
 
     this.stats.bufferSize = this.frames.length;

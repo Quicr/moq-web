@@ -1374,17 +1374,33 @@ export class MOQTSession {
           existing.previousObjectId // Delta encoding from previous object
         );
 
-        await this.doWriteStream({ writer: existing.writer, streamId: existing.streamId }, objectData);
-        existing.objectCount++;
-        existing.previousObjectId = metadata.objectId; // Update for next delta
+        try {
+          await this.doWriteStream({ writer: existing.writer, streamId: existing.streamId }, objectData);
+          existing.objectCount++;
+          existing.previousObjectId = metadata.objectId; // Update for next delta
 
-        log.debug('Added P-frame to GOP stream', {
-          trackAlias: aliasKey,
-          groupId: metadata.groupId,
-          objectId: metadata.objectId,
-          objectCount: existing.objectCount,
-          payloadSize: data.byteLength,
-        });
+          log.debug('Added P-frame to GOP stream', {
+            trackAlias: aliasKey,
+            groupId: metadata.groupId,
+            objectId: metadata.objectId,
+            objectCount: existing.objectCount,
+            payloadSize: data.byteLength,
+          });
+        } catch (writeErr) {
+          const errMsg = (writeErr as Error).message;
+          // Stream was closed (STOP_SENDING or not found) - clean up and drop this P-frame
+          // Next keyframe will start a fresh GOP stream
+          if (errMsg.includes('not found') || errMsg.includes('STOP_SENDING')) {
+            log.debug('GOP stream closed by relay, dropping P-frame until next keyframe', {
+              trackAlias: aliasKey,
+              groupId: metadata.groupId,
+              objectId: metadata.objectId,
+            });
+            this.activeVideoStreams.delete(aliasKey);
+          } else {
+            throw writeErr;
+          }
+        }
       }
     } catch (err) {
       log.error('Failed to send video object with GOP batching', {

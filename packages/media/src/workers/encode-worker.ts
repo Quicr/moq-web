@@ -14,10 +14,18 @@ import type { EncodeWorkerRequest, EncodeWorkerResponse } from './encode-worker-
 let packager: LOCPackager;
 let debug = false;
 
-// Group/object tracking
-let videoGroupId = 0;
+/**
+ * Generate initial group ID from current time.
+ * Uses last 32 bits of millisecond timestamp (~50 days coverage).
+ */
+function getInitialGroupId(): number {
+  return Date.now() >>> 0;  // Unsigned 32-bit
+}
+
+// Group/object tracking - initialized with time-based IDs for uniqueness
+let videoGroupId = getInitialGroupId();
 let videoObjectId = 0;
-let audioGroupId = 0;
+let audioGroupId = getInitialGroupId();
 let audioObjectId = 0;
 
 /**

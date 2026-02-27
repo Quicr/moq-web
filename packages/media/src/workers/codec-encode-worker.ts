@@ -23,6 +23,15 @@ import type {
 let debug = false;
 
 /**
+ * Generate initial group ID from current time.
+ * Uses last 32 bits of millisecond timestamp (~50 days coverage).
+ * This ensures unique group IDs across different publish sessions.
+ */
+function getInitialGroupId(): number {
+  return Date.now() >>> 0;  // Unsigned 32-bit (~50 days of milliseconds)
+}
+
+/**
  * Channel state - each publication gets its own encode context
  */
 interface EncodeChannel {
@@ -69,9 +78,9 @@ function createChannel(channelId: number, config: CodecEncodeWorkerConfig): Enco
     videoEncoder: null,
     audioEncoder: null,
     packager: new LOCPackager(),
-    videoGroupId: 0,
+    videoGroupId: getInitialGroupId(),
     videoObjectId: 0,
-    audioGroupId: 0,
+    audioGroupId: getInitialGroupId(),
     audioObjectId: 0,
     forceNextKeyframe: false,
   };
@@ -301,9 +310,9 @@ async function flushChannel(channel: EncodeChannel): Promise<void> {
  * Reset channel state
  */
 function resetChannel(channel: EncodeChannel): void {
-  channel.videoGroupId = 0;
+  channel.videoGroupId = getInitialGroupId();
   channel.videoObjectId = 0;
-  channel.audioGroupId = 0;
+  channel.audioGroupId = getInitialGroupId();
   channel.audioObjectId = 0;
   channel.forceNextKeyframe = false;
   channel.packager.reset();

@@ -100,6 +100,8 @@ export interface MediaConfig {
   audioEnabled?: boolean;
   /** Enable jitter stats collection for subscriptions */
   enableStats?: boolean;
+  /** Jitter buffer delay in milliseconds (default: 100) */
+  jitterBufferDelay?: number;
 }
 
 /**

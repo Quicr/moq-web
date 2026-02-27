@@ -510,14 +510,6 @@ export class BufferReader {
     }
   }
 
-  /**
-   * Peek at remaining bytes without advancing position
-   *
-   * @returns Uint8Array containing all remaining bytes
-   */
-  peekRemaining(): Uint8Array {
-    return this.buffer.slice(this.position);
-  }
 }
 
 /**

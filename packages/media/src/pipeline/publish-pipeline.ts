@@ -124,6 +124,15 @@ export type PipelineEvent =
  * await pipeline.start(stream);
  * ```
  */
+/**
+ * Generate initial group ID from current time.
+ * Uses last 32 bits of millisecond timestamp (~50 days coverage).
+ * This ensures unique group IDs across different publish sessions.
+ */
+function getInitialGroupId(): number {
+  return Date.now() >>> 0;  // Unsigned 32-bit (~50 days of milliseconds)
+}
+
 export class PublishPipeline {
   /** Channel ID counter for multiplexed worker (static for thread safety) */
   private static nextChannelId = 1;
@@ -150,12 +159,12 @@ export class PublishPipeline {
   private videoProcessor?: MediaStreamTrackProcessor<VideoFrame>;
   /** Audio track processor */
   private audioProcessor?: MediaStreamTrackProcessor<AudioData>;
-  /** Video group ID (main thread mode only) */
-  private videoGroupId = 0;
+  /** Video group ID (main thread mode only) - initialized with time-based ID */
+  private videoGroupId = getInitialGroupId();
   /** Video object ID (main thread mode only) */
   private videoObjectId = 0;
-  /** Audio group ID (main thread mode only) */
-  private audioGroupId = 0;
+  /** Audio group ID (main thread mode only) - initialized with time-based ID */
+  private audioGroupId = getInitialGroupId();
   /** Audio object ID (main thread mode only) */
   private audioObjectId = 0;
   /** Abort controller */

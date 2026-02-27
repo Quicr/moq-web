@@ -340,11 +340,9 @@ export class MessageCodec {
         message = MessageCodec.decodeSubscribeUpdatePayload(reader);
         break;
       case MessageType.SUBSCRIBE_OK:
-        console.log('[SUBSCRIBE_OK] Raw bytes:', Array.from(buffer.slice(offset)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         message = MessageCodec.decodeSubscribeOkPayload(reader);
         break;
       case MessageType.SUBSCRIBE_ERROR:
-        console.log('[SUBSCRIBE_ERROR] Raw bytes:', Array.from(buffer.slice(offset)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         message = MessageCodec.decodeSubscribeErrorPayload(reader);
         break;
       case MessageType.UNSUBSCRIBE:
@@ -961,10 +959,6 @@ export class MessageCodec {
         groupOrder: GroupOrder.ASCENDING,
         filterType: FilterType.LATEST_GROUP, // Default, may be overridden from parameters
       };
-
-      // DEBUG: Log remaining bytes for parameter parsing
-      const remainingBytes = reader.peekRemaining();
-      console.log('[SUBSCRIBE] Remaining bytes for parameters:', Array.from(remainingBytes).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
 
       message.parameters = MessageCodec.decodeRequestParameters(reader);
 
