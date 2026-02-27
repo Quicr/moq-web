@@ -10,7 +10,7 @@
  * @example
  * ```bash
  * # Build with draft-16
- * MOQT_VERSION=draft-16 pnpm build
+ * MOQT_VERSION=draft-16 bun run build
  * ```
  */
 declare const __MOQT_VERSION__: 'draft-14' | 'draft-16';

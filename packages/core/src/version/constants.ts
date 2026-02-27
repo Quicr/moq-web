@@ -10,10 +10,10 @@
  * @example
  * ```bash
  * # Build for draft-14 (default)
- * pnpm build
+ * bun run build
  *
  * # Build for draft-16 (includes draft-15 changes)
- * MOQT_VERSION=draft-16 pnpm build
+ * MOQT_VERSION=draft-16 bun run build
  * ```
  */
 
