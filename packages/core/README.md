@@ -16,33 +16,33 @@ This package provides the fundamental building blocks for implementing MOQT in T
 ## Installation
 
 ```bash
-pnpm add @web-moq/core
+bun add @web-moq/core
 ```
 
 ## Building
 
 ```bash
 # Build the package
-pnpm build
+bun build
 
 # Build with Draft-16 support
-MOQT_VERSION=draft-16 pnpm build
+MOQT_VERSION=draft-16 bun build
 
 # Clean build artifacts
-pnpm clean
+bun clean
 ```
 
 ## Testing
 
 ```bash
 # Run tests
-pnpm test
+bun test
 
 # Run tests in watch mode
-pnpm test:watch
+bun test:watch
 
 # Run tests with Draft-16
-MOQT_VERSION=draft-16 pnpm test
+MOQT_VERSION=draft-16 bun test
 ```
 
 ## Usage
