@@ -15,30 +15,30 @@ This package provides a complete MOQT session implementation:
 ## Installation
 
 ```bash
-pnpm add @web-moq/session
+bun add @web-moq/session
 ```
 
 ## Building
 
 ```bash
 # Build the package
-pnpm build
+bun build
 
 # Build with Draft-16 support
-MOQT_VERSION=draft-16 pnpm build
+MOQT_VERSION=draft-16 bun build
 
 # Clean build artifacts
-pnpm clean
+bun clean
 ```
 
 ## Testing
 
 ```bash
 # Run tests
-pnpm test
+bun test
 
 # Run tests in watch mode
-pnpm test:watch
+bun test:watch
 ```
 
 ## Usage

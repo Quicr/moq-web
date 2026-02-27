@@ -79,12 +79,12 @@ describe('JitterBuffer', () => {
     it('handles buffer limit by dropping non-keyframes first', () => {
       const buffer = new JitterBuffer<string>({ maxFrames: 3 });
 
-      buffer.push(createFrame('kf', 0, { isKeyframe: true }));
-      buffer.push(createFrame('delta1', 33, { isKeyframe: false }));
-      buffer.push(createFrame('delta2', 66, { isKeyframe: false }));
+      buffer.push(createFrame('kf', 0, { isKeyframe: true, sequence: 0 }));
+      buffer.push(createFrame('delta1', 33, { isKeyframe: false, sequence: 1 }));
+      buffer.push(createFrame('delta2', 66, { isKeyframe: false, sequence: 2 }));
 
       // Buffer is full, push another - should drop a non-keyframe
-      const accepted = buffer.push(createFrame('new', 99, { isKeyframe: false }));
+      const accepted = buffer.push(createFrame('new', 99, { isKeyframe: false, sequence: 3 }));
 
       expect(accepted).toBe(true);
       expect(buffer.size).toBe(3);
@@ -94,27 +94,27 @@ describe('JitterBuffer', () => {
     it('rejects already-played frames', () => {
       const buffer = new JitterBuffer<string>({ targetDelay: 0 });
 
-      buffer.push(createFrame('frame1', 0));
-      buffer.push(createFrame('frame2', 33));
+      buffer.push(createFrame('frame1', 0, { sequence: 0 }));
+      buffer.push(createFrame('frame2', 33, { sequence: 1 }));
 
       // Advance time and get ready frames
       vi.advanceTimersByTime(100);
       buffer.getReadyFrames();
 
-      // Try to push a frame with timestamp <= last played
-      const accepted = buffer.push(createFrame('old', 0));
+      // Try to push a frame with sequence <= last played
+      const accepted = buffer.push(createFrame('old', 0, { sequence: 0 }));
       expect(accepted).toBe(false);
     });
 
     it('drops non-keyframe when buffer is full', () => {
       const buffer = new JitterBuffer<string>({ maxFrames: 3 });
 
-      buffer.push(createFrame('frame1', 0, { isKeyframe: true }));
-      buffer.push(createFrame('frame2', 33, { isKeyframe: false }));
-      buffer.push(createFrame('frame3', 66, { isKeyframe: false }));
+      buffer.push(createFrame('frame1', 0, { isKeyframe: true, sequence: 0 }));
+      buffer.push(createFrame('frame2', 33, { isKeyframe: false, sequence: 1 }));
+      buffer.push(createFrame('frame3', 66, { isKeyframe: false, sequence: 2 }));
 
       // Buffer is now full, push another frame
-      buffer.push(createFrame('frame4', 99, { isKeyframe: false }));
+      buffer.push(createFrame('frame4', 99, { isKeyframe: false, sequence: 3 }));
 
       expect(buffer.size).toBe(3);
       expect(buffer.getStats().framesDropped).toBe(1);
@@ -123,11 +123,11 @@ describe('JitterBuffer', () => {
     it('drops oldest keyframe when buffer is full of keyframes', () => {
       const buffer = new JitterBuffer<string>({ maxFrames: 2 });
 
-      buffer.push(createFrame('kf1', 0, { isKeyframe: true }));
-      buffer.push(createFrame('kf2', 33, { isKeyframe: true }));
+      buffer.push(createFrame('kf1', 0, { isKeyframe: true, sequence: 0 }));
+      buffer.push(createFrame('kf2', 33, { isKeyframe: true, sequence: 1 }));
 
       // Buffer is full of keyframes, push another
-      buffer.push(createFrame('kf3', 66, { isKeyframe: true }));
+      buffer.push(createFrame('kf3', 66, { isKeyframe: true, sequence: 2 }));
 
       expect(buffer.size).toBe(2);
     });
@@ -135,9 +135,9 @@ describe('JitterBuffer', () => {
     it('tracks reordered frames', () => {
       const buffer = new JitterBuffer<string>();
 
-      buffer.push(createFrame('frame1', 0));
-      buffer.push(createFrame('frame3', 66)); // Out of order
-      buffer.push(createFrame('frame2', 33)); // This will be inserted in the middle
+      buffer.push(createFrame('frame1', 0, { sequence: 0 }));
+      buffer.push(createFrame('frame3', 66, { sequence: 2 })); // Out of order by sequence
+      buffer.push(createFrame('frame2', 33, { sequence: 1 })); // This will be inserted in the middle
 
       expect(buffer.getStats().framesReordered).toBe(1);
     });
@@ -176,15 +176,15 @@ describe('JitterBuffer', () => {
       expect(buffer.size).toBe(2);
     });
 
-    it('returns frames in timestamp order when flushed', () => {
+    it('returns frames in sequence order when flushed', () => {
       const buffer = new JitterBuffer<string>({ targetDelay: 0 });
 
-      // Push out of order
-      buffer.push(createFrame('frame3', 66));
-      buffer.push(createFrame('frame1', 0));
-      buffer.push(createFrame('frame2', 33));
+      // Push out of order (by sequence)
+      buffer.push(createFrame('frame3', 66, { sequence: 2 }));
+      buffer.push(createFrame('frame1', 0, { sequence: 0 }));
+      buffer.push(createFrame('frame2', 33, { sequence: 1 }));
 
-      // Use flush to get all frames in order
+      // Use flush to get all frames in sequence order
       const flushed = buffer.flush();
 
       expect(flushed.map(f => f.data)).toEqual(['frame1', 'frame2', 'frame3']);
@@ -206,8 +206,8 @@ describe('JitterBuffer', () => {
     it('buffers multiple frames with different timestamps', () => {
       const buffer = new JitterBuffer<string>({ targetDelay: 100 });
 
-      buffer.push(createFrame('frame1', 0));
-      buffer.push(createFrame('frame2', 200));
+      buffer.push(createFrame('frame1', 0, { sequence: 0 }));
+      buffer.push(createFrame('frame2', 200, { sequence: 1 }));
 
       // Both frames should be buffered
       expect(buffer.size).toBe(2);
@@ -223,8 +223,8 @@ describe('JitterBuffer', () => {
 
     it('returns next frame without removing it', () => {
       const buffer = new JitterBuffer<string>();
-      buffer.push(createFrame('frame1', 0));
-      buffer.push(createFrame('frame2', 33));
+      buffer.push(createFrame('frame1', 0, { sequence: 0 }));
+      buffer.push(createFrame('frame2', 33, { sequence: 1 }));
 
       const peeked = buffer.peek();
       expect(peeked?.data).toBe('frame1');
@@ -309,10 +309,10 @@ describe('JitterBuffer', () => {
   describe('seekToGroup', () => {
     it('seeks to keyframe at target group', () => {
       const buffer = new JitterBuffer<string>();
-      buffer.push(createFrame('frame1', 0, { groupId: 0, isKeyframe: true }));
-      buffer.push(createFrame('frame2', 33, { groupId: 0, isKeyframe: false }));
-      buffer.push(createFrame('frame3', 66, { groupId: 1, isKeyframe: true }));
-      buffer.push(createFrame('frame4', 99, { groupId: 1, isKeyframe: false }));
+      buffer.push(createFrame('frame1', 0, { groupId: 0, isKeyframe: true, sequence: 0 }));
+      buffer.push(createFrame('frame2', 33, { groupId: 0, isKeyframe: false, sequence: 1 }));
+      buffer.push(createFrame('frame3', 66, { groupId: 1, isKeyframe: true, sequence: 2 }));
+      buffer.push(createFrame('frame4', 99, { groupId: 1, isKeyframe: false, sequence: 3 }));
 
       const success = buffer.seekToGroup(1);
 
@@ -324,8 +324,8 @@ describe('JitterBuffer', () => {
 
     it('returns false when no keyframe found', () => {
       const buffer = new JitterBuffer<string>();
-      buffer.push(createFrame('frame1', 0, { groupId: 0, isKeyframe: false }));
-      buffer.push(createFrame('frame2', 33, { groupId: 0, isKeyframe: false }));
+      buffer.push(createFrame('frame1', 0, { groupId: 0, isKeyframe: false, sequence: 0 }));
+      buffer.push(createFrame('frame2', 33, { groupId: 0, isKeyframe: false, sequence: 1 }));
 
       const success = buffer.seekToGroup(1);
 
@@ -334,9 +334,9 @@ describe('JitterBuffer', () => {
 
     it('tracks dropped frames during seek', () => {
       const buffer = new JitterBuffer<string>();
-      buffer.push(createFrame('frame1', 0, { groupId: 0, isKeyframe: true }));
-      buffer.push(createFrame('frame2', 33, { groupId: 0, isKeyframe: false }));
-      buffer.push(createFrame('frame3', 66, { groupId: 1, isKeyframe: true }));
+      buffer.push(createFrame('frame1', 0, { groupId: 0, isKeyframe: true, sequence: 0 }));
+      buffer.push(createFrame('frame2', 33, { groupId: 0, isKeyframe: false, sequence: 1 }));
+      buffer.push(createFrame('frame3', 66, { groupId: 1, isKeyframe: true, sequence: 2 }));
 
       buffer.seekToGroup(1);
 
@@ -362,9 +362,9 @@ describe('JitterBuffer', () => {
     it('tracks all statistics correctly', () => {
       const buffer = new JitterBuffer<string>({ targetDelay: 0 });
 
-      buffer.push(createFrame('frame1', 0));
-      buffer.push(createFrame('frame3', 66));
-      buffer.push(createFrame('frame2', 33)); // reordered
+      buffer.push(createFrame('frame1', 0, { sequence: 0 }));
+      buffer.push(createFrame('frame3', 66, { sequence: 2 }));
+      buffer.push(createFrame('frame2', 33, { sequence: 1 })); // reordered by sequence
 
       // Verify received and reordered counts
       const stats = buffer.getStats();
@@ -427,26 +427,26 @@ describe('JitterBuffer', () => {
   });
 
   describe('binary search insertion', () => {
-    it('correctly inserts frames in sorted order', () => {
+    it('correctly inserts frames in sorted order by sequence', () => {
       const buffer = new JitterBuffer<string>({ targetDelay: 0 });
 
-      // Insert in random order
-      buffer.push(createFrame('t50', 50));
-      buffer.push(createFrame('t10', 10));
-      buffer.push(createFrame('t90', 90));
-      buffer.push(createFrame('t30', 30));
-      buffer.push(createFrame('t70', 70));
+      // Insert in random order (by sequence)
+      buffer.push(createFrame('s50', 50, { sequence: 50 }));
+      buffer.push(createFrame('s10', 10, { sequence: 10 }));
+      buffer.push(createFrame('s90', 90, { sequence: 90 }));
+      buffer.push(createFrame('s30', 30, { sequence: 30 }));
+      buffer.push(createFrame('s70', 70, { sequence: 70 }));
 
-      // Verify buffer maintains sorted order by flushing
+      // Verify buffer maintains sorted order by sequence
       const flushed = buffer.flush();
-      expect(flushed.map(f => f.timestamp)).toEqual([10, 30, 50, 70, 90]);
+      expect(flushed.map(f => f.sequence)).toEqual([10, 30, 50, 70, 90]);
     });
 
-    it('handles duplicate timestamps', () => {
+    it('handles duplicate sequences', () => {
       const buffer = new JitterBuffer<string>({ targetDelay: 0 });
 
-      buffer.push(createFrame('first', 50));
-      buffer.push(createFrame('second', 50));
+      buffer.push(createFrame('first', 50, { sequence: 50 }));
+      buffer.push(createFrame('second', 60, { sequence: 50 }));
 
       expect(buffer.size).toBe(2);
     });

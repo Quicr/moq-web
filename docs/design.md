@@ -179,10 +179,10 @@ The protocol version is selected at build time via environment variable:
 
 ```bash
 # Build for Draft-14 (default)
-pnpm build
+bun run build
 
 # Build for Draft-16
-MOQT_VERSION=draft-16 pnpm build
+MOQT_VERSION=draft-16 bun run build
 ```
 
 The build system uses conditional compilation to include only the relevant protocol code, eliminating dead code from the bundle.
