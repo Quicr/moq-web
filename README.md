@@ -114,6 +114,32 @@ bun run bun:dev
 bun run bun:test
 ```
 
+## Clean Build
+
+To completely clean and rebuild from scratch:
+
+```bash
+# Remove all node_modules and build artifacts
+rm -rf node_modules packages/*/node_modules packages/*/dist packages/*/.tsbuildinfo
+
+# Clear pnpm cache
+pnpm store prune
+
+# Fresh install and build
+pnpm install
+pnpm run build
+```
+
+One-liner:
+```bash
+rm -rf node_modules packages/*/node_modules packages/*/dist packages/*/.tsbuildinfo && pnpm store prune && pnpm install && pnpm run build
+```
+
+If using bun:
+```bash
+rm -rf node_modules packages/*/node_modules packages/*/dist packages/*/.tsbuildinfo && bun pm cache rm && bun install && bun run bun:build
+```
+
 ## Test
 
 ```bash
