@@ -1,17 +1,20 @@
 # Build stage
-FROM oven/bun:latest AS builder
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@9 --activate
+
 # Copy package files
-COPY package.json bun.lockb ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/core/package.json ./packages/core/
 COPY packages/session/package.json ./packages/session/
 COPY packages/media/package.json ./packages/media/
 COPY packages/client/package.json ./packages/client/
 
 # Install dependencies
-RUN bun install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 # Copy source code
 COPY packages/ ./packages/
@@ -19,7 +22,7 @@ COPY tsconfig.json ./
 
 # Build for draft-16
 ENV MOQT_VERSION=draft-16
-RUN bun run build
+RUN pnpm run build
 
 # Production stage - Caddy for automatic HTTPS
 FROM caddy:alpine
