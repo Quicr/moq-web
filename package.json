@@ -7,14 +7,18 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "MOQT_VERSION=draft-16 bun run --filter '*' build",
-    "build:draft-14": "MOQT_VERSION=draft-14 bun run --filter '*' build",
-    "test": "MOQT_VERSION=draft-16 bun run --filter '*' test",
-    "test:draft-14": "MOQT_VERSION=draft-14 bun run --filter '*' test",
-    "lint": "bun run --filter '*' lint",
-    "dev": "MOQT_VERSION=draft-16 bun run --filter @web-moq/client dev",
-    "dev:draft-14": "MOQT_VERSION=draft-14 bun run --filter @web-moq/client dev",
-    "clean": "bun run --filter '*' clean"
+    "build": "MOQT_VERSION=draft-16 pnpm -r run build",
+    "build:draft-14": "MOQT_VERSION=draft-14 pnpm -r run build",
+    "test": "MOQT_VERSION=draft-16 pnpm -r run test",
+    "test:draft-14": "MOQT_VERSION=draft-14 pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "dev": "MOQT_VERSION=draft-16 pnpm --filter @web-moq/client run dev",
+    "dev:draft-14": "MOQT_VERSION=draft-14 pnpm --filter @web-moq/client run dev",
+    "clean": "pnpm -r run clean",
+    "bun:build": "MOQT_VERSION=draft-16 bun run --filter '*' build",
+    "bun:test": "MOQT_VERSION=draft-16 bun run --filter '*' test",
+    "bun:lint": "bun run --filter '*' lint",
+    "bun:dev": "MOQT_VERSION=draft-16 bun run --filter @web-moq/client dev"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -27,7 +31,15 @@
     "typescript": "^5.3.0",
     "typescript-eslint": "^8.56.0"
   },
-  "overrides": {
-    "minimatch": ">=10.2.1"
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "overrides": {
+      "minimatch": ">=10.2.1"
+    }
   }
 }

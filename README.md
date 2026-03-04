@@ -14,14 +14,14 @@ Built on WebTransport and WebCodecs for low-latency video/audio delivery.
 
 ## Quick Start
 
-1. **Install bun** (if not installed):
+1. **Install pnpm** (if not installed):
    ```bash
-   curl -fsSL https://bun.sh/install | bash
+   corepack enable && corepack prepare pnpm@9 --activate
    ```
 
 2. **Install dependencies**:
    ```bash
-   bun install
+   pnpm install
    ```
 
 3. **Generate certificates** for local WebTransport:
@@ -31,8 +31,8 @@ Built on WebTransport and WebCodecs for low-latency video/audio delivery.
 
 4. **Build and run**:
    ```bash
-   bun run build
-   bun run dev
+   pnpm run build
+   pnpm run dev
    ```
 
 5. Open https://localhost:5173
@@ -50,8 +50,8 @@ Built on WebTransport and WebCodecs for low-latency video/audio delivery.
 Build for draft-14:
 
 ```bash
-bun run build:draft-14
-bun run dev:draft-14
+pnpm run build:draft-14
+pnpm run dev:draft-14
 ```
 
 ## Architecture
@@ -100,14 +100,25 @@ packages/
 
 ## Prerequisites
 
-- Node.js 20+ or Bun 1.0+
-- bun (`curl -fsSL https://bun.sh/install | bash`)
+- Node.js 20+
+- pnpm 9+ (`corepack enable && corepack prepare pnpm@9 --activate`)
+
+## Using Bun (Alternative)
+
+If you prefer bun over pnpm, use the `bun:` prefixed scripts:
+
+```bash
+bun install
+bun run bun:build
+bun run bun:dev
+bun run bun:test
+```
 
 ## Test
 
 ```bash
-bun run test              # Run all tests
-bun run test:draft-14     # Test with draft-14
+pnpm run test              # Run all tests
+pnpm run test:draft-14     # Test with draft-14
 ```
 
 ## License
