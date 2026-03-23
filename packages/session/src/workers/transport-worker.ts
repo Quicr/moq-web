@@ -15,7 +15,7 @@ import type {
   TransportState,
   StreamInfo,
 } from './transport-worker-types.js';
-import { getCurrentALPNProtocol } from '@web-moq/core';
+import { getCurrentALPNProtocol, IS_DRAFT_16 } from '@web-moq/core';
 
 // Worker state
 let transport: WebTransport | null = null;
@@ -72,11 +72,12 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
 
   try {
     // Build WebTransport options
-    const alpnProtocol = getCurrentALPNProtocol();
-    log('Using ALPN protocol:', alpnProtocol);
-    const options: WebTransportOptions & { protocols?: string[] } = {
-      protocols: [alpnProtocol],
-    };
+    // Only set protocols (WT-Available-Protocols) for draft-16+
+    // Draft-14 relays don't support WebTransport protocol negotiation
+    const options: WebTransportOptions & { protocols?: string[] } = {};
+    if (IS_DRAFT_16) {
+      options.protocols = [getCurrentALPNProtocol()];
+    }
     if (config.serverCertificateHashes?.length) {
       options.serverCertificateHashes = config.serverCertificateHashes.map((hash) => ({
         algorithm: 'sha-256',
