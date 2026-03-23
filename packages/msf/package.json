@@ -1,0 +1,33 @@
+{
+  "name": "@web-moq/msf",
+  "version": "0.1.0",
+  "description": "MOQT Streaming Format (MSF) - JSON catalogs for LOC-compliant media delivery",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@web-moq/core": "workspace:*",
+    "@web-moq/session": "workspace:*",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18"
+  }
+}
