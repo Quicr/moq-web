@@ -51,7 +51,7 @@ export const VERSION_NUMBER = {
  * Used in WT-Available-Protocols header (draft-15+)
  */
 export const ALPN_PROTOCOL = {
-  DRAFT_14: 'moqt-14',
+  DRAFT_14: 'moq-00',
   DRAFT_15: 'moqt-15',
   DRAFT_16: 'moqt-16',
 } as const;
