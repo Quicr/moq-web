@@ -14,6 +14,7 @@ import { VideoRenderer } from './VideoRenderer';
 import { AudioPlayer } from './AudioPlayer';
 import { JitterGraph } from './JitterGraph';
 import { LatencyStatsGraph } from './LatencyStatsGraph';
+import { SubscribeNamespacePanel } from './SubscribeNamespacePanel';
 import { isDebugMode } from '../common/DevSettingsPanel';
 
 type MediaType = 'video' | 'audio';
@@ -32,6 +33,8 @@ interface VideoFrameMap {
   [subscriptionId: number]: VideoFrame | null;
 }
 
+type SubscribeMode = 'track' | 'namespace';
+
 export const SubscribePanel: React.FC = () => {
   const {
     subscribedTracks,
@@ -47,6 +50,9 @@ export const SubscribePanel: React.FC = () => {
     onLatencyStats,
     enableStats,
   } = useStore();
+
+  // Subscribe mode toggle
+  const [subscribeMode, setSubscribeMode] = useState<SubscribeMode>('track');
 
   // Subscription configurations
   const [subscriptionConfigs, setSubscriptionConfigs] = useState<SubscriptionConfig[]>([]);
@@ -294,6 +300,36 @@ export const SubscribePanel: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Mode Selector */}
+      <div className="flex gap-2 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg">
+        <button
+          onClick={() => setSubscribeMode('track')}
+          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            subscribeMode === 'track'
+              ? 'bg-white dark:bg-gray-700 text-primary-600 dark:text-primary-400 shadow-sm'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+          }`}
+        >
+          Subscribe to Track
+        </button>
+        <button
+          onClick={() => setSubscribeMode('namespace')}
+          className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            subscribeMode === 'namespace'
+              ? 'bg-white dark:bg-gray-700 text-primary-600 dark:text-primary-400 shadow-sm'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+          }`}
+        >
+          Subscribe to Namespace
+        </button>
+      </div>
+
+      {/* Namespace Mode */}
+      {subscribeMode === 'namespace' && <SubscribeNamespacePanel />}
+
+      {/* Track Mode */}
+      {subscribeMode === 'track' && (
+      <>
       {/* Add New Subscription */}
       <div className="panel">
         <div className="panel-header">Add Subscription</div>
@@ -570,6 +606,8 @@ export const SubscribePanel: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );
