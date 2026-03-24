@@ -26,7 +26,8 @@ export type SessionEventType =
   | 'publish-stats'
   | 'subscribe-stats'
   | 'incoming-subscribe'
-  | 'namespace-acknowledged';
+  | 'namespace-acknowledged'
+  | 'incoming-publish';
 
 /**
  * Options for subscribing to a track
@@ -188,4 +189,62 @@ export interface IncomingSubscribeEvent {
   trackName: string;
   /** Track alias to use for publishing */
   trackAlias: bigint;
+}
+
+/**
+ * Options for subscribing to a namespace
+ */
+export interface SubscribeNamespaceOptions {
+  /** Subscriber priority (0-255, default 128) */
+  priority?: number;
+}
+
+/**
+ * Namespace subscription info
+ */
+export interface NamespaceSubscriptionInfo {
+  /** Subscription ID */
+  subscriptionId: number;
+  /** Request ID */
+  requestId: number;
+  /** Namespace prefix */
+  namespacePrefix: string[];
+  /** Tracks discovered under this namespace */
+  tracks: Map<string, IncomingPublishInfo>;
+}
+
+/**
+ * Incoming publish info (from PUBLISH message)
+ */
+export interface IncomingPublishInfo {
+  /** Request ID from publisher */
+  requestId: number;
+  /** Full namespace */
+  namespace: string[];
+  /** Track name */
+  trackName: string;
+  /** Track alias assigned by publisher */
+  trackAlias: bigint;
+  /** Group order */
+  groupOrder: GroupOrder;
+  /** Whether we've sent PUBLISH_OK */
+  acknowledged: boolean;
+}
+
+/**
+ * Event fired when a publisher announces a track (subscribe namespace flow)
+ */
+export interface IncomingPublishEvent {
+  /** Namespace subscription ID that matched this publish */
+  namespaceSubscriptionId: number;
+  /** Request ID from publisher */
+  requestId: number;
+  /** Namespace */
+  namespace: string[];
+  /** Track name */
+  trackName: string;
+  /** Track alias to use for receiving objects */
+  trackAlias: bigint;
+  /** Group order */
+  groupOrder: GroupOrder;
 }

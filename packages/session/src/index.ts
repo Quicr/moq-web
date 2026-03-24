@@ -72,6 +72,10 @@ export type {
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
+  SubscribeNamespaceOptions,
+  NamespaceSubscriptionInfo,
+  IncomingPublishInfo,
+  IncomingPublishEvent,
 } from './types.js';
 
 // Worker API

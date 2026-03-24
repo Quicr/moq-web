@@ -61,6 +61,10 @@ import type {
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
+  SubscribeNamespaceOptions,
+  NamespaceSubscriptionInfo,
+  IncomingPublishInfo,
+  IncomingPublishEvent,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -152,6 +156,12 @@ export class MOQTSession {
   private announceRequestIdToNamespace = new Map<number, string>();
   /** Next track alias for incoming subscriptions (announce flow) */
   private nextIncomingTrackAlias = BigInt(1000);
+  /** Namespace subscriptions (for subscribe namespace flow) */
+  private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
+  /** Request ID to namespace subscription mapping */
+  private namespaceSubscriptionByRequestId = new Map<number, number>();
+  /** Our own namespace prefix for filtering out self-publishes */
+  private ownNamespacePrefix: string | null = null;
 
   /**
    * Create a new MOQTSession
@@ -685,6 +695,105 @@ export class MOQTSession {
   }
 
   /**
+   * Subscribe to a namespace prefix
+   *
+   * When subscribed to a namespace, you receive PUBLISH messages from publishers
+   * announcing tracks under that namespace. Respond with PUBLISH_OK to start
+   * receiving objects on those tracks.
+   *
+   * @param namespacePrefix - Namespace prefix to subscribe to
+   * @param options - Subscribe options
+   * @returns Namespace subscription ID
+   */
+  async subscribeNamespace(
+    namespacePrefix: string[],
+    options?: SubscribeNamespaceOptions
+  ): Promise<number> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+    const subscriptionId = requestId;
+    const prefixStr = namespacePrefix.join('/');
+
+    log.info('Subscribing to namespace', { namespacePrefix: prefixStr, requestId });
+
+    // Store namespace subscription
+    const subscription: NamespaceSubscriptionInfo = {
+      subscriptionId,
+      requestId,
+      namespacePrefix,
+      tracks: new Map(),
+    };
+    this.namespaceSubscriptions.set(subscriptionId, subscription);
+    this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
+
+    // Build SUBSCRIBE_NAMESPACE message
+    const message = {
+      type: MessageType.SUBSCRIBE_NAMESPACE as const,
+      namespacePrefix,
+      parameters: options?.priority !== undefined
+        ? new Map([[0x00, new Uint8Array([options.priority])]])
+        : undefined,
+    };
+
+    const bytes = MessageCodec.encode(message);
+    await this.doSendControl(bytes);
+    log.info('Sent SUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr, requestId });
+
+    return subscriptionId;
+  }
+
+  /**
+   * Unsubscribe from a namespace
+   *
+   * @param subscriptionId - Namespace subscription ID
+   */
+  async unsubscribeNamespace(subscriptionId: number): Promise<void> {
+    const subscription = this.namespaceSubscriptions.get(subscriptionId);
+    if (!subscription) {
+      log.warn('Namespace subscription not found', { subscriptionId });
+      return;
+    }
+
+    const prefixStr = subscription.namespacePrefix.join('/');
+    log.info('Unsubscribing from namespace', { namespacePrefix: prefixStr });
+
+    // Send UNSUBSCRIBE_NAMESPACE
+    const message = {
+      type: MessageType.UNSUBSCRIBE_NAMESPACE as const,
+      namespacePrefix: subscription.namespacePrefix,
+    };
+
+    try {
+      const bytes = MessageCodec.encode(message);
+      await this.doSendControl(bytes);
+      log.info('Sent UNSUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr });
+    } catch (err) {
+      log.error('Failed to send UNSUBSCRIBE_NAMESPACE', { error: (err as Error).message });
+    }
+
+    // Clean up
+    this.namespaceSubscriptionByRequestId.delete(subscription.requestId);
+    this.namespaceSubscriptions.delete(subscriptionId);
+  }
+
+  /**
+   * Set own namespace prefix for filtering out self-publishes
+   */
+  setOwnNamespacePrefix(prefix: string): void {
+    this.ownNamespacePrefix = prefix;
+  }
+
+  /**
+   * Get all namespace subscriptions
+   */
+  getNamespaceSubscriptions(): NamespaceSubscriptionInfo[] {
+    return Array.from(this.namespaceSubscriptions.values());
+  }
+
+  /**
    * Publish to a track
    *
    * @param namespace - Track namespace
@@ -1048,6 +1157,109 @@ export class MOQTSession {
       trackAlias: trackAlias.toString(),
       fullTrackName: fullTrackNameStr,
     });
+  }
+
+  /**
+   * Handle incoming PUBLISH message (subscribe namespace flow - we are the subscriber)
+   */
+  private async handleIncomingPublish(message: PublishMessage): Promise<void> {
+    const { namespace, trackName } = message.fullTrackName;
+    const fullTrackNameStr = [...namespace, trackName].join('/');
+    const namespaceStr = namespace.join('/');
+
+    log.info('Received PUBLISH (subscribe namespace flow)', {
+      requestId: message.requestId,
+      namespace: namespaceStr,
+      trackName,
+      trackAlias: message.trackAlias.toString(),
+      groupOrder: message.groupOrder,
+    });
+
+    // Check if this is our own publish (filter out self)
+    if (this.ownNamespacePrefix && namespaceStr.startsWith(this.ownNamespacePrefix)) {
+      log.debug('Ignoring own PUBLISH', { namespace: namespaceStr });
+      return;
+    }
+
+    // Find matching namespace subscription
+    let matchingSubscription: NamespaceSubscriptionInfo | undefined;
+    for (const sub of this.namespaceSubscriptions.values()) {
+      const prefix = sub.namespacePrefix.join('/');
+      if (namespaceStr.startsWith(prefix)) {
+        matchingSubscription = sub;
+        break;
+      }
+    }
+
+    if (!matchingSubscription) {
+      log.warn('PUBLISH does not match any namespace subscription', {
+        publishNamespace: namespaceStr,
+        subscriptions: Array.from(this.namespaceSubscriptions.values()).map(s => s.namespacePrefix.join('/')),
+      });
+      return;
+    }
+
+    // Store track info
+    const trackInfo: IncomingPublishInfo = {
+      requestId: message.requestId,
+      namespace,
+      trackName,
+      trackAlias: BigInt(message.trackAlias),
+      groupOrder: message.groupOrder,
+      acknowledged: false,
+    };
+    matchingSubscription.tracks.set(fullTrackNameStr, trackInfo);
+
+    // Send PUBLISH_OK to accept the track
+    await this.sendPublishOk(message.requestId, message.groupOrder);
+    trackInfo.acknowledged = true;
+
+    // Register this as a subscription so objects can be routed
+    const subscriptionId = this.getNextRequestId();
+    const subscription: InternalSubscription = {
+      subscriptionId,
+      requestId: message.requestId,
+      namespace,
+      trackName,
+      trackAlias: BigInt(message.trackAlias),
+      paused: false,
+    };
+    this.subscriptionManager.add(subscription);
+
+    // Emit event for application to handle
+    this.emit('incoming-publish', {
+      namespaceSubscriptionId: matchingSubscription.subscriptionId,
+      requestId: message.requestId,
+      namespace,
+      trackName,
+      trackAlias: BigInt(message.trackAlias),
+      groupOrder: message.groupOrder,
+    } as IncomingPublishEvent);
+
+    log.info('Accepted PUBLISH, ready to receive objects', {
+      requestId: message.requestId,
+      trackAlias: message.trackAlias.toString(),
+      fullTrackName: fullTrackNameStr,
+      subscriptionId,
+    });
+  }
+
+  /**
+   * Send PUBLISH_OK response
+   */
+  private async sendPublishOk(requestId: number, groupOrder: GroupOrder): Promise<void> {
+    const publishOk = {
+      type: MessageType.PUBLISH_OK as const,
+      requestId,
+      forward: 1,
+      subscriberPriority: 128,
+      groupOrder,
+      filterType: FilterType.LATEST_GROUP,
+    };
+
+    const bytes = MessageCodec.encode(publishOk);
+    await this.doSendControl(bytes);
+    log.info('Sent PUBLISH_OK', { requestId });
   }
 
   /**
@@ -1566,6 +1778,7 @@ export class MOQTSession {
   on(event: 'publish-stats', handler: (stats: PublishStatsEvent) => void): () => void;
   on(event: 'subscribe-stats', handler: (stats: SubscribeStatsEvent) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
+  on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
@@ -1877,6 +2090,15 @@ export class MOQTSession {
         const subscribeMessage = message as SubscribeMessage;
         this.handleIncomingSubscribe(subscribeMessage).catch(err => {
           log.error('Error handling incoming SUBSCRIBE', { error: (err as Error).message });
+        });
+        break;
+      }
+
+      case MessageType.PUBLISH: {
+        // Handle incoming PUBLISH (subscribe namespace flow - we are the subscriber)
+        const publishMessage = message as PublishMessage;
+        this.handleIncomingPublish(publishMessage).catch(err => {
+          log.error('Error handling incoming PUBLISH', { error: (err as Error).message });
         });
         break;
       }
