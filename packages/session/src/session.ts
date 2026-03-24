@@ -568,6 +568,11 @@ export class MOQTSession {
     this.subscriptionManager.clear();
     this.publicationManager.clear();
 
+    // Disconnect transport worker if using worker mode
+    if (this.useWorker && this.transportWorker) {
+      this.transportWorker.disconnect();
+    }
+
     this._state = 'none';
     log.info('Session closed');
   }
