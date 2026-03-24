@@ -205,6 +205,56 @@ interface SubscribeSlice {
 }
 
 // ============================================================================
+// Namespace Subscription Slice
+// ============================================================================
+
+/** Track discovered under a namespace subscription */
+interface DiscoveredTrack {
+  /** Full namespace */
+  namespace: string[];
+  /** Track name (e.g., "video", "audio", "chat") */
+  trackName: string;
+  /** Track alias for receiving objects */
+  trackAlias: bigint;
+  /** Internal subscription ID for object routing */
+  subscriptionId?: number;
+  /** Track type inferred from trackName */
+  type: 'video' | 'audio' | 'chat' | 'unknown';
+}
+
+/** A namespace subscription panel */
+interface NamespaceSubscriptionPanel {
+  /** Panel ID */
+  id: string;
+  /** Namespace prefix being subscribed to */
+  namespacePrefix: string;
+  /** Session's namespace subscription ID */
+  subscriptionId?: number;
+  /** Whether subscription is active */
+  isActive: boolean;
+  /** Tracks discovered under this namespace */
+  tracks: DiscoveredTrack[];
+}
+
+interface NamespaceSubscribeSlice {
+  /** Active namespace subscription panels */
+  namespaceSubscriptions: NamespaceSubscriptionPanel[];
+
+  /** Add a new namespace subscription panel */
+  addNamespacePanel: (namespacePrefix: string) => string;
+  /** Remove a namespace subscription panel */
+  removeNamespacePanel: (panelId: string) => void;
+  /** Start subscription for a panel */
+  startNamespaceSubscription: (panelId: string) => Promise<void>;
+  /** Stop subscription for a panel */
+  stopNamespaceSubscription: (panelId: string) => Promise<void>;
+  /** Add discovered track to a panel */
+  addDiscoveredTrack: (panelId: string, track: DiscoveredTrack) => void;
+  /** Get panel by subscription ID */
+  getPanelBySubscriptionId: (subscriptionId: number) => NamespaceSubscriptionPanel | undefined;
+}
+
+// ============================================================================
 // Chat Slice
 // ============================================================================
 
@@ -264,7 +314,7 @@ interface SettingsSlice {
 // Combined Store
 // ============================================================================
 
-type AppStore = ConnectionSlice & PublishSlice & SubscribeSlice & ChatSlice & SettingsSlice;
+type AppStore = ConnectionSlice & PublishSlice & SubscribeSlice & NamespaceSubscribeSlice & ChatSlice & SettingsSlice;
 
 export const useStore = create<AppStore>()(
   persist(
@@ -446,6 +496,51 @@ export const useStore = create<AppStore>()(
             }
           });
 
+          // Handle incoming PUBLISH (subscribe namespace flow)
+          session.on('incoming-publish', (event) => {
+            log.info('Incoming publish (subscribe namespace flow)', {
+              namespaceSubscriptionId: event.namespaceSubscriptionId,
+              namespace: event.namespace.join('/'),
+              trackName: event.trackName,
+              trackAlias: event.trackAlias.toString(),
+            });
+
+            // Find the panel for this namespace subscription
+            const panel = get().getPanelBySubscriptionId(event.namespaceSubscriptionId);
+            if (!panel) {
+              log.warn('No panel found for namespace subscription', {
+                namespaceSubscriptionId: event.namespaceSubscriptionId,
+              });
+              return;
+            }
+
+            // Determine track type from trackName
+            let trackType: 'video' | 'audio' | 'chat' | 'unknown' = 'unknown';
+            const trackNameLower = event.trackName.toLowerCase();
+            if (trackNameLower.includes('video')) {
+              trackType = 'video';
+            } else if (trackNameLower.includes('audio')) {
+              trackType = 'audio';
+            } else if (trackNameLower.includes('chat')) {
+              trackType = 'chat';
+            }
+
+            // Add to discovered tracks
+            get().addDiscoveredTrack(panel.id, {
+              namespace: event.namespace,
+              trackName: event.trackName,
+              trackAlias: event.trackAlias,
+              type: trackType,
+            });
+
+            log.info('Added discovered track', {
+              panelId: panel.id,
+              trackName: event.trackName,
+              trackType,
+              trackAlias: event.trackAlias.toString(),
+            });
+          });
+
           set({ session, sessionState: 'setup' });
 
           // Perform MOQT session setup
@@ -474,7 +569,7 @@ export const useStore = create<AppStore>()(
         if (pendingAnnounceStream) {
           pendingAnnounceStream.getTracks().forEach(track => track.stop());
         }
-        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceStream: null, publishedTracks: [], subscribedTracks: [] });
+        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceStream: null, publishedTracks: [], subscribedTracks: [], namespaceSubscriptions: [] });
       },
 
       setServerUrl: (url: string) => set({ serverUrl: url }),
@@ -790,6 +885,84 @@ export const useStore = create<AppStore>()(
             t.id === id ? { ...t, stats } : t
           ),
         })),
+
+      // ========================================
+      // Namespace Subscribe State
+      // ========================================
+      namespaceSubscriptions: [],
+
+      addNamespacePanel: (namespacePrefix) => {
+        const id = `ns-${Date.now()}`;
+        const panel: NamespaceSubscriptionPanel = {
+          id,
+          namespacePrefix,
+          isActive: false,
+          tracks: [],
+        };
+        set((state) => ({
+          namespaceSubscriptions: [...state.namespaceSubscriptions, panel],
+        }));
+        return id;
+      },
+
+      removeNamespacePanel: (panelId) => {
+        const { session, namespaceSubscriptions } = get();
+        const panel = namespaceSubscriptions.find(p => p.id === panelId);
+        if (panel?.subscriptionId && session) {
+          session.unsubscribeNamespace(panel.subscriptionId).catch(err => {
+            log.error('Failed to unsubscribe namespace', err);
+          });
+        }
+        set((state) => ({
+          namespaceSubscriptions: state.namespaceSubscriptions.filter(p => p.id !== panelId),
+        }));
+      },
+
+      startNamespaceSubscription: async (panelId) => {
+        const { session, namespaceSubscriptions } = get();
+        if (!session) throw new Error('No session');
+
+        const panel = namespaceSubscriptions.find(p => p.id === panelId);
+        if (!panel) throw new Error('Panel not found');
+
+        const namespacePrefix = panel.namespacePrefix.split('/');
+        const subscriptionId = await session.subscribeNamespace(namespacePrefix);
+
+        set((state) => ({
+          namespaceSubscriptions: state.namespaceSubscriptions.map(p =>
+            p.id === panelId ? { ...p, subscriptionId, isActive: true } : p
+          ),
+        }));
+      },
+
+      stopNamespaceSubscription: async (panelId) => {
+        const { session, namespaceSubscriptions } = get();
+        if (!session) return;
+
+        const panel = namespaceSubscriptions.find(p => p.id === panelId);
+        if (!panel?.subscriptionId) return;
+
+        await session.unsubscribeNamespace(panel.subscriptionId);
+
+        set((state) => ({
+          namespaceSubscriptions: state.namespaceSubscriptions.map(p =>
+            p.id === panelId ? { ...p, subscriptionId: undefined, isActive: false, tracks: [] } : p
+          ),
+        }));
+      },
+
+      addDiscoveredTrack: (panelId, track) => {
+        set((state) => ({
+          namespaceSubscriptions: state.namespaceSubscriptions.map(p =>
+            p.id === panelId ? { ...p, tracks: [...p.tracks, track] } : p
+          ),
+        }));
+      },
+
+      getPanelBySubscriptionId: (subscriptionId) => {
+        const { namespaceSubscriptions } = get();
+        return namespaceSubscriptions.find(p => p.subscriptionId === subscriptionId);
+      },
 
       // ========================================
       // Chat State

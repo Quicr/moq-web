@@ -17,6 +17,9 @@ import {
   type AnnouncedNamespaceInfo,
   type IncomingSubscriber,
   type IncomingSubscribeEvent,
+  type IncomingPublishEvent,
+  type SubscribeNamespaceOptions,
+  type NamespaceSubscriptionInfo,
 } from '@web-moq/session';
 import { PublishPipeline, type PublishedObject } from '../pipeline/publish-pipeline.js';
 import { SubscribePipeline, type JitterSample, type LatencyStatsSample } from '../pipeline/subscribe-pipeline.js';
@@ -552,6 +555,47 @@ export class MediaSession {
     return this.session.getSubscribers(namespace);
   }
 
+  // =========================================================================
+  // Subscribe Namespace (discover tracks from publishers)
+  // =========================================================================
+
+  /**
+   * Subscribe to a namespace prefix to discover tracks from publishers
+   *
+   * @param namespacePrefix - Namespace prefix to subscribe to
+   * @param options - Subscribe options
+   * @returns Namespace subscription ID
+   */
+  async subscribeNamespace(
+    namespacePrefix: string[],
+    options?: SubscribeNamespaceOptions
+  ): Promise<number> {
+    return this.session.subscribeNamespace(namespacePrefix, options);
+  }
+
+  /**
+   * Unsubscribe from a namespace
+   *
+   * @param subscriptionId - Namespace subscription ID
+   */
+  async unsubscribeNamespace(subscriptionId: number): Promise<void> {
+    return this.session.unsubscribeNamespace(subscriptionId);
+  }
+
+  /**
+   * Set own namespace prefix for filtering out self-publishes
+   */
+  setOwnNamespacePrefix(prefix: string): void {
+    this.session.setOwnNamespacePrefix(prefix);
+  }
+
+  /**
+   * Get all namespace subscriptions
+   */
+  getNamespaceSubscriptions(): NamespaceSubscriptionInfo[] {
+    return this.session.getNamespaceSubscriptions();
+  }
+
   /**
    * Start publish pipeline for an announced track (when subscriber connects)
    *
@@ -704,6 +748,7 @@ export class MediaSession {
   on(event: 'publish-stats', handler: (stats: { trackAlias: string; type: string; groupId: number; objectId: number; bytes: number }) => void): () => void;
   on(event: 'subscribe-stats', handler: (stats: { subscriptionId: number; groupId: number; objectId: number; bytes: number }) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
+  on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: MediaSessionEventType, handler: (data: any) => void): () => void {
