@@ -60,6 +60,9 @@ jobs:
       - name: Save draft-16 build
         run: mv packages/client/dist dist-combined
 
+      - name: Clean for draft-14 rebuild
+        run: pnpm run clean
+
       - name: Build draft-14
         run: pnpm run build
         env:
