@@ -55,7 +55,6 @@ jobs:
         run: pnpm run build
         env:
           BASE_URL: /${{ github.event.repository.name }}/
-          MOQT_VERSION: draft-16
 
       - name: Save draft-16 build
         run: mv packages/client/dist dist-combined
@@ -64,10 +63,9 @@ jobs:
         run: pnpm run clean
 
       - name: Build draft-14
-        run: pnpm run build
+        run: pnpm run build:draft-14
         env:
           BASE_URL: /${{ github.event.repository.name }}/14/
-          MOQT_VERSION: draft-14
 
       - name: Combine builds
         run: mv packages/client/dist dist-combined/14
