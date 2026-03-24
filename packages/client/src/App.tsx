@@ -117,9 +117,10 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {isConnected && activeTab === 'publish' && <PublishPanel />}
-              {isConnected && activeTab === 'subscribe' && <SubscribePanel />}
-              {isConnected && activeTab === 'chat' && <ChatPanel />}
+              {/* Keep panels mounted to preserve state, hide inactive ones */}
+              <div className={activeTab === 'publish' ? '' : 'hidden'}>{isConnected && <PublishPanel />}</div>
+              <div className={activeTab === 'subscribe' ? '' : 'hidden'}>{isConnected && <SubscribePanel />}</div>
+              <div className={activeTab === 'chat' ? '' : 'hidden'}>{isConnected && <ChatPanel />}</div>
             </div>
           </div>
         </div>
