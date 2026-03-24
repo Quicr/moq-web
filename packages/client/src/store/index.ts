@@ -460,14 +460,21 @@ export const useStore = create<AppStore>()(
       },
 
       disconnect: async () => {
-        const { transport, session } = get();
+        const { transport, session, localStream, pendingAnnounceStream } = get();
         if (session) {
           await session.close();
         }
         if (transport) {
           await transport.close();
         }
-        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none' });
+        // Stop camera/microphone capture
+        if (localStream) {
+          localStream.getTracks().forEach(track => track.stop());
+        }
+        if (pendingAnnounceStream) {
+          pendingAnnounceStream.getTracks().forEach(track => track.stop());
+        }
+        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceStream: null, publishedTracks: [] });
       },
 
       setServerUrl: (url: string) => set({ serverUrl: url }),
