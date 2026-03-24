@@ -474,7 +474,7 @@ export const useStore = create<AppStore>()(
         if (pendingAnnounceStream) {
           pendingAnnounceStream.getTracks().forEach(track => track.stop());
         }
-        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceStream: null, publishedTracks: [] });
+        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceStream: null, publishedTracks: [], subscribedTracks: [] });
       },
 
       setServerUrl: (url: string) => set({ serverUrl: url }),
