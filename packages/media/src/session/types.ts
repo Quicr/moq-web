@@ -27,6 +27,7 @@ export type MediaSessionEventType =
   | 'publish-stats'
   | 'subscribe-stats'
   | 'incoming-subscribe'
+  | 'incoming-publish'
   | 'namespace-acknowledged';
 
 /**
