@@ -709,7 +709,7 @@ export class MOQTSession {
    */
   async subscribeNamespace(
     namespacePrefix: string[],
-    options?: SubscribeNamespaceOptions
+    _options?: SubscribeNamespaceOptions
   ): Promise<number> {
     if (!this.isReady) {
       throw new Error('Session not ready');
@@ -732,13 +732,12 @@ export class MOQTSession {
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
 
     // Build SUBSCRIBE_NAMESPACE message
+    // Note: In draft-16, subscriber priority is not a valid parameter for SUBSCRIBE_NAMESPACE
     const message = {
       type: MessageType.SUBSCRIBE_NAMESPACE as const,
       requestId,
       namespacePrefix,
-      parameters: options?.priority !== undefined
-        ? new Map([[0x00, new Uint8Array([options.priority])]])
-        : undefined,
+      subscribeOptions: 0x00, // Request PUBLISH messages
     };
 
     const bytes = MessageCodec.encode(message);
