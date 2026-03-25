@@ -797,30 +797,50 @@ export interface PublishNamespaceCancelMessage extends MOQTMessage {
  * Used to discover available tracks within a namespace.
  * The relay will forward PUBLISH_NAMESPACE messages for matching tracks.
  */
+/**
+ * Subscribe Options for SUBSCRIBE_NAMESPACE (Draft 16)
+ */
+export enum SubscribeNamespaceOptions {
+  /** Request PUBLISH messages only */
+  PUBLISH = 0x00,
+  /** Request NAMESPACE messages only */
+  NAMESPACE = 0x01,
+  /** Request both PUBLISH and NAMESPACE messages */
+  BOTH = 0x02,
+}
+
 export interface SubscribeNamespaceMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_NAMESPACE;
+  /** Request ID for correlating responses (draft-16 only) */
+  requestId?: number;
   /** Namespace prefix to subscribe to */
   namespacePrefix: TrackNamespace;
+  /** Subscribe options - what to receive (draft-16 only, default PUBLISH) */
+  subscribeOptions?: SubscribeNamespaceOptions;
   /** Optional parameters */
   parameters?: Map<number, Uint8Array>;
 }
 
 /**
- * Successful namespace subscription response (Draft 14)
+ * Successful namespace subscription response (Draft 14/16)
  */
 export interface SubscribeNamespaceOkMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_NAMESPACE_OK;
-  /** Namespace prefix from the request */
-  namespacePrefix: TrackNamespace;
+  /** Request ID from the SUBSCRIBE_NAMESPACE (draft-16) */
+  requestId?: number;
+  /** Namespace prefix from the request (draft-14) */
+  namespacePrefix?: TrackNamespace;
 }
 
 /**
- * Namespace subscription error response (Draft 14)
+ * Namespace subscription error response (Draft 14/16)
  */
 export interface SubscribeNamespaceErrorMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_NAMESPACE_ERROR;
-  /** Namespace prefix from the request */
-  namespacePrefix: TrackNamespace;
+  /** Request ID from the SUBSCRIBE_NAMESPACE (draft-16) */
+  requestId?: number;
+  /** Namespace prefix from the request (draft-14) */
+  namespacePrefix?: TrackNamespace;
   /** Error code */
   errorCode: NamespaceErrorCode;
   /** Human-readable error reason */

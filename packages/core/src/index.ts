@@ -116,6 +116,7 @@ export type {
   PublishNamespaceDoneMessage,
   PublishNamespaceCancelMessage,
   // Namespace subscribe messages
+  SubscribeNamespaceOptions,
   SubscribeNamespaceMessage,
   SubscribeNamespaceOkMessage,
   SubscribeNamespaceErrorMessage,

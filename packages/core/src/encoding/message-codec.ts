@@ -1554,7 +1554,14 @@ export class MessageCodec {
     writer: BufferWriter,
     message: SubscribeNamespaceMessage
   ): void {
+    if (IS_DRAFT_16) {
+      writer.writeVarInt(message.requestId ?? 0);
+    }
     MessageCodec.encodeNamespace(writer, message.namespacePrefix);
+    if (IS_DRAFT_16) {
+      // Subscribe Options: 0x00=PUBLISH, 0x01=NAMESPACE, 0x02=BOTH
+      writer.writeVarInt(message.subscribeOptions ?? 0x00);
+    }
     const paramCount = message.parameters?.size ?? 0;
     writer.writeVarInt(paramCount);
     if (message.parameters) {
@@ -1567,7 +1574,15 @@ export class MessageCodec {
   }
 
   private static decodeSubscribeNamespacePayload(reader: BufferReader): SubscribeNamespaceMessage {
+    let requestId: number | undefined;
+    let subscribeOptions: number | undefined;
+    if (IS_DRAFT_16) {
+      requestId = reader.readVarIntNumber();
+    }
     const namespacePrefix = MessageCodec.decodeNamespace(reader);
+    if (IS_DRAFT_16) {
+      subscribeOptions = reader.readVarIntNumber();
+    }
     const paramCount = reader.readVarIntNumber();
 
     let parameters: Map<number, Uint8Array> | undefined;
@@ -1582,7 +1597,9 @@ export class MessageCodec {
 
     return {
       type: MessageType.SUBSCRIBE_NAMESPACE,
+      requestId,
       namespacePrefix,
+      subscribeOptions,
       parameters,
     };
   }
@@ -1591,21 +1608,36 @@ export class MessageCodec {
     writer: BufferWriter,
     message: SubscribeNamespaceOkMessage
   ): void {
-    MessageCodec.encodeNamespace(writer, message.namespacePrefix);
+    if (IS_DRAFT_16) {
+      writer.writeVarInt(message.requestId ?? 0);
+    } else {
+      MessageCodec.encodeNamespace(writer, message.namespacePrefix ?? []);
+    }
   }
 
   private static decodeSubscribeNamespaceOkPayload(reader: BufferReader): SubscribeNamespaceOkMessage {
-    return {
-      type: MessageType.SUBSCRIBE_NAMESPACE_OK,
-      namespacePrefix: MessageCodec.decodeNamespace(reader),
-    };
+    if (IS_DRAFT_16) {
+      return {
+        type: MessageType.SUBSCRIBE_NAMESPACE_OK,
+        requestId: reader.readVarIntNumber(),
+      };
+    } else {
+      return {
+        type: MessageType.SUBSCRIBE_NAMESPACE_OK,
+        namespacePrefix: MessageCodec.decodeNamespace(reader),
+      };
+    }
   }
 
   private static encodeSubscribeNamespaceErrorPayload(
     writer: BufferWriter,
     message: SubscribeNamespaceErrorMessage
   ): void {
-    MessageCodec.encodeNamespace(writer, message.namespacePrefix);
+    if (IS_DRAFT_16) {
+      writer.writeVarInt(message.requestId ?? 0);
+    } else {
+      MessageCodec.encodeNamespace(writer, message.namespacePrefix ?? []);
+    }
     writer.writeVarInt(message.errorCode);
     writer.writeString(message.reasonPhrase);
   }
@@ -1613,12 +1645,21 @@ export class MessageCodec {
   private static decodeSubscribeNamespaceErrorPayload(
     reader: BufferReader
   ): SubscribeNamespaceErrorMessage {
-    return {
-      type: MessageType.SUBSCRIBE_NAMESPACE_ERROR,
-      namespacePrefix: MessageCodec.decodeNamespace(reader),
-      errorCode: reader.readVarIntNumber(),
-      reasonPhrase: reader.readString(),
-    };
+    if (IS_DRAFT_16) {
+      return {
+        type: MessageType.SUBSCRIBE_NAMESPACE_ERROR,
+        requestId: reader.readVarIntNumber(),
+        errorCode: reader.readVarIntNumber(),
+        reasonPhrase: reader.readString(),
+      };
+    } else {
+      return {
+        type: MessageType.SUBSCRIBE_NAMESPACE_ERROR,
+        namespacePrefix: MessageCodec.decodeNamespace(reader),
+        errorCode: reader.readVarIntNumber(),
+        reasonPhrase: reader.readString(),
+      };
+    }
   }
 
   private static encodeUnsubscribeNamespacePayload(
