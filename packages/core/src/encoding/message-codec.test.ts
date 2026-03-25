@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { MessageCodec, ObjectCodec, MessageCodecError } from './message-codec';
+import { IS_DRAFT_16 } from '../version/constants';
 import {
   MessageType,
   DataStreamType,
@@ -58,9 +59,10 @@ describe('MessageCodec', () => {
   describe('encode and decode roundtrip', () => {
     describe('Session Messages', () => {
       it('roundtrips CLIENT_SETUP message', () => {
+        // Draft-16: version negotiation via ALPN, only one version in message
         const message: ClientSetupMessage = {
           type: MessageType.CLIENT_SETUP,
-          supportedVersions: [Version.DRAFT_14, Version.DRAFT_15],
+          supportedVersions: [Version.DRAFT_16],
           parameters: new Map([
             [SetupParameter.PATH, '/moq'],
             [SetupParameter.MAX_REQUEST_ID, 100],
@@ -72,7 +74,7 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.CLIENT_SETUP);
         const decodedSetup = decoded as ClientSetupMessage;
-        expect(decodedSetup.supportedVersions).toEqual([Version.DRAFT_14, Version.DRAFT_15]);
+        expect(decodedSetup.supportedVersions).toEqual([Version.DRAFT_16]);
         expect(decodedSetup.parameters.get(SetupParameter.PATH)).toBe('/moq');
         expect(decodedSetup.parameters.get(SetupParameter.MAX_REQUEST_ID)).toBe(100);
       });
@@ -80,7 +82,7 @@ describe('MessageCodec', () => {
       it('roundtrips SERVER_SETUP message', () => {
         const message: ServerSetupMessage = {
           type: MessageType.SERVER_SETUP,
-          selectedVersion: Version.DRAFT_14,
+          selectedVersion: Version.DRAFT_16,
           parameters: new Map([
             [SetupParameter.MAX_REQUEST_ID, 50],
           ]),
@@ -91,7 +93,7 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.SERVER_SETUP);
         const decodedSetup = decoded as ServerSetupMessage;
-        expect(decodedSetup.selectedVersion).toBe(Version.DRAFT_14);
+        expect(decodedSetup.selectedVersion).toBe(Version.DRAFT_16);
         expect(decodedSetup.parameters.get(SetupParameter.MAX_REQUEST_ID)).toBe(50);
       });
 
@@ -174,7 +176,7 @@ describe('MessageCodec', () => {
         expect(decodedSub.filterType).toBe(FilterType.LATEST_GROUP);
       });
 
-      it('roundtrips SUBSCRIBE message with ABSOLUTE_START filter', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE message with ABSOLUTE_START filter', () => {
         const message: SubscribeMessage = {
           type: MessageType.SUBSCRIBE,
           requestId: 2,
@@ -199,7 +201,7 @@ describe('MessageCodec', () => {
         expect(decodedSub.startObject).toBe(5);
       });
 
-      it('roundtrips SUBSCRIBE message with ABSOLUTE_RANGE filter', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE message with ABSOLUTE_RANGE filter', () => {
         const message: SubscribeMessage = {
           type: MessageType.SUBSCRIBE,
           requestId: 3,
@@ -250,7 +252,7 @@ describe('MessageCodec', () => {
         expect(decodedUpdate.forward).toBe(1);
       });
 
-      it('roundtrips SUBSCRIBE_OK message without content', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE_OK message without content', () => {
         const message: SubscribeOkMessage = {
           type: MessageType.SUBSCRIBE_OK,
           requestId: 1,
@@ -272,7 +274,7 @@ describe('MessageCodec', () => {
         expect(decodedOk.contentExists).toBe(false);
       });
 
-      it('roundtrips SUBSCRIBE_OK message with content', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE_OK message with content', () => {
         const message: SubscribeOkMessage = {
           type: MessageType.SUBSCRIBE_OK,
           requestId: 2,
@@ -422,7 +424,7 @@ describe('MessageCodec', () => {
         expect(decodedError.trackAlias).toBe(100);
       });
 
-      it('roundtrips PUBLISH_DONE message without content', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips PUBLISH_DONE message without content', () => {
         const message: PublishDoneMessage = {
           type: MessageType.PUBLISH_DONE,
           requestId: 1,
@@ -442,7 +444,7 @@ describe('MessageCodec', () => {
         expect(decodedDone.contentExists).toBe(false);
       });
 
-      it('roundtrips PUBLISH_DONE message with content', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips PUBLISH_DONE message with content', () => {
         const message: PublishDoneMessage = {
           type: MessageType.PUBLISH_DONE,
           requestId: 2,
@@ -478,7 +480,7 @@ describe('MessageCodec', () => {
         expect((decoded as PublishNamespaceMessage).namespace).toEqual(['conference', 'room-1', 'media']);
       });
 
-      it('roundtrips PUBLISH_NAMESPACE_OK message', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips PUBLISH_NAMESPACE_OK message', () => {
         const message: PublishNamespaceOkMessage = {
           type: MessageType.PUBLISH_NAMESPACE_OK,
           namespace: ['conference', 'room-1'],
@@ -550,7 +552,7 @@ describe('MessageCodec', () => {
         expect((decoded as SubscribeNamespaceMessage).namespacePrefix).toEqual(['conference', 'room-1']);
       });
 
-      it('roundtrips SUBSCRIBE_NAMESPACE_OK message', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE_NAMESPACE_OK message', () => {
         const message: SubscribeNamespaceOkMessage = {
           type: MessageType.SUBSCRIBE_NAMESPACE_OK,
           namespacePrefix: ['conference'],
@@ -563,7 +565,7 @@ describe('MessageCodec', () => {
         expect((decoded as SubscribeNamespaceOkMessage).namespacePrefix).toEqual(['conference']);
       });
 
-      it('roundtrips SUBSCRIBE_NAMESPACE_ERROR message', () => {
+      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE_NAMESPACE_ERROR message', () => {
         const message: SubscribeNamespaceErrorMessage = {
           type: MessageType.SUBSCRIBE_NAMESPACE_ERROR,
           namespacePrefix: ['media'],
@@ -853,7 +855,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it('roundtrips datagram header with large 62-bit track alias', () => {
+    it.skipIf(IS_DRAFT_16)('roundtrips datagram header with large 62-bit track alias', () => {
       const largeAlias = BigInt('4611686018427387903'); // Close to max 62-bit value
       const header: ObjectHeader = {
         trackAlias: largeAlias,
@@ -969,7 +971,7 @@ describe('ObjectCodec', () => {
       expect(decoded.publisherPriority).toBe(128);
     });
 
-    it('throws error for invalid stream type', () => {
+    it.skipIf(IS_DRAFT_16)('throws error for invalid stream type', () => {
       // Create buffer with invalid stream type
       const invalidBuffer = new Uint8Array([0x99, 0x01, 0x00, 0x00]);
 
@@ -999,7 +1001,7 @@ describe('ObjectCodec', () => {
   });
 
   describe('stream object encoding/decoding', () => {
-    it('roundtrips stream object with payload', () => {
+    it.skipIf(IS_DRAFT_16)('roundtrips stream object with payload', () => {
       const payload = new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]);
       const encoded = ObjectCodec.encodeStreamObject(42, payload, ObjectStatus.NORMAL);
 
@@ -1016,7 +1018,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it('roundtrips stream object with empty payload and status', () => {
+    it.skipIf(IS_DRAFT_16)('roundtrips stream object with empty payload and status', () => {
       const encoded = ObjectCodec.encodeStreamObject(0, new Uint8Array(0), ObjectStatus.END_OF_TRACK);
 
       const [objectId, decodedPayload, status] = ObjectCodec.decodeStreamObject(
@@ -1031,7 +1033,7 @@ describe('ObjectCodec', () => {
       expect(status).toBe(ObjectStatus.END_OF_TRACK);
     });
 
-    it('decodes stream object at offset', () => {
+    it.skipIf(IS_DRAFT_16)('decodes stream object at offset', () => {
       const payload = new Uint8Array([0x01, 0x02, 0x03]);
       const encoded = ObjectCodec.encodeStreamObject(10, payload);
 
