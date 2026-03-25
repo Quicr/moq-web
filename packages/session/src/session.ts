@@ -38,6 +38,8 @@ import {
   type SubscribeOkMessage,
   type PublishNamespaceMessage,
   type PublishNamespaceOkMessage,
+  type SubscribeNamespaceOkMessage,
+  type SubscribeNamespaceErrorMessage,
   type MOQTMessage,
   type ControlMessage,
   type ObjectHeader,
@@ -732,6 +734,7 @@ export class MOQTSession {
     // Build SUBSCRIBE_NAMESPACE message
     const message = {
       type: MessageType.SUBSCRIBE_NAMESPACE as const,
+      requestId,
       namespacePrefix,
       parameters: options?.priority !== undefined
         ? new Map([[0x00, new Uint8Array([options.priority])]])
@@ -2082,6 +2085,76 @@ export class MOQTSession {
         // Remove the failed namespace announcement
         this.announcedNamespaces.delete(namespaceStr);
         this.emit('error', new Error(`Namespace announcement failed: ${publishNamespaceError.reasonPhrase}`));
+        break;
+      }
+
+      case MessageType.SUBSCRIBE_NAMESPACE_OK: {
+        const subscribeNamespaceOk = message as SubscribeNamespaceOkMessage;
+        let subscriptionId: number | undefined;
+
+        if (IS_DRAFT_16 && subscribeNamespaceOk.requestId !== undefined) {
+          // Draft-16: Use requestId to find subscription
+          subscriptionId = this.namespaceSubscriptionByRequestId.get(subscribeNamespaceOk.requestId);
+        } else if (subscribeNamespaceOk.namespacePrefix) {
+          // Draft-14: Use namespacePrefix to find subscription
+          const prefixStr = subscribeNamespaceOk.namespacePrefix.join('/');
+          for (const [id, sub] of this.namespaceSubscriptions) {
+            if (sub.namespacePrefix.join('/') === prefixStr) {
+              subscriptionId = id;
+              break;
+            }
+          }
+        }
+
+        if (subscriptionId !== undefined) {
+          const subscription = this.namespaceSubscriptions.get(subscriptionId);
+          if (subscription) {
+            log.info('Received SUBSCRIBE_NAMESPACE_OK', {
+              requestId: subscribeNamespaceOk.requestId,
+              namespacePrefix: subscription.namespacePrefix.join('/'),
+            });
+          }
+        } else {
+          log.warn('SUBSCRIBE_NAMESPACE_OK for unknown request', {
+            requestId: subscribeNamespaceOk.requestId,
+            namespacePrefix: subscribeNamespaceOk.namespacePrefix?.join('/'),
+          });
+        }
+        break;
+      }
+
+      case MessageType.SUBSCRIBE_NAMESPACE_ERROR: {
+        const subscribeNamespaceError = message as SubscribeNamespaceErrorMessage;
+        let subscriptionId: number | undefined;
+
+        if (IS_DRAFT_16 && subscribeNamespaceError.requestId !== undefined) {
+          subscriptionId = this.namespaceSubscriptionByRequestId.get(subscribeNamespaceError.requestId);
+        } else if (subscribeNamespaceError.namespacePrefix) {
+          const prefixStr = subscribeNamespaceError.namespacePrefix.join('/');
+          for (const [id, sub] of this.namespaceSubscriptions) {
+            if (sub.namespacePrefix.join('/') === prefixStr) {
+              subscriptionId = id;
+              break;
+            }
+          }
+        }
+
+        log.error('Received SUBSCRIBE_NAMESPACE_ERROR', {
+          requestId: subscribeNamespaceError.requestId,
+          namespacePrefix: subscribeNamespaceError.namespacePrefix?.join('/'),
+          errorCode: subscribeNamespaceError.errorCode,
+          reasonPhrase: subscribeNamespaceError.reasonPhrase,
+        });
+
+        if (subscriptionId !== undefined) {
+          const subscription = this.namespaceSubscriptions.get(subscriptionId);
+          // Remove the failed subscription
+          this.namespaceSubscriptions.delete(subscriptionId);
+          if (subscription) {
+            this.namespaceSubscriptionByRequestId.delete(subscription.requestId);
+          }
+        }
+        this.emit('error', new Error(`Namespace subscription failed: ${subscribeNamespaceError.reasonPhrase}`));
         break;
       }
 
