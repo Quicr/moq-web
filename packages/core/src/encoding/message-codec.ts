@@ -1573,13 +1573,20 @@ export class MessageCodec {
           filterType = filterReader.readVarIntNumber() as FilterType;
 
           if (filterType === FilterType.ABSOLUTE_START || filterType === FilterType.ABSOLUTE_RANGE) {
+            // Use BigInt for location values - relay may send max varint (0x3FFFFFFFFFFFFFFF) as "unknown"
+            const groupIdBig = filterReader.readVarInt();
+            const objectIdBig = filterReader.readVarInt();
+            // Max 62-bit varint is sentinel for "unknown" - treat as 0
+            const MAX_VARINT = 0x3FFFFFFFFFFFFFFFn;
             startLocation = {
-              groupId: filterReader.readVarIntNumber(),
-              objectId: filterReader.readVarIntNumber(),
+              groupId: groupIdBig >= MAX_VARINT ? 0 : Number(groupIdBig),
+              objectId: objectIdBig >= MAX_VARINT ? 0 : Number(objectIdBig),
             };
           }
           if (filterType === FilterType.ABSOLUTE_RANGE) {
-            endGroup = filterReader.readVarIntNumber();
+            const endGroupBig = filterReader.readVarInt();
+            const MAX_VARINT = 0x3FFFFFFFFFFFFFFFn;
+            endGroup = endGroupBig >= MAX_VARINT ? undefined : Number(endGroupBig);
           }
         }
       }
