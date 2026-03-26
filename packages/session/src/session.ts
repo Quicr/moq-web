@@ -162,6 +162,8 @@ export class MOQTSession {
   private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
   /** Request ID to namespace subscription mapping */
   private namespaceSubscriptionByRequestId = new Map<number, number>();
+  /** Stream ID to subscription ID mapping for worker mode bidi streams */
+  private namespaceSubscriptionStreams = new Map<number, number>();
   /** Our own namespace prefix for filtering out self-publishes */
   private ownNamespacePrefix: string | null = null;
 
@@ -385,6 +387,11 @@ export class MOQTSession {
       this.handleWorkerStreamData(streamId, data);
     });
 
+    // Bidi stream data (for SUBSCRIBE_NAMESPACE responses)
+    this.transportWorker.on('bidi-stream-data', ({ streamId, data }) => {
+      this.handleWorkerBidiStreamData(streamId, data);
+    });
+
     // Stream closed
     this.transportWorker.on('stream-closed', ({ streamId }) => {
       this.handleWorkerStreamClosed(streamId);
@@ -434,6 +441,63 @@ export class MOQTSession {
   private handleWorkerStreamClosed(streamId: number): void {
     this.workerStreamBuffers.delete(streamId);
     this.workerStreamReaders.delete(streamId);
+    this.bidiStreamBuffers.delete(streamId);
+  }
+
+  /** Buffers for bidi stream data (namespace subscriptions) */
+  private bidiStreamBuffers = new Map<number, Uint8Array>();
+
+  /**
+   * Handle bidi stream data from worker (SUBSCRIBE_NAMESPACE responses)
+   */
+  private handleWorkerBidiStreamData(streamId: number, data: Uint8Array): void {
+    // Find which subscription this stream belongs to
+    let subscriptionId: number | undefined;
+    for (const [subId, sId] of this.namespaceSubscriptionStreams) {
+      if (sId === streamId) {
+        subscriptionId = subId;
+        break;
+      }
+    }
+
+    if (subscriptionId === undefined) {
+      log.warn('Received bidi stream data for unknown stream', { streamId });
+      return;
+    }
+
+    // Append to buffer
+    let buffer = this.bidiStreamBuffers.get(streamId) ?? new Uint8Array(0);
+    const newBuffer = new Uint8Array(buffer.length + data.length);
+    newBuffer.set(buffer);
+    newBuffer.set(data, buffer.length);
+    buffer = newBuffer;
+    this.bidiStreamBuffers.set(streamId, buffer);
+
+    // Try to decode messages
+    while (buffer.length > 0) {
+      try {
+        const [message, bytesRead] = MessageCodec.decode(buffer);
+        buffer = buffer.slice(bytesRead);
+        this.bidiStreamBuffers.set(streamId, buffer);
+
+        log.info('Received message on namespace subscription stream (worker)', {
+          type: MessageType[message.type],
+          subscriptionId,
+          streamId,
+        });
+
+        // Route the message
+        this.routeMessage(message);
+      } catch (err) {
+        if ((err as Error).message?.includes('Incomplete') ||
+            (err as Error).message?.includes('buffer')) {
+          // Need more data
+          break;
+        }
+        log.error('Error decoding bidi stream message', { error: (err as Error).message });
+        break;
+      }
+    }
   }
 
   // Track readable streams created for worker streams
@@ -743,21 +807,32 @@ export class MOQTSession {
     const bytes = MessageCodec.encode(message);
 
     // Draft-16: SUBSCRIBE_NAMESPACE must be sent on a new bidirectional stream
-    if (IS_DRAFT_16 && !this.useWorker && this.transport) {
-      const bidiStream = await this.transport.createBidirectionalStream();
-      const writer = bidiStream.writable.getWriter();
-      await writer.write(bytes);
-      // Don't close - we need to receive responses on this stream
-      writer.releaseLock();
+    if (IS_DRAFT_16) {
+      if (this.useWorker && this.transportWorker) {
+        // Worker mode: create bidi stream via worker
+        const streamId = await this.transportWorker.createBidiStream();
+        this.transportWorker.writeStream(streamId, bytes, false);
 
-      // Start reading responses on this bidi stream
-      this.readNamespaceSubscriptionStream(bidiStream.readable, subscriptionId).catch(err => {
-        log.error('Error reading namespace subscription stream', { error: (err as Error).message });
-      });
+        // Store stream ID for receiving responses
+        this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
 
-      log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream', { namespacePrefix: prefixStr, requestId });
+        log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { namespacePrefix: prefixStr, requestId, streamId });
+      } else if (this.transport) {
+        // Main thread mode: create bidi stream directly
+        const bidiStream = await this.transport.createBidirectionalStream();
+        const writer = bidiStream.writable.getWriter();
+        await writer.write(bytes);
+        writer.releaseLock();
+
+        // Start reading responses on this bidi stream
+        this.readNamespaceSubscriptionStream(bidiStream.readable, subscriptionId).catch(err => {
+          log.error('Error reading namespace subscription stream', { error: (err as Error).message });
+        });
+
+        log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream', { namespacePrefix: prefixStr, requestId });
+      }
     } else {
-      // Fallback for worker mode or draft-14
+      // Draft-14: send on control stream
       await this.doSendControl(bytes);
       log.info('Sent SUBSCRIBE_NAMESPACE on control stream', { namespacePrefix: prefixStr, requestId });
     }

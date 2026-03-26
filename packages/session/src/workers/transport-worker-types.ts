@@ -44,6 +44,7 @@ export type TransportWorkerRequest =
   | { type: 'send-control'; data: Uint8Array }
   | { type: 'send-datagram'; data: Uint8Array }
   | { type: 'create-stream'; id: number }
+  | { type: 'create-bidi-stream'; id: number }
   | { type: 'write-stream'; streamId: number; data: Uint8Array; close?: boolean }
   | { type: 'close-stream'; streamId: number };
 
@@ -58,6 +59,8 @@ export type TransportWorkerResponse =
   | { type: 'control-message'; data: Uint8Array }
   | { type: 'datagram'; data: Uint8Array }
   | { type: 'stream-created'; id: number; streamId: number }
+  | { type: 'bidi-stream-created'; id: number; streamId: number }
+  | { type: 'bidi-stream-data'; streamId: number; data: Uint8Array }
   | { type: 'incoming-stream'; streamId: number }
   | { type: 'stream-data'; streamId: number; data: Uint8Array }
   | { type: 'stream-closed'; streamId: number }

@@ -140,6 +140,19 @@ export class TransportWorkerClient {
   }
 
   /**
+   * Create bidirectional stream (for SUBSCRIBE_NAMESPACE in draft-16)
+   * @returns Promise resolving to stream ID
+   */
+  async createBidiStream(): Promise<number> {
+    const id = ++this.streamRequestId;
+
+    return new Promise((resolve) => {
+      this.pendingStreamCreations.set(id, resolve);
+      this.post({ type: 'create-bidi-stream', id });
+    });
+  }
+
+  /**
    * Write data to stream
    */
   writeStream(streamId: number, data: Uint8Array, close = false): void {
@@ -163,6 +176,7 @@ export class TransportWorkerClient {
   on(type: 'datagram', handler: (data: { data: Uint8Array }) => void): void;
   on(type: 'incoming-stream', handler: (data: { streamId: number }) => void): void;
   on(type: 'stream-data', handler: (data: { streamId: number; data: Uint8Array }) => void): void;
+  on(type: 'bidi-stream-data', handler: (data: { streamId: number; data: Uint8Array }) => void): void;
   on(type: 'stream-closed', handler: (data: { streamId: number }) => void): void;
   on(type: 'error', handler: (data: { message: string; code?: number }) => void): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -205,7 +219,7 @@ export class TransportWorkerClient {
     }
 
     // Handle stream creation responses
-    if (response.type === 'stream-created') {
+    if (response.type === 'stream-created' || response.type === 'bidi-stream-created') {
       const resolver = this.pendingStreamCreations.get(response.id);
       if (resolver) {
         this.pendingStreamCreations.delete(response.id);
