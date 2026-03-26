@@ -110,6 +110,12 @@ interface ActiveSubscription {
  * await session.publish(['conference', 'room-1'], 'video', stream, config);
  * ```
  */
+/** Namespace subscription config for auto-creating pipelines */
+interface NamespaceSubscriptionConfig {
+  subscriptionId: number;
+  config: MediaConfig;
+}
+
 export class MediaSession {
   /** Underlying generic session */
   private session: MOQTSession;
@@ -119,6 +125,8 @@ export class MediaSession {
   private subscriptions = new Map<number, ActiveSubscription>();
   /** Reverse lookup: pipeline to subscription ID for O(1) access */
   private pipelineToSubscriptionId = new Map<SubscribePipeline, number>();
+  /** Namespace subscription configs for auto-creating pipelines */
+  private namespaceConfigs = new Map<number, NamespaceSubscriptionConfig>();
   /** Event handlers */
   private handlers = new Map<MediaSessionEventType, Set<(data: unknown) => void>>();
   /** Session event cleanup handlers */
@@ -562,15 +570,31 @@ export class MediaSession {
   /**
    * Subscribe to a namespace prefix to discover tracks from publishers
    *
+   * When tracks are discovered via PUBLISH messages, pipelines are automatically
+   * created to decode video/audio if a config is provided.
+   *
    * @param namespacePrefix - Namespace prefix to subscribe to
+   * @param config - Optional media config for auto-creating decode pipelines
    * @param options - Subscribe options
    * @returns Namespace subscription ID
    */
   async subscribeNamespace(
     namespacePrefix: string[],
+    config?: MediaConfig,
     options?: SubscribeNamespaceOptions
   ): Promise<number> {
-    return this.session.subscribeNamespace(namespacePrefix, options);
+    const subscriptionId = await this.session.subscribeNamespace(namespacePrefix, options);
+
+    // Store config for auto-creating pipelines when tracks are discovered
+    if (config) {
+      this.namespaceConfigs.set(subscriptionId, { subscriptionId, config });
+      log.info('Stored namespace config for auto-pipeline creation', {
+        subscriptionId,
+        namespacePrefix: namespacePrefix.join('/'),
+      });
+    }
+
+    return subscriptionId;
   }
 
   /**
@@ -579,6 +603,7 @@ export class MediaSession {
    * @param subscriptionId - Namespace subscription ID
    */
   async unsubscribeNamespace(subscriptionId: number): Promise<void> {
+    this.namespaceConfigs.delete(subscriptionId);
     return this.session.unsubscribeNamespace(subscriptionId);
   }
 
@@ -805,6 +830,127 @@ export class MediaSession {
       this.emit('namespace-acknowledged', data);
     });
     this.sessionCleanup.push(namespaceAckCleanup);
+
+    // Handle incoming-publish events to auto-create decode pipelines
+    const incomingPublishCleanup = this.session.on('incoming-publish', (event: IncomingPublishEvent) => {
+      this.handleIncomingPublish(event).catch((err) => {
+        log.error('Failed to handle incoming publish', err as Error);
+      });
+      // Forward the event to app
+      this.emit('incoming-publish', event);
+    });
+    this.sessionCleanup.push(incomingPublishCleanup);
+  }
+
+  /**
+   * Handle incoming PUBLISH by creating a decode pipeline if config is available
+   */
+  private async handleIncomingPublish(event: IncomingPublishEvent): Promise<void> {
+    const nsConfig = this.namespaceConfigs.get(event.namespaceSubscriptionId);
+    if (!nsConfig) {
+      log.debug('No config for namespace subscription, skipping pipeline creation', {
+        namespaceSubscriptionId: event.namespaceSubscriptionId,
+      });
+      return;
+    }
+
+    // Determine media type from track name
+    const trackNameLower = event.trackName.toLowerCase();
+    let mediaType: 'video' | 'audio' | undefined;
+    if (trackNameLower.includes('video')) {
+      mediaType = 'video';
+    } else if (trackNameLower.includes('audio')) {
+      mediaType = 'audio';
+    } else {
+      log.debug('Unknown media type for track, skipping pipeline', { trackName: event.trackName });
+      return;
+    }
+
+    const config = nsConfig.config;
+    const resolution = getResolutionConfig(config.videoResolution);
+
+    // Create decode pipeline
+    const pipeline = new SubscribePipeline({
+      mediaType,
+      video: mediaType === 'video' ? {
+        codec: resolution.codec,
+        codedWidth: resolution.width,
+        codedHeight: resolution.height,
+      } : undefined,
+      audio: mediaType === 'audio' ? {
+        sampleRate: 48000,
+        numberOfChannels: 2,
+      } : undefined,
+      jitterBufferDelay: config.jitterBufferDelay ?? 100,
+      decodeWorker: this.workers?.decodeWorker,
+      enableStats: config.enableStats,
+    });
+
+    log.info('Created decode pipeline for discovered track', {
+      namespaceSubscriptionId: event.namespaceSubscriptionId,
+      trackName: event.trackName,
+      mediaType,
+    });
+
+    // Find the subscription created for this track and attach the pipeline
+    // The subscription was created in session.handleIncomingPublish with trackAlias
+    const subscriptions = this.session.getSubscriptions();
+    const trackSub = subscriptions.find(s =>
+      s.trackAlias === event.trackAlias
+    );
+
+    if (!trackSub) {
+      log.warn('Could not find subscription for incoming publish', {
+        trackAlias: event.trackAlias.toString(),
+      });
+      return;
+    }
+
+    // Set up event handlers
+    pipeline.on('video-frame', (frame: VideoFrame) => {
+      this.emit('video-frame', { subscriptionId: trackSub.subscriptionId, frame });
+    });
+
+    pipeline.on('audio-data', (audioData: AudioData) => {
+      this.emit('audio-data', { subscriptionId: trackSub.subscriptionId, audioData });
+    });
+
+    pipeline.on('jitter-sample', (sample: JitterSample) => {
+      this.emit('jitter-sample', { subscriptionId: trackSub.subscriptionId, sample });
+    });
+
+    pipeline.on('latency-stats', (stats: LatencyStatsSample) => {
+      this.emit('latency-stats', { subscriptionId: trackSub.subscriptionId, stats });
+    });
+
+    pipeline.on('error', (err: Error) => {
+      log.error('Subscribe pipeline error', err);
+      this.emit('error', err);
+    });
+
+    // Start pipeline
+    await pipeline.start();
+
+    // Store subscription with pipeline
+    this.subscriptions.set(trackSub.subscriptionId, {
+      subscriptionId: trackSub.subscriptionId,
+      namespace: event.namespace,
+      trackName: event.trackName,
+      pipeline,
+      mediaType,
+    });
+    this.pipelineToSubscriptionId.set(pipeline, trackSub.subscriptionId);
+
+    // Update the subscription's onObject callback to push to pipeline
+    this.session.setSubscriptionCallback(trackSub.subscriptionId, (data, groupId, objectId, timestamp) => {
+      pipeline.push(data, groupId, objectId, timestamp);
+    });
+
+    log.info('Pipeline attached to discovered track', {
+      subscriptionId: trackSub.subscriptionId,
+      trackName: event.trackName,
+      mediaType,
+    });
   }
 
   /**
