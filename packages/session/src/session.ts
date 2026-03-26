@@ -741,10 +741,80 @@ export class MOQTSession {
     };
 
     const bytes = MessageCodec.encode(message);
-    await this.doSendControl(bytes);
-    log.info('Sent SUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr, requestId });
+
+    // Draft-16: SUBSCRIBE_NAMESPACE must be sent on a new bidirectional stream
+    if (IS_DRAFT_16 && !this.useWorker && this.transport) {
+      const bidiStream = await this.transport.createBidirectionalStream();
+      const writer = bidiStream.writable.getWriter();
+      await writer.write(bytes);
+      // Don't close - we need to receive responses on this stream
+      writer.releaseLock();
+
+      // Start reading responses on this bidi stream
+      this.readNamespaceSubscriptionStream(bidiStream.readable, subscriptionId).catch(err => {
+        log.error('Error reading namespace subscription stream', { error: (err as Error).message });
+      });
+
+      log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream', { namespacePrefix: prefixStr, requestId });
+    } else {
+      // Fallback for worker mode or draft-14
+      await this.doSendControl(bytes);
+      log.info('Sent SUBSCRIBE_NAMESPACE on control stream', { namespacePrefix: prefixStr, requestId });
+    }
 
     return subscriptionId;
+  }
+
+  /**
+   * Read responses from a namespace subscription bidirectional stream
+   */
+  private async readNamespaceSubscriptionStream(
+    readable: ReadableStream<Uint8Array>,
+    subscriptionId: number
+  ): Promise<void> {
+    const reader = readable.getReader();
+    let buffer = new Uint8Array(0);
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        // Append to buffer
+        const newBuffer = new Uint8Array(buffer.length + value.length);
+        newBuffer.set(buffer);
+        newBuffer.set(value, buffer.length);
+        buffer = newBuffer;
+
+        // Try to decode messages
+        while (buffer.length > 0) {
+          try {
+            const [message, bytesRead] = MessageCodec.decode(buffer);
+            buffer = buffer.slice(bytesRead);
+
+            log.info('Received message on namespace subscription stream', {
+              type: MessageType[message.type],
+              subscriptionId,
+            });
+
+            // Route the message
+            this.routeMessage(message);
+          } catch (err) {
+            if ((err as Error).message?.includes('Incomplete') ||
+                (err as Error).message?.includes('buffer')) {
+              // Need more data
+              break;
+            }
+            throw err;
+          }
+        }
+      }
+    } catch (err) {
+      log.error('Namespace subscription stream error', { error: (err as Error).message });
+    } finally {
+      reader.releaseLock();
+    }
   }
 
   /**

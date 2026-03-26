@@ -465,6 +465,23 @@ export class MOQTransport {
   }
 
   /**
+   * Create a new bidirectional stream
+   *
+   * Used for SUBSCRIBE_NAMESPACE (draft-16) which requires a new bidi stream.
+   *
+   * @returns Bidirectional stream with readable and writable sides
+   */
+  async createBidirectionalStream(): Promise<WebTransportBidirectionalStream> {
+    if (!this.transport) {
+      throw new Error('Not connected');
+    }
+
+    log.trace('Creating bidirectional stream');
+    const stream = await this.transport.createBidirectionalStream();
+    return stream;
+  }
+
+  /**
    * Close the transport connection
    *
    * @param code - Close code (default: 0)
