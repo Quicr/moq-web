@@ -1483,58 +1483,158 @@ export class MessageCodec {
 
   private static encodePublishOkPayload(writer: BufferWriter, message: PublishOkMessage): void {
     writer.writeVarInt(message.requestId);
-    writer.writeByte(message.forward);
-    writer.writeByte(message.subscriberPriority);
-    writer.writeByte(message.groupOrder);
-    writer.writeVarInt(message.filterType);
-    // Optional groups based on filter type - not implemented for now
-    // Write empty parameters
-    writer.writeVarInt(0);
+
+    if (IS_DRAFT_16) {
+      // Draft-16: Request ID, Parameters
+      const params = new Map<number, Uint8Array>();
+
+      // FORWARD (0x10, even)
+      if (message.forward !== undefined) {
+        params.set(RequestParameter.FORWARD, VarInt.encode(message.forward));
+      }
+
+      // SUBSCRIBER_PRIORITY (0x20, even)
+      if (message.subscriberPriority !== undefined) {
+        params.set(RequestParameter.SUBSCRIBER_PRIORITY, VarInt.encode(message.subscriberPriority));
+      }
+
+      // SUBSCRIPTION_FILTER (0x21, odd) - contains filterType and optional locations
+      const filterWriter = new BufferWriter();
+      filterWriter.writeVarInt(message.filterType);
+      if (message.filterType === FilterType.ABSOLUTE_START || message.filterType === FilterType.ABSOLUTE_RANGE) {
+        filterWriter.writeVarInt(message.startLocation?.groupId ?? 0);
+        filterWriter.writeVarInt(message.startLocation?.objectId ?? 0);
+      }
+      if (message.filterType === FilterType.ABSOLUTE_RANGE) {
+        filterWriter.writeVarInt(message.endGroup ?? 0);
+      }
+      params.set(RequestParameter.SUBSCRIPTION_FILTER, filterWriter.toUint8Array());
+
+      // GROUP_ORDER (0x22, even)
+      if (message.groupOrder !== undefined) {
+        params.set(RequestParameter.GROUP_ORDER, VarInt.encode(message.groupOrder));
+      }
+
+      MessageCodec.encodeRequestParameters(writer, params);
+    } else {
+      // Draft-14: direct fields
+      writer.writeByte(message.forward);
+      writer.writeByte(message.subscriberPriority);
+      writer.writeByte(message.groupOrder);
+      writer.writeVarInt(message.filterType);
+      // Optional groups based on filter type - not implemented for now
+      // Write empty parameters
+      writer.writeVarInt(0);
+    }
   }
 
   private static decodePublishOkPayload(reader: BufferReader): PublishOkMessage {
     const requestId = reader.readVarIntNumber();
     log.info('PUBLISH_OK field', { field: 'requestId', value: requestId });
 
-    // LAPS format: requestId, forward, subscriberPriority, groupOrder, filterType
-    const forward = reader.readByte();
-    log.info('PUBLISH_OK field', { field: 'forward', value: forward });
-    const subscriberPriority = reader.readByte();
-    log.info('PUBLISH_OK field', { field: 'subscriberPriority', value: subscriberPriority });
-    const groupOrder = reader.readByte() as GroupOrder;
-    log.info('PUBLISH_OK field', { field: 'groupOrder', value: groupOrder });
-    const filterType = reader.readVarIntNumber();
-    log.info('PUBLISH_OK field', { field: 'filterType', value: filterType });
+    if (IS_DRAFT_16) {
+      // Draft-16: Request ID, Parameters
+      // All fields (forward, subscriberPriority, groupOrder, filterType, etc.) are in parameters
+      const parameters = MessageCodec.decodeRequestParameters(reader);
 
-    const message: PublishOkMessage = {
-      type: MessageType.PUBLISH_OK,
-      requestId,
-      forward,
-      subscriberPriority,
-      groupOrder,
-      filterType,
-    };
+      let forward = 1;
+      let subscriberPriority = 128;
+      let groupOrder = GroupOrder.ASCENDING;
+      let filterType = FilterType.LATEST_GROUP;
+      let startLocation: { groupId: number; objectId: number } | undefined;
+      let endGroup: number | undefined;
 
-    // Read optional groups based on filter type
-    // Filter types: 0x1=NextGroupStart, 0x2=LargestObject, 0x3=AbsoluteStart, 0x4=AbsoluteRange
-    if (filterType === 0x2 || filterType === 0x3 || filterType === 0x4) {
-      // Has start location
-      message.startLocation = {
-        groupId: reader.readVarIntNumber(),
-        objectId: reader.readVarIntNumber(),
+      if (parameters) {
+        // FORWARD (0x10, even)
+        const forwardParam = parameters.get(RequestParameter.FORWARD);
+        if (forwardParam && forwardParam.length > 0) {
+          const [fwd] = VarInt.decodeNumber(forwardParam);
+          forward = fwd;
+        }
+
+        // SUBSCRIBER_PRIORITY (0x20, even)
+        const priorityParam = parameters.get(RequestParameter.SUBSCRIBER_PRIORITY);
+        if (priorityParam && priorityParam.length > 0) {
+          const [pri] = VarInt.decodeNumber(priorityParam);
+          subscriberPriority = pri;
+        }
+
+        // GROUP_ORDER (0x22, even)
+        const groupOrderParam = parameters.get(RequestParameter.GROUP_ORDER);
+        if (groupOrderParam && groupOrderParam.length > 0) {
+          const [order] = VarInt.decodeNumber(groupOrderParam);
+          groupOrder = order as GroupOrder;
+        }
+
+        // SUBSCRIPTION_FILTER (0x21, odd) - contains filterType and optional locations
+        const filterParam = parameters.get(RequestParameter.SUBSCRIPTION_FILTER);
+        if (filterParam && filterParam.length > 0) {
+          const filterReader = new BufferReader(filterParam);
+          filterType = filterReader.readVarIntNumber() as FilterType;
+
+          if (filterType === FilterType.ABSOLUTE_START || filterType === FilterType.ABSOLUTE_RANGE) {
+            startLocation = {
+              groupId: filterReader.readVarIntNumber(),
+              objectId: filterReader.readVarIntNumber(),
+            };
+          }
+          if (filterType === FilterType.ABSOLUTE_RANGE) {
+            endGroup = filterReader.readVarIntNumber();
+          }
+        }
+      }
+
+      log.info('PUBLISH_OK (draft-16)', { forward, subscriberPriority, groupOrder, filterType });
+
+      return {
+        type: MessageType.PUBLISH_OK,
+        requestId,
+        forward,
+        subscriberPriority,
+        groupOrder,
+        filterType,
+        startLocation,
+        endGroup,
+        parameters,
       };
-      log.info('PUBLISH_OK field', { field: 'startLocation', value: message.startLocation });
-    }
-    if (filterType === 0x4) {
-      // Has end group
-      message.endGroup = reader.readVarIntNumber();
-      log.info('PUBLISH_OK field', { field: 'endGroup', value: message.endGroup });
-    }
+    } else {
+      // Draft-14: requestId, forward, subscriberPriority, groupOrder, filterType as direct fields
+      const forward = reader.readByte();
+      log.info('PUBLISH_OK field', { field: 'forward', value: forward });
+      const subscriberPriority = reader.readByte();
+      log.info('PUBLISH_OK field', { field: 'subscriberPriority', value: subscriberPriority });
+      const groupOrder = reader.readByte() as GroupOrder;
+      log.info('PUBLISH_OK field', { field: 'groupOrder', value: groupOrder });
+      const filterType = reader.readVarIntNumber();
+      log.info('PUBLISH_OK field', { field: 'filterType', value: filterType });
 
-    // Skip parameters
-    MessageCodec.skipParameters(reader);
+      const message: PublishOkMessage = {
+        type: MessageType.PUBLISH_OK,
+        requestId,
+        forward,
+        subscriberPriority,
+        groupOrder,
+        filterType,
+      };
 
-    return message;
+      // Read optional groups based on filter type
+      if (filterType === 0x2 || filterType === 0x3 || filterType === 0x4) {
+        message.startLocation = {
+          groupId: reader.readVarIntNumber(),
+          objectId: reader.readVarIntNumber(),
+        };
+        log.info('PUBLISH_OK field', { field: 'startLocation', value: message.startLocation });
+      }
+      if (filterType === 0x4) {
+        message.endGroup = reader.readVarIntNumber();
+        log.info('PUBLISH_OK field', { field: 'endGroup', value: message.endGroup });
+      }
+
+      // Skip parameters
+      MessageCodec.skipParameters(reader);
+
+      return message;
+    }
   }
 
   private static encodePublishErrorPayload(writer: BufferWriter, message: PublishErrorMessage): void {
