@@ -849,6 +849,7 @@ export class MOQTSession {
       requestId,
       namespacePrefix,
       tracks: new Map(),
+      onObject: _options?.onObject,
     };
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
@@ -1470,6 +1471,7 @@ export class MOQTSession {
       trackName,
       trackAlias: BigInt(message.trackAlias),
       paused: false,
+      onObject: matchingSubscription.onObject,
     };
     this.subscriptionManager.add(subscription);
 

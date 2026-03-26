@@ -197,6 +197,8 @@ export interface IncomingSubscribeEvent {
 export interface SubscribeNamespaceOptions {
   /** Subscriber priority (0-255, default 128) */
   priority?: number;
+  /** Callback for received objects from tracks under this namespace */
+  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
 }
 
 /**
@@ -211,6 +213,8 @@ export interface NamespaceSubscriptionInfo {
   namespacePrefix: string[];
   /** Tracks discovered under this namespace */
   tracks: Map<string, IncomingPublishInfo>;
+  /** Callback for received objects from tracks under this namespace */
+  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
 }
 
 /**
