@@ -1308,56 +1308,142 @@ export class MessageCodec {
   }
 
   private static encodePublishPayload(writer: BufferWriter, message: PublishMessage): void {
-    // Draft-14 PUBLISH format (Section 9.13):
-    // Request ID (varint), Track Namespace (tuple), Track Name (string),
-    // Track Alias (varint), Group Order (8), Content Exists (8),
-    // [Largest Location], Forward (8), Parameters
-    writer.writeVarInt(message.requestId);
-    MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
-    writer.writeVarInt(message.trackAlias);
-    writer.writeByte(message.groupOrder);
-    writer.writeByte(message.contentExists ? 1 : 0);
-    if (message.contentExists && message.largestLocation) {
-      writer.writeVarInt(message.largestLocation.groupId);
-      writer.writeVarInt(message.largestLocation.objectId);
+    if (IS_DRAFT_16) {
+      // Draft-16 PUBLISH format:
+      // Request ID, Full Track Name, Track Alias, Parameters
+      // groupOrder, forward, largestLocation are all in Parameters
+      writer.writeVarInt(message.requestId);
+      MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
+      writer.writeVarInt(message.trackAlias);
+
+      // Build parameters from message fields
+      const params = new Map<number, Uint8Array>(message.parameters ?? []);
+
+      // LARGEST_OBJECT (0x09, odd) - only if content exists with location
+      if (message.contentExists && message.largestLocation) {
+        const locWriter = new BufferWriter();
+        locWriter.writeVarInt(message.largestLocation.groupId);
+        locWriter.writeVarInt(message.largestLocation.objectId);
+        params.set(RequestParameter.LARGEST_OBJECT, locWriter.toUint8Array());
+      }
+
+      // FORWARD (0x10, even)
+      if (message.forward !== undefined) {
+        params.set(RequestParameter.FORWARD, VarInt.encode(message.forward));
+      }
+
+      // GROUP_ORDER (0x22, even)
+      if (message.groupOrder !== undefined) {
+        params.set(RequestParameter.GROUP_ORDER, VarInt.encode(message.groupOrder));
+      }
+
+      MessageCodec.encodeRequestParameters(writer, params);
+    } else {
+      // Draft-14 PUBLISH format (Section 9.13):
+      // Request ID (varint), Track Namespace (tuple), Track Name (string),
+      // Track Alias (varint), Group Order (8), Content Exists (8),
+      // [Largest Location], Forward (8), Parameters
+      writer.writeVarInt(message.requestId);
+      MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
+      writer.writeVarInt(message.trackAlias);
+      writer.writeByte(message.groupOrder);
+      writer.writeByte(message.contentExists ? 1 : 0);
+      if (message.contentExists && message.largestLocation) {
+        writer.writeVarInt(message.largestLocation.groupId);
+        writer.writeVarInt(message.largestLocation.objectId);
+      }
+      writer.writeByte(message.forward);
+      MessageCodec.encodeRequestParameters(writer, message.parameters);
     }
-    writer.writeByte(message.forward);
-    MessageCodec.encodeRequestParameters(writer, message.parameters);
   }
 
   private static decodePublishPayload(reader: BufferReader): PublishMessage {
-    // Draft-14 PUBLISH format (Section 9.13):
-    // Request ID (varint), Track Namespace (tuple), Track Name (string),
-    // Track Alias (varint), Group Order (8), Content Exists (8),
-    // [Largest Location], Forward (8), Parameters
-    const requestId = reader.readVarIntNumber();
-    const fullTrackName = MessageCodec.decodeFullTrackName(reader);
-    const trackAlias = reader.readVarIntNumber();
-    const groupOrder = reader.readByte() as GroupOrder;
-    const contentExists = reader.readByte() === 1;
+    if (IS_DRAFT_16) {
+      // Draft-16 PUBLISH format:
+      // Request ID, Full Track Name, Track Alias, Parameters
+      const requestId = reader.readVarIntNumber();
+      const fullTrackName = MessageCodec.decodeFullTrackName(reader);
+      const trackAlias = reader.readVarIntNumber();
+      const parameters = MessageCodec.decodeRequestParameters(reader);
 
-    let largestLocation: { groupId: number; objectId: number } | undefined;
-    if (contentExists) {
-      largestLocation = {
-        groupId: reader.readVarIntNumber(),
-        objectId: reader.readVarIntNumber(),
+      // Extract fields from parameters
+      let groupOrder = GroupOrder.ASCENDING;
+      let forward = 1;
+      let contentExists = false;
+      let largestLocation: { groupId: number; objectId: number } | undefined;
+
+      if (parameters) {
+        // GROUP_ORDER (0x22, even)
+        const groupOrderParam = parameters.get(RequestParameter.GROUP_ORDER);
+        if (groupOrderParam && groupOrderParam.length > 0) {
+          const [order] = VarInt.decodeNumber(groupOrderParam);
+          groupOrder = order as GroupOrder;
+        }
+
+        // FORWARD (0x10, even)
+        const forwardParam = parameters.get(RequestParameter.FORWARD);
+        if (forwardParam && forwardParam.length > 0) {
+          const [fwd] = VarInt.decodeNumber(forwardParam);
+          forward = fwd;
+        }
+
+        // LARGEST_OBJECT (0x09, odd)
+        const largestParam = parameters.get(RequestParameter.LARGEST_OBJECT);
+        if (largestParam && largestParam.length > 0) {
+          contentExists = true;
+          const locReader = new BufferReader(largestParam);
+          largestLocation = {
+            groupId: locReader.readVarIntNumber(),
+            objectId: locReader.readVarIntNumber(),
+          };
+        }
+      }
+
+      return {
+        type: MessageType.PUBLISH,
+        requestId,
+        fullTrackName,
+        trackAlias,
+        groupOrder,
+        contentExists,
+        largestLocation,
+        forward,
+        parameters,
+      };
+    } else {
+      // Draft-14 PUBLISH format (Section 9.13):
+      // Request ID (varint), Track Namespace (tuple), Track Name (string),
+      // Track Alias (varint), Group Order (8), Content Exists (8),
+      // [Largest Location], Forward (8), Parameters
+      const requestId = reader.readVarIntNumber();
+      const fullTrackName = MessageCodec.decodeFullTrackName(reader);
+      const trackAlias = reader.readVarIntNumber();
+      const groupOrder = reader.readByte() as GroupOrder;
+      const contentExists = reader.readByte() === 1;
+
+      let largestLocation: { groupId: number; objectId: number } | undefined;
+      if (contentExists) {
+        largestLocation = {
+          groupId: reader.readVarIntNumber(),
+          objectId: reader.readVarIntNumber(),
+        };
+      }
+
+      const forward = reader.readByte();
+      const parameters = MessageCodec.decodeRequestParameters(reader);
+
+      return {
+        type: MessageType.PUBLISH,
+        requestId,
+        fullTrackName,
+        trackAlias,
+        groupOrder,
+        contentExists,
+        largestLocation,
+        forward,
+        parameters,
       };
     }
-
-    const forward = reader.readByte();
-    const parameters = MessageCodec.decodeRequestParameters(reader);
-
-    return {
-      type: MessageType.PUBLISH,
-      requestId,
-      fullTrackName,
-      trackAlias,
-      groupOrder,
-      contentExists,
-      largestLocation,
-      forward,
-      parameters,
-    };
   }
 
   private static encodePublishOkPayload(writer: BufferWriter, message: PublishOkMessage): void {
