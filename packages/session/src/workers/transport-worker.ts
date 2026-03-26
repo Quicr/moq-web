@@ -359,6 +359,55 @@ async function createStream(requestId: number): Promise<void> {
 }
 
 /**
+ * Create bidirectional stream for SUBSCRIBE_NAMESPACE (draft-16)
+ */
+async function createBidiStream(requestId: number): Promise<void> {
+  if (!transport) {
+    respond({ type: 'error', message: 'Not connected' });
+    return;
+  }
+
+  try {
+    const stream = await transport.createBidirectionalStream();
+    const streamId = nextStreamId++;
+    const writer = stream.writable.getWriter();
+
+    outgoingStreams.set(streamId, { id: requestId, writer });
+    log('Created bidi stream', { requestId, streamId });
+
+    respond({ type: 'bidi-stream-created', id: requestId, streamId });
+
+    // Start reading from the readable side
+    readBidiStream(streamId, stream.readable).catch(err => {
+      log('Error reading bidi stream', err);
+    });
+  } catch (err) {
+    respond({ type: 'error', message: (err as Error).message });
+  }
+}
+
+/**
+ * Read from bidirectional stream and forward to main thread
+ */
+async function readBidiStream(streamId: number, readable: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = readable.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value && value.length > 0) {
+        respond({ type: 'bidi-stream-data', streamId, data: value }, [value.buffer]);
+      }
+    }
+  } catch (err) {
+    log('Bidi stream read error', err);
+  } finally {
+    reader.releaseLock();
+    respond({ type: 'stream-closed', streamId });
+  }
+}
+
+/**
  * Write data to stream
  */
 async function writeStream(
@@ -441,6 +490,9 @@ self.onmessage = async (event: MessageEvent<TransportWorkerRequest>): Promise<vo
       break;
     case 'create-stream':
       await createStream(msg.id);
+      break;
+    case 'create-bidi-stream':
+      await createBidiStream(msg.id);
       break;
     case 'write-stream':
       await writeStream(msg.streamId, msg.data, msg.close);
