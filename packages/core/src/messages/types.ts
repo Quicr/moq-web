@@ -702,6 +702,8 @@ export interface PublishOkMessage extends MOQTMessage {
   startLocation?: { groupId: number; objectId: number };
   /** End group (optional, based on filter type) */
   endGroup?: number;
+  /** Parameters (Draft-16) */
+  parameters?: Map<RequestParameter, Uint8Array>;
 }
 
 /**
