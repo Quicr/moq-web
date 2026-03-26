@@ -1501,6 +1501,7 @@ export class MOQTSession {
     // Emit event for application to handle
     this.emit('incoming-publish', {
       namespaceSubscriptionId: matchingSubscription.subscriptionId,
+      subscriptionId,
       requestId: message.requestId,
       namespace,
       trackName,

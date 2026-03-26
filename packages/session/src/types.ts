@@ -241,6 +241,8 @@ export interface IncomingPublishInfo {
 export interface IncomingPublishEvent {
   /** Namespace subscription ID that matched this publish */
   namespaceSubscriptionId: number;
+  /** Internal subscription ID for this track (for object routing) */
+  subscriptionId: number;
   /** Request ID from publisher */
   requestId: number;
   /** Namespace */

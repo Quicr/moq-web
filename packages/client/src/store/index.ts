@@ -530,6 +530,7 @@ export const useStore = create<AppStore>()(
               namespace: event.namespace,
               trackName: event.trackName,
               trackAlias: event.trackAlias,
+              subscriptionId: event.subscriptionId,
               type: trackType,
             });
 
