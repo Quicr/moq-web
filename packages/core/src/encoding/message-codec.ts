@@ -769,6 +769,11 @@ export class MessageCodec {
           const MAX_VARINT = 0x3FFFFFFFFFFFFFFFn;
           if (valueBig >= MAX_VARINT) {
             // Max varint is sentinel for "unknown" - store as 0
+            log.info('Parameter has max varint (unknown) value', {
+              key: '0x' + key.toString(16),
+              keyName: RequestParameter[key] || 'UNKNOWN',
+              value: valueBig.toString(),
+            });
             parameters.set(key, VarInt.encode(0));
           } else {
             parameters.set(key, VarInt.encode(Number(valueBig)));
@@ -1585,6 +1590,12 @@ export class MessageCodec {
             const objectIdBig = filterReader.readVarInt();
             // Max 62-bit varint is sentinel for "unknown" - treat as 0
             const MAX_VARINT = 0x3FFFFFFFFFFFFFFFn;
+            if (groupIdBig >= MAX_VARINT) {
+              log.info('PUBLISH_OK filter has max varint groupId (unknown)', { value: groupIdBig.toString() });
+            }
+            if (objectIdBig >= MAX_VARINT) {
+              log.info('PUBLISH_OK filter has max varint objectId (unknown)', { value: objectIdBig.toString() });
+            }
             startLocation = {
               groupId: groupIdBig >= MAX_VARINT ? 0 : Number(groupIdBig),
               objectId: objectIdBig >= MAX_VARINT ? 0 : Number(objectIdBig),
@@ -1593,6 +1604,9 @@ export class MessageCodec {
           if (filterType === FilterType.ABSOLUTE_RANGE) {
             const endGroupBig = filterReader.readVarInt();
             const MAX_VARINT = 0x3FFFFFFFFFFFFFFFn;
+            if (endGroupBig >= MAX_VARINT) {
+              log.info('PUBLISH_OK filter has max varint endGroup (unknown)', { value: endGroupBig.toString() });
+            }
             endGroup = endGroupBig >= MAX_VARINT ? undefined : Number(endGroupBig);
           }
         }
