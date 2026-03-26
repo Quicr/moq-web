@@ -790,6 +790,16 @@ export class MessageCodec {
   }
 
   // ============================================================================
+  // Debug Helpers
+  // ============================================================================
+
+  /** Get hex string of bytes written since startPos */
+  private static hexBytes(writer: BufferWriter, startPos: number): string {
+    const bytes = writer.toUint8Array().subarray(startPos);
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+  }
+
+  // ============================================================================
   // Setup Message Encoding/Decoding
   // ============================================================================
 
@@ -1312,12 +1322,26 @@ export class MessageCodec {
       // Draft-16 PUBLISH format:
       // Request ID, Full Track Name, Track Alias, Parameters
       // groupOrder, forward, largestLocation are all in Parameters
+
+      // DEBUG: Track byte offsets for each field
+      const debugParts: { field: string; start: number; bytes: string }[] = [];
+      let startPos = writer.length;
+
       writer.writeVarInt(message.requestId);
+      debugParts.push({ field: 'requestId=' + message.requestId, start: startPos, bytes: MessageCodec.hexBytes(writer, startPos) });
+      startPos = writer.length;
+
       MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
+      debugParts.push({ field: 'fullTrackName', start: startPos, bytes: MessageCodec.hexBytes(writer, startPos) });
+      startPos = writer.length;
+
       writer.writeVarInt(message.trackAlias);
+      debugParts.push({ field: 'trackAlias=' + message.trackAlias, start: startPos, bytes: MessageCodec.hexBytes(writer, startPos) });
+      startPos = writer.length;
 
       // Build parameters from message fields
-      const params = new Map<number, Uint8Array>(message.parameters ?? []);
+      // Note: Don't include user-provided parameters - only spec-defined ones
+      const params = new Map<number, Uint8Array>();
 
       // LARGEST_OBJECT (0x09, odd) - only if content exists with location
       if (message.contentExists && message.largestLocation) {
@@ -1337,7 +1361,18 @@ export class MessageCodec {
         params.set(RequestParameter.GROUP_ORDER, VarInt.encode(message.groupOrder));
       }
 
+      // Encode parameters with debug
       MessageCodec.encodeRequestParameters(writer, params);
+      debugParts.push({ field: 'params(count=' + params.size + ')', start: startPos, bytes: MessageCodec.hexBytes(writer, startPos) });
+
+      // Log the full breakdown
+      log.info('PUBLISH (draft-16) encoding breakdown:', debugParts);
+      log.info('PUBLISH params detail:', {
+        forward: message.forward,
+        groupOrder: message.groupOrder,
+        contentExists: message.contentExists,
+        paramKeys: Array.from(params.keys()).map(k => '0x' + k.toString(16))
+      });
     } else {
       // Draft-14 PUBLISH format (Section 9.13):
       // Request ID (varint), Track Namespace (tuple), Track Name (string),
