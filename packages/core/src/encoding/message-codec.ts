@@ -1640,17 +1640,41 @@ export class MessageCodec {
   private static encodePublishErrorPayload(writer: BufferWriter, message: PublishErrorMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.errorCode);
-    writer.writeString(message.reasonPhrase);
-    writer.writeVarInt(message.trackAlias);
+
+    if (IS_DRAFT_16) {
+      // Draft-16: trackAlias before reasonPhrase (like REQUEST_ERROR)
+      writer.writeVarInt(message.trackAlias);
+      writer.writeString(message.reasonPhrase);
+    } else {
+      // Draft-14: reasonPhrase before trackAlias
+      writer.writeString(message.reasonPhrase);
+      writer.writeVarInt(message.trackAlias);
+    }
   }
 
   private static decodePublishErrorPayload(reader: BufferReader): PublishErrorMessage {
+    const requestId = reader.readVarIntNumber();
+    const errorCode = reader.readVarIntNumber() as RequestErrorCode;
+
+    let trackAlias: number;
+    let reasonPhrase: string;
+
+    if (IS_DRAFT_16) {
+      // Draft-16: trackAlias before reasonPhrase
+      trackAlias = reader.readVarIntNumber();
+      reasonPhrase = reader.readString();
+    } else {
+      // Draft-14: reasonPhrase before trackAlias
+      reasonPhrase = reader.readString();
+      trackAlias = reader.readVarIntNumber();
+    }
+
     return {
       type: MessageType.PUBLISH_ERROR,
-      requestId: reader.readVarIntNumber(),
-      errorCode: reader.readVarIntNumber() as RequestErrorCode,
-      reasonPhrase: reader.readString(),
-      trackAlias: reader.readVarIntNumber(),
+      requestId,
+      errorCode,
+      reasonPhrase,
+      trackAlias,
     };
   }
 
