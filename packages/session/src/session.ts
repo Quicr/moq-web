@@ -1042,6 +1042,29 @@ export class MOQTSession {
   }
 
   /**
+   * Get all track subscriptions
+   */
+  getSubscriptions(): InternalSubscription[] {
+    return this.subscriptionManager.getAll();
+  }
+
+  /**
+   * Set or update the onObject callback for a subscription
+   */
+  setSubscriptionCallback(
+    subscriptionId: number,
+    onObject: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void
+  ): void {
+    const subscription = this.subscriptionManager.get(subscriptionId);
+    if (subscription) {
+      subscription.onObject = onObject;
+      log.debug('Updated subscription callback', { subscriptionId });
+    } else {
+      log.warn('Cannot set callback: subscription not found', { subscriptionId });
+    }
+  }
+
+  /**
    * Publish to a track
    *
    * @param namespace - Track namespace

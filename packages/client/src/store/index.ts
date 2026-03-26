@@ -919,14 +919,24 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
         if (!panel) throw new Error('Panel not found');
 
         const namespacePrefix = panel.namespacePrefix.split('/');
-        const subscriptionId = await session.subscribeNamespace(namespacePrefix);
+
+        // Pass media config for auto-creating decode pipelines
+        const config: MediaConfig = {
+          videoBitrate,
+          audioBitrate,
+          videoResolution,
+          enableStats,
+          jitterBufferDelay,
+        };
+
+        const subscriptionId = await session.subscribeNamespace(namespacePrefix, config);
 
         set((state) => ({
           namespaceSubscriptions: state.namespaceSubscriptions.map(p =>
