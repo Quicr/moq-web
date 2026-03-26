@@ -892,35 +892,29 @@ export class MediaSession {
       mediaType,
     });
 
-    // Find the subscription created for this track and attach the pipeline
-    // The subscription was created in session.handleIncomingPublish with trackAlias
-    const subscriptions = this.session.getSubscriptions();
-    const trackSub = subscriptions.find(s =>
-      s.trackAlias === event.trackAlias
-    );
-
-    if (!trackSub) {
-      log.warn('Could not find subscription for incoming publish', {
-        trackAlias: event.trackAlias.toString(),
-      });
-      return;
-    }
+    // Use the subscriptionId from the event (added in the session when creating the subscription)
+    const subscriptionId = event.subscriptionId;
+    log.info('Setting up pipeline for subscription', {
+      subscriptionId,
+      trackAlias: event.trackAlias.toString(),
+      trackName: event.trackName,
+    });
 
     // Set up event handlers
     pipeline.on('video-frame', (frame: VideoFrame) => {
-      this.emit('video-frame', { subscriptionId: trackSub.subscriptionId, frame });
+      this.emit('video-frame', { subscriptionId, frame });
     });
 
     pipeline.on('audio-data', (audioData: AudioData) => {
-      this.emit('audio-data', { subscriptionId: trackSub.subscriptionId, audioData });
+      this.emit('audio-data', { subscriptionId, audioData });
     });
 
     pipeline.on('jitter-sample', (sample: JitterSample) => {
-      this.emit('jitter-sample', { subscriptionId: trackSub.subscriptionId, sample });
+      this.emit('jitter-sample', { subscriptionId, sample });
     });
 
     pipeline.on('latency-stats', (stats: LatencyStatsSample) => {
-      this.emit('latency-stats', { subscriptionId: trackSub.subscriptionId, stats });
+      this.emit('latency-stats', { subscriptionId, stats });
     });
 
     pipeline.on('error', (err: Error) => {
@@ -932,22 +926,22 @@ export class MediaSession {
     await pipeline.start();
 
     // Store subscription with pipeline
-    this.subscriptions.set(trackSub.subscriptionId, {
-      subscriptionId: trackSub.subscriptionId,
+    this.subscriptions.set(subscriptionId, {
+      subscriptionId,
       namespace: event.namespace,
       trackName: event.trackName,
       pipeline,
       mediaType,
     });
-    this.pipelineToSubscriptionId.set(pipeline, trackSub.subscriptionId);
+    this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
 
     // Update the subscription's onObject callback to push to pipeline
-    this.session.setSubscriptionCallback(trackSub.subscriptionId, (data, groupId, objectId, timestamp) => {
+    this.session.setSubscriptionCallback(subscriptionId, (data, groupId, objectId, timestamp) => {
       pipeline.push(data, groupId, objectId, timestamp);
     });
 
     log.info('Pipeline attached to discovered track', {
-      subscriptionId: trackSub.subscriptionId,
+      subscriptionId,
       trackName: event.trackName,
       mediaType,
     });
