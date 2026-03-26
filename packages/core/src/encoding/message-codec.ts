@@ -764,8 +764,15 @@ export class MessageCodec {
 
         if (key % 2 === 0) {
           // Even key: read value as varint directly, store as encoded bytes
-          const value = reader.readVarIntNumber();
-          parameters.set(key, VarInt.encode(value));
+          // Use BigInt to handle max varint values (relay sends 0x3FFFFFFFFFFFFFFF as "unknown")
+          const valueBig = reader.readVarInt();
+          const MAX_VARINT = 0x3FFFFFFFFFFFFFFFn;
+          if (valueBig >= MAX_VARINT) {
+            // Max varint is sentinel for "unknown" - store as 0
+            parameters.set(key, VarInt.encode(0));
+          } else {
+            parameters.set(key, VarInt.encode(Number(valueBig)));
+          }
         } else {
           // Odd key: read length + bytes
           const length = reader.readVarIntNumber();
