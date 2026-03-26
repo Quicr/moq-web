@@ -441,14 +441,15 @@ export class MOQTSession {
   private handleWorkerStreamClosed(streamId: number): void {
     this.workerStreamBuffers.delete(streamId);
     this.workerStreamReaders.delete(streamId);
-    this.bidiStreamBuffers.delete(streamId);
+    this.bidiStreamChunks.delete(streamId);
   }
 
-  /** Buffers for bidi stream data (namespace subscriptions) */
-  private bidiStreamBuffers = new Map<number, Uint8Array>();
+  /** Chunked buffers for bidi stream data - avoids copying on each receive */
+  private bidiStreamChunks = new Map<number, { chunks: Uint8Array[]; totalLength: number; offset: number }>();
 
   /**
    * Handle bidi stream data from worker (SUBSCRIBE_NAMESPACE responses)
+   * Optimized to minimize buffer copies
    */
   private handleWorkerBidiStreamData(streamId: number, data: Uint8Array): void {
     // Find which subscription this stream belongs to
@@ -465,20 +466,61 @@ export class MOQTSession {
       return;
     }
 
-    // Append to buffer
-    let buffer = this.bidiStreamBuffers.get(streamId) ?? new Uint8Array(0);
-    const newBuffer = new Uint8Array(buffer.length + data.length);
-    newBuffer.set(buffer);
-    newBuffer.set(data, buffer.length);
-    buffer = newBuffer;
-    this.bidiStreamBuffers.set(streamId, buffer);
+    // Get or create chunk buffer - accumulate chunks without copying
+    let state = this.bidiStreamChunks.get(streamId);
+    if (!state) {
+      state = { chunks: [], totalLength: 0, offset: 0 };
+      this.bidiStreamChunks.set(streamId, state);
+    }
+
+    state.chunks.push(data);
+    state.totalLength += data.length;
 
     // Try to decode messages
-    while (buffer.length > 0) {
+    this.processBidiStreamChunks(streamId, subscriptionId, state);
+  }
+
+  /**
+   * Process accumulated chunks - only concatenates when needed for decoding
+   */
+  private processBidiStreamChunks(
+    streamId: number,
+    subscriptionId: number,
+    state: { chunks: Uint8Array[]; totalLength: number; offset: number }
+  ): void {
+    const availableBytes = state.totalLength - state.offset;
+    if (availableBytes === 0) return;
+
+    // Concatenate chunks only when we need to decode (lazy concatenation)
+    let buffer: Uint8Array;
+    if (state.chunks.length === 1 && state.offset === 0) {
+      // Single chunk, no offset - use directly without copy
+      buffer = state.chunks[0];
+    } else {
+      // Multiple chunks or partial consumption - concatenate remaining
+      buffer = new Uint8Array(availableBytes);
+      let writeOffset = 0;
+      let skipBytes = state.offset;
+
+      for (const chunk of state.chunks) {
+        if (skipBytes >= chunk.length) {
+          skipBytes -= chunk.length;
+          continue;
+        }
+        const source = skipBytes > 0 ? chunk.subarray(skipBytes) : chunk;
+        buffer.set(source, writeOffset);
+        writeOffset += source.length;
+        skipBytes = 0;
+      }
+    }
+
+    // Try to decode messages
+    let consumed = 0;
+    while (consumed < buffer.length) {
       try {
-        const [message, bytesRead] = MessageCodec.decode(buffer);
-        buffer = buffer.slice(bytesRead);
-        this.bidiStreamBuffers.set(streamId, buffer);
+        const view = buffer.subarray(consumed);
+        const [message, bytesRead] = MessageCodec.decode(view);
+        consumed += bytesRead;
 
         log.info('Received message on namespace subscription stream (worker)', {
           type: MessageType[message.type],
@@ -486,16 +528,32 @@ export class MOQTSession {
           streamId,
         });
 
-        // Route the message
         this.routeMessage(message);
       } catch (err) {
         if ((err as Error).message?.includes('Incomplete') ||
             (err as Error).message?.includes('buffer')) {
-          // Need more data
           break;
         }
         log.error('Error decoding bidi stream message', { error: (err as Error).message });
         break;
+      }
+    }
+
+    // Update offset - compact if we've consumed significant data
+    state.offset += consumed;
+    if (state.offset > 4096) {
+      // Compact: remove fully consumed chunks
+      const remaining = state.totalLength - state.offset;
+      if (remaining === 0) {
+        state.chunks = [];
+        state.totalLength = 0;
+        state.offset = 0;
+      } else {
+        // Keep only unconsumed data
+        const newBuffer = buffer.subarray(consumed);
+        state.chunks = [new Uint8Array(newBuffer)];
+        state.totalLength = newBuffer.length;
+        state.offset = 0;
       }
     }
   }
@@ -842,46 +900,88 @@ export class MOQTSession {
 
   /**
    * Read responses from a namespace subscription bidirectional stream
+   * Optimized to minimize buffer copies using chunked accumulation
    */
   private async readNamespaceSubscriptionStream(
     readable: ReadableStream<Uint8Array>,
     subscriptionId: number
   ): Promise<void> {
     const reader = readable.getReader();
-    let buffer = new Uint8Array(0);
+    const chunks: Uint8Array[] = [];
+    let totalLength = 0;
+    let offset = 0;
 
     try {
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        if (!value) continue;
+        if (!value || value.length === 0) continue;
 
-        // Append to buffer
-        const newBuffer = new Uint8Array(buffer.length + value.length);
-        newBuffer.set(buffer);
-        newBuffer.set(value, buffer.length);
-        buffer = newBuffer;
+        // Accumulate chunks without copying
+        chunks.push(value);
+        totalLength += value.length;
 
-        // Try to decode messages
-        while (buffer.length > 0) {
+        // Try to decode messages from accumulated chunks
+        const availableBytes = totalLength - offset;
+        if (availableBytes === 0) continue;
+
+        // Concatenate only when needed for decoding
+        let buffer: Uint8Array;
+        if (chunks.length === 1 && offset === 0) {
+          buffer = chunks[0];
+        } else {
+          buffer = new Uint8Array(availableBytes);
+          let writePos = 0;
+          let skip = offset;
+          for (const chunk of chunks) {
+            if (skip >= chunk.length) {
+              skip -= chunk.length;
+              continue;
+            }
+            const src = skip > 0 ? chunk.subarray(skip) : chunk;
+            buffer.set(src, writePos);
+            writePos += src.length;
+            skip = 0;
+          }
+        }
+
+        // Decode messages
+        let consumed = 0;
+        while (consumed < buffer.length) {
           try {
-            const [message, bytesRead] = MessageCodec.decode(buffer);
-            buffer = buffer.slice(bytesRead);
+            const view = buffer.subarray(consumed);
+            const [message, bytesRead] = MessageCodec.decode(view);
+            consumed += bytesRead;
 
             log.info('Received message on namespace subscription stream', {
               type: MessageType[message.type],
               subscriptionId,
             });
 
-            // Route the message
             this.routeMessage(message);
           } catch (err) {
             if ((err as Error).message?.includes('Incomplete') ||
                 (err as Error).message?.includes('buffer')) {
-              // Need more data
               break;
             }
             throw err;
+          }
+        }
+
+        // Update offset and compact if needed
+        offset += consumed;
+        if (offset > 4096) {
+          const remaining = totalLength - offset;
+          if (remaining === 0) {
+            chunks.length = 0;
+            totalLength = 0;
+            offset = 0;
+          } else {
+            const leftover = buffer.subarray(consumed);
+            chunks.length = 0;
+            chunks.push(new Uint8Array(leftover));
+            totalLength = leftover.length;
+            offset = 0;
           }
         }
       }
