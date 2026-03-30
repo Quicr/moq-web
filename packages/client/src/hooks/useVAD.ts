@@ -12,13 +12,14 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../store';
 import type { VAD, VADResult, LibfvadModule, SileroVADFactory } from '@web-moq/media';
 import { LibfvadVAD, SileroVAD } from '@web-moq/media';
+import { loadLibfvadModule, createSileroVAD } from '../lib/vad-loaders';
 
 interface UseVADOptions {
   /** Media stream to analyze */
   stream: MediaStream | null;
-  /** libfvad WASM module loader (required if using libfvad) */
+  /** libfvad WASM module loader (optional, uses default if not provided) */
   libfvadLoader?: () => Promise<LibfvadModule>;
-  /** Silero VAD factory (required if using silero) */
+  /** Silero VAD factory (optional, uses default if not provided) */
   sileroFactory?: SileroVADFactory;
 }
 
@@ -84,15 +85,9 @@ export function useVAD({
       return;
     }
 
-    // Check for required loaders
-    if (vadProvider === 'libfvad' && !libfvadLoader) {
-      setError('libfvad loader not provided');
-      return;
-    }
-    if (vadProvider === 'silero' && !sileroFactory) {
-      setError('Silero factory not provided');
-      return;
-    }
+    // Use provided loaders or defaults
+    const fvadLoader = libfvadLoader ?? loadLibfvadModule;
+    const sileroFac = sileroFactory ?? createSileroVAD;
 
     let cancelled = false;
 
@@ -114,15 +109,15 @@ export function useVAD({
 
         // Create VAD instance
         let vad: VAD;
-        if (vadProvider === 'libfvad' && libfvadLoader) {
+        if (vadProvider === 'libfvad') {
           vad = new LibfvadVAD(
             { provider: 'libfvad', sampleRate: 48000, frameSize: 480 },
-            libfvadLoader
+            fvadLoader
           );
-        } else if (vadProvider === 'silero' && sileroFactory) {
+        } else if (vadProvider === 'silero') {
           vad = new SileroVAD(
             { provider: 'silero', sampleRate: 48000, frameSize: 480 },
-            sileroFactory
+            sileroFac
           );
         } else {
           throw new Error(`Unknown VAD provider: ${vadProvider}`);
