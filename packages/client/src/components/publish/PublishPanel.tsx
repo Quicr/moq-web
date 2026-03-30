@@ -168,23 +168,19 @@ export const PublishPanel: React.FC = () => {
         return;
       }
 
-      // Set video/audio enabled based on track's media type
-      // This ensures only the requested media type is encoded
-      const { setVideoEnabled, setAudioEnabled } = useStore.getState();
-      if (config.mediaType === 'video') {
-        setVideoEnabled(true);
-        setAudioEnabled(false);
-      } else {
-        setVideoEnabled(false);
-        setAudioEnabled(true);
-      }
+      // Each track gets its own video/audio enabled based on its media type
+      // These are passed directly to startPublishing, not set globally
+      const videoEnabled = config.mediaType === 'video';
+      const audioEnabled = config.mediaType === 'audio';
 
       const trackAlias = await storeStartPublishing(
         config.namespace,
         config.trackName,
         config.deliveryTimeout,
         config.priority,
-        config.deliveryMode
+        config.deliveryMode,
+        videoEnabled,
+        audioEnabled
       );
 
       setTrackConfigs(trackConfigs.map(t =>
