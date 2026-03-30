@@ -150,6 +150,20 @@ export class MessageCodec {
   static encode(message: ControlMessage): Uint8Array {
     log.debug('Encoding message', { type: MessageType[message.type] });
 
+    // DEBUG: Log PUBLISH messages at error level for visibility
+    if (message.type === MessageType.PUBLISH) {
+      const pubMsg = message as PublishMessage;
+      log.error('[DEBUG] Encoding PUBLISH message', {
+        requestId: pubMsg.requestId,
+        namespace: pubMsg.fullTrackName.namespace.join('/'),
+        trackName: pubMsg.fullTrackName.trackName,
+        trackAlias: pubMsg.trackAlias,
+        groupOrder: pubMsg.groupOrder,
+        contentExists: pubMsg.contentExists,
+        forward: pubMsg.forward,
+      });
+    }
+
     // First, encode the payload (message-specific fields)
     const payloadWriter = new BufferWriter();
 
@@ -268,7 +282,7 @@ export class MessageCodec {
 
     const payload = payloadWriter.toUint8Array();
 
-    // LAPS uses: Type (varint) + Length (16-bit big-endian) + Payload
+    // MOQT spec: Message Type (varint) + Message Length (16-bit) + Message Payload
     const writer = new BufferWriter();
     writer.writeVarInt(message.type);
     writer.writeByte((payload.length >> 8) & 0xff);
@@ -303,10 +317,11 @@ export class MessageCodec {
     // Read message type
     const messageType = reader.readVarIntNumber();
 
-    // Read message length as 16-bit big-endian (LAPS format)
+    // MOQT spec: Message Length is 16-bit
     const lengthHigh = reader.readByte();
     const lengthLow = reader.readByte();
     const payloadLength = (lengthHigh << 8) | lengthLow;
+    const payloadStartOffset = reader.offset;
 
     log.trace('Decoding message', {
       type: MessageType[messageType] ?? messageType,
@@ -415,6 +430,30 @@ export class MessageCodec {
         break;
       default:
         throw new MessageCodecError(`Unknown message type: ${messageType}`, messageType);
+    }
+
+    // Calculate actual bytes consumed by payload decoder
+    const actualPayloadConsumed = reader.offset - payloadStartOffset;
+
+    // CRITICAL FIX: If we didn't consume all declared payload bytes, skip the rest
+    // This prevents trailing bytes from corrupting the next message
+    if (actualPayloadConsumed < payloadLength) {
+      const skipped = payloadLength - actualPayloadConsumed;
+      log.error('[DEBUG] Payload not fully consumed - skipping trailing bytes', {
+        messageType: MessageType[messageType] ?? messageType,
+        declaredPayloadLength: payloadLength,
+        actualPayloadConsumed,
+        skippedBytes: skipped,
+        trailingBytes: Array.from(buffer.subarray(reader.offset, reader.offset + skipped)).map(b => b.toString(16).padStart(2, '0')).join(' '),
+      });
+      reader.skip(skipped);
+    } else if (actualPayloadConsumed > payloadLength) {
+      // This shouldn't happen - decoder read more than declared
+      log.error('[DEBUG] Payload overread - decoder consumed more bytes than declared!', {
+        messageType: MessageType[messageType] ?? messageType,
+        declaredPayloadLength: payloadLength,
+        actualPayloadConsumed,
+      });
     }
 
     const bytesConsumed = reader.offset - startOffset;
@@ -1407,11 +1446,33 @@ export class MessageCodec {
   private static decodePublishPayload(reader: BufferReader): PublishMessage {
     if (IS_DRAFT_16) {
       // Draft-16 PUBLISH format:
-      // Request ID, Full Track Name, Track Alias, Parameters
+      // Request ID, Full Track Name, Track Alias, Parameters, [Track Extensions]
+      const beforeOffset = reader.offset;
       const requestId = reader.readVarIntNumber();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
       const trackAlias = reader.readVarIntNumber();
       const parameters = MessageCodec.decodeRequestParameters(reader);
+      const afterParamsOffset = reader.offset;
+
+      // Read track extensions (key-value pairs until end of message payload)
+      // Note: extensions are read by the caller using the payload boundary
+      const extensions = MessageCodec.decodeTrackExtensions(reader);
+      const afterExtOffset = reader.offset;
+
+      log.error('[DEBUG] Decoded PUBLISH message (draft-16)', {
+        requestId,
+        namespace: fullTrackName.namespace.join('/'),
+        trackName: fullTrackName.trackName,
+        trackAlias,
+        bytesBeforeParams: afterParamsOffset - beforeOffset,
+        bytesForParams: parameters?.size ?? 0,
+        bytesForExtensions: afterExtOffset - afterParamsOffset,
+        hasParams: parameters !== undefined,
+        paramCount: parameters?.size ?? 0,
+        hasExtensions: extensions !== undefined,
+        extensionCount: extensions?.size ?? 0,
+        extensionKeys: extensions ? Array.from(extensions.keys()).map(k => '0x' + k.toString(16)) : [],
+      });
 
       // Extract fields from parameters
       let groupOrder = GroupOrder.ASCENDING;
