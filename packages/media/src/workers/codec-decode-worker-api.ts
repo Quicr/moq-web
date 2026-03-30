@@ -21,6 +21,7 @@ import type {
   VideoDecoderWorkerConfig,
   AudioDecoderWorkerConfig,
   LatencyStatsSample,
+  DecodeErrorDiagnostics,
 } from './codec-decode-worker-types.js';
 
 export type {
@@ -30,6 +31,7 @@ export type {
   VideoDecoderWorkerConfig,
   AudioDecoderWorkerConfig,
   LatencyStatsSample,
+  DecodeErrorDiagnostics,
 } from './codec-decode-worker-types.js';
 
 /**
@@ -54,6 +56,7 @@ export interface ChannelPollResult {
 export interface ChannelErrorResponse {
   channelId?: number;
   message: string;
+  diagnostics?: DecodeErrorDiagnostics;
 }
 
 export interface ChannelLatencyStatsResponse {

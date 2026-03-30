@@ -133,6 +133,22 @@
   }
 }
 
+/* Toast slide-in animation (from right) */
+.animate-slide-in {
+  animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(100px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 /* Status indicator pulse */
 .status-pulse {
   animation: pulse 2s infinite;

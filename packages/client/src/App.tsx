@@ -19,6 +19,7 @@ import { ChatPanel } from './components/chat/ChatPanel';
 import { SettingsPanel } from './components/common/SettingsPanel';
 import { StatusPanel } from './components/common/StatusPanel';
 import { DevSettingsPanel } from './components/common/DevSettingsPanel';
+import { DecodeErrorToast } from './components/common/DecodeErrorToast';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = React.useState<'publish' | 'subscribe' | 'chat'>('publish');
@@ -128,6 +129,9 @@ const App: React.FC = () => {
 
       {/* Developer Settings Panel (only shows with ?debug=1) */}
       <DevSettingsPanel />
+
+      {/* Decode Error Toasts */}
+      <DecodeErrorToast />
 
       {/* Settings Modal */}
       {showSettings && (

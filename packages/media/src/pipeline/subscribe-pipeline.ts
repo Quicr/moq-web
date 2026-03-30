@@ -40,8 +40,23 @@ import { OpusDecoder, AudioDecoderConfig } from '../webcodecs/audio-decoder.js';
 import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
 import { JitterBuffer } from './jitter-buffer.js';
 import { CodecDecodeWorkerClient, LatencyStatsSample } from '../workers/codec-decode-worker-api.js';
+import type { DecodeErrorDiagnostics } from '../workers/codec-decode-worker-types.js';
 
 export type { LatencyStatsSample } from '../workers/codec-decode-worker-api.js';
+export type { DecodeErrorDiagnostics } from '../workers/codec-decode-worker-types.js';
+
+/**
+ * Custom error class for decode errors with diagnostic information
+ */
+export class DecodeError extends Error {
+  readonly diagnostics?: DecodeErrorDiagnostics;
+
+  constructor(message: string, diagnostics?: DecodeErrorDiagnostics) {
+    super(message);
+    this.name = 'DecodeError';
+    this.diagnostics = diagnostics;
+  }
+}
 
 const log = Logger.create('moqt:media:subscribe-pipeline');
 
@@ -320,8 +335,12 @@ export class SubscribePipeline {
     });
 
     this.decodeWorkerClient.on('error', (response) => {
-      log.error('Decode worker error', { channelId: this.channelId, message: response.message });
-      this.emit('error', new Error(response.message));
+      log.error('Decode worker error', {
+        channelId: this.channelId,
+        message: response.message,
+        diagnostics: response.diagnostics,
+      });
+      this.emit('error', new DecodeError(response.message, response.diagnostics));
     });
 
     // Forward latency stats if enabled

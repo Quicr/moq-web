@@ -122,6 +122,28 @@ export interface Participant {
 }
 
 // ============================================================================
+// Decode Error Tracking
+// ============================================================================
+
+/** Decode error entry with diagnostic information */
+export interface DecodeErrorEntry {
+  id: number;
+  message: string;
+  timestamp: number;
+  diagnostics?: {
+    mediaType: 'video' | 'audio';
+    groupId?: number;
+    objectId?: number;
+    isKeyframe?: boolean;
+    dataSize?: number;
+    sequence?: number;
+    framesDecodedBefore: number;
+    keyframesReceived: number;
+    hadKeyframe: boolean;
+  };
+}
+
+// ============================================================================
 // Connection Slice
 // ============================================================================
 
@@ -132,13 +154,19 @@ interface ConnectionSlice {
   sessionState: SessionState;
   serverUrl: string;
   error: string | null;
+  /** Recent decode errors with diagnostics (max 10, newest first) */
+  decodeErrors: DecodeErrorEntry[];
+  /** Add a decode error */
+  addDecodeError: (message: string, diagnostics?: DecodeErrorEntry['diagnostics']) => void;
+  /** Clear all decode errors */
+  clearDecodeErrors: () => void;
 
   connect: (url: string) => Promise<void>;
   disconnect: () => Promise<void>;
   setServerUrl: (url: string) => void;
 
   // Publish/Subscribe methods that delegate to session
-  startPublishing: (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram') => Promise<bigint>;
+  startPublishing: (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean) => Promise<bigint>;
   stopPublishing: (trackAlias: bigint | string) => Promise<void>;
   // Announce flow methods
   announceNamespace: (namespace: string) => Promise<void>;
@@ -328,6 +356,7 @@ export const useStore = create<AppStore>()(
       sessionState: 'none',
       serverUrl: 'https://localhost:4443/moq',
       error: null,
+      decodeErrors: [],
       // Announce flow state
       announceStatus: 'idle',
       pendingAnnounceStream: null,
@@ -405,7 +434,14 @@ export const useStore = create<AppStore>()(
 
           session.on('error', (err) => {
             log.error('Session error', err);
-            set({ error: err.message });
+            // Check if this is a DecodeError with diagnostics
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const decodeErr = err as any;
+            if (decodeErr.name === 'DecodeError' && decodeErr.diagnostics) {
+              get().addDecodeError(err.message, decodeErr.diagnostics);
+            } else {
+              set({ error: err.message });
+            }
           });
 
           // Listen for publish stats to update track stats
@@ -575,14 +611,33 @@ export const useStore = create<AppStore>()(
 
       setServerUrl: (url: string) => set({ serverUrl: url }),
 
-      startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram') => {
-        const { session, localStream, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled, audioEnabled, useAnnounceFlow } = get();
+      addDecodeError: (message: string, diagnostics?: DecodeErrorEntry['diagnostics']) => {
+        const { decodeErrors } = get();
+        const newError: DecodeErrorEntry = {
+          id: Date.now(),
+          message,
+          timestamp: Date.now(),
+          diagnostics,
+        };
+        // Keep max 10 errors, newest first
+        const updated = [newError, ...decodeErrors].slice(0, 10);
+        set({ decodeErrors: updated });
+      },
+
+      clearDecodeErrors: () => set({ decodeErrors: [] }),
+
+      startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean) => {
+        const { session, localStream, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled: globalVideoEnabled, audioEnabled: globalAudioEnabled, useAnnounceFlow } = get();
         if (!session) {
           throw new Error('No session');
         }
         if (!localStream) {
           throw new Error('No local stream');
         }
+
+        // Use passed parameters if provided, otherwise fall back to global state
+        const effectiveVideoEnabled = videoEnabled ?? globalVideoEnabled;
+        const effectiveAudioEnabled = audioEnabled ?? globalAudioEnabled;
 
         const config: MediaConfig = {
           videoBitrate,
@@ -592,8 +647,8 @@ export const useStore = create<AppStore>()(
           deliveryTimeout: deliveryTimeout ?? 5000,
           priority: priority ?? 128,
           deliveryMode: deliveryMode ?? 'stream',
-          videoEnabled,
-          audioEnabled,
+          videoEnabled: effectiveVideoEnabled,
+          audioEnabled: effectiveAudioEnabled,
         };
 
         // Use announce flow if enabled

@@ -121,6 +121,32 @@ export interface LatencyStatsSample {
 }
 
 /**
+ * Decode error diagnostic information
+ */
+export interface DecodeErrorDiagnostics {
+  /** Type of media that failed */
+  mediaType: 'video' | 'audio';
+  /** Group ID of the frame that caused the error */
+  groupId?: number;
+  /** Object ID of the frame that caused the error */
+  objectId?: number;
+  /** Whether the frame was a keyframe */
+  isKeyframe?: boolean;
+  /** Size of the frame data in bytes */
+  dataSize?: number;
+  /** Sequence number of the frame */
+  sequence?: number;
+  /** Number of frames successfully decoded before this error */
+  framesDecodedBefore: number;
+  /** Number of keyframes received before this error */
+  keyframesReceived: number;
+  /** Whether decoder had received initial keyframe */
+  hadKeyframe: boolean;
+  /** Timestamp when error occurred */
+  timestamp: number;
+}
+
+/**
  * Messages from worker to main thread
  *
  * Responses include channelId so the main thread can route decoded
@@ -135,5 +161,5 @@ export type CodecDecodeWorkerResponse =
   | { type: 'latency-stats'; channelId: number; stats: LatencyStatsSample }
   | { type: 'poll-result'; channelId: number; videoFrames: number; audioFrames: number }
   | { type: 'destroyed'; channelId: number }
-  | { type: 'error'; channelId?: number; message: string }
+  | { type: 'error'; channelId?: number; message: string; diagnostics?: DecodeErrorDiagnostics }
   | { type: 'closed' };
