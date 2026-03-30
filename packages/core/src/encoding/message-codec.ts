@@ -368,7 +368,7 @@ export class MessageCodec {
         message = MessageCodec.decodePublishDonePayload(reader);
         break;
       case MessageType.PUBLISH:
-        message = MessageCodec.decodePublishPayload(reader);
+        message = MessageCodec.decodePublishPayload(reader, payloadStartOffset + payloadLength);
         break;
       case MessageType.PUBLISH_OK:
         message = MessageCodec.decodePublishOkPayload(reader);
@@ -755,6 +755,41 @@ export class MessageCodec {
     let previousKey = 0;
 
     while (reader.hasMore) {
+      const deltaKey = reader.readVarIntNumber();
+      const key = previousKey + deltaKey;
+      previousKey = key;
+
+      if (key % 2 === 0) {
+        // Even key: read value as varint directly, convert to bytes for storage
+        const value = reader.readVarIntNumber();
+        extensions.set(key, VarInt.encode(value));
+      } else {
+        // Odd key: read length + bytes
+        const length = reader.readVarIntNumber();
+        extensions.set(key, reader.readBytes(length));
+      }
+    }
+
+    return extensions.size > 0 ? extensions : undefined;
+  }
+
+  /**
+   * Decode track extensions with a bounded end offset (Draft-16)
+   * Reads key-value pairs until reaching the payload boundary
+   */
+  private static decodeTrackExtensionsBounded(
+    reader: BufferReader,
+    endOffset?: number
+  ): Map<number, Uint8Array> | undefined {
+    const hasMore = endOffset !== undefined
+      ? reader.offset < endOffset
+      : reader.hasMore;
+    if (!hasMore) return undefined;
+
+    const extensions = new Map<number, Uint8Array>();
+    let previousKey = 0;
+
+    while (endOffset !== undefined ? reader.offset < endOffset : reader.hasMore) {
       const deltaKey = reader.readVarIntNumber();
       const key = previousKey + deltaKey;
       previousKey = key;
@@ -1443,7 +1478,7 @@ export class MessageCodec {
     }
   }
 
-  private static decodePublishPayload(reader: BufferReader): PublishMessage {
+  private static decodePublishPayload(reader: BufferReader, payloadEndOffset?: number): PublishMessage {
     if (IS_DRAFT_16) {
       // Draft-16 PUBLISH format:
       // Request ID, Full Track Name, Track Alias, Parameters, [Track Extensions]
@@ -1454,9 +1489,14 @@ export class MessageCodec {
       const parameters = MessageCodec.decodeRequestParameters(reader);
       const afterParamsOffset = reader.offset;
 
-      // Read track extensions (key-value pairs until end of message payload)
-      // Note: extensions are read by the caller using the payload boundary
-      const extensions = MessageCodec.decodeTrackExtensions(reader);
+      // Read track extensions only if there are remaining bytes within the payload boundary
+      let extensions: Map<number, Uint8Array> | undefined;
+      const hasMoreInPayload = payloadEndOffset !== undefined
+        ? reader.offset < payloadEndOffset
+        : reader.hasMore;
+      if (hasMoreInPayload) {
+        extensions = MessageCodec.decodeTrackExtensionsBounded(reader, payloadEndOffset);
+      }
       const afterExtOffset = reader.offset;
 
       log.error('[DEBUG] Decoded PUBLISH message (draft-16)', {
@@ -1464,8 +1504,7 @@ export class MessageCodec {
         namespace: fullTrackName.namespace.join('/'),
         trackName: fullTrackName.trackName,
         trackAlias,
-        bytesBeforeParams: afterParamsOffset - beforeOffset,
-        bytesForParams: parameters?.size ?? 0,
+        bytesConsumed: afterExtOffset - beforeOffset,
         bytesForExtensions: afterExtOffset - afterParamsOffset,
         hasParams: parameters !== undefined,
         paramCount: parameters?.size ?? 0,
