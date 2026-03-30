@@ -341,7 +341,7 @@ export class MessageCodec {
         message = MessageCodec.decodeSubscribeUpdatePayload(reader);
         break;
       case MessageType.SUBSCRIBE_OK:
-        message = MessageCodec.decodeSubscribeOkPayload(reader);
+        message = MessageCodec.decodeSubscribeOkPayload(reader, payloadStartOffset + payloadLength);
         break;
       case MessageType.SUBSCRIBE_ERROR:
         message = MessageCodec.decodeSubscribeErrorPayload(reader);
@@ -728,7 +728,9 @@ export class MessageCodec {
   /**
    * Decode track extensions (Draft-16)
    * Unlike parameters, extensions don't have a count - read until end of message
+   * NOTE: Use decodeTrackExtensionsBounded for bounded reading within payload limits
    */
+  // @ts-expect-error - unused, kept for reference; use decodeTrackExtensionsBounded instead
   private static decodeTrackExtensions(
     reader: BufferReader
   ): Map<number, Uint8Array> | undefined {
@@ -1186,7 +1188,7 @@ export class MessageCodec {
     }
   }
 
-  private static decodeSubscribeOkPayload(reader: BufferReader): SubscribeOkMessage {
+  private static decodeSubscribeOkPayload(reader: BufferReader, payloadEndOffset?: number): SubscribeOkMessage {
     const requestId = reader.readVarIntNumber();
     log.info('SUBSCRIBE_OK field', { field: 'requestId', value: requestId });
     // trackAlias can be large (62-bit CityHash64), keep as BigInt
@@ -1226,8 +1228,8 @@ export class MessageCodec {
         }
       }
 
-      // Read Track Extensions (no count, just key-value pairs until end)
-      const extensions = MessageCodec.decodeTrackExtensions(reader);
+      // Read Track Extensions (no count, just key-value pairs until payload end)
+      const extensions = MessageCodec.decodeTrackExtensionsBounded(reader, payloadEndOffset);
       log.info('SUBSCRIBE_OK extensions', { extCount: extensions?.size ?? 0 });
 
       if (extensions) {
