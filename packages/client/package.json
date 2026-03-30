@@ -15,6 +15,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@echogarden/fvad-wasm": "^0.2.0",
+    "@ricky0123/vad-web": "^0.0.30",
     "@web-moq/core": "workspace:*",
     "@web-moq/media": "workspace:*",
     "react": "^18.2.0",

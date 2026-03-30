@@ -11,6 +11,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStore } from '../../store';
 import { isDebugMode } from '../common/DevSettingsPanel';
+import { useVAD } from '../../hooks/useVAD';
+import { VADIndicator, VADDot } from '../common/VADIndicator';
 
 type MediaType = 'video' | 'audio';
 type Resolution = '1080p' | '720p' | '480p';
@@ -68,6 +70,14 @@ export const PublishPanel: React.FC = () => {
     priority: 128,
     deliveryMode: 'stream', // Video defaults to stream
   });
+
+  // Voice Activity Detection
+  const {
+    isSpeaking,
+    audioContext,
+    sourceNode,
+    result: vadResult,
+  } = useVAD({ stream: localStream });
 
   // Get available devices
   useEffect(() => {
@@ -242,7 +252,7 @@ export const PublishPanel: React.FC = () => {
               </div>
             )}
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
             {!localStream ? (
               <button onClick={startCapture} className="btn-secondary flex-1">
                 Start Capture
@@ -252,7 +262,21 @@ export const PublishPanel: React.FC = () => {
                 Stop Capture
               </button>
             )}
+            {localStream && (
+              <VADIndicator
+                audioContext={audioContext}
+                sourceNode={sourceNode}
+                isSpeaking={isSpeaking}
+                vadResult={vadResult}
+              />
+            )}
           </div>
+          {localStream && isSpeaking && (
+            <div className="mt-2 flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+              <VADDot isSpeaking={isSpeaking} />
+              <span>Voice detected</span>
+            </div>
+          )}
         </div>
       </div>
 
