@@ -2220,7 +2220,10 @@ export class ObjectCodec {
     writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
     writer.writeVarInt(header.trackAlias);
     writer.writeVarInt(header.groupId);
-    writer.writeVarInt(header.subgroupId);
+    if (!IS_DRAFT_16) {
+      // Draft-14 includes subgroupId; draft-16 datagrams don't belong to subgroups
+      writer.writeVarInt(header.subgroupId);
+    }
     writer.writeVarInt(header.objectId);
     writer.writeByte(header.publisherPriority); // 1 byte, not varint
     if (!IS_DRAFT_16) {
@@ -2249,14 +2252,20 @@ export class ObjectCodec {
 
     // trackAlias can be a 62-bit hash - keep as bigint to preserve full value
     const trackAliasBigInt = reader.readVarInt();
+    const groupId = reader.readVarIntNumber();
+    // Draft-16 datagrams don't have subgroupId; draft-14 does
+    const subgroupId = IS_DRAFT_16 ? 0 : reader.readVarIntNumber();
+    const objectId = reader.readVarIntNumber();
+    const publisherPriority = reader.readByte(); // 1 byte, not varint
+    const objectStatus = IS_DRAFT_16 ? ObjectStatus.NORMAL : reader.readVarIntNumber() as ObjectStatus;
 
     const header: ObjectHeader = {
       trackAlias: trackAliasBigInt,
-      groupId: reader.readVarIntNumber(),
-      subgroupId: reader.readVarIntNumber(),
-      objectId: reader.readVarIntNumber(),
-      publisherPriority: reader.readByte(), // 1 byte, not varint
-      objectStatus: IS_DRAFT_16 ? ObjectStatus.NORMAL : reader.readVarIntNumber() as ObjectStatus,
+      groupId,
+      subgroupId,
+      objectId,
+      publisherPriority,
+      objectStatus,
     };
 
     log.trace('Decoded datagram header', {
