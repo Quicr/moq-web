@@ -329,6 +329,8 @@ interface SettingsSlice {
   vadProvider: VADProvider;
   /** Enable VAD visualization (audio bars) */
   vadVisualizationEnabled: boolean;
+  /** Audio delivery mode: datagram (low latency) or stream (reliable) */
+  audioDeliveryMode: 'datagram' | 'stream';
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -346,6 +348,7 @@ interface SettingsSlice {
   setVadEnabled: (value: boolean) => void;
   setVadProvider: (provider: VADProvider) => void;
   setVadVisualizationEnabled: (value: boolean) => void;
+  setAudioDeliveryMode: (mode: 'datagram' | 'stream') => void;
 }
 
 // ============================================================================
@@ -491,7 +494,7 @@ export const useStore = create<AppStore>()(
               trackAlias: event.trackAlias.toString(),
             });
 
-            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled, audioEnabled } = get();
+            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled, audioEnabled, audioDeliveryMode } = get();
 
             if (pendingAnnounceStream && pendingAnnounceConfig) {
               try {
@@ -504,6 +507,7 @@ export const useStore = create<AppStore>()(
                   deliveryTimeout: pendingAnnounceConfig.deliveryTimeout ?? 5000,
                   priority: pendingAnnounceConfig.priority ?? 128,
                   deliveryMode: pendingAnnounceConfig.deliveryMode ?? 'stream',
+                  audioDeliveryMode,
                   videoEnabled,
                   audioEnabled,
                 };
@@ -637,7 +641,7 @@ export const useStore = create<AppStore>()(
       clearDecodeErrors: () => set({ decodeErrors: [] }),
 
       startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean) => {
-        const { session, localStream, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled: globalVideoEnabled, audioEnabled: globalAudioEnabled, useAnnounceFlow } = get();
+        const { session, localStream, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled: globalVideoEnabled, audioEnabled: globalAudioEnabled, useAnnounceFlow, audioDeliveryMode } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -657,6 +661,7 @@ export const useStore = create<AppStore>()(
           deliveryTimeout: deliveryTimeout ?? 5000,
           priority: priority ?? 128,
           deliveryMode: deliveryMode ?? 'stream',
+          audioDeliveryMode,
           videoEnabled: effectiveVideoEnabled,
           audioEnabled: effectiveAudioEnabled,
         };
@@ -1097,6 +1102,7 @@ export const useStore = create<AppStore>()(
       vadEnabled: false, // Default VAD off
       vadProvider: 'libfvad', // Default to lightweight libfvad
       vadVisualizationEnabled: false, // Default viz off for performance
+      audioDeliveryMode: 'datagram', // Default to datagram for low latency
 
       setTheme: (theme) => {
         set({ theme });
@@ -1132,6 +1138,7 @@ export const useStore = create<AppStore>()(
       setVadEnabled: (value) => set({ vadEnabled: value }),
       setVadProvider: (provider) => set({ vadProvider: provider }),
       setVadVisualizationEnabled: (value) => set({ vadVisualizationEnabled: value }),
+      setAudioDeliveryMode: (mode) => set({ audioDeliveryMode: mode }),
     }),
     {
       name: 'moqt-client-storage',
@@ -1154,6 +1161,7 @@ export const useStore = create<AppStore>()(
         vadEnabled: state.vadEnabled,
         vadProvider: state.vadProvider,
         vadVisualizationEnabled: state.vadVisualizationEnabled,
+        audioDeliveryMode: state.audioDeliveryMode,
       }),
     }
   )

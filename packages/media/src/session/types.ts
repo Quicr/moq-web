@@ -95,6 +95,8 @@ export interface MediaConfig {
   priority?: number;
   /** Delivery mode: 'stream' for reliable ordered delivery, 'datagram' for low-latency unreliable */
   deliveryMode?: 'stream' | 'datagram';
+  /** Audio delivery mode when main delivery mode is 'stream' (default: 'datagram' for low latency) */
+  audioDeliveryMode?: 'datagram' | 'stream';
   /** Whether video is enabled for publishing */
   videoEnabled?: boolean;
   /** Whether audio is enabled for publishing */

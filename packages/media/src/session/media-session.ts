@@ -313,6 +313,7 @@ export class MediaSession {
       priority: config.priority ?? 128,
       deliveryTimeout: config.deliveryTimeout ?? 5000,
       deliveryMode: config.deliveryMode ?? 'stream',
+      audioDeliveryMode: config.audioDeliveryMode ?? 'datagram',
     };
 
     // Publish to the session (get track alias)

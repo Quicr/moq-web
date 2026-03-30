@@ -1097,6 +1097,7 @@ export class MOQTSession {
     const priority = options?.priority ?? 128;
     const deliveryTimeout = options?.deliveryTimeout ?? 5000;
     const deliveryMode = options?.deliveryMode ?? 'stream';
+    const audioDeliveryMode = options?.audioDeliveryMode ?? 'datagram';
 
     log.info('Starting publish', {
       namespace,
@@ -1121,6 +1122,7 @@ export class MOQTSession {
       trackName,
       priority,
       deliveryMode,
+      audioDeliveryMode,
       requestId,
       cleanupHandlers: [],
     };
@@ -1410,6 +1412,7 @@ export class MOQTSession {
       trackName,
       priority: announceInfo.options.priority ?? 128,
       deliveryMode: announceInfo.options.deliveryMode ?? 'stream',
+      audioDeliveryMode: announceInfo.options.audioDeliveryMode ?? 'datagram',
       requestId: message.requestId,
       cleanupHandlers: [],
     };
@@ -1638,13 +1641,23 @@ export class MOQTSession {
     const publication = this.publicationManager.get(trackAlias);
     const priority = publication?.priority ?? 128;
     const deliveryMode = publication?.deliveryMode ?? 'stream';
+    const audioDeliveryMode = publication?.audioDeliveryMode ?? 'datagram';
 
     if (deliveryMode === 'datagram') {
       await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
     } else {
-      if (metadata.isKeyframe !== undefined) {
+      // Video with keyframe info uses GOP batching (one stream per group)
+      if (metadata.type === 'video' && metadata.isKeyframe !== undefined) {
         await this.sendObjectWithGOP(trackAlias, data, metadata, priority);
+      } else if (metadata.type === 'audio') {
+        // Audio uses configured audioDeliveryMode (default: datagram for low latency)
+        if (audioDeliveryMode === 'datagram') {
+          await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
+        } else {
+          await this.sendObjectViaStream(trackAlias, data, metadata, priority);
+        }
       } else {
+        // Other data uses individual streams
         await this.sendObjectViaStream(trackAlias, data, metadata, priority);
       }
     }
