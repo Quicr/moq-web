@@ -40,6 +40,8 @@ export const SettingsPanel: React.FC = () => {
     setVadProvider,
     vadVisualizationEnabled,
     setVadVisualizationEnabled,
+    audioDeliveryMode,
+    setAudioDeliveryMode,
   } = useStore();
 
   return (
@@ -261,6 +263,41 @@ export const SettingsPanel: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* Audio Delivery Mode (only shown when main mode is stream) */}
+          {deliveryMode === 'stream' && (
+            <div>
+              <label className="label">Audio Delivery</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setAudioDeliveryMode('datagram')}
+                  className={`p-3 rounded-md border text-left ${
+                    audioDeliveryMode === 'datagram'
+                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/30'
+                      : 'border-gray-200 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="font-medium text-sm">Datagram</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    Low-latency (default)
+                  </div>
+                </button>
+                <button
+                  onClick={() => setAudioDeliveryMode('stream')}
+                  className={`p-3 rounded-md border text-left ${
+                    audioDeliveryMode === 'stream'
+                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/30'
+                      : 'border-gray-200 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="font-medium text-sm">Stream</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    Reliable, ordered
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Use Announce Flow Toggle */}
           <div>

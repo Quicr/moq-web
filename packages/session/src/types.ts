@@ -51,6 +51,8 @@ export interface PublishOptions {
   deliveryTimeout?: number;
   /** Delivery mode: 'stream' for reliable, 'datagram' for low-latency */
   deliveryMode?: 'stream' | 'datagram';
+  /** Audio delivery mode when main mode is 'stream' (default: 'datagram' for low latency) */
+  audioDeliveryMode?: 'datagram' | 'stream';
 }
 
 /**
@@ -106,6 +108,8 @@ export interface PublicationInfo {
   trackName: string;
   priority: number;
   deliveryMode: 'stream' | 'datagram';
+  /** Audio delivery mode when main delivery mode is 'stream' */
+  audioDeliveryMode?: 'datagram' | 'stream';
 }
 
 /**
@@ -141,6 +145,8 @@ export interface AnnounceOptions {
   deliveryTimeout?: number;
   /** Delivery mode: 'stream' for reliable, 'datagram' for low-latency */
   deliveryMode?: 'stream' | 'datagram';
+  /** Audio delivery mode when main mode is 'stream' (default: 'datagram' for low latency) */
+  audioDeliveryMode?: 'datagram' | 'stream';
 }
 
 /**
