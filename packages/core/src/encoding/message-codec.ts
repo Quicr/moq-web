@@ -781,15 +781,22 @@ export class MessageCodec {
     reader: BufferReader,
     endOffset?: number
   ): Map<number, Uint8Array> | undefined {
-    const hasMore = endOffset !== undefined
-      ? reader.offset < endOffset
-      : reader.hasMore;
-    if (!hasMore) return undefined;
+    // Need at least 2 bytes for a minimal extension (1-byte key + 1-byte value)
+    const remaining = endOffset !== undefined
+      ? endOffset - reader.offset
+      : reader.remaining;
+    if (remaining < 2) return undefined;
 
     const extensions = new Map<number, Uint8Array>();
     let previousKey = 0;
 
-    while (endOffset !== undefined ? reader.offset < endOffset : reader.hasMore) {
+    // Keep reading while we have at least 2 bytes remaining for a minimal extension
+    while (true) {
+      const bytesLeft = endOffset !== undefined
+        ? endOffset - reader.offset
+        : reader.remaining;
+      if (bytesLeft < 2) break;
+
       const deltaKey = reader.readVarIntNumber();
       const key = previousKey + deltaKey;
       previousKey = key;
@@ -1489,12 +1496,12 @@ export class MessageCodec {
       const parameters = MessageCodec.decodeRequestParameters(reader);
       const afterParamsOffset = reader.offset;
 
-      // Read track extensions only if there are remaining bytes within the payload boundary
+      // Read track extensions only if there are at least 2 bytes remaining (minimum for valid extension)
       let extensions: Map<number, Uint8Array> | undefined;
-      const hasMoreInPayload = payloadEndOffset !== undefined
-        ? reader.offset < payloadEndOffset
-        : reader.hasMore;
-      if (hasMoreInPayload) {
+      const remainingBytes = payloadEndOffset !== undefined
+        ? payloadEndOffset - reader.offset
+        : reader.remaining;
+      if (remainingBytes >= 2) {
         extensions = MessageCodec.decodeTrackExtensionsBounded(reader, payloadEndOffset);
       }
       const afterExtOffset = reader.offset;
