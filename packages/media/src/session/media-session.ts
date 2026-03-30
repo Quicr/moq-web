@@ -886,7 +886,7 @@ export class MediaSession {
       enableStats: config.enableStats,
     });
 
-    log.error('[DEBUG] Created decode pipeline for discovered track', {
+    log.info('Created decode pipeline for discovered track', {
       namespaceSubscriptionId: event.namespaceSubscriptionId,
       trackName: event.trackName,
       mediaType,
@@ -894,7 +894,7 @@ export class MediaSession {
 
     // Use the subscriptionId from the event (added in the session when creating the subscription)
     const subscriptionId = event.subscriptionId;
-    log.error('[DEBUG] Setting up pipeline for subscription', {
+    log.info('Setting up pipeline for subscription', {
       subscriptionId,
       trackAlias: event.trackAlias.toString(),
       trackName: event.trackName,

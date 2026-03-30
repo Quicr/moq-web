@@ -150,20 +150,6 @@ export class MessageCodec {
   static encode(message: ControlMessage): Uint8Array {
     log.debug('Encoding message', { type: MessageType[message.type] });
 
-    // DEBUG: Log PUBLISH messages at error level for visibility
-    if (message.type === MessageType.PUBLISH) {
-      const pubMsg = message as PublishMessage;
-      log.error('[DEBUG] Encoding PUBLISH message', {
-        requestId: pubMsg.requestId,
-        namespace: pubMsg.fullTrackName.namespace.join('/'),
-        trackName: pubMsg.fullTrackName.trackName,
-        trackAlias: pubMsg.trackAlias,
-        groupOrder: pubMsg.groupOrder,
-        contentExists: pubMsg.contentExists,
-        forward: pubMsg.forward,
-      });
-    }
-
     // First, encode the payload (message-specific fields)
     const payloadWriter = new BufferWriter();
 
@@ -439,17 +425,14 @@ export class MessageCodec {
     // This prevents trailing bytes from corrupting the next message
     if (actualPayloadConsumed < payloadLength) {
       const skipped = payloadLength - actualPayloadConsumed;
-      log.error('[DEBUG] Payload not fully consumed - skipping trailing bytes', {
+      log.trace('Skipping unconsumed payload bytes', {
         messageType: MessageType[messageType] ?? messageType,
-        declaredPayloadLength: payloadLength,
-        actualPayloadConsumed,
         skippedBytes: skipped,
-        trailingBytes: Array.from(buffer.subarray(reader.offset, reader.offset + skipped)).map(b => b.toString(16).padStart(2, '0')).join(' '),
       });
       reader.skip(skipped);
     } else if (actualPayloadConsumed > payloadLength) {
       // This shouldn't happen - decoder read more than declared
-      log.error('[DEBUG] Payload overread - decoder consumed more bytes than declared!', {
+      log.warn('Payload overread - decoder consumed more bytes than declared', {
         messageType: MessageType[messageType] ?? messageType,
         declaredPayloadLength: payloadLength,
         actualPayloadConsumed,
@@ -1489,36 +1472,18 @@ export class MessageCodec {
     if (IS_DRAFT_16) {
       // Draft-16 PUBLISH format:
       // Request ID, Full Track Name, Track Alias, Parameters, [Track Extensions]
-      const beforeOffset = reader.offset;
       const requestId = reader.readVarIntNumber();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
       const trackAlias = reader.readVarIntNumber();
       const parameters = MessageCodec.decodeRequestParameters(reader);
-      const afterParamsOffset = reader.offset;
 
       // Read track extensions only if there are at least 2 bytes remaining (minimum for valid extension)
-      let extensions: Map<number, Uint8Array> | undefined;
       const remainingBytes = payloadEndOffset !== undefined
         ? payloadEndOffset - reader.offset
         : reader.remaining;
       if (remainingBytes >= 2) {
-        extensions = MessageCodec.decodeTrackExtensionsBounded(reader, payloadEndOffset);
+        MessageCodec.decodeTrackExtensionsBounded(reader, payloadEndOffset);
       }
-      const afterExtOffset = reader.offset;
-
-      log.error('[DEBUG] Decoded PUBLISH message (draft-16)', {
-        requestId,
-        namespace: fullTrackName.namespace.join('/'),
-        trackName: fullTrackName.trackName,
-        trackAlias,
-        bytesConsumed: afterExtOffset - beforeOffset,
-        bytesForExtensions: afterExtOffset - afterParamsOffset,
-        hasParams: parameters !== undefined,
-        paramCount: parameters?.size ?? 0,
-        hasExtensions: extensions !== undefined,
-        extensionCount: extensions?.size ?? 0,
-        extensionKeys: extensions ? Array.from(extensions.keys()).map(k => '0x' + k.toString(16)) : [],
-      });
 
       // Extract fields from parameters
       let groupOrder = GroupOrder.ASCENDING;

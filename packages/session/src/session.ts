@@ -1150,7 +1150,7 @@ export class MOQTSession {
     log.info('PUBLISH bytes', { length: publishBytes.length, hex: hexBytes });
 
     await this.doSendControl(publishBytes);
-    log.error('[DEBUG] Sent PUBLISH message', {
+    log.info('Sent PUBLISH message', {
       requestId,
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
@@ -1438,7 +1438,7 @@ export class MOQTSession {
     const fullTrackNameStr = [...namespace, trackName].join('/');
     const namespaceStr = namespace.join('/');
 
-    log.error('[DEBUG] Received PUBLISH (subscribe namespace flow)', {
+    log.info('Received PUBLISH (subscribe namespace flow)', {
       requestId: message.requestId,
       namespace: namespaceStr,
       trackName,
