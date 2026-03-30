@@ -5,11 +5,22 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import path from 'path';
+import { execSync } from 'child_process';
 
 // MOQT version selection at build time
 // Default to 'draft-16', can be set via MOQT_VERSION env var
 const moqtVersion = process.env.MOQT_VERSION || 'draft-16';
 console.log(`Building with MOQT_VERSION=${moqtVersion}`);
+
+// Get git commit hash at build time
+const gitCommit = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD').toString().trim();
+  } catch {
+    return 'unknown';
+  }
+})();
+console.log(`Building commit: ${gitCommit}`);
 
 export default defineConfig({
   plugins: [react(), basicSsl()],
@@ -25,6 +36,8 @@ export default defineConfig({
     __MOQT_VERSION__: JSON.stringify(moqtVersion),
     // Also set as VITE env for runtime access
     'import.meta.env.VITE_MOQT_VERSION': JSON.stringify(moqtVersion),
+    // Git commit hash for version display
+    'import.meta.env.VITE_GIT_COMMIT': JSON.stringify(gitCommit),
   },
   server: {
     port: 5173,
