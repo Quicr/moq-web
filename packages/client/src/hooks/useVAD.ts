@@ -8,7 +8,7 @@
  * Handles VAD instance lifecycle and audio processing.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import type { VAD, VADResult, LibfvadModule, SileroVADFactory } from '@web-moq/media';
 import { LibfvadVAD, SileroVAD } from '@web-moq/media';
@@ -55,31 +55,36 @@ export function useVAD({
   const [sourceNode, setSourceNode] = useState<MediaStreamAudioSourceNode | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Use refs for cleanup to avoid stale closures
   const vadRef = useRef<VAD | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
-
-  // Cleanup function
-  const cleanup = useCallback(() => {
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
-    }
-    if (vadRef.current) {
-      vadRef.current.destroy();
-      vadRef.current = null;
-    }
-    if (audioContext) {
-      audioContext.close();
-      setAudioContext(null);
-    }
-    setSourceNode(null);
-    setIsReady(false);
-    setIsSpeaking(false);
-    setResult(null);
-  }, [audioContext]);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   // Initialize VAD when stream and settings are ready
   useEffect(() => {
+    // Cleanup function using refs
+    const cleanup = () => {
+      if (processorRef.current) {
+        processorRef.current.disconnect();
+        processorRef.current = null;
+      }
+      if (vadRef.current) {
+        vadRef.current.destroy();
+        vadRef.current = null;
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {
+          // Ignore close errors
+        });
+        audioContextRef.current = null;
+      }
+      setAudioContext(null);
+      setSourceNode(null);
+      setIsReady(false);
+      setIsSpeaking(false);
+      setResult(null);
+    };
+
     if (!vadEnabled || !stream) {
       cleanup();
       return;
@@ -97,10 +102,13 @@ export function useVAD({
 
         // Create audio context
         const ctx = new AudioContext({ sampleRate: 48000 });
+        audioContextRef.current = ctx;
+
         const source = ctx.createMediaStreamSource(stream!);
 
         if (cancelled) {
-          ctx.close();
+          ctx.close().catch(() => {});
+          audioContextRef.current = null;
           return;
         }
 
@@ -111,12 +119,12 @@ export function useVAD({
         let vad: VAD;
         if (vadProvider === 'libfvad') {
           vad = new LibfvadVAD(
-            { provider: 'libfvad', sampleRate: 48000, frameSize: 480 },
+            { provider: 'libfvad', sampleRate: 48000, frameSize: 512 },
             fvadLoader
           );
         } else if (vadProvider === 'silero') {
           vad = new SileroVAD(
-            { provider: 'silero', sampleRate: 48000, frameSize: 480 },
+            { provider: 'silero', sampleRate: 48000, frameSize: 512 },
             sileroFac
           );
         } else {
@@ -127,7 +135,8 @@ export function useVAD({
 
         if (cancelled) {
           vad.destroy();
-          ctx.close();
+          ctx.close().catch(() => {});
+          audioContextRef.current = null;
           return;
         }
 
@@ -141,7 +150,8 @@ export function useVAD({
         // Create audio processor
         // Note: ScriptProcessorNode is deprecated but still widely supported
         // AudioWorklet would be better but requires more setup
-        const processor = ctx.createScriptProcessor(480, 1, 1);
+        // Buffer size must be power of 2: using 512 (~10.7ms at 48kHz)
+        const processor = ctx.createScriptProcessor(512, 1, 1);
         processor.onaudioprocess = (e) => {
           const inputData = e.inputBuffer.getChannelData(0);
           try {
@@ -168,7 +178,7 @@ export function useVAD({
       cancelled = true;
       cleanup();
     };
-  }, [vadEnabled, vadProvider, stream, libfvadLoader, sileroFactory, cleanup]);
+  }, [vadEnabled, vadProvider, stream, libfvadLoader, sileroFactory]);
 
   return {
     isReady,
