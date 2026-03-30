@@ -12,6 +12,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType } from '@web-moq/core';
+import type { VADProvider } from '@web-moq/media';
 import { MediaSession, type SessionState, type MediaConfig, type WorkerConfig } from '@web-moq/media';
 import { TransportState, LogLevel } from '../types';
 import { isDebugMode } from '../components/common/DevSettingsPanel';
@@ -322,6 +323,12 @@ interface SettingsSlice {
   jitterBufferDelay: number;
   /** VarInt encoding type (QUIC or MOQT) */
   varIntType: VarIntType;
+  /** Enable Voice Activity Detection */
+  vadEnabled: boolean;
+  /** VAD provider to use */
+  vadProvider: VADProvider;
+  /** Enable VAD visualization (audio bars) */
+  vadVisualizationEnabled: boolean;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -336,6 +343,9 @@ interface SettingsSlice {
   setEnableStats: (value: boolean) => void;
   setJitterBufferDelay: (value: number) => void;
   setVarIntType: (type: VarIntType) => void;
+  setVadEnabled: (value: boolean) => void;
+  setVadProvider: (provider: VADProvider) => void;
+  setVadVisualizationEnabled: (value: boolean) => void;
 }
 
 // ============================================================================
@@ -1084,6 +1094,9 @@ export const useStore = create<AppStore>()(
       enableStats: false, // Default to off for performance
       jitterBufferDelay: 100, // Default 100ms jitter buffer
       varIntType: VarIntType.QUIC, // Default to QUIC varints for compatibility
+      vadEnabled: false, // Default VAD off
+      vadProvider: 'libfvad', // Default to lightweight libfvad
+      vadVisualizationEnabled: false, // Default viz off for performance
 
       setTheme: (theme) => {
         set({ theme });
@@ -1116,6 +1129,9 @@ export const useStore = create<AppStore>()(
         // Apply to the global VarInt codec
         setVarIntType(type);
       },
+      setVadEnabled: (value) => set({ vadEnabled: value }),
+      setVadProvider: (provider) => set({ vadProvider: provider }),
+      setVadVisualizationEnabled: (value) => set({ vadVisualizationEnabled: value }),
     }),
     {
       name: 'moqt-client-storage',
@@ -1135,6 +1151,9 @@ export const useStore = create<AppStore>()(
         enableStats: state.enableStats,
         jitterBufferDelay: state.jitterBufferDelay,
         varIntType: state.varIntType,
+        vadEnabled: state.vadEnabled,
+        vadProvider: state.vadProvider,
+        vadVisualizationEnabled: state.vadVisualizationEnabled,
       }),
     }
   )
