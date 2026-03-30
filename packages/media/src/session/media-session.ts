@@ -280,12 +280,20 @@ export class MediaSession {
     }
 
     const resolution = getResolutionConfig(config.videoResolution);
-    const videoEnabled = config.videoEnabled ?? true;
-    const audioEnabled = config.audioEnabled ?? true;
+
+    // Check what tracks the stream actually has
+    const hasVideoTracks = stream.getVideoTracks().length > 0;
+    const hasAudioTracks = stream.getAudioTracks().length > 0;
+
+    // Only enable video/audio if both config allows AND stream has those tracks
+    const videoEnabled = (config.videoEnabled ?? true) && hasVideoTracks;
+    const audioEnabled = (config.audioEnabled ?? true) && hasAudioTracks;
 
     log.info('Creating publish pipeline', {
       videoEnabled,
       audioEnabled,
+      hasVideoTracks,
+      hasAudioTracks,
       resolution: config.videoResolution,
       useEncodeWorker: !!this.workers?.encodeWorker,
     });
@@ -637,13 +645,21 @@ export class MediaSession {
     config: MediaConfig
   ): Promise<void> {
     const resolution = getResolutionConfig(config.videoResolution);
-    const videoEnabled = config.videoEnabled ?? true;
-    const audioEnabled = config.audioEnabled ?? true;
+
+    // Check what tracks the stream actually has
+    const hasVideoTracks = stream.getVideoTracks().length > 0;
+    const hasAudioTracks = stream.getAudioTracks().length > 0;
+
+    // Only enable video/audio if both config allows AND stream has those tracks
+    const videoEnabled = (config.videoEnabled ?? true) && hasVideoTracks;
+    const audioEnabled = (config.audioEnabled ?? true) && hasAudioTracks;
 
     log.info('Creating publish pipeline for announced track', {
       trackAlias: trackAlias.toString(),
       videoEnabled,
       audioEnabled,
+      hasVideoTracks,
+      hasAudioTracks,
       resolution: config.videoResolution,
       useEncodeWorker: !!this.workers?.encodeWorker,
     });
