@@ -75,6 +75,12 @@ interface DecodeChannel {
   enableStats: boolean;
   lastDecodedSequence: number;
   framesOutOfOrder: number;
+  // Diagnostic tracking
+  videoFramesDecoded: number;
+  videoKeyframesReceived: number;
+  audioFramesDecoded: number;
+  lastVideoFrameInfo: { groupId: number; objectId: number; isKeyframe: boolean; dataSize: number; sequence: number } | null;
+  lastAudioFrameInfo: { groupId: number; objectId: number; dataSize: number; sequence: number } | null;
 }
 
 // Map of channel ID to decode context
@@ -124,6 +130,12 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     enableStats: config.enableStats ?? false,
     lastDecodedSequence: -1,
     framesOutOfOrder: 0,
+    // Diagnostic tracking
+    videoFramesDecoded: 0,
+    videoKeyframesReceived: 0,
+    audioFramesDecoded: 0,
+    lastVideoFrameInfo: null,
+    lastAudioFrameInfo: null,
   };
 
   log(`Channel ${channelId} config`, { enableStats: channel.enableStats, jitterDelay: config.jitterBufferDelay });
@@ -198,10 +210,31 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
       }
     },
     error: (err) => {
-      log(`Video decoder error (channel ${channel.channelId})`, err);
+      // Capture diagnostic info before resetting state
+      const diagnostics = {
+        mediaType: 'video' as const,
+        groupId: channel.lastVideoFrameInfo?.groupId,
+        objectId: channel.lastVideoFrameInfo?.objectId,
+        isKeyframe: channel.lastVideoFrameInfo?.isKeyframe,
+        dataSize: channel.lastVideoFrameInfo?.dataSize,
+        sequence: channel.lastVideoFrameInfo?.sequence,
+        framesDecodedBefore: channel.videoFramesDecoded,
+        keyframesReceived: channel.videoKeyframesReceived,
+        hadKeyframe: channel.hasReceivedKeyframe,
+        timestamp: Date.now(),
+      };
+
+      // Log detailed error info (always log errors, not just in debug mode)
+      console.error(`[CodecDecodeWorker] VIDEO DECODE ERROR (channel ${channel.channelId}):`, {
+        error: err.message,
+        ...diagnostics,
+        bufferSize: channel.videoBuffer?.size ?? 0,
+        decoderState: channel.videoDecoder?.state,
+      });
+
       // Reset keyframe state to force waiting for new keyframe after error
       channel.hasReceivedKeyframe = false;
-      respond({ type: 'error', channelId: channel.channelId, message: err.message });
+      respond({ type: 'error', channelId: channel.channelId, message: err.message, diagnostics });
     },
   });
 
@@ -245,8 +278,25 @@ function initAudioDecoder(channel: DecodeChannel, config: AudioDecoderWorkerConf
       }
     },
     error: (err) => {
-      log(`Audio decoder error (channel ${channel.channelId})`, err);
-      respond({ type: 'error', channelId: channel.channelId, message: err.message });
+      // Capture diagnostic info (only on error - not in hot path)
+      const diagnostics = {
+        mediaType: 'audio' as const,
+        groupId: channel.lastAudioFrameInfo?.groupId,
+        objectId: channel.lastAudioFrameInfo?.objectId,
+        dataSize: channel.lastAudioFrameInfo?.dataSize,
+        sequence: channel.lastAudioFrameInfo?.sequence,
+        framesDecodedBefore: channel.audioFramesDecoded,
+        keyframesReceived: 0, // Opus is always key
+        hadKeyframe: true,
+        timestamp: Date.now(),
+      };
+
+      console.error(`[CodecDecodeWorker] AUDIO DECODE ERROR (channel ${channel.channelId}):`, {
+        error: err.message,
+        ...diagnostics,
+      });
+
+      respond({ type: 'error', channelId: channel.channelId, message: err.message, diagnostics });
     },
   });
 
@@ -381,6 +431,7 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
 
       if (frame.data.isKeyframe) {
         channel.hasReceivedKeyframe = true;
+        channel.videoKeyframesReceived++;
         log(`KEYFRAME received (channel ${channel.channelId})`, {
           groupId: frame.groupId,
           objectId: frame.objectId,
@@ -421,6 +472,16 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
           arrivedAt: frame.data.arrivedAt,
         };
 
+        // Track frame info for diagnostics (reuse object to avoid allocations)
+        if (!channel.lastVideoFrameInfo) {
+          channel.lastVideoFrameInfo = { groupId: 0, objectId: 0, isKeyframe: false, dataSize: 0, sequence: 0 };
+        }
+        channel.lastVideoFrameInfo.groupId = frame.groupId;
+        channel.lastVideoFrameInfo.objectId = frame.objectId;
+        channel.lastVideoFrameInfo.isKeyframe = frame.data.isKeyframe;
+        channel.lastVideoFrameInfo.dataSize = frame.data.data.length;
+        channel.lastVideoFrameInfo.sequence = frame.sequence;
+
         const chunk = new EncodedVideoChunk({
           type: frame.data.isKeyframe ? 'key' : 'delta',
           timestamp: frame.timestamp * 1000, // Back to microseconds
@@ -428,6 +489,7 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
         });
 
         channel.videoDecoder.decode(chunk);
+        channel.videoFramesDecoded++;
         videoCount++;
       } catch (err) {
         log(`Error decoding video (channel ${channel.channelId})`, err);
@@ -448,6 +510,15 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
           timestamp: frame.timestamp * 1000, // Back to microseconds
         };
 
+        // Track frame info for diagnostics (reuse object to avoid allocations)
+        if (!channel.lastAudioFrameInfo) {
+          channel.lastAudioFrameInfo = { groupId: 0, objectId: 0, dataSize: 0, sequence: 0 };
+        }
+        channel.lastAudioFrameInfo.groupId = frame.groupId;
+        channel.lastAudioFrameInfo.objectId = frame.objectId;
+        channel.lastAudioFrameInfo.dataSize = frame.data.data.length;
+        channel.lastAudioFrameInfo.sequence = frame.sequence;
+
         const chunk = new EncodedAudioChunk({
           type: 'key', // Opus is always key
           timestamp: frame.timestamp * 1000, // Back to microseconds
@@ -455,6 +526,7 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
         });
 
         channel.audioDecoder.decode(chunk);
+        channel.audioFramesDecoded++;
         audioCount++;
       } catch (err) {
         log(`Error decoding audio (channel ${channel.channelId})`, err);
@@ -503,6 +575,12 @@ function resetChannel(channel: DecodeChannel): void {
   channel.droppedFramesBeforeKeyframe = 0;
   channel.lastDecodedSequence = -1;
   channel.framesOutOfOrder = 0;
+  // Reset diagnostic counters
+  channel.videoFramesDecoded = 0;
+  channel.videoKeyframesReceived = 0;
+  channel.audioFramesDecoded = 0;
+  channel.lastVideoFrameInfo = null;
+  channel.lastAudioFrameInfo = null;
 
   // Close any pending frames
   for (const { frame } of channel.pendingVideoFrames) {
