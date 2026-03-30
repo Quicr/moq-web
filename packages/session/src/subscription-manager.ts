@@ -209,6 +209,7 @@ export class SubscriptionManager {
 
   /**
    * Safely register an alias without overwriting other subscriptions
+   * Returns false if collision detected (alias already registered to different subscription)
    */
   private safeRegisterAlias(aliasKey: string, subscription: InternalSubscription): boolean {
     const existing = this.subscriptionsByAlias.get(aliasKey);
@@ -216,11 +217,36 @@ export class SubscriptionManager {
       log.warn('Alias collision detected, not overwriting', {
         aliasKey,
         existingSubscriptionId: existing.subscriptionId,
+        existingTrackName: existing.trackName,
         newSubscriptionId: subscription.subscriptionId,
+        newTrackName: subscription.trackName,
       });
       return false;
     }
     this.subscriptionsByAlias.set(aliasKey, subscription);
     return true;
+  }
+
+  /**
+   * Get all subscriptions that match a given trackAlias
+   * Used for handling alias collisions when relay assigns same alias to multiple tracks
+   */
+  getAllByAlias(trackAlias: bigint | number | string): InternalSubscription[] {
+    const aliasKey = trackAlias.toString();
+    const matches: InternalSubscription[] = [];
+    for (const sub of this.subscriptions.values()) {
+      if (sub.trackAlias?.toString() === aliasKey) {
+        matches.push(sub);
+      }
+    }
+    return matches;
+  }
+
+  /**
+   * Get subscription by namespace and track name (for collision resolution)
+   */
+  getByFullTrackName(namespace: string[], trackName: string): InternalSubscription | undefined {
+    const key = this.makeTrackNameKey(namespace, trackName);
+    return this.subscriptionsByTrackName.get(key);
   }
 }
