@@ -428,6 +428,9 @@ export const SettingsPanel: React.FC = () => {
         <div className="text-center text-xs text-gray-500">
           <p className="font-medium">MOQT Client v0.1.0</p>
           <p className="mt-1">Media over QUIC Transport</p>
+          <p className="mt-1 font-mono text-[10px]">
+            Commit: {import.meta.env.VITE_GIT_COMMIT || 'dev'}
+          </p>
         </div>
       </div>
     </div>
