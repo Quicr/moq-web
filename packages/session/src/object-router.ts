@@ -210,6 +210,19 @@ export class ObjectRouter {
 
               const subscription = this.subscriptionManager.getByAlias(subgroupHeader.trackAlias);
 
+              // Check for alias collision (multiple subscriptions with same alias)
+              const allMatches = this.subscriptionManager.getAllByAlias(subgroupHeader.trackAlias);
+              if (allMatches.length > 1) {
+                log.error('ALIAS COLLISION: Multiple subscriptions have same trackAlias - data may be routed incorrectly', {
+                  trackAlias: subgroupHeader.trackAlias.toString(),
+                  conflictingTracks: allMatches.map(s => ({
+                    subscriptionId: s.subscriptionId,
+                    trackName: s.trackName,
+                    namespace: s.namespace.join('/'),
+                  })),
+                });
+              }
+
               log.debug('Looking up subscription by trackAlias', {
                 lookupAlias: subgroupHeader.trackAlias.toString(),
                 found: !!subscription,

@@ -1470,6 +1470,25 @@ export class MOQTSession {
       return;
     }
 
+    // Check for trackAlias collision - this will cause routing issues
+    const existingSubscription = this.subscriptionManager.getByAlias(BigInt(message.trackAlias));
+    if (existingSubscription) {
+      const existingTrackName = [...existingSubscription.namespace, existingSubscription.trackName].join('/');
+      log.error('TrackAlias collision detected - multiple tracks using same alias will cause data corruption', {
+        trackAlias: message.trackAlias.toString(),
+        newTrack: fullTrackNameStr,
+        existingTrack: existingTrackName,
+        existingSubscriptionId: existingSubscription.subscriptionId,
+      });
+
+      // Emit error event so UI can warn the user
+      this.emit('error', new Error(
+        `TrackAlias collision: "${fullTrackNameStr}" and "${existingTrackName}" both use alias ${message.trackAlias}. Video/audio data may be corrupted.`
+      ));
+
+      // Continue anyway - we'll accept the PUBLISH but routing will be broken
+    }
+
     // Store track info
     const trackInfo: IncomingPublishInfo = {
       requestId: message.requestId,
