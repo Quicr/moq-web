@@ -499,6 +499,17 @@ export class BufferReader {
   }
 
   /**
+   * Peek at the next varint without advancing position
+   *
+   * @returns The decoded number value
+   * @throws {VarIntError} If value exceeds Number.MAX_SAFE_INTEGER
+   */
+  peekVarIntNumber(): number {
+    const [value] = VarInt.decodeNumber(this.buffer, this.position);
+    return value;
+  }
+
+  /**
    * Skip a number of bytes
    *
    * @param count - Number of bytes to skip

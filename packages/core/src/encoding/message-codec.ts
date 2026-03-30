@@ -2568,11 +2568,42 @@ export class ObjectCodec {
 
     if (IS_DRAFT_16) {
       // Draft-16 format: Object ID Delta | [Extensions] | Payload Length | [Status] | [Payload]
-      // Skip extensions if present
+      // Draft-16 extensions are inline KVPs per section 1.4.2:
+      //   - Delta Type (varint): type = prev_type + delta + 1 (first: type = delta)
+      //   - Length (varint): only present if type is odd
+      //   - Value: varint if even type, Length bytes if odd type
+      // Extensions are NOT length-prefixed. When 0 extensions, 0 bytes are written.
       if (hasExtensions) {
-        const extLen = reader.readVarIntNumber();
-        if (extLen > 0) {
-          reader.readBytes(extLen);
+        // Parse extension KVPs until we hit payload length
+        // Extension types are small registered values; payload length is typically larger
+        let prevType = -1;
+        while (reader.hasMore) {
+          // Peek at next varint to determine if it's extension type or payload length
+          const peekValue = reader.peekVarIntNumber();
+
+          // Calculate what the extension type would be
+          const extType = prevType < 0 ? peekValue : (prevType + peekValue + 1);
+
+          // Extension types are registered small values (< 0x40)
+          // If this looks like a payload length (>= 0x40 or very large), stop parsing extensions
+          if (extType >= 0x40) {
+            break;
+          }
+
+          // Read the delta type
+          const deltaType = reader.readVarIntNumber();
+          const type = prevType < 0 ? deltaType : (prevType + deltaType + 1);
+          prevType = type;
+
+          // Odd types have length + value bytes, even types have varint value
+          if (type % 2 === 1) {
+            const extLen = reader.readVarIntNumber();
+            const extValue = reader.readBytes(extLen);
+            log.trace('Object extension (odd)', { type, length: extLen, value: extValue });
+          } else {
+            const extValue = reader.readVarIntNumber();
+            log.trace('Object extension (even)', { type, value: extValue });
+          }
         }
       }
       const payloadLength = reader.readVarIntNumber();
