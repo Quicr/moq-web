@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moxygen Picoquic Integration Design Document</title>
+    <style>
+
+:root {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #21262d;
+    --bg-code: #1a1f26;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #6e7681;
+    --accent-blue: #58a6ff;
+    --accent-green: #3fb950;
+    --accent-purple: #a371f7;
+    --accent-orange: #d29922;
+    --accent-red: #f85149;
+    --accent-cyan: #39c5cf;
+    --border-primary: #30363d;
+    --border-secondary: #21262d;
+    --shadow-color: rgba(0, 0, 0, 0.4);
+    --gradient-header: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    --gradient-accent: linear-gradient(135deg, #58a6ff 0%, #a371f7 100%);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.7;
+    font-size: 16px;
+}
+
+.container { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+
+header {
+    background: var(--gradient-header);
+    padding: 3rem 2rem;
+    margin-bottom: 2rem;
+    border-radius: 12px;
+    box-shadow: 0 10px 40px var(--shadow-color);
+}
+
+header h1 {
+    color: white;
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+}
+
+header .meta { color: rgba(255,255,255,0.85); font-size: 0.95rem; }
+
+.content {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    animation: fadeIn 0.5s ease-out;
+}
+
+h1, h2, h3, h4, h5, h6 { color: var(--text-primary); margin-top: 2rem; margin-bottom: 1rem; font-weight: 600; }
+
+h1 {
+    font-size: 2rem;
+    background: var(--gradient-accent);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--border-primary);
+}
+
+h2 {
+    font-size: 1.6rem;
+    color: var(--accent-blue);
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--border-secondary);
+}
+
+h3 { font-size: 1.3rem; color: var(--accent-purple); }
+h4 { font-size: 1.1rem; color: var(--accent-cyan); }
+
+p { margin-bottom: 1rem; color: var(--text-secondary); }
+
+a { color: var(--accent-blue); text-decoration: none; transition: color 0.2s ease; }
+a:hover { color: var(--accent-purple); text-decoration: underline; }
+
+pre.code-block {
+    background: var(--bg-code);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    padding: 1.25rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    position: relative;
+    box-shadow: inset 0 2px 8px rgba(0,0,0,0.2);
+}
+
+pre.code-block::before {
+    content: attr(data-lang);
+    position: absolute;
+    top: 0;
+    right: 0;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    border-radius: 0 8px 0 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+pre.code-block code {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--accent-green);
+}
+
+code.inline-code {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+    background: var(--bg-tertiary);
+    color: var(--accent-orange);
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+.table-wrapper {
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    border-radius: 8px;
+    border: 1px solid var(--border-primary);
+}
+
+table { width: 100%; border-collapse: collapse; background: var(--bg-tertiary); }
+
+th, td { padding: 0.875rem 1rem; text-align: left; border-bottom: 1px solid var(--border-primary); }
+
+th {
+    background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+    color: var(--accent-blue);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.85rem;
+    letter-spacing: 0.5px;
+}
+
+tr:hover td { background: rgba(88, 166, 255, 0.05); }
+td { color: var(--text-secondary); }
+
+ul, ol { margin: 1rem 0; padding-left: 2rem; color: var(--text-secondary); }
+li { margin-bottom: 0.5rem; }
+li::marker { color: var(--accent-blue); }
+
+hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-primary), transparent);
+    margin: 2rem 0;
+}
+
+strong { color: var(--text-primary); font-weight: 600; }
+em { color: var(--accent-cyan); font-style: italic; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+@media (max-width: 768px) {
+    .container { padding: 1rem; }
+    header { padding: 2rem 1rem; }
+    header h1 { font-size: 1.8rem; }
+    .content { padding: 1rem; }
+    pre.code-block { padding: 1rem; font-size: 0.8rem; }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+footer {
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+footer a { color: var(--accent-purple); }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Moxygen Picoquic Integration</h1>
+            <div class="meta">Design Document | pico-openmoq branch | February 2025</div>
+        </header>
+
+        <div class="content">
+            <h1 id="web-moq-package-publishing-guide">@web-moq Package Publishing Guide</h1>
+
+<h2 id="package-overview">Package Overview</h2>
+
+<div class="table-wrapper"><table>
+<tr>
+<th>Package</th>
+<th>Description</th>
+<th>Dependencies</th>
+</tr>
+<tr>
+<td><code class="inline-code">@web-moq/core</code></td>
+<td>Protocol types, encoding, transport</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code class="inline-code">@web-moq/session</code></td>
+<td>MOQT session management</td>
+<td>core</td>
+</tr>
+<tr>
+<td><code class="inline-code">@web-moq/media</code></td>
+<td>WebCodecs, LOC container, pipelines</td>
+<td>core, session</td>
+</tr>
+<tr>
+<td><code class="inline-code">@web-moq/msf</code></td>
+<td>MOQT Streaming Format catalogs</td>
+<td>core, session</td>
+</tr>
+</table></div>
+
+<hr>
+
+<h2 id="build-instructions">Build Instructions</h2>
+
+<h3 id="prerequisites">Prerequisites</h3>
+<pre class="code-block" data-lang="bash"><code>
+# Node.js 20+
+node --version  # v20.x.x or higher
+
+# pnpm 9+
+corepack enable &amp;&amp; corepack prepare pnpm@9 --activate
+</code></pre>
+
+<h3 id="build-all-packages">Build All Packages</h3>
+<pre class="code-block" data-lang="bash"><code>
+# Install dependencies
+pnpm install
+
+# Build for draft-16 (default)
+pnpm run build
+
+# Build for draft-14
+pnpm run build:draft-14
+
+# Run tests
+pnpm run test
+</code></pre>
+
+<h3 id="build-individual-package">Build Individual Package</h3>
+<pre class="code-block" data-lang="bash"><code>
+# Build specific package
+pnpm --filter @web-moq/core run build
+pnpm --filter @web-moq/session run build
+pnpm --filter @web-moq/media run build
+pnpm --filter @web-moq/msf run build
+</code></pre>
+
+<hr>
+
+<h2 id="publishing-steps">Publishing Steps</h2>
+
+<h3 id="1-authenticate">1. Authenticate</h3>
+<pre class="code-block" data-lang="bash"><code>
+npm login
+</code></pre>
+
+<h3 id="2-version-bump">2. Version Bump</h3>
+<pre class="code-block" data-lang="bash"><code>
+# Patch version (0.1.0 -&gt; 0.1.1)
+pnpm -r exec -- npm version patch
+
+# Minor version (0.1.0 -&gt; 0.2.0)
+pnpm -r exec -- npm version minor
+
+# Major version (0.1.0 -&gt; 1.0.0)
+pnpm -r exec -- npm version major
+</code></pre>
+
+<h3 id="3-publish-in-dependency-order">3. Publish (in dependency order)</h3>
+<pre class="code-block" data-lang="bash"><code>
+pnpm --filter @web-moq/core publish --access public
+pnpm --filter @web-moq/session publish --access public
+pnpm --filter @web-moq/media publish --access public
+pnpm --filter @web-moq/msf publish --access public
+</code></pre>
+
+<h3 id="4-tag-release">4. Tag Release</h3>
+<pre class="code-block" data-lang="bash"><code>
+git add .
+git commit -m &quot;Release v0.2.0&quot;
+git tag v0.2.0
+git push &amp;&amp; git push --tags
+</code></pre>
+
+<hr>
+
+<h2 id="package-usage-examples">Package Usage Examples</h2>
+
+<h3 id="web-moqcore">@web-moq/core</h3>
+
+<p>Core MOQT protocol types, encoding, state management, and WebTransport layer.</p>
+
+<p><strong>Install:</strong></p>
+<pre class="code-block" data-lang="bash"><code>
+npm install @web-moq/core
+</code></pre>
+
+<p><strong>Usage:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import {
+  // Transport
+  MOQTransport,
+  StreamManager,
+  DatagramManager,
+
+  // Message encoding
+  MessageCodec,
+  MessageType,
+  Version,
+  SetupParameter,
+
+  // Track management
+  TrackManager,
+
+  // Logging
+  Logger,
+  LogLevel,
+
+  // Version detection
+  IS_DRAFT_16,
+  IS_DRAFT_14,
+
+  // VarInt encoding
+  VarInt,
+  BufferReader,
+  BufferWriter,
+} from &#x27;@web-moq/core&#x27;;
+
+// Configure logging
+Logger.setLevel(LogLevel.DEBUG);
+
+// Check build version
+console.log(&#x27;Draft-16 build:&#x27;, IS_DRAFT_16);
+
+// Create WebTransport connection
+const transport = new MOQTransport();
+await transport.connect(&#x27;https://relay.example.com/moq&#x27;, {
+  serverCertificateHashes: [/* for local dev */],
+});
+
+// Listen for events
+transport.on(&#x27;connected&#x27;, () =&gt; console.log(&#x27;Connected!&#x27;));
+transport.on(&#x27;error&#x27;, (err) =&gt; console.error(&#x27;Error:&#x27;, err));
+
+// Create stream/datagram managers
+const streams = new StreamManager(transport);
+const datagrams = new DatagramManager(transport);
+
+// Encode a CLIENT_SETUP message
+const setupBytes = MessageCodec.encode({
+  type: MessageType.CLIENT_SETUP,
+  supportedVersions: [Version.DRAFT_16],
+  parameters: new Map([[SetupParameter.PATH, &#x27;/moq&#x27;]]),
+});
+
+// Send on control stream
+const controlStream = await streams.openBidirectional();
+await controlStream.write(setupBytes);
+
+// Track management
+const trackManager = new TrackManager();
+trackManager.on(&#x27;track-added&#x27;, (track) =&gt; {
+  console.log(&#x27;New track:&#x27;, track.namespace, track.name);
+});
+</code></pre>
+
+<hr>
+
+<h3 id="web-moqsession">@web-moq/session</h3>
+
+<p>Generic MOQT session management - subscribe/publish without media dependencies.</p>
+
+<p><strong>Install:</strong></p>
+<pre class="code-block" data-lang="bash"><code>
+npm install @web-moq/session @web-moq/core
+</code></pre>
+
+<p><strong>Usage:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import { MOQTSession } from &#x27;@web-moq/session&#x27;;
+import { MOQTransport } from &#x27;@web-moq/core&#x27;;
+
+// Create transport and session
+const transport = new MOQTransport();
+await transport.connect(&#x27;https://relay.example.com/moq&#x27;);
+
+const session = new MOQTSession(transport);
+
+// Setup the session (client/server handshake)
+await session.setup();
+
+// Listen for session events
+session.on(&#x27;state-change&#x27;, (state) =&gt; console.log(&#x27;Session state:&#x27;, state));
+session.on(&#x27;error&#x27;, (err) =&gt; console.error(&#x27;Session error:&#x27;, err));
+
+// Subscribe to a track
+const subscriptionId = await session.subscribe(
+  [&#x27;conference&#x27;, &#x27;room-123&#x27;],  // namespace
+  &#x27;video&#x27;,                      // track name
+  {
+    startGroup: &#x27;latest&#x27;,       // or specific group number
+    endGroup: &#x27;none&#x27;,           // stream forever
+  },
+  (data, groupId, objectId, timestamp) =&gt; {
+    console.log(`Received object: group=${groupId}, obj=${objectId}, size=${data.byteLength}`);
+    // Process the raw bytes...
+  }
+);
+
+// Publish to a track
+const trackAlias = await session.publish(
+  [&#x27;conference&#x27;, &#x27;room-123&#x27;],
+  &#x27;my-video&#x27;
+);
+
+// Send objects
+await session.sendObject(trackAlias, new Uint8Array([1, 2, 3, 4]), {
+  groupId: 0,
+  objectId: 0,
+  priority: 0,
+});
+
+// Unsubscribe when done
+await session.unsubscribe(subscriptionId);
+
+// Close session
+await session.close();
+</code></pre>
+
+<p><strong>Worker-based Transport:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import { MOQTSession } from &#x27;@web-moq/session&#x27;;
+
+// Use worker for transport (offload from main thread)
+const worker = new Worker(
+  new URL(&#x27;@web-moq/session/worker&#x27;, import.meta.url),
+  { type: &#x27;module&#x27; }
+);
+
+const session = new MOQTSession({ worker });
+await session.connect(&#x27;https://relay.example.com/moq&#x27;);
+await session.setup();
+// ... same API as above
+</code></pre>
+
+<hr>
+
+<h3 id="web-moqmedia">@web-moq/media</h3>
+
+<p>WebCodecs encoding/decoding with LOC container format for media streaming.</p>
+
+<p><strong>Install:</strong></p>
+<pre class="code-block" data-lang="bash"><code>
+npm install @web-moq/media @web-moq/session @web-moq/core
+</code></pre>
+
+<p><strong>High-Level MediaSession (Recommended):</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import { MediaSession, getResolutionConfig } from &#x27;@web-moq/media&#x27;;
+
+// Create media session
+const session = new MediaSession({
+  relayUrl: &#x27;https://relay.example.com/moq&#x27;,
+});
+
+await session.connect();
+
+// Get user media
+const stream = await navigator.mediaDevices.getUserMedia({
+  video: { width: 1280, height: 720 },
+  audio: true,
+});
+
+// Start publishing
+await session.publish(
+  [&#x27;conference&#x27;, &#x27;room-123&#x27;],
+  &#x27;participant-1&#x27;,
+  stream,
+  {
+    video: getResolutionConfig(&#x27;720p&#x27;),
+    audio: { sampleRate: 48000, numberOfChannels: 2, bitrate: 128000 },
+  }
+);
+
+// Subscribe to another participant
+await session.subscribe(
+  [&#x27;conference&#x27;, &#x27;room-123&#x27;],
+  &#x27;participant-2&#x27;,
+  document.getElementById(&#x27;remoteVideo&#x27;) as HTMLVideoElement,
+  {
+    jitterBufferDelay: 100,
+  }
+);
+
+// Stop when done
+await session.stopPublishing();
+await session.disconnect();
+</code></pre>
+
+<p><strong>Low-Level Pipeline API:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import {
+  // Encoders
+  H264Encoder,
+  OpusEncoder,
+
+  // Decoders
+  H264Decoder,
+  OpusDecoder,
+
+  // LOC container
+  LOCPackager,
+  LOCUnpackager,
+  MediaType,
+
+  // Pipelines
+  PublishPipeline,
+  SubscribePipeline,
+
+  // Jitter buffer
+  JitterBuffer,
+} from &#x27;@web-moq/media&#x27;;
+
+// === PUBLISHING ===
+
+// Create video encoder
+const videoEncoder = new H264Encoder({
+  width: 1280,
+  height: 720,
+  bitrate: 2_000_000,
+  framerate: 30,
+  keyFrameInterval: 60,
+});
+
+// Create audio encoder
+const audioEncoder = new OpusEncoder({
+  sampleRate: 48000,
+  numberOfChannels: 2,
+  bitrate: 128000,
+});
+
+// Create LOC packager
+const packager = new LOCPackager();
+
+// Encode and package video
+videoEncoder.on(&#x27;frame&#x27;, (encodedFrame) =&gt; {
+  const locPacket = packager.packageVideo(encodedFrame.data, {
+    timestamp: encodedFrame.timestamp,
+    isKeyFrame: encodedFrame.isKeyFrame,
+  });
+  // Send locPacket over MOQT...
+});
+
+// Start encoding from MediaStream
+const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+const videoTrack = stream.getVideoTracks()[0];
+const processor = new MediaStreamTrackProcessor({ track: videoTrack });
+const reader = processor.readable.getReader();
+
+while (true) {
+  const { value: frame, done } = await reader.read();
+  if (done) break;
+  await videoEncoder.encode(frame);
+  frame.close();
+}
+
+// === SUBSCRIBING ===
+
+// Create decoders
+const videoDecoder = new H264Decoder({
+  codec: &#x27;avc1.4D401E&#x27;,
+  codedWidth: 1280,
+  codedHeight: 720,
+});
+
+const audioDecoder = new OpusDecoder({
+  sampleRate: 48000,
+  numberOfChannels: 2,
+});
+
+// Create LOC unpackager
+const unpackager = new LOCUnpackager();
+
+// Create jitter buffer
+const jitterBuffer = new JitterBuffer({
+  targetDelay: 100,  // ms
+  maxDelay: 500,
+});
+
+// Process received LOC packets
+function onReceivedObject(data: Uint8Array, groupId: number, objectId: number) {
+  const frame = unpackager.unpackage(data);
+  jitterBuffer.push({
+    data: frame.data,
+    timestamp: frame.timestamp,
+    sequence: objectId,
+    isKeyFrame: frame.isKeyFrame,
+  });
+}
+
+// Decode from jitter buffer
+videoDecoder.on(&#x27;frame&#x27;, (videoFrame) =&gt; {
+  // Render to canvas
+  const ctx = canvas.getContext(&#x27;2d&#x27;)!;
+  ctx.drawImage(videoFrame, 0, 0);
+  videoFrame.close();
+});
+
+// Poll jitter buffer
+setInterval(() =&gt; {
+  const frame = jitterBuffer.pop();
+  if (frame) {
+    videoDecoder.decode(frame.data, frame.timestamp);
+  }
+}, 16);  // ~60fps
+</code></pre>
+
+<p><strong>Using Workers:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import {
+  CodecEncodeWorkerClient,
+  CodecDecodeWorkerClient,
+} from &#x27;@web-moq/media&#x27;;
+
+// Create encode worker (WebCodecs + LOC in worker thread)
+const encodeWorker = new CodecEncodeWorkerClient({
+  video: {
+    width: 1280,
+    height: 720,
+    bitrate: 2_000_000,
+    framerate: 30,
+  },
+  audio: {
+    sampleRate: 48000,
+    numberOfChannels: 2,
+    bitrate: 128000,
+  },
+});
+
+encodeWorker.on(&#x27;video-encoded&#x27;, (result) =&gt; {
+  // result.data is LOC-packaged bytes ready to send
+  session.sendObject(trackAlias, result.data, {
+    groupId: result.groupId,
+    objectId: result.objectId,
+  });
+});
+
+// Send VideoFrame to worker
+encodeWorker.encodeVideo(videoFrame);
+
+// Create decode worker
+const decodeWorker = new CodecDecodeWorkerClient({
+  video: {
+    codec: &#x27;avc1.4D401E&#x27;,
+    codedWidth: 1280,
+    codedHeight: 720,
+  },
+  audio: {
+    sampleRate: 48000,
+    numberOfChannels: 2,
+  },
+});
+
+decodeWorker.on(&#x27;video-decoded&#x27;, (result) =&gt; {
+  // result.frame is a VideoFrame ready to render
+  ctx.drawImage(result.frame, 0, 0);
+  result.frame.close();
+});
+
+// Send received LOC data to worker
+decodeWorker.decodeVideo(locData, timestamp);
+</code></pre>
+
+<hr>
+
+<h3 id="web-moqmsf">@web-moq/msf</h3>
+
+<p>MOQT Streaming Format - JSON catalogs for LOC-compliant media delivery.</p>
+
+<p><strong>Install:</strong></p>
+<pre class="code-block" data-lang="bash"><code>
+npm install @web-moq/msf @web-moq/session @web-moq/core
+</code></pre>
+
+<p><strong>Building Catalogs:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import {
+  createCatalog,
+  parseCatalog,
+  serializeCatalog,
+  MSF_VERSION,
+} from &#x27;@web-moq/msf&#x27;;
+
+// Build a full catalog
+const catalog = createCatalog()
+  .generatedAt()                     // Set generation timestamp
+  .commonTrackFields({               // Fields shared by all tracks
+    packaging: &#x27;loc&#x27;,
+    renderGroup: 1,
+  })
+  .addVideoTrack({
+    name: &#x27;video-main&#x27;,
+    codec: &#x27;avc1.4D401E&#x27;,
+    width: 1280,
+    height: 720,
+    framerate: 30,
+    bitrate: 2_000_000,
+    isLive: true,
+  })
+  .addVideoTrack({
+    name: &#x27;video-thumbnail&#x27;,
+    codec: &#x27;avc1.4D401E&#x27;,
+    width: 320,
+    height: 180,
+    framerate: 15,
+    bitrate: 200_000,
+    isLive: true,
+  })
+  .addAudioTrack({
+    name: &#x27;audio-main&#x27;,
+    codec: &#x27;opus&#x27;,
+    samplerate: 48000,
+    channelConfig: &#x27;stereo&#x27;,
+    bitrate: 128000,
+    isLive: true,
+  })
+  .build();
+
+// Serialize to JSON
+const json = serializeCatalog(catalog);
+console.log(json);
+
+// Serialize to bytes for transmission
+import { serializeCatalogToBytes } from &#x27;@web-moq/msf&#x27;;
+const bytes = serializeCatalogToBytes(catalog);
+
+// Parse received catalog
+const parsed = parseCatalog(json);
+console.log(&#x27;Tracks:&#x27;, parsed.tracks.length);
+</code></pre>
+
+<p><strong>Delta Updates:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import {
+  createDelta,
+  generateDelta,
+  applyDelta,
+} from &#x27;@web-moq/msf&#x27;;
+
+// Create delta manually
+const delta = createDelta()
+  .addTrack({
+    name: &#x27;video-simulcast-low&#x27;,
+    codec: &#x27;avc1.4D401E&#x27;,
+    width: 640,
+    height: 360,
+    framerate: 30,
+    bitrate: 500_000,
+    isLive: true,
+  })
+  .removeTrack(&#x27;video-thumbnail&#x27;)
+  .build();
+
+// Or generate delta from two catalogs
+const autoDelta = generateDelta(oldCatalog, newCatalog);
+
+// Apply delta to get updated catalog
+const updatedCatalog = applyDelta(oldCatalog, delta);
+</code></pre>
+
+<p><strong>Session Integration:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import {
+  createMSFSession,
+  createCatalogSubscriber,
+  createCatalogPublisher,
+} from &#x27;@web-moq/msf&#x27;;
+import { MOQTSession } from &#x27;@web-moq/session&#x27;;
+import { MOQTransport } from &#x27;@web-moq/core&#x27;;
+
+// Setup MOQT session
+const transport = new MOQTransport();
+await transport.connect(&#x27;https://relay.example.com/moq&#x27;);
+const moqtSession = new MOQTSession(transport);
+await moqtSession.setup();
+
+// Create MSF session wrapper
+const msfSession = createMSFSession(moqtSession, [&#x27;conference&#x27;, &#x27;room-123&#x27;]);
+
+// === PUBLISHER SIDE ===
+
+// Start catalog publishing
+await msfSession.startCatalogPublishing();
+
+// Publish initial catalog
+const catalog = createCatalog()
+  .addVideoTrack({ name: &#x27;video&#x27;, codec: &#x27;avc1.4D401E&#x27;, width: 1280, height: 720, framerate: 30, bitrate: 2_000_000, isLive: true })
+  .addAudioTrack({ name: &#x27;audio&#x27;, codec: &#x27;opus&#x27;, samplerate: 48000, channelConfig: &#x27;stereo&#x27;, isLive: true })
+  .build();
+
+await msfSession.publishCatalog(catalog);
+
+// Later, publish delta update
+const delta = createDelta()
+  .addTrack({ name: &#x27;video-low&#x27;, codec: &#x27;avc1.4D401E&#x27;, width: 640, height: 360, framerate: 30, bitrate: 500_000, isLive: true })
+  .build();
+
+await msfSession.publishDelta(delta);
+
+// === SUBSCRIBER SIDE ===
+
+// Subscribe to catalog
+const catalogSubscriber = createCatalogSubscriber(moqtSession, [&#x27;conference&#x27;, &#x27;room-123&#x27;]);
+
+catalogSubscriber.on(&#x27;catalog&#x27;, (catalog) =&gt; {
+  console.log(&#x27;Received catalog version:&#x27;, catalog.version);
+
+  for (const track of catalog.tracks) {
+    console.log(`Track: ${track.name}, codec: ${track.codec}`);
+
+    if (&#x27;width&#x27; in track) {
+      console.log(`  Video: ${track.width}x${track.height}`);
+    }
+    if (&#x27;samplerate&#x27; in track) {
+      console.log(`  Audio: ${track.samplerate}Hz`);
+    }
+  }
+});
+
+catalogSubscriber.on(&#x27;delta&#x27;, (delta, newCatalog) =&gt; {
+  console.log(&#x27;Catalog updated, added tracks:&#x27;, delta.addTracks?.length);
+});
+
+await catalogSubscriber.start();
+</code></pre>
+
+<p><strong>URL Handling:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import {
+  parseMsfUrl,
+  generateMsfUrl,
+  encodeNamespace,
+  decodeNamespace,
+} from &#x27;@web-moq/msf&#x27;;
+
+// Parse MSF URL
+const url = parseMsfUrl(&#x27;moqt://relay.example.com/conference/room-123#video-main&#x27;);
+console.log(&#x27;Host:&#x27;, url.host);
+console.log(&#x27;Namespace:&#x27;, url.namespace);  // [&#x27;conference&#x27;, &#x27;room-123&#x27;]
+console.log(&#x27;Track:&#x27;, url.trackName);       // &#x27;video-main&#x27;
+
+// Generate MSF URL
+const newUrl = generateMsfUrl({
+  host: &#x27;relay.example.com&#x27;,
+  namespace: [&#x27;live&#x27;, &#x27;stream-456&#x27;],
+  trackName: &#x27;video&#x27;,
+});
+// =&gt; &#x27;moqt://relay.example.com/live/stream-456#video&#x27;
+
+// URL-safe namespace encoding
+const encoded = encodeNamespace([&#x27;my namespace&#x27;, &#x27;with/special&#x27;]);
+// =&gt; &#x27;my%20namespace/with%2Fspecial&#x27;
+
+const decoded = decodeNamespace(encoded);
+// =&gt; [&#x27;my namespace&#x27;, &#x27;with/special&#x27;]
+</code></pre>
+
+<p><strong>Timeline Operations:</strong></p>
+<pre class="code-block" data-lang="typescript"><code>
+import {
+  MediaTimelineCalculator,
+  createVideoTemplate,
+  encodeMediaTimeline,
+  decodeMediaTimeline,
+} from &#x27;@web-moq/msf&#x27;;
+
+// Create timeline template for video
+const template = createVideoTemplate({
+  framerate: 30,
+  gopSize: 60,  // keyframe every 2 seconds
+});
+
+const calculator = new MediaTimelineCalculator(template);
+
+// Map media time to group/object
+const location = calculator.timeToLocation(5000);  // 5 seconds
+console.log(`Group: ${location.group}, Object: ${location.object}`);
+
+// Map group/object to media time
+const time = calculator.locationToTime({ group: 10, object: 0 });
+console.log(`Time: ${time}ms`);
+
+// Encode/decode timeline entries
+const entries = [
+  { mediaTime: 0, group: 0, object: 0 },
+  { mediaTime: 2000, group: 1, object: 0 },
+  { mediaTime: 4000, group: 2, object: 0 },
+];
+
+const encoded = encodeMediaTimeline(entries);
+const decoded = decodeMediaTimeline(encoded);
+</code></pre>
+
+<hr>
+
+<h2 id="complete-example-video-chat-application">Complete Example: Video Chat Application</h2>
+
+<pre class="code-block" data-lang="typescript"><code>
+import { MOQTransport } from &#x27;@web-moq/core&#x27;;
+import { MOQTSession } from &#x27;@web-moq/session&#x27;;
+import { MediaSession, getResolutionConfig } from &#x27;@web-moq/media&#x27;;
+import { createMSFSession, createCatalog } from &#x27;@web-moq/msf&#x27;;
+
+async function startVideoChat(roomId: string, participantId: string) {
+  // Create media session
+  const session = new MediaSession({
+    relayUrl: &#x27;https://relay.example.com/moq&#x27;,
+  });
+
+  await session.connect();
+
+  // Get camera/mic
+  const localStream = await navigator.mediaDevices.getUserMedia({
+    video: { width: 1280, height: 720 },
+    audio: true,
+  });
+
+  // Display local preview
+  const localVideo = document.getElementById(&#x27;local&#x27;) as HTMLVideoElement;
+  localVideo.srcObject = localStream;
+
+  // Publish our stream
+  const namespace = [&#x27;chat&#x27;, roomId];
+  await session.publish(namespace, participantId, localStream, {
+    video: getResolutionConfig(&#x27;720p&#x27;),
+    audio: { sampleRate: 48000, numberOfChannels: 2 },
+  });
+
+  // Publish MSF catalog
+  const msfSession = createMSFSession(session.moqtSession!, namespace);
+  await msfSession.startCatalogPublishing();
+
+  const catalog = createCatalog()
+    .addVideoTrack({
+      name: `${participantId}-video`,
+      codec: &#x27;avc1.4D401E&#x27;,
+      width: 1280, height: 720,
+      framerate: 30, bitrate: 2_000_000,
+      isLive: true,
+    })
+    .addAudioTrack({
+      name: `${participantId}-audio`,
+      codec: &#x27;opus&#x27;,
+      samplerate: 48000,
+      channelConfig: &#x27;stereo&#x27;,
+      isLive: true,
+    })
+    .build();
+
+  await msfSession.publishCatalog(catalog);
+
+  // Subscribe to other participants
+  async function subscribeToParticipant(otherId: string) {
+    const remoteVideo = document.createElement(&#x27;video&#x27;);
+    remoteVideo.id = `remote-${otherId}`;
+    remoteVideo.autoplay = true;
+    document.getElementById(&#x27;remotes&#x27;)!.appendChild(remoteVideo);
+
+    await session.subscribe(namespace, otherId, remoteVideo);
+  }
+
+  // Return cleanup function
+  return async () =&gt; {
+    await session.stopPublishing();
+    await session.disconnect();
+    localStream.getTracks().forEach(t =&gt; t.stop());
+  };
+}
+
+// Usage
+const cleanup = await startVideoChat(&#x27;room-abc&#x27;, &#x27;alice&#x27;);
+// Later: await cleanup();
+</code></pre>
+
+        </div>
+
+        <footer>
+            Generated from <a href="https://github.com/openmoq/moxygen/tree/pico-openmoq">moxygen pico-openmoq</a>
+        </footer>
+    </div>
+</body>
+</html>
