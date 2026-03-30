@@ -498,6 +498,10 @@ export const useStore = create<AppStore>()(
 
             if (pendingAnnounceStream && pendingAnnounceConfig) {
               try {
+                // Check what tracks the stream actually has
+                const hasVideoTracks = pendingAnnounceStream.getVideoTracks().length > 0;
+                const hasAudioTracks = pendingAnnounceStream.getAudioTracks().length > 0;
+
                 // Start publishing on this track
                 const config = {
                   videoBitrate,
@@ -508,8 +512,9 @@ export const useStore = create<AppStore>()(
                   priority: pendingAnnounceConfig.priority ?? 128,
                   deliveryMode: pendingAnnounceConfig.deliveryMode ?? 'stream',
                   audioDeliveryMode,
-                  videoEnabled,
-                  audioEnabled,
+                  // Only enable video/audio if both the setting is enabled AND the stream has those tracks
+                  videoEnabled: videoEnabled && hasVideoTracks,
+                  audioEnabled: audioEnabled && hasAudioTracks,
                 };
 
                 await session.startAnnouncePublish(
@@ -520,10 +525,11 @@ export const useStore = create<AppStore>()(
                   config
                 );
 
-                // Add to published tracks
+                // Add to published tracks (determine type based on what's actually enabled)
+                const trackType = config.videoEnabled ? 'video' : 'audio';
                 get().addPublishedTrack({
                   id: `pub-${event.trackAlias.toString()}`,
-                  type: 'video',
+                  type: trackType,
                   namespace: event.namespace,
                   trackName: event.trackName,
                   active: true,
@@ -653,6 +659,10 @@ export const useStore = create<AppStore>()(
         const effectiveVideoEnabled = videoEnabled ?? globalVideoEnabled;
         const effectiveAudioEnabled = audioEnabled ?? globalAudioEnabled;
 
+        // Check what tracks the stream actually has
+        const hasVideoTracks = localStream.getVideoTracks().length > 0;
+        const hasAudioTracks = localStream.getAudioTracks().length > 0;
+
         const config: MediaConfig = {
           videoBitrate,
           audioBitrate,
@@ -662,8 +672,9 @@ export const useStore = create<AppStore>()(
           priority: priority ?? 128,
           deliveryMode: deliveryMode ?? 'stream',
           audioDeliveryMode,
-          videoEnabled: effectiveVideoEnabled,
-          audioEnabled: effectiveAudioEnabled,
+          // Only enable video/audio if both the setting is enabled AND the stream has those tracks
+          videoEnabled: effectiveVideoEnabled && hasVideoTracks,
+          audioEnabled: effectiveAudioEnabled && hasAudioTracks,
         };
 
         // Use announce flow if enabled
