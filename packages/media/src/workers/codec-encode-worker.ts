@@ -44,6 +44,10 @@ interface EncodeChannel {
   audioGroupId: number;
   audioObjectId: number;
   forceNextKeyframe: boolean;
+  /** Frame counter for keyframe interval */
+  videoFrameCount: number;
+  /** Keyframe interval in frames (0 = no auto keyframes) */
+  keyframeIntervalFrames: number;
 }
 
 // Map of channel ID to encode context
@@ -73,6 +77,11 @@ function respond(msg: CodecEncodeWorkerResponse, transfer?: Transferable[]): voi
  * Create a new encode channel
  */
 function createChannel(channelId: number, config: CodecEncodeWorkerConfig): EncodeChannel {
+  // Calculate keyframe interval in frames (default: 2 seconds worth of frames)
+  const framerate = config.video?.framerate ?? 30;
+  const keyframeIntervalSeconds = config.video?.keyframeInterval ?? 2;
+  const keyframeIntervalFrames = Math.round(keyframeIntervalSeconds * framerate);
+
   const channel: EncodeChannel = {
     channelId,
     videoEncoder: null,
@@ -83,7 +92,11 @@ function createChannel(channelId: number, config: CodecEncodeWorkerConfig): Enco
     audioGroupId: getInitialGroupId(),
     audioObjectId: 0,
     forceNextKeyframe: false,
+    videoFrameCount: 0,
+    keyframeIntervalFrames,
   };
+
+  log(`Channel ${channelId} created with keyframeIntervalFrames=${keyframeIntervalFrames}`);
 
   if (config.video) {
     initVideoEncoder(channel, config.video);
@@ -254,8 +267,12 @@ function encodeVideoFrame(channel: EncodeChannel, frame: VideoFrame, forceKeyfra
   }
 
   try {
-    const keyFrame = forceKeyframe || channel.forceNextKeyframe;
+    // Auto-generate keyframes at configured interval
+    const autoKeyframe = channel.keyframeIntervalFrames > 0 &&
+      channel.videoFrameCount % channel.keyframeIntervalFrames === 0;
+    const keyFrame = forceKeyframe || channel.forceNextKeyframe || autoKeyframe;
     channel.forceNextKeyframe = false;
+    channel.videoFrameCount++;
 
     channel.videoEncoder.encode(frame, { keyFrame });
   } catch (err) {
@@ -315,6 +332,7 @@ function resetChannel(channel: EncodeChannel): void {
   channel.audioGroupId = getInitialGroupId();
   channel.audioObjectId = 0;
   channel.forceNextKeyframe = false;
+  channel.videoFrameCount = 0;
   channel.packager.reset();
   log(`Channel ${channel.channelId} reset`);
 }
