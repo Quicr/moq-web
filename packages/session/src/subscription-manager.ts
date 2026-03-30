@@ -30,6 +30,8 @@ export class SubscriptionManager {
   private subscriptions = new Map<number, InternalSubscription>();
   /** Subscriptions by track alias (as string for bigint compatibility) */
   private subscriptionsByAlias = new Map<string, InternalSubscription>();
+  /** Subscriptions by request ID (separate from alias to avoid collisions) */
+  private subscriptionsByRequestId = new Map<string, InternalSubscription>();
   /** Subscriptions by full track name */
   private subscriptionsByTrackName = new Map<string, InternalSubscription>();
 
@@ -49,8 +51,8 @@ export class SubscriptionManager {
       this.safeRegisterAlias(aliasKey, subscription);
     }
 
-    // Pre-register by request ID
-    this.safeRegisterAlias(subscription.requestId.toString(), subscription);
+    // Pre-register by request ID (in separate map to avoid collisions with trackAlias)
+    this.subscriptionsByRequestId.set(subscription.requestId.toString(), subscription);
 
     log.debug('Added subscription', {
       subscriptionId: subscription.subscriptionId,
@@ -84,12 +86,8 @@ export class SubscriptionManager {
    * Find subscription by request ID
    */
   findByRequestId(requestId: number): InternalSubscription | undefined {
-    for (const sub of this.subscriptions.values()) {
-      if (sub.requestId === requestId) {
-        return sub;
-      }
-    }
-    return undefined;
+    // Use the dedicated requestId map for O(1) lookup
+    return this.subscriptionsByRequestId.get(requestId.toString());
   }
 
   /**
@@ -120,11 +118,7 @@ export class SubscriptionManager {
       }
     }
 
-    // Keep request ID mapping too
-    const requestIdKey = sub.requestId.toString();
-    if (requestIdKey !== serverAliasKey) {
-      this.safeRegisterAlias(requestIdKey, sub);
-    }
+    // Request ID is in separate map, no need to update here
 
     log.info('Updated subscription aliases', {
       subscriptionId,
@@ -159,11 +153,11 @@ export class SubscriptionManager {
       }
     }
 
-    // Clean up request ID mapping
+    // Clean up request ID mapping (from separate map)
     const requestIdKey = sub.requestId.toString();
-    const requestIdMapped = this.subscriptionsByAlias.get(requestIdKey);
+    const requestIdMapped = this.subscriptionsByRequestId.get(requestIdKey);
     if (requestIdMapped && requestIdMapped.subscriptionId === subscriptionId) {
-      this.subscriptionsByAlias.delete(requestIdKey);
+      this.subscriptionsByRequestId.delete(requestIdKey);
     }
 
     log.debug('Removed subscription', { subscriptionId });
@@ -197,6 +191,7 @@ export class SubscriptionManager {
   clear(): void {
     this.subscriptions.clear();
     this.subscriptionsByAlias.clear();
+    this.subscriptionsByRequestId.clear();
     this.subscriptionsByTrackName.clear();
   }
 
