@@ -34,6 +34,12 @@ export const SettingsPanel: React.FC = () => {
     setJitterBufferDelay,
     varIntType,
     setVarIntType,
+    vadEnabled,
+    setVadEnabled,
+    vadProvider,
+    setVadProvider,
+    vadVisualizationEnabled,
+    setVadVisualizationEnabled,
   } = useStore();
 
   return (
@@ -118,6 +124,103 @@ export const SettingsPanel: React.FC = () => {
             <option value="192000">192 kbps</option>
             <option value="256000">256 kbps</option>
           </select>
+        </div>
+      </div>
+
+      {/* Voice Activity Detection */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
+          Voice Activity Detection
+        </h3>
+        <div className="space-y-4">
+          {/* Enable VAD Toggle */}
+          <div>
+            <label className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Enable VAD
+                </span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Detect voice activity for active speaker switching
+                </p>
+              </div>
+              <button
+                onClick={() => setVadEnabled(!vadEnabled)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  vadEnabled ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    vadEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </label>
+          </div>
+
+          {/* VAD Provider Selection */}
+          {vadEnabled && (
+            <>
+              <div>
+                <label className="label">VAD Provider</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setVadProvider('libfvad')}
+                    className={`p-3 rounded-md border text-left ${
+                      vadProvider === 'libfvad'
+                        ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/30'
+                        : 'border-gray-200 dark:border-gray-700'
+                    }`}
+                  >
+                    <div className="font-medium text-sm">libfvad</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      WebRTC VAD, low CPU
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => setVadProvider('silero')}
+                    className={`p-3 rounded-md border text-left ${
+                      vadProvider === 'silero'
+                        ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/30'
+                        : 'border-gray-200 dark:border-gray-700'
+                    }`}
+                  >
+                    <div className="font-medium text-sm">Silero</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Neural network, higher accuracy
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* VAD Visualization Toggle */}
+              <div>
+                <label className="flex items-center justify-between">
+                  <div>
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Show VAD Visualization
+                    </span>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Display audio bars indicator (uses more CPU)
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setVadVisualizationEnabled(!vadVisualizationEnabled)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      vadVisualizationEnabled ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        vadVisualizationEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </label>
+              </div>
+            </>
+          )}
         </div>
       </div>
 

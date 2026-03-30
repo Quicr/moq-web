@@ -165,3 +165,15 @@ export type {
   VideoDecodedResult,
   AudioDecodedResult,
 } from './workers/index.js';
+
+// Voice Activity Detection
+export { BaseVAD, LibfvadVAD, SileroVAD } from './vad/index.js';
+export type {
+  VAD,
+  VADConfig,
+  VADResult,
+  VADEvents,
+  VADProvider,
+  LibfvadModule,
+  SileroVADFactory,
+} from './vad/index.js';
