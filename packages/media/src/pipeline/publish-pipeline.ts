@@ -190,6 +190,24 @@ export class PublishPipeline {
   }
 
   /**
+   * Get appropriate AVC codec string based on resolution.
+   * Higher resolutions require higher AVC levels.
+   */
+  private getCodecForResolution(width: number, height: number): string {
+    const pixels = width * height;
+    if (pixels > 1280 * 720) {
+      // 1080p and above: Level 4.0 (Baseline)
+      return 'avc1.42E028';
+    } else if (pixels > 854 * 480) {
+      // 720p: Level 3.1 (Baseline)
+      return 'avc1.42E01F';
+    } else {
+      // 480p and below: Level 3.0 (Baseline)
+      return 'avc1.42E01E';
+    }
+  }
+
+  /**
    * Set up handlers for worker mode
    */
   private setupWorkerHandlers(): void {
@@ -265,9 +283,14 @@ export class PublishPipeline {
 
     // Initialize worker if using worker mode
     if (this.useWorker && this.encodeWorkerClient) {
+      // Select codec based on resolution - higher resolutions need higher AVC levels
+      const videoCodec = this.config.video
+        ? this.getCodecForResolution(this.config.video.width, this.config.video.height)
+        : 'avc1.42001f';
+
       await this.encodeWorkerClient.init({
         video: this.config.video ? {
-          codec: 'avc1.42001f',
+          codec: videoCodec,
           width: this.config.video.width,
           height: this.config.video.height,
           bitrate: this.config.video.bitrate,
