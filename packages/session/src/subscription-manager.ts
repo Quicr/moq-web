@@ -24,15 +24,30 @@ export interface InternalSubscription extends SubscriptionInfo {
 
 /**
  * Manages subscriptions and track alias mappings
+ *
+ * Two distinct identifier scopes:
+ * - Track Alias (data plane): Used for routing media objects to subscriptions.
+ *   This is hop-by-hop and determined by the endpoint sending PUBLISH or SUBSCRIBE_OK.
+ * - Request ID (control plane): Used for correlating control message transactions
+ *   (e.g., SUBSCRIBE↔SUBSCRIBE_OK). Scoped to control message exchanges only.
  */
 export class SubscriptionManager {
-  /** Active subscriptions by subscription ID */
+  /** Active subscriptions by subscription ID (internal identifier) */
   private subscriptions = new Map<number, InternalSubscription>();
-  /** Subscriptions by track alias (as string for bigint compatibility) */
+
+  /**
+   * Data plane: Subscriptions indexed by track alias for media object routing.
+   * Track alias is hop-by-hop, assigned by the publisher endpoint.
+   */
   private subscriptionsByAlias = new Map<string, InternalSubscription>();
-  /** Subscriptions by request ID (separate from alias to avoid collisions) */
+
+  /**
+   * Control plane: Subscriptions indexed by request ID for control message correlation.
+   * Request ID is scoped to control message transactions only.
+   */
   private subscriptionsByRequestId = new Map<string, InternalSubscription>();
-  /** Subscriptions by full track name */
+
+  /** Subscriptions by full track name (namespace/trackName) */
   private subscriptionsByTrackName = new Map<string, InternalSubscription>();
 
   /**
@@ -68,7 +83,7 @@ export class SubscriptionManager {
   }
 
   /**
-   * Get subscription by track alias
+   * Get subscription by track alias (data plane lookup for media object routing)
    */
   getByAlias(trackAlias: bigint | number | string): InternalSubscription | undefined {
     return this.subscriptionsByAlias.get(trackAlias.toString());
@@ -83,10 +98,9 @@ export class SubscriptionManager {
   }
 
   /**
-   * Find subscription by request ID
+   * Find subscription by request ID (control plane lookup for message correlation)
    */
   findByRequestId(requestId: number): InternalSubscription | undefined {
-    // Use the dedicated requestId map for O(1) lookup
     return this.subscriptionsByRequestId.get(requestId.toString());
   }
 
