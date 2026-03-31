@@ -502,6 +502,18 @@ export const useStore = create<AppStore>()(
                 const hasVideoTracks = pendingAnnounceStream.getVideoTracks().length > 0;
                 const hasAudioTracks = pendingAnnounceStream.getAudioTracks().length > 0;
 
+                // DEBUG: Log track info
+                log.error('ANNOUNCE DEBUG - stream tracks:', {
+                  videoTracks: pendingAnnounceStream.getVideoTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled })),
+                  audioTracks: pendingAnnounceStream.getAudioTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled })),
+                  hasVideoTracks,
+                  hasAudioTracks,
+                  settingVideoEnabled: videoEnabled,
+                  settingAudioEnabled: audioEnabled,
+                  finalVideoEnabled: videoEnabled && hasVideoTracks,
+                  finalAudioEnabled: audioEnabled && hasAudioTracks,
+                });
+
                 // Start publishing on this track
                 const config = {
                   videoBitrate,
