@@ -2225,9 +2225,10 @@ export class ObjectCodec {
       writer.writeVarInt(header.subgroupId);
     }
     writer.writeVarInt(header.objectId);
-    writer.writeByte(header.publisherPriority); // 1 byte, not varint
     if (!IS_DRAFT_16) {
-      // Draft-14 LAPS format includes objectStatus in header
+      // Draft-14 includes publisherPriority and objectStatus in datagram header
+      // Draft-16 datagrams go directly from Object ID to payload
+      writer.writeByte(header.publisherPriority); // 1 byte, not varint
       writer.writeVarInt(header.objectStatus);
     }
     return writer.toUint8Array();
@@ -2256,7 +2257,9 @@ export class ObjectCodec {
     // Draft-16 datagrams don't have subgroupId; draft-14 does
     const subgroupId = IS_DRAFT_16 ? 0 : reader.readVarIntNumber();
     const objectId = reader.readVarIntNumber();
-    const publisherPriority = reader.readByte(); // 1 byte, not varint
+    // Draft-16 datagrams go directly from Object ID to payload (no publisherPriority/objectStatus)
+    // Draft-14 includes publisherPriority (1 byte) and objectStatus (varint)
+    const publisherPriority = IS_DRAFT_16 ? 128 : reader.readByte(); // default priority for draft-16
     const objectStatus = IS_DRAFT_16 ? ObjectStatus.NORMAL : reader.readVarIntNumber() as ObjectStatus;
 
     const header: ObjectHeader = {
