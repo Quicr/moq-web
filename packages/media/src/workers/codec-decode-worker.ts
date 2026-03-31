@@ -234,6 +234,30 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
 
       // Reset keyframe state to force waiting for new keyframe after error
       channel.hasReceivedKeyframe = false;
+
+      // Reset the decoder to recover from error state
+      // This puts it back to "configured" state, ready to decode from next keyframe
+      if (channel.videoDecoder && channel.videoDecoder.state !== 'closed') {
+        try {
+          channel.videoDecoder.reset();
+          // Reconfigure after reset
+          if (channel.videoConfig) {
+            const decoderConfig: VideoDecoderConfig = {
+              codec: channel.videoConfig.codec,
+              codedWidth: channel.videoConfig.codedWidth,
+              codedHeight: channel.videoConfig.codedHeight,
+            };
+            if (channel.videoConfig.description) {
+              decoderConfig.description = channel.videoConfig.description;
+            }
+            channel.videoDecoder.configure(decoderConfig);
+            console.log(`[CodecDecodeWorker] Decoder reset and reconfigured (channel ${channel.channelId})`);
+          }
+        } catch (resetErr) {
+          console.error(`[CodecDecodeWorker] Failed to reset decoder (channel ${channel.channelId}):`, resetErr);
+        }
+      }
+
       respond({ type: 'error', channelId: channel.channelId, message: err.message, diagnostics });
     },
   });
