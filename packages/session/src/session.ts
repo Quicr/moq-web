@@ -272,6 +272,10 @@ export class MOQTSession {
    * Send datagram (works in both modes)
    */
   private async doSendDatagram(data: Uint8Array): Promise<void> {
+    // DEBUG: Log all datagram sends with stack trace
+    log.error('DATAGRAM SENT - stack trace:', new Error().stack);
+    log.error('DATAGRAM data (first 20 bytes):', Array.from(data.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+
     if (this.useWorker) {
       this.transportWorker!.sendDatagram(data);
     } else {
@@ -1642,6 +1646,18 @@ export class MOQTSession {
     const priority = publication?.priority ?? 128;
     const deliveryMode = publication?.deliveryMode ?? 'stream';
     const audioDeliveryMode = publication?.audioDeliveryMode ?? 'datagram';
+
+    // DEBUG: Log all sendObject calls with settings
+    log.error('sendObject called:', {
+      trackAlias: trackAlias.toString(),
+      metadataType: metadata.type,
+      isKeyframe: metadata.isKeyframe,
+      groupId: metadata.groupId,
+      objectId: metadata.objectId,
+      publicationFound: !!publication,
+      deliveryMode,
+      audioDeliveryMode,
+    });
 
     if (deliveryMode === 'datagram') {
       await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
