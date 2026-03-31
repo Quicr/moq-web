@@ -182,6 +182,9 @@ interface ConnectionSlice {
     deliveryTimeout?: number;
     priority?: number;
     deliveryMode?: 'stream' | 'datagram';
+    /** Track type enabled from panel - overrides stream track detection */
+    videoEnabled?: boolean;
+    audioEnabled?: boolean;
   } | null;
   startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => Promise<number>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
@@ -494,7 +497,7 @@ export const useStore = create<AppStore>()(
               trackAlias: event.trackAlias.toString(),
             });
 
-            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled, audioEnabled, audioDeliveryMode } = get();
+            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode } = get();
 
             if (pendingAnnounceStream && pendingAnnounceConfig) {
               try {
@@ -502,17 +505,11 @@ export const useStore = create<AppStore>()(
                 const hasVideoTracks = pendingAnnounceStream.getVideoTracks().length > 0;
                 const hasAudioTracks = pendingAnnounceStream.getAudioTracks().length > 0;
 
-                // DEBUG: Log track info
-                log.error('ANNOUNCE DEBUG - stream tracks:', {
-                  videoTracks: pendingAnnounceStream.getVideoTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled })),
-                  audioTracks: pendingAnnounceStream.getAudioTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled })),
-                  hasVideoTracks,
-                  hasAudioTracks,
-                  settingVideoEnabled: videoEnabled,
-                  settingAudioEnabled: audioEnabled,
-                  finalVideoEnabled: videoEnabled && hasVideoTracks,
-                  finalAudioEnabled: audioEnabled && hasAudioTracks,
-                });
+                // Use the panel's explicit track type config, but only if the stream has those tracks
+                // This respects the panel's intent (e.g., user selected "video" track type)
+                // rather than using global settings which may not match the panel's configuration
+                const videoEnabled = (pendingAnnounceConfig.videoEnabled ?? hasVideoTracks) && hasVideoTracks;
+                const audioEnabled = (pendingAnnounceConfig.audioEnabled ?? hasAudioTracks) && hasAudioTracks;
 
                 // Start publishing on this track
                 const config = {
@@ -524,9 +521,8 @@ export const useStore = create<AppStore>()(
                   priority: pendingAnnounceConfig.priority ?? 128,
                   deliveryMode: pendingAnnounceConfig.deliveryMode ?? 'stream',
                   audioDeliveryMode,
-                  // Only enable video/audio if both the setting is enabled AND the stream has those tracks
-                  videoEnabled: videoEnabled && hasVideoTracks,
-                  audioEnabled: audioEnabled && hasAudioTracks,
+                  videoEnabled,
+                  audioEnabled,
                 };
 
                 await session.startAnnouncePublish(
@@ -702,6 +698,9 @@ export const useStore = create<AppStore>()(
               deliveryTimeout: deliveryTimeout ?? 5000,
               priority: priority ?? 128,
               deliveryMode: deliveryMode ?? 'stream',
+              // Store the panel's explicit track type intent
+              videoEnabled: effectiveVideoEnabled,
+              audioEnabled: effectiveAudioEnabled,
             },
           });
 
