@@ -2342,10 +2342,11 @@ export class ObjectCodec {
    *
    * @param header - Subgroup header to encode
    * @param endOfGroup - Whether this is the last subgroup in the group
-   * @returns Encoded bytes
+   * @returns Tuple of [encoded bytes, hasExtensions flag]
    */
-  static encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): Uint8Array {
+  static encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
     const writer = new BufferWriter();
+    let hasExtensions = false;
 
     if (IS_DRAFT_16) {
       // Draft-16 format:
@@ -2359,6 +2360,7 @@ export class ObjectCodec {
       }
       // SUBGROUP_ID_MODE = 0b00: no subgroup ID field (implicit 0)
       // DEFAULT_PRIORITY = 0: include publisher priority field
+      hasExtensions = (headerType & 0x01) !== 0;
 
       writer.writeVarInt(headerType);
       writer.writeVarInt(header.trackAlias);
@@ -2373,8 +2375,9 @@ export class ObjectCodec {
       writer.writeVarInt(header.groupId);
       // subgroupId not written for type 0x11 (implied 0)
       writer.writeByte(header.publisherPriority);
+      hasExtensions = true; // 0x11 has extensions bit set
     }
-    return writer.toUint8Array();
+    return [writer.toUint8Array(), hasExtensions];
   }
 
   /**
@@ -2512,13 +2515,15 @@ export class ObjectCodec {
    * @param payload - Object payload
    * @param status - Object status (default: NORMAL)
    * @param previousObjectId - Previous object ID for delta encoding (draft-16), -1 for first object
+   * @param hasExtensions - Whether objects have extensions field (from subgroup header type)
    * @returns Encoded bytes
    */
   static encodeStreamObject(
     objectId: number,
     payload: Uint8Array,
     status: ObjectStatus = ObjectStatus.NORMAL,
-    previousObjectId = -1
+    previousObjectId = -1,
+    hasExtensions = false
   ): Uint8Array {
     const writer = new BufferWriter();
 
@@ -2530,9 +2535,11 @@ export class ObjectCodec {
       const objectIdDelta = isFirstObject ? objectId : (objectId - previousObjectId - 1);
       writer.writeVarInt(objectIdDelta);
 
-      // Draft-16 format: Object ID Delta | ExtLen | [Extensions] | Payload Length | [Status] | Payload
-      // Always write extension length (0 if no extensions)
-      writer.writeVarInt(0); // No extensions for now
+      // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | Payload
+      // Extension length field is only present when hasExtensions bit is set in subgroup header
+      if (hasExtensions) {
+        writer.writeVarInt(0); // No extensions for now
+      }
 
       if (payload.length === 0) {
         writer.writeVarInt(0);
@@ -2599,12 +2606,14 @@ export class ObjectCodec {
     }
 
     if (IS_DRAFT_16) {
-      // Draft-16 format: Object ID Delta | ExtLen | [Extensions] | Payload Length | [Status] | [Payload]
-      // ExtLen is always present: 0 if no extensions, otherwise total length of extension bytes
-      const extensionLength = reader.readVarIntNumber();
-      if (extensionLength > 0) {
-        // Skip extension bytes (TODO: parse KVPs if needed)
-        reader.readBytes(extensionLength);
+      // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | [Payload]
+      // Extension length field is only present when hasExtensions bit is set in subgroup header
+      if (hasExtensions) {
+        const extensionLength = reader.readVarIntNumber();
+        if (extensionLength > 0) {
+          // Skip extension bytes (TODO: parse KVPs if needed)
+          reader.readBytes(extensionLength);
+        }
       }
       const payloadLength = reader.readVarIntNumber();
       let status = ObjectStatus.NORMAL;

@@ -151,6 +151,7 @@ export class MOQTSession {
     groupId: number;
     objectCount: number;
     previousObjectId: number; // For delta encoding in draft-16
+    hasExtensions: boolean; // Whether subgroup header has extensions bit set
   }>();
   /** Announced namespaces (for announce flow) */
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
@@ -1735,7 +1736,7 @@ export class MOQTSession {
       const streamInfo = await this.doCreateStream();
 
       // Set END_OF_GROUP=true since this stream contains one complete object/group
-      const subgroupHeader = ObjectCodec.encodeSubgroupHeader({
+      const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
         trackAlias,
         groupId: metadata.groupId,
         subgroupId: 0,
@@ -1745,7 +1746,9 @@ export class MOQTSession {
       const objectData = ObjectCodec.encodeStreamObject(
         metadata.objectId,
         data,
-        ObjectStatus.NORMAL
+        ObjectStatus.NORMAL,
+        -1, // previousObjectId (first object)
+        hasExtensions
       );
 
       const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -1804,7 +1807,8 @@ export class MOQTSession {
               existing.previousObjectId + 1, // Next object ID
               new Uint8Array(0), // Empty payload
               ObjectStatus.END_OF_GROUP,
-              existing.previousObjectId
+              existing.previousObjectId,
+              existing.hasExtensions
             );
             await this.doWriteStream({ writer: existing.writer, streamId: existing.streamId }, endOfGroupObject);
 
@@ -1826,7 +1830,7 @@ export class MOQTSession {
         const streamInfo = await this.doCreateStream();
 
         // Set END_OF_GROUP=true since each stream contains exactly one complete group (one GOP)
-        const subgroupHeader = ObjectCodec.encodeSubgroupHeader({
+        const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
           trackAlias,
           groupId: metadata.groupId,
           subgroupId: 0,
@@ -1836,7 +1840,9 @@ export class MOQTSession {
         const objectData = ObjectCodec.encodeStreamObject(
           metadata.objectId,
           data,
-          ObjectStatus.NORMAL
+          ObjectStatus.NORMAL,
+          -1, // previousObjectId (first object)
+          hasExtensions
         );
 
         const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -1851,6 +1857,7 @@ export class MOQTSession {
           groupId: metadata.groupId,
           objectCount: 1,
           previousObjectId: metadata.objectId, // For delta encoding
+          hasExtensions,
         });
 
         log.info('Started new GOP stream with keyframe', {
@@ -1893,7 +1900,8 @@ export class MOQTSession {
           metadata.objectId,
           data,
           ObjectStatus.NORMAL,
-          existing.previousObjectId // Delta encoding from previous object
+          existing.previousObjectId, // Delta encoding from previous object
+          existing.hasExtensions
         );
 
         try {
