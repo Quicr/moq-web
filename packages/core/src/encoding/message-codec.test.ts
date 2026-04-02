@@ -942,7 +942,7 @@ describe('ObjectCodec', () => {
         publisherPriority: 200,
       };
 
-      const encoded = ObjectCodec.encodeSubgroupHeader(header);
+      const [encoded] = ObjectCodec.encodeSubgroupHeader(header);
       const [decoded, bytesConsumed] = ObjectCodec.decodeSubgroupHeader(encoded);
 
       expect(decoded.trackAlias).toBe(BigInt(100));
