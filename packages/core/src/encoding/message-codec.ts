@@ -2225,9 +2225,11 @@ export class ObjectCodec {
       writer.writeVarInt(header.subgroupId);
     }
     writer.writeVarInt(header.objectId);
-    if (!IS_DRAFT_16) {
+    if (IS_DRAFT_16) {
+      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
+      writer.writeVarInt(0); // No extensions for now
+    } else {
       // Draft-14 includes publisherPriority and objectStatus in datagram header
-      // Draft-16 datagrams go directly from Object ID to payload
       writer.writeByte(header.publisherPriority); // 1 byte, not varint
       writer.writeVarInt(header.objectStatus);
     }
@@ -2257,10 +2259,24 @@ export class ObjectCodec {
     // Draft-16 datagrams don't have subgroupId; draft-14 does
     const subgroupId = IS_DRAFT_16 ? 0 : reader.readVarIntNumber();
     const objectId = reader.readVarIntNumber();
-    // Draft-16 datagrams go directly from Object ID to payload (no publisherPriority/objectStatus)
-    // Draft-14 includes publisherPriority (1 byte) and objectStatus (varint)
-    const publisherPriority = IS_DRAFT_16 ? 128 : reader.readByte(); // default priority for draft-16
-    const objectStatus = IS_DRAFT_16 ? ObjectStatus.NORMAL : reader.readVarIntNumber() as ObjectStatus;
+
+    let publisherPriority: number;
+    let objectStatus: ObjectStatus;
+
+    if (IS_DRAFT_16) {
+      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
+      const extensionLength = reader.readVarIntNumber();
+      if (extensionLength > 0) {
+        // Skip extension bytes
+        reader.readBytes(extensionLength);
+      }
+      publisherPriority = 128; // default priority
+      objectStatus = ObjectStatus.NORMAL;
+    } else {
+      // Draft-14 includes publisherPriority (1 byte) and objectStatus (varint)
+      publisherPriority = reader.readByte();
+      objectStatus = reader.readVarIntNumber() as ObjectStatus;
+    }
 
     const header: ObjectHeader = {
       trackAlias: trackAliasBigInt,
@@ -2514,8 +2530,10 @@ export class ObjectCodec {
       const objectIdDelta = isFirstObject ? objectId : (objectId - previousObjectId - 1);
       writer.writeVarInt(objectIdDelta);
 
-      // Draft-16 format: Object ID Delta | Payload Length | Payload
-      // No extensions field
+      // Draft-16 format: Object ID Delta | ExtLen | [Extensions] | Payload Length | [Status] | Payload
+      // Always write extension length (0 if no extensions)
+      writer.writeVarInt(0); // No extensions for now
+
       if (payload.length === 0) {
         writer.writeVarInt(0);
         writer.writeVarInt(status);
@@ -2581,44 +2599,12 @@ export class ObjectCodec {
     }
 
     if (IS_DRAFT_16) {
-      // Draft-16 format: Object ID Delta | [Extensions] | Payload Length | [Status] | [Payload]
-      // Draft-16 extensions are inline KVPs per section 1.4.2:
-      //   - Delta Type (varint): type = prev_type + delta + 1 (first: type = delta)
-      //   - Length (varint): only present if type is odd
-      //   - Value: varint if even type, Length bytes if odd type
-      // Extensions are NOT length-prefixed. When 0 extensions, 0 bytes are written.
-      if (hasExtensions) {
-        // Parse extension KVPs until we hit payload length
-        // Extension types are small registered values; payload length is typically larger
-        let prevType = -1;
-        while (reader.hasMore) {
-          // Peek at next varint to determine if it's extension type or payload length
-          const peekValue = reader.peekVarIntNumber();
-
-          // Calculate what the extension type would be
-          const extType = prevType < 0 ? peekValue : (prevType + peekValue + 1);
-
-          // Extension types are registered small values (< 0x40)
-          // If this looks like a payload length (>= 0x40 or very large), stop parsing extensions
-          if (extType >= 0x40) {
-            break;
-          }
-
-          // Read the delta type
-          const deltaType = reader.readVarIntNumber();
-          const type = prevType < 0 ? deltaType : (prevType + deltaType + 1);
-          prevType = type;
-
-          // Odd types have length + value bytes, even types have varint value
-          if (type % 2 === 1) {
-            const extLen = reader.readVarIntNumber();
-            const extValue = reader.readBytes(extLen);
-            log.trace('Object extension (odd)', { type, length: extLen, value: extValue });
-          } else {
-            const extValue = reader.readVarIntNumber();
-            log.trace('Object extension (even)', { type, value: extValue });
-          }
-        }
+      // Draft-16 format: Object ID Delta | ExtLen | [Extensions] | Payload Length | [Status] | [Payload]
+      // ExtLen is always present: 0 if no extensions, otherwise total length of extension bytes
+      const extensionLength = reader.readVarIntNumber();
+      if (extensionLength > 0) {
+        // Skip extension bytes (TODO: parse KVPs if needed)
+        reader.readBytes(extensionLength);
       }
       const payloadLength = reader.readVarIntNumber();
       let status = ObjectStatus.NORMAL;
