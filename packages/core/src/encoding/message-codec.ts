@@ -2346,7 +2346,7 @@ export class ObjectCodec {
    */
   static encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
     const writer = new BufferWriter();
-    let hasExtensions = false;
+    let hasExtensions: boolean;
 
     if (IS_DRAFT_16) {
       // Draft-16 format:
