@@ -252,7 +252,7 @@ export const PublishPanel: React.FC = () => {
               </div>
             )}
           </div>
-          <div className="flex gap-2 items-center">
+          <div className="flex gap-2">
             {!localStream ? (
               <button onClick={startCapture} className="btn-secondary flex-1">
                 Start Capture
@@ -262,21 +262,25 @@ export const PublishPanel: React.FC = () => {
                 Stop Capture
               </button>
             )}
+          </div>
+          {/* VAD Status - fixed height container to prevent layout shifts */}
+          <div className="mt-2 h-8 flex items-center">
             {localStream && (
-              <VADIndicator
-                audioContext={audioContext}
-                sourceNode={sourceNode}
-                isSpeaking={isSpeaking}
-                vadResult={vadResult}
-              />
+              <div className={`flex items-center gap-3 text-sm ${isSpeaking ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`}>
+                <VADIndicator
+                  audioContext={audioContext}
+                  sourceNode={sourceNode}
+                  isSpeaking={isSpeaking}
+                  vadResult={vadResult}
+                />
+                <VADDot isSpeaking={isSpeaking} />
+                <span>{isSpeaking ? 'Speaking' : 'Silent'}</span>
+                {vadResult && (
+                  <span className="text-xs opacity-75">({(vadResult.probability * 100).toFixed(0)}%)</span>
+                )}
+              </div>
             )}
           </div>
-          {localStream && isSpeaking && (
-            <div className="mt-2 flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-              <VADDot isSpeaking={isSpeaking} />
-              <span>Voice detected</span>
-            </div>
-          )}
         </div>
       </div>
 
