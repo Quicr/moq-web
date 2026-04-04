@@ -169,8 +169,13 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         catalogTimescale: config.catalogTimescale,
         allowPartialGroupDecode: true,
         skipOnlyToKeyframe: true,
+        skipToLatestGroup: config.skipToLatestGroup ?? false,
+        skipGraceFrames: config.skipGraceFrames ?? 3,
       });
-      log(`Channel ${channelId} using GroupArbiter for video`);
+      log(`Channel ${channelId} using GroupArbiter for video`, {
+        skipToLatestGroup: config.skipToLatestGroup,
+        skipGraceFrames: config.skipGraceFrames,
+      });
     } else {
       // Use legacy JitterBuffer
       channel.videoBuffer = new JitterBuffer<VideoBufferData>({
@@ -192,6 +197,8 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         estimatedGopDuration: 20, // Audio frames are typically ~20ms
         allowPartialGroupDecode: true,
         skipOnlyToKeyframe: false, // Audio doesn't need keyframes (Opus)
+        skipToLatestGroup: config.skipToLatestGroup ?? false,
+        skipGraceFrames: config.skipGraceFrames ?? 3,
       });
       log(`Channel ${channelId} using GroupArbiter for audio`);
     } else {

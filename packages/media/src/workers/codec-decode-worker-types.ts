@@ -64,6 +64,10 @@ export interface CodecDecodeWorkerConfig {
   catalogFramerate?: number;
   /** Timescale hint from catalog in units per second (optional) */
   catalogTimescale?: number;
+  /** Skip to latest group when a newer group arrives (aggressive catch-up, default: false) */
+  skipToLatestGroup?: boolean;
+  /** Number of frames to wait before skipping to latest group (grace period, default: 3) */
+  skipGraceFrames?: number;
 }
 
 /**

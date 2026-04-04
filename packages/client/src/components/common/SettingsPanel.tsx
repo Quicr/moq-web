@@ -50,6 +50,10 @@ export const SettingsPanel: React.FC = () => {
     setMaxLatency,
     estimatedGopDuration,
     setEstimatedGopDuration,
+    skipToLatestGroup,
+    setSkipToLatestGroup,
+    skipGraceFrames,
+    setSkipGraceFrames,
   } = useStore();
 
   return (
@@ -470,6 +474,50 @@ export const SettingsPanel: React.FC = () => {
                         <span>5000ms (long)</span>
                       </div>
                     </div>
+                    <div>
+                      <label className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Skip to Latest Group
+                          </span>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Jump to newest GOP when behind (aggressive catch-up)
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setSkipToLatestGroup(!skipToLatestGroup)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            skipToLatestGroup ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              skipToLatestGroup ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </label>
+                    </div>
+                    {skipToLatestGroup && (
+                      <div>
+                        <label className="label">
+                          Grace Period: {skipGraceFrames} frame{skipGraceFrames !== 1 ? 's' : ''}
+                        </label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="10"
+                          step="1"
+                          value={skipGraceFrames}
+                          onChange={(e) => setSkipGraceFrames(Number(e.target.value))}
+                          className="w-full"
+                        />
+                        <div className="flex justify-between text-xs text-gray-500 mt-1">
+                          <span>0 (immediate)</span>
+                          <span>10 (patient)</span>
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
               </div>

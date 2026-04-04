@@ -92,6 +92,10 @@ export interface SubscribePipelineConfig {
   catalogFramerate?: number;
   /** Timescale hint from catalog in units per second (optional) */
   catalogTimescale?: number;
+  /** Skip to latest group when a newer group arrives (aggressive catch-up, default: false) */
+  skipToLatestGroup?: boolean;
+  /** Number of frames to wait before skipping to latest group (grace period, default: 3) */
+  skipGraceFrames?: number;
 
   /**
    * Optional decode worker for offloading decoding to a web worker.
@@ -396,6 +400,8 @@ export class SubscribePipeline {
       estimatedGopDuration: this.config.estimatedGopDuration,
       catalogFramerate: this.config.catalogFramerate,
       catalogTimescale: this.config.catalogTimescale,
+      skipToLatestGroup: this.config.skipToLatestGroup,
+      skipGraceFrames: this.config.skipGraceFrames,
     });
 
     log.info('Decode worker channel initialized', { channelId: this.channelId });
@@ -450,8 +456,13 @@ export class SubscribePipeline {
           catalogTimescale: this.config.catalogTimescale,
           allowPartialGroupDecode: true,
           skipOnlyToKeyframe: true,
+          skipToLatestGroup: this.config.skipToLatestGroup ?? false,
+          skipGraceFrames: this.config.skipGraceFrames ?? 3,
         });
-        log.info('Using GroupArbiter for video');
+        log.info('Using GroupArbiter for video', {
+          skipToLatestGroup: this.config.skipToLatestGroup,
+          skipGraceFrames: this.config.skipGraceFrames,
+        });
       } else {
         this.videoBuffer = new JitterBuffer({
           targetDelay: jitterDelay,
@@ -483,6 +494,8 @@ export class SubscribePipeline {
           estimatedGopDuration: 20, // Audio frames are typically ~20ms
           allowPartialGroupDecode: true,
           skipOnlyToKeyframe: false, // Audio doesn't need keyframes (Opus)
+          skipToLatestGroup: this.config.skipToLatestGroup ?? false,
+          skipGraceFrames: this.config.skipGraceFrames ?? 3,
         });
         log.info('Using GroupArbiter for audio');
       } else {
