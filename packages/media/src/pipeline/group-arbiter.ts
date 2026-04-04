@@ -144,6 +144,7 @@ export class GroupArbiter<T> {
       locTimestamp,
       isKeyframe,
       isDiscardable: isDiscardable ?? false,
+      shouldRender: true, // Default to render; catch-up logic may change this
     };
 
     group.frames.set(objectId, frameEntry);
@@ -230,7 +231,8 @@ export class GroupArbiter<T> {
    * Get frames ready for output
    *
    * @param maxFrames - Maximum frames to return (default: 5)
-   * @returns Array of frames ready for decoding
+   * @returns Array of frames ready for decoding. Check frame.shouldRender
+   *          to determine if frame should be displayed or just decoded.
    */
   getReadyFrames(maxFrames = 5): FrameEntry<T>[] {
     const result: FrameEntry<T>[] = [];
@@ -249,13 +251,30 @@ export class GroupArbiter<T> {
       }
     }
 
+    // Check if we should enter catch-up mode
+    const readyFrameCount = this.countReadyFrames(activeGroup);
+    const inCatchUpMode =
+      this.config.enableCatchUp &&
+      readyFrameCount >= this.config.catchUpThreshold;
+
+    if (inCatchUpMode) {
+      this.stats.catchUpEvents++;
+    }
+
+    // Determine how many frames to output
+    const effectiveMaxFrames = inCatchUpMode
+      ? Math.min(readyFrameCount, this.config.maxCatchUpFrames)
+      : maxFrames;
+
     // Output frames in objectId order
     const startObjectId =
       activeGroup.outputObjectId < 0 ? 0 : activeGroup.outputObjectId;
 
+    const now = performance.now();
+
     for (
       let objId = startObjectId;
-      objId <= activeGroup.highestObjectId && result.length < maxFrames;
+      objId <= activeGroup.highestObjectId && result.length < effectiveMaxFrames;
       objId++
     ) {
       const frame = activeGroup.frames.get(objId);
@@ -270,11 +289,13 @@ export class GroupArbiter<T> {
         continue;
       }
 
-      // Check jitter delay using wall-clock time (not ticks)
-      // This ensures frames are released even when no new frames are arriving
-      const now = performance.now();
-      if (frame.receivedAt + this.config.jitterDelay > now) {
-        break; // Not ready yet - still within jitter buffer window
+      // In catch-up mode, bypass jitter delay to flush frames quickly
+      if (!inCatchUpMode) {
+        // Check jitter delay using wall-clock time (not ticks)
+        // This ensures frames are released even when no new frames are arriving
+        if (frame.receivedAt + this.config.jitterDelay > now) {
+          break; // Not ready yet - still within jitter buffer window
+        }
       }
 
       result.push(frame);
@@ -287,6 +308,16 @@ export class GroupArbiter<T> {
       this.updateLatencyStats(latencyMs);
     }
 
+    // In catch-up mode, mark all but the last frame as decode-only (don't render)
+    if (inCatchUpMode && result.length > 1) {
+      for (let i = 0; i < result.length - 1; i++) {
+        result[i].shouldRender = false;
+        this.stats.framesFlushed++;
+      }
+      // Last frame should be rendered
+      result[result.length - 1].shouldRender = true;
+    }
+
     // Check if group is complete (all frames output)
     if (activeGroup.frames.size === 0 && activeGroup.outputObjectId > 0) {
       activeGroup.status = 'complete';
@@ -295,6 +326,30 @@ export class GroupArbiter<T> {
     }
 
     return result;
+  }
+
+  /**
+   * Count how many frames are ready for output (past jitter delay)
+   */
+  private countReadyFrames(group: GroupState<T>): number {
+    const now = performance.now();
+    let count = 0;
+    const startObjectId = group.outputObjectId < 0 ? 0 : group.outputObjectId;
+
+    for (let objId = startObjectId; objId <= group.highestObjectId; objId++) {
+      const frame = group.frames.get(objId);
+      if (!frame) {
+        // Gap - stop counting consecutive ready frames
+        break;
+      }
+      if (frame.receivedAt + this.config.jitterDelay <= now) {
+        count++;
+      } else {
+        break; // Not ready yet
+      }
+    }
+
+    return count;
   }
 
   /**

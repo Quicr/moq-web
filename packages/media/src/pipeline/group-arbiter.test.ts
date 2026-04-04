@@ -18,6 +18,7 @@ describe('GroupArbiter', () => {
         estimatedGopDuration: 100,
         deadlineExtension: 50,
         maxActiveGroups: 4,
+        enableCatchUp: false, // Disable catch-up for deterministic unit tests
       },
       ticker
     );
@@ -691,5 +692,187 @@ describe('GroupArbiter benchmark', () => {
     );
 
     expect(opsPerMs).toBeGreaterThan(100);
+  });
+});
+
+describe('GroupArbiter catch-up mode', () => {
+  it('should trigger catch-up when buffer exceeds threshold', () => {
+    const ticker = new MonotonicTickProvider();
+    const arbiter = new GroupArbiter<string>(
+      {
+        jitterDelay: 0,
+        enableCatchUp: true,
+        catchUpThreshold: 5,
+        maxCatchUpFrames: 30,
+      },
+      ticker
+    );
+
+    // Add 10 frames (exceeds threshold of 5)
+    for (let i = 0; i < 10; i++) {
+      arbiter.addFrame({
+        groupId: 0,
+        objectId: i,
+        data: `f${i}`,
+        isKeyframe: i === 0,
+      });
+    }
+
+    const frames = arbiter.getReadyFrames(3); // Request only 3, but catch-up should return all 10
+
+    expect(frames.length).toBe(10);
+
+    // All but last should have shouldRender = false
+    for (let i = 0; i < frames.length - 1; i++) {
+      expect(frames[i].shouldRender).toBe(false);
+    }
+    // Last frame should render
+    expect(frames[frames.length - 1].shouldRender).toBe(true);
+
+    // Stats should reflect catch-up
+    const stats = arbiter.getStats();
+    expect(stats.catchUpEvents).toBe(1);
+    expect(stats.framesFlushed).toBe(9); // All but last
+  });
+
+  it('should not trigger catch-up when disabled', () => {
+    const ticker = new MonotonicTickProvider();
+    const arbiter = new GroupArbiter<string>(
+      {
+        jitterDelay: 0,
+        enableCatchUp: false,
+        catchUpThreshold: 5,
+      },
+      ticker
+    );
+
+    // Add 10 frames
+    for (let i = 0; i < 10; i++) {
+      arbiter.addFrame({
+        groupId: 0,
+        objectId: i,
+        data: `f${i}`,
+        isKeyframe: i === 0,
+      });
+    }
+
+    const frames = arbiter.getReadyFrames(3);
+
+    // Should respect maxFrames limit
+    expect(frames.length).toBe(3);
+
+    // All should have shouldRender = true
+    for (const frame of frames) {
+      expect(frame.shouldRender).toBe(true);
+    }
+
+    const stats = arbiter.getStats();
+    expect(stats.catchUpEvents).toBe(0);
+    expect(stats.framesFlushed).toBe(0);
+  });
+
+  it('should not trigger catch-up when below threshold', () => {
+    const ticker = new MonotonicTickProvider();
+    const arbiter = new GroupArbiter<string>(
+      {
+        jitterDelay: 0,
+        enableCatchUp: true,
+        catchUpThreshold: 5,
+      },
+      ticker
+    );
+
+    // Add only 3 frames (below threshold of 5)
+    for (let i = 0; i < 3; i++) {
+      arbiter.addFrame({
+        groupId: 0,
+        objectId: i,
+        data: `f${i}`,
+        isKeyframe: i === 0,
+      });
+    }
+
+    const frames = arbiter.getReadyFrames(10);
+
+    expect(frames.length).toBe(3);
+
+    // All should have shouldRender = true (no catch-up)
+    for (const frame of frames) {
+      expect(frame.shouldRender).toBe(true);
+    }
+
+    const stats = arbiter.getStats();
+    expect(stats.catchUpEvents).toBe(0);
+  });
+
+  it('should respect maxCatchUpFrames limit', () => {
+    const ticker = new MonotonicTickProvider();
+    const arbiter = new GroupArbiter<string>(
+      {
+        jitterDelay: 0,
+        enableCatchUp: true,
+        catchUpThreshold: 5,
+        maxCatchUpFrames: 8,
+      },
+      ticker
+    );
+
+    // Add 15 frames
+    for (let i = 0; i < 15; i++) {
+      arbiter.addFrame({
+        groupId: 0,
+        objectId: i,
+        data: `f${i}`,
+        isKeyframe: i === 0,
+      });
+    }
+
+    const frames = arbiter.getReadyFrames(3);
+
+    // Should be limited to maxCatchUpFrames
+    expect(frames.length).toBe(8);
+
+    // Last frame should render
+    expect(frames[7].shouldRender).toBe(true);
+    // Others should not render
+    for (let i = 0; i < 7; i++) {
+      expect(frames[i].shouldRender).toBe(false);
+    }
+  });
+
+  it('should mark only last frame for rendering in catch-up', () => {
+    const ticker = new MonotonicTickProvider();
+    const arbiter = new GroupArbiter<string>(
+      {
+        jitterDelay: 0,
+        enableCatchUp: true,
+        catchUpThreshold: 3,
+      },
+      ticker
+    );
+
+    // Add 6 frames
+    for (let i = 0; i < 6; i++) {
+      arbiter.addFrame({
+        groupId: 0,
+        objectId: i,
+        data: `f${i}`,
+        isKeyframe: i === 0,
+      });
+    }
+
+    const frames = arbiter.getReadyFrames();
+
+    // Verify frame data is correct
+    expect(frames[0].data).toBe('f0');
+    expect(frames[5].data).toBe('f5');
+
+    // Only last should render
+    expect(frames[0].shouldRender).toBe(false);
+    expect(frames[1].shouldRender).toBe(false);
+    expect(frames[2].shouldRender).toBe(false);
+    expect(frames[3].shouldRender).toBe(false);
+    expect(frames[4].shouldRender).toBe(false);
+    expect(frames[5].shouldRender).toBe(true);
   });
 });

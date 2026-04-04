@@ -96,6 +96,10 @@ export interface SubscribePipelineConfig {
   skipToLatestGroup?: boolean;
   /** Number of frames to wait before skipping to latest group (grace period, default: 3) */
   skipGraceFrames?: number;
+  /** Enable catch-up mode when buffer gets too deep (default: true) */
+  enableCatchUp?: boolean;
+  /** Number of ready frames that triggers catch-up mode (default: 5) */
+  catchUpThreshold?: number;
 
   /**
    * Optional decode worker for offloading decoding to a web worker.
@@ -458,10 +462,14 @@ export class SubscribePipeline {
           skipOnlyToKeyframe: true,
           skipToLatestGroup: this.config.skipToLatestGroup ?? false,
           skipGraceFrames: this.config.skipGraceFrames ?? 3,
+          enableCatchUp: this.config.enableCatchUp ?? true,
+          catchUpThreshold: this.config.catchUpThreshold ?? 5,
         });
         log.info('Using GroupArbiter for video', {
           skipToLatestGroup: this.config.skipToLatestGroup,
           skipGraceFrames: this.config.skipGraceFrames,
+          enableCatchUp: this.config.enableCatchUp,
+          catchUpThreshold: this.config.catchUpThreshold,
         });
       } else {
         this.videoBuffer = new JitterBuffer({
@@ -496,6 +504,8 @@ export class SubscribePipeline {
           skipOnlyToKeyframe: false, // Audio doesn't need keyframes (Opus)
           skipToLatestGroup: this.config.skipToLatestGroup ?? false,
           skipGraceFrames: this.config.skipGraceFrames ?? 3,
+          enableCatchUp: this.config.enableCatchUp ?? true,
+          catchUpThreshold: this.config.catchUpThreshold ?? 5,
         });
         log.info('Using GroupArbiter for audio');
       } else {

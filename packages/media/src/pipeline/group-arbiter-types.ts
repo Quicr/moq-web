@@ -42,6 +42,13 @@ export interface FrameEntry<T> {
 
   /** Whether this frame is discardable (from LOC Video Frame Marking) */
   isDiscardable: boolean;
+
+  /**
+   * Whether this frame should be rendered after decoding.
+   * When false, frame should be decoded (to update decoder state) but not displayed.
+   * Used during catch-up to flush buffered frames quickly.
+   */
+  shouldRender: boolean;
 }
 
 /**
@@ -130,6 +137,13 @@ export interface ArbiterStats {
 
   /** Maximum observed output latency (ms) */
   maxOutputLatency: number;
+
+  // Catch-up stats
+  /** Number of times catch-up mode was triggered */
+  catchUpEvents: number;
+
+  /** Total frames flushed during catch-up (decode-only, not rendered) */
+  framesFlushed: number;
 }
 
 /**
@@ -175,6 +189,16 @@ export interface TimingConfig {
 
   /** Number of frames to wait before skipping to latest group (grace period, default: 3) */
   skipGraceFrames: number;
+
+  // Catch-up / buffer flush settings
+  /** Enable catch-up mode when buffer gets too deep (default: true) */
+  enableCatchUp: boolean;
+
+  /** Number of ready frames that triggers catch-up mode (default: 5) */
+  catchUpThreshold: number;
+
+  /** Maximum frames to flush in a single catch-up batch (default: 30) */
+  maxCatchUpFrames: number;
 }
 
 /**
@@ -191,6 +215,9 @@ export const DEFAULT_TIMING_CONFIG: TimingConfig = {
   skipOnlyToKeyframe: true,
   skipToLatestGroup: false,
   skipGraceFrames: 3,
+  enableCatchUp: true,
+  catchUpThreshold: 5,
+  maxCatchUpFrames: 30,
 };
 
 /**
@@ -237,6 +264,8 @@ export function createArbiterStats(): ArbiterStats {
     estimatedGopDuration: 0,
     avgOutputLatency: 0,
     maxOutputLatency: 0,
+    catchUpEvents: 0,
+    framesFlushed: 0,
   };
 }
 
