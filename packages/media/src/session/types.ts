@@ -105,6 +105,18 @@ export interface MediaConfig {
   enableStats?: boolean;
   /** Jitter buffer delay in milliseconds (default: 100) */
   jitterBufferDelay?: number;
+
+  // Group-aware jitter buffer options (for parallel QUIC stream handling)
+  /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
+  useGroupArbiter?: boolean;
+  /** Maximum acceptable end-to-end latency in ms before skipping to next keyframe (default: 500) */
+  maxLatency?: number;
+  /** Initial estimated GOP duration in ms (default: 1000) */
+  estimatedGopDuration?: number;
+  /** Framerate hint from catalog (improves GOP estimation) */
+  catalogFramerate?: number;
+  /** Timescale hint from catalog in units per second (e.g., 90000 for video) */
+  catalogTimescale?: number;
 }
 
 /**

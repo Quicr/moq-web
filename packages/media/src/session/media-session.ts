@@ -445,6 +445,12 @@ export class MediaSession {
       jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
+      // GroupArbiter options for parallel QUIC stream handling
+      useGroupArbiter: config.useGroupArbiter,
+      maxLatency: config.maxLatency,
+      estimatedGopDuration: config.estimatedGopDuration,
+      catalogFramerate: config.catalogFramerate,
+      catalogTimescale: config.catalogTimescale,
     });
 
     log.info('Created subscribe pipeline', {
@@ -452,6 +458,7 @@ export class MediaSession {
       hasVideoConfig: mediaType !== 'audio',
       hasAudioConfig: mediaType !== 'video',
       useDecodeWorker: !!this.workers?.decodeWorker,
+      useGroupArbiter: config.useGroupArbiter,
     });
 
     // Handle video frames - O(1) lookup using reverse map
@@ -901,12 +908,19 @@ export class MediaSession {
       jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
+      // GroupArbiter options for parallel QUIC stream handling
+      useGroupArbiter: config.useGroupArbiter,
+      maxLatency: config.maxLatency,
+      estimatedGopDuration: config.estimatedGopDuration,
+      catalogFramerate: config.catalogFramerate,
+      catalogTimescale: config.catalogTimescale,
     });
 
     log.info('Created decode pipeline for discovered track', {
       namespaceSubscriptionId: event.namespaceSubscriptionId,
       trackName: event.trackName,
       mediaType,
+      useGroupArbiter: config.useGroupArbiter,
     });
 
     // Use the subscriptionId from the event (added in the session when creating the subscription)
