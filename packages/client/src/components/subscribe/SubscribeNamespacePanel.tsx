@@ -11,6 +11,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../../store';
 import { VideoRenderer } from './VideoRenderer';
+import { AudioPlayer } from './AudioPlayer';
 
 export const SubscribeNamespacePanel: React.FC = () => {
   const {
@@ -21,6 +22,7 @@ export const SubscribeNamespacePanel: React.FC = () => {
     startNamespaceSubscription,
     stopNamespaceSubscription,
     onVideoFrame,
+    onAudioData,
   } = useStore();
 
   const [newNamespacePrefix, setNewNamespacePrefix] = useState('conference/room-1');
@@ -233,6 +235,15 @@ export const SubscribeNamespacePanel: React.FC = () => {
                             {track.type}
                           </span>
                         </div>
+                        {/* Audio Player for audio tracks */}
+                        {track.type === 'audio' && track.subscriptionId !== undefined && (
+                          <div className="mt-2">
+                            <AudioPlayer
+                              subscriptionId={track.subscriptionId}
+                              onAudioData={onAudioData}
+                            />
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
