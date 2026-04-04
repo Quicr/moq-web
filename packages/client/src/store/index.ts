@@ -340,6 +340,10 @@ interface SettingsSlice {
   maxLatency: number;
   /** Initial estimated GOP duration (ms) */
   estimatedGopDuration: number;
+  /** Skip to latest group immediately when a new group arrives (aggressive catch-up) */
+  skipToLatestGroup: boolean;
+  /** Number of frame intervals to wait before skipping to latest group (grace period) */
+  skipGraceFrames: number;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -361,6 +365,8 @@ interface SettingsSlice {
   setUseGroupArbiter: (value: boolean) => void;
   setMaxLatency: (value: number) => void;
   setEstimatedGopDuration: (value: number) => void;
+  setSkipToLatestGroup: (value: boolean) => void;
+  setSkipGraceFrames: (value: number) => void;
 }
 
 // ============================================================================
@@ -819,7 +825,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -833,6 +839,8 @@ export const useStore = create<AppStore>()(
           useGroupArbiter,
           maxLatency,
           estimatedGopDuration,
+          skipToLatestGroup,
+          skipGraceFrames,
         };
 
         const subscriptionId = await session.subscribe(
@@ -1024,7 +1032,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1042,6 +1050,8 @@ export const useStore = create<AppStore>()(
           useGroupArbiter,
           maxLatency,
           estimatedGopDuration,
+          skipToLatestGroup,
+          skipGraceFrames,
         };
 
         const subscriptionId = await session.subscribeNamespace(namespacePrefix, config);
@@ -1143,6 +1153,8 @@ export const useStore = create<AppStore>()(
       useGroupArbiter: false, // Default to legacy JitterBuffer
       maxLatency: 500, // Default 500ms max latency
       estimatedGopDuration: 1000, // Default 1s GOP
+      skipToLatestGroup: false, // Default: complete current GOP before switching
+      skipGraceFrames: 3, // Default: wait 3 frame intervals before skipping
 
       setTheme: (theme) => {
         set({ theme });
@@ -1182,6 +1194,8 @@ export const useStore = create<AppStore>()(
       setUseGroupArbiter: (value) => set({ useGroupArbiter: value }),
       setMaxLatency: (value) => set({ maxLatency: value }),
       setEstimatedGopDuration: (value) => set({ estimatedGopDuration: value }),
+      setSkipToLatestGroup: (value) => set({ skipToLatestGroup: value }),
+      setSkipGraceFrames: (value) => set({ skipGraceFrames: value }),
     }),
     {
       name: 'moqt-client-storage',
@@ -1208,6 +1222,8 @@ export const useStore = create<AppStore>()(
         useGroupArbiter: state.useGroupArbiter,
         maxLatency: state.maxLatency,
         estimatedGopDuration: state.estimatedGopDuration,
+        skipToLatestGroup: state.skipToLatestGroup,
+        skipGraceFrames: state.skipGraceFrames,
       }),
     }
   )

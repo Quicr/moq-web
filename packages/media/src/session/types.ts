@@ -117,6 +117,10 @@ export interface MediaConfig {
   catalogFramerate?: number;
   /** Timescale hint from catalog in units per second (e.g., 90000 for video) */
   catalogTimescale?: number;
+  /** Skip to latest group immediately when a new group arrives (aggressive catch-up, default: false) */
+  skipToLatestGroup?: boolean;
+  /** Number of frame intervals to wait before skipping to latest group (grace period, default: 3) */
+  skipGraceFrames?: number;
 }
 
 /**

@@ -70,6 +70,10 @@ export class GroupArbiter<T> {
   private stats: ArbiterStats;
   private syncCounter = 0;
 
+  // Skip-to-latest tracking
+  private pendingSkipGroupId = -1;
+  private pendingSkipFrameCount = 0;
+
   constructor(config: Partial<TimingConfig> = {}, tickProvider?: TickProvider) {
     this.config = { ...DEFAULT_TIMING_CONFIG, ...config };
     this.tickProvider = tickProvider ?? new MonotonicTickProvider();
@@ -170,7 +174,55 @@ export class GroupArbiter<T> {
       group.status = 'active';
     }
 
+    // Skip-to-latest logic: track newer groups with keyframes
+    if (this.config.skipToLatestGroup && groupId > this.activeGroupId) {
+      if (group.hasKeyframe) {
+        // Track this as a potential skip target
+        if (groupId > this.pendingSkipGroupId) {
+          // New higher group with keyframe - reset counter
+          this.pendingSkipGroupId = groupId;
+          this.pendingSkipFrameCount = 1;
+        } else if (groupId === this.pendingSkipGroupId) {
+          // Same group - increment counter
+          this.pendingSkipFrameCount++;
+        }
+
+        // Check if grace period reached
+        if (this.pendingSkipFrameCount >= this.config.skipGraceFrames) {
+          this.executeSkipToLatest();
+        }
+      }
+    }
+
     return true;
+  }
+
+  /**
+   * Execute skip to the latest group (pendingSkipGroupId)
+   */
+  private executeSkipToLatest(): void {
+    const targetGroup = this.groups.get(this.pendingSkipGroupId);
+    if (!targetGroup || !targetGroup.hasKeyframe) {
+      return;
+    }
+
+    // Mark all groups between active and target as skipped
+    for (const [groupId, group] of this.groups) {
+      if (groupId >= this.activeGroupId && groupId < this.pendingSkipGroupId) {
+        if (group.status === 'active' || group.status === 'receiving') {
+          group.status = 'skipped';
+          this.stats.groupsSkipped++;
+        }
+      }
+    }
+
+    // Switch to target group
+    this.activeGroupId = this.pendingSkipGroupId;
+    targetGroup.status = 'active';
+
+    // Reset pending skip tracking
+    this.pendingSkipGroupId = -1;
+    this.pendingSkipFrameCount = 0;
   }
 
   /**
@@ -486,5 +538,7 @@ export class GroupArbiter<T> {
     this.timingEstimator.reset();
     this.stats = createArbiterStats();
     this.syncCounter = 0;
+    this.pendingSkipGroupId = -1;
+    this.pendingSkipFrameCount = 0;
   }
 }

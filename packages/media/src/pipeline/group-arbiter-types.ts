@@ -160,6 +160,12 @@ export interface TimingConfig {
 
   /** Only skip to groups that have a keyframe (default: true) */
   skipOnlyToKeyframe: boolean;
+
+  /** Skip to latest group when a newer group arrives (aggressive catch-up, default: false) */
+  skipToLatestGroup: boolean;
+
+  /** Number of frames to wait before skipping to latest group (grace period, default: 3) */
+  skipGraceFrames: number;
 }
 
 /**
@@ -174,6 +180,8 @@ export const DEFAULT_TIMING_CONFIG: TimingConfig = {
   maxFramesPerGroup: 120,
   allowPartialGroupDecode: true,
   skipOnlyToKeyframe: true,
+  skipToLatestGroup: false,
+  skipGraceFrames: 3,
 };
 
 /**
