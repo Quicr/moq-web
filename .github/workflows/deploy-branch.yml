@@ -9,16 +9,23 @@ on:
         default: 'jitter-overhaul'
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
     name: Build and Deploy Branch
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}branches/${{ github.event.inputs.branch }}/
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout branch to build
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
@@ -36,15 +43,50 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
+      - name: Build branch
         run: pnpm run build
         env:
           BASE_URL: /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/
 
-      - name: Deploy to branch subfolder
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Save branch build
+        run: mkdir -p branch-build && mv packages/client/dist branch-build/${{ github.event.inputs.branch }}
+
+      - name: Checkout main for full build
+        uses: actions/checkout@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./packages/client/dist
-          destination_dir: branches/${{ github.event.inputs.branch }}
-          keep_files: true
+          ref: main
+          clean: false
+
+      - name: Install main dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build main (draft-16)
+        run: pnpm run build
+        env:
+          BASE_URL: /${{ github.event.repository.name }}/
+
+      - name: Setup combined output
+        run: mv packages/client/dist dist-combined
+
+      - name: Clean for draft-14 rebuild
+        run: pnpm run clean
+
+      - name: Build draft-14
+        run: pnpm run build:draft-14
+        env:
+          BASE_URL: /${{ github.event.repository.name }}/14/
+
+      - name: Combine all builds
+        run: |
+          mv packages/client/dist dist-combined/14
+          mkdir -p dist-combined/branches
+          mv branch-build/${{ github.event.inputs.branch }} dist-combined/branches/
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-combined
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
