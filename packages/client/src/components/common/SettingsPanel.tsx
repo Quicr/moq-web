@@ -7,12 +7,14 @@
  * Application settings including theme, codec settings, and delivery options.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useStore } from '../../store';
 import { LogLevel } from '../../types';
 import { VarIntType } from '@web-moq/core';
 
 export const SettingsPanel: React.FC = () => {
+  const [showAdvancedJitter, setShowAdvancedJitter] = useState(false);
+
   const {
     theme,
     setTheme,
@@ -42,6 +44,12 @@ export const SettingsPanel: React.FC = () => {
     setVadVisualizationEnabled,
     audioDeliveryMode,
     setAudioDeliveryMode,
+    useGroupArbiter,
+    setUseGroupArbiter,
+    maxLatency,
+    setMaxLatency,
+    estimatedGopDuration,
+    setEstimatedGopDuration,
   } = useStore();
 
   return (
@@ -369,6 +377,103 @@ export const SettingsPanel: React.FC = () => {
               <span>50ms (low latency)</span>
               <span>300ms (smooth)</span>
             </div>
+          </div>
+
+          {/* Advanced Jitter Buffer Settings (collapsible) */}
+          <div className="border border-gray-200 dark:border-gray-700 rounded-md">
+            <button
+              onClick={() => setShowAdvancedJitter(!showAdvancedJitter)}
+              className="w-full flex items-center justify-between p-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800 rounded-md transition-colors"
+            >
+              <div>
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Advanced Jitter Settings
+                </span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Group-aware buffering for parallel streams
+                </p>
+              </div>
+              <svg
+                className={`w-5 h-5 text-gray-500 transition-transform ${showAdvancedJitter ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {showAdvancedJitter && (
+              <div className="p-3 pt-0 space-y-4 border-t border-gray-200 dark:border-gray-700">
+                {/* Group-Aware Buffer Toggle */}
+                <div>
+                  <label className="flex items-center justify-between">
+                    <div>
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Enable GroupArbiter
+                      </span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Deadline-based ordering for QUIC streams
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setUseGroupArbiter(!useGroupArbiter)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                        useGroupArbiter ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          useGroupArbiter ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
+                </div>
+
+                {/* GroupArbiter Settings (only shown when enabled) */}
+                {useGroupArbiter && (
+                  <>
+                    <div>
+                      <label className="label">
+                        Max Latency: {maxLatency}ms
+                      </label>
+                      <input
+                        type="range"
+                        min="200"
+                        max="2000"
+                        step="100"
+                        value={maxLatency}
+                        onChange={(e) => setMaxLatency(Number(e.target.value))}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-gray-500 mt-1">
+                        <span>200ms (aggressive)</span>
+                        <span>2000ms (tolerant)</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="label">
+                        GOP Duration: {estimatedGopDuration}ms
+                      </label>
+                      <input
+                        type="range"
+                        min="100"
+                        max="5000"
+                        step="100"
+                        value={estimatedGopDuration}
+                        onChange={(e) => setEstimatedGopDuration(Number(e.target.value))}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-gray-500 mt-1">
+                        <span>100ms (short)</span>
+                        <span>5000ms (long)</span>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* MOQT VarInt Encoding Toggle */}
