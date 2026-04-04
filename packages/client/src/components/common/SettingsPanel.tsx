@@ -448,16 +448,16 @@ export const SettingsPanel: React.FC = () => {
                       </label>
                       <input
                         type="range"
-                        min="200"
-                        max="2000"
-                        step="100"
+                        min="0"
+                        max="5000"
+                        step="50"
                         value={maxLatency}
                         onChange={(e) => setMaxLatency(Number(e.target.value))}
                         className="w-full"
                       />
                       <div className="flex justify-between text-xs text-gray-500 mt-1">
-                        <span>200ms (aggressive)</span>
-                        <span>2000ms (tolerant)</span>
+                        <span>0ms (immediate)</span>
+                        <span>5000ms (tolerant)</span>
                       </div>
                     </div>
                     <div>
