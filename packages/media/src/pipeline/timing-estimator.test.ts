@@ -208,11 +208,14 @@ describe('createTimingEstimator', () => {
 describe('group-arbiter-types', () => {
   describe('createGroupState', () => {
     it('should create empty group state', () => {
-      const group = createGroupState<string>(42, 100, 2000);
+      const now = performance.now();
+      const group = createGroupState<string>(42, 100, now, 2000, now + 1500);
 
       expect(group.groupId).toBe(42);
       expect(group.firstFrameReceivedTick).toBe(100);
+      expect(group.firstFrameReceivedAt).toBe(now);
       expect(group.deadlineTick).toBe(2000);
+      expect(group.deadlineTime).toBe(now + 1500);
       expect(group.frames.size).toBe(0);
       expect(group.hasKeyframe).toBe(false);
       expect(group.highestObjectId).toBe(-1);
