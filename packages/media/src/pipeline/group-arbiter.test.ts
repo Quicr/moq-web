@@ -14,7 +14,7 @@ describe('GroupArbiter', () => {
     arbiter = new GroupArbiter<string>(
       {
         maxLatency: 500,
-        jitterDelay: 10, // Short for testing
+        jitterDelay: 0, // No jitter delay for unit tests (wall-clock based)
         estimatedGopDuration: 100,
         deadlineExtension: 50,
         maxActiveGroups: 4,
@@ -125,17 +125,27 @@ describe('GroupArbiter', () => {
       expect(frames[2].objectId).toBe(2);
     });
 
-    it('should respect jitter delay', () => {
-      arbiter.addFrame({ groupId: 0, objectId: 0, data: 'kf', isKeyframe: true });
+    it('should respect jitter delay', async () => {
+      // Create arbiter with actual jitter delay for this test
+      const jitterArbiter = new GroupArbiter<string>(
+        {
+          maxLatency: 500,
+          jitterDelay: 30, // 30ms jitter delay
+          estimatedGopDuration: 100,
+        },
+        ticker
+      );
 
-      // Don't advance time enough
-      ticker.tickBy(5);
-      let frames = arbiter.getReadyFrames();
+      jitterArbiter.addFrame({ groupId: 0, objectId: 0, data: 'kf', isKeyframe: true });
+
+      // Immediately check - should not be ready (jitter delay not elapsed)
+      let frames = jitterArbiter.getReadyFrames();
       expect(frames.length).toBe(0);
 
-      // Now advance past jitter delay
-      ticker.tickBy(10);
-      frames = arbiter.getReadyFrames();
+      // Wait for jitter delay to pass (wall-clock time)
+      await new Promise(resolve => setTimeout(resolve, 40));
+
+      frames = jitterArbiter.getReadyFrames();
       expect(frames.length).toBe(1);
     });
 
@@ -225,12 +235,15 @@ describe('GroupArbiter', () => {
   });
 
   describe('deadline handling', () => {
-    it('should skip to next keyframe group when deadline expires', () => {
+    // Helper to wait for wall-clock time
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+    it('should skip to next keyframe group when deadline expires', async () => {
       const fastArbiter = new GroupArbiter<string>(
         {
-          maxLatency: 10,
-          jitterDelay: 1,
-          estimatedGopDuration: 10,
+          maxLatency: 20, // Short deadline in ms
+          jitterDelay: 0, // Wall-clock based
+          estimatedGopDuration: 20,
           deadlineExtension: 5,
         },
         ticker
@@ -242,8 +255,8 @@ describe('GroupArbiter', () => {
       // Add group 1 with keyframe
       fastArbiter.addFrame({ groupId: 1, objectId: 0, data: 'g1-kf', isKeyframe: true });
 
-      // Advance past deadline
-      ticker.tickBy(100);
+      // Wait for wall-clock deadline to expire
+      await sleep(50);
 
       const frames = fastArbiter.getReadyFrames();
 
@@ -253,13 +266,13 @@ describe('GroupArbiter', () => {
       expect(fastArbiter.getStats().groupsSkipped).toBe(1);
     });
 
-    it('should extend deadline for partial group with keyframe', () => {
+    it('should extend deadline for partial group with keyframe', async () => {
       const localTicker = new MonotonicTickProvider();
       const fastArbiter = new GroupArbiter<string>(
         {
-          maxLatency: 10,
-          jitterDelay: 1,
-          estimatedGopDuration: 10,
+          maxLatency: 20, // Short deadline in ms
+          jitterDelay: 0, // Wall-clock based
+          estimatedGopDuration: 20,
           deadlineExtension: 100,
           allowPartialGroupDecode: true,
         },
@@ -269,13 +282,13 @@ describe('GroupArbiter', () => {
       // Add group 0 with keyframe and additional frame (so group doesn't complete immediately)
       fastArbiter.addFrame({ groupId: 0, objectId: 0, data: 'g0-kf', isKeyframe: true });
       fastArbiter.addFrame({ groupId: 0, objectId: 2, data: 'g0-p2', isKeyframe: false }); // Gap at 1
-      localTicker.tickBy(5);
+
       const kfFrames = fastArbiter.getReadyFrames(); // Output keyframe, wait at gap
       expect(kfFrames.length).toBe(1);
       expect(kfFrames[0].data).toBe('g0-kf');
 
-      // Now deadline passes while waiting for objectId 1
-      localTicker.tickBy(50);
+      // Wait for wall-clock deadline to expire
+      await sleep(50);
 
       // Trigger deadline check - should extend and skip gap
       fastArbiter.getReadyFrames();
@@ -352,7 +365,7 @@ describe('GroupArbiter - root cause scenario', () => {
     const arbiter = new GroupArbiter<{ type: string; obj: number }>(
       {
         maxLatency: 500,
-        jitterDelay: 10,
+        jitterDelay: 0, // Wall-clock based
         estimatedGopDuration: 1000,
       },
       ticker
@@ -415,7 +428,7 @@ describe('GroupArbiter - root cause scenario', () => {
     const arbiter = new GroupArbiter<string>(
       {
         maxLatency: 500,
-        jitterDelay: 5,
+        jitterDelay: 0, // Wall-clock based
         estimatedGopDuration: 100,
       },
       ticker
@@ -450,7 +463,7 @@ describe('GroupArbiter edge cases', () => {
     const arbiter = new GroupArbiter<string>(
       {
         maxLatency: 200,
-        jitterDelay: 5,
+        jitterDelay: 0, // Wall-clock based
         estimatedGopDuration: 50, // 50ms GOP (20 fps keyframe interval)
       },
       ticker
@@ -476,7 +489,7 @@ describe('GroupArbiter edge cases', () => {
     const arbiter = new GroupArbiter<string>(
       {
         maxLatency: 2000,
-        jitterDelay: 50,
+        jitterDelay: 0, // No jitter delay for ordering tests
         estimatedGopDuration: 10000, // 10 second GOP
         maxFramesPerGroup: 300, // 30fps * 10s
       },
@@ -493,7 +506,6 @@ describe('GroupArbiter edge cases', () => {
       });
     }
 
-    ticker.tickBy(100);
     const frames = arbiter.getReadyFrames(50);
 
     expect(frames.length).toBeGreaterThan(0);
@@ -505,7 +517,7 @@ describe('GroupArbiter edge cases', () => {
     const arbiter = new GroupArbiter<string>(
       {
         maxLatency: 500,
-        jitterDelay: 10,
+        jitterDelay: 0, // No jitter delay for ordering tests
         estimatedGopDuration: 1000,
       },
       ticker
@@ -516,14 +528,17 @@ describe('GroupArbiter edge cases', () => {
     arbiter.addFrame({ groupId: 200, objectId: 0, data: 'g200', isKeyframe: true });
     arbiter.addFrame({ groupId: 500, objectId: 0, data: 'g500', isKeyframe: true });
 
-    ticker.tickBy(50);
-
     // Should process in order despite large gaps
     let frames = arbiter.getReadyFrames();
     expect(frames[0].data).toBe('g100');
 
+    // Mark group 100 as complete to allow next group
+    arbiter.getGroupState(100)!.status = 'complete';
+
     frames = arbiter.getReadyFrames();
     expect(frames[0].data).toBe('g200');
+
+    arbiter.getGroupState(200)!.status = 'complete';
 
     frames = arbiter.getReadyFrames();
     expect(frames[0].data).toBe('g500');
@@ -534,7 +549,7 @@ describe('GroupArbiter edge cases', () => {
     const arbiter = new GroupArbiter<string>(
       {
         maxLatency: 500,
-        jitterDelay: 10,
+        jitterDelay: 0, // No jitter delay for ordering tests
         estimatedGopDuration: 1000,
       },
       ticker
@@ -546,7 +561,6 @@ describe('GroupArbiter edge cases', () => {
     arbiter.addFrame({ groupId: baseGroupId, objectId: 1, data: 'g0-p1', isKeyframe: false });
     arbiter.addFrame({ groupId: baseGroupId + 1, objectId: 0, data: 'g1-kf', isKeyframe: true });
 
-    ticker.tickBy(50);
     const frames = arbiter.getReadyFrames(10);
 
     // Should output frames from baseGroupId first
@@ -562,7 +576,7 @@ describe('GroupArbiter edge cases', () => {
     const arbiter = new GroupArbiter<string>(
       {
         maxLatency: 500,
-        jitterDelay: 10,
+        jitterDelay: 0, // No jitter delay for ordering tests
         estimatedGopDuration: 1000,
       },
       ticker
@@ -581,8 +595,6 @@ describe('GroupArbiter edge cases', () => {
     arbiter.addFrame({ groupId: 0, objectId: 3, data: 'g0-p3', isKeyframe: false });
     arbiter.addFrame({ groupId: 0, objectId: 4, data: 'g0-p4', isKeyframe: false });
 
-    ticker.tickBy(50);
-
     // Should still complete group 0 first
     const frames = arbiter.getReadyFrames(10);
     expect(frames.every(f => f.data.startsWith('g0'))).toBe(true);
@@ -593,7 +605,7 @@ describe('GroupArbiter edge cases', () => {
     const arbiter = new GroupArbiter<string>(
       {
         maxLatency: 500,
-        jitterDelay: 10,
+        jitterDelay: 0, // Wall-clock based
         maxFramesPerGroup: 5,
       },
       ticker

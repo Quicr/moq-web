@@ -140,6 +140,7 @@ export class GroupArbiter<T> {
       data,
       objectId,
       receivedTick: this.tickProvider.currentTick,
+      receivedAt: performance.now(),
       locTimestamp,
       isKeyframe,
       isDiscardable: isDiscardable ?? false,
@@ -269,10 +270,11 @@ export class GroupArbiter<T> {
         continue;
       }
 
-      // Check jitter delay
-      const jitterTicks = this.tickProvider.msToTicks(this.config.jitterDelay);
-      if (frame.receivedTick + jitterTicks > this.tickProvider.currentTick) {
-        break; // Not ready yet
+      // Check jitter delay using wall-clock time (not ticks)
+      // This ensures frames are released even when no new frames are arriving
+      const now = performance.now();
+      if (frame.receivedAt + this.config.jitterDelay > now) {
+        break; // Not ready yet - still within jitter buffer window
       }
 
       result.push(frame);
@@ -280,9 +282,8 @@ export class GroupArbiter<T> {
       activeGroup.outputObjectId = objId + 1;
       this.stats.framesOutput++;
 
-      // Update latency stats
-      const latencyTicks = this.tickProvider.currentTick - frame.receivedTick;
-      const latencyMs = this.tickProvider.ticksToMs(latencyTicks);
+      // Update latency stats using wall-clock time for accuracy
+      const latencyMs = now - frame.receivedAt;
       this.updateLatencyStats(latencyMs);
     }
 
@@ -300,15 +301,15 @@ export class GroupArbiter<T> {
    * Update group states based on deadlines
    */
   private updateGroupStates(): void {
-    const now = this.tickProvider.currentTick;
+    const now = performance.now();
 
     for (const [groupId, group] of this.groups) {
       if (group.status !== 'receiving' && group.status !== 'active') {
         continue;
       }
 
-      // Check deadline
-      if (now > group.deadlineTick) {
+      // Check deadline using wall-clock time
+      if (now > group.deadlineTime) {
         if (groupId === this.activeGroupId) {
           // Active group expired - decide what to do
           this.handleExpiredActiveGroup(group);
@@ -326,6 +327,8 @@ export class GroupArbiter<T> {
    * Handle expired active group
    */
   private handleExpiredActiveGroup(group: GroupState<T>): void {
+    const now = performance.now();
+
     // Option 1: If we have partial content and allowPartialGroupDecode, keep outputting
     if (
       this.config.allowPartialGroupDecode &&
@@ -333,6 +336,7 @@ export class GroupArbiter<T> {
       group.outputObjectId >= 0
     ) {
       // Extend deadline slightly to finish partial output
+      group.deadlineTime = now + this.config.deadlineExtension;
       group.deadlineTick =
         this.tickProvider.currentTick +
         this.tickProvider.msToTicks(this.config.deadlineExtension);
@@ -353,6 +357,7 @@ export class GroupArbiter<T> {
     }
 
     // Option 3: No keyframe available - extend deadline
+    group.deadlineTime = now + this.config.deadlineExtension;
     group.deadlineTick =
       this.tickProvider.currentTick +
       this.tickProvider.msToTicks(this.config.deadlineExtension);
@@ -412,14 +417,19 @@ export class GroupArbiter<T> {
    */
   private createGroup(groupId: number): GroupState<T> {
     const tick = this.tickProvider.currentTick;
+    const now = performance.now();
 
-    const group = createGroupState<T>(groupId, tick, 0);
+    // Calculate deadline in both ticks and wall-clock time
+    const gopDurationMs = this.timingEstimator.getEstimatedGopDuration();
+    const deadlineMs = gopDurationMs + this.config.maxLatency;
+    const deadlineTicks = this.tickProvider.msToTicks(deadlineMs);
 
-    // Calculate deadline
-    group.deadlineTick = this.timingEstimator.calculateDeadline(
-      group,
-      this.tickProvider,
-      this.config.maxLatency
+    const group = createGroupState<T>(
+      groupId,
+      tick,
+      now,
+      tick + deadlineTicks,
+      now + deadlineMs
     );
 
     return group;

@@ -31,6 +31,9 @@ export interface FrameEntry<T> {
   /** Monotonic tick when frame was received */
   receivedTick: number;
 
+  /** Wall-clock time when frame was received (performance.now()) */
+  receivedAt: number;
+
   /** LOC timestamp if available (microseconds) */
   locTimestamp?: number;
 
@@ -54,6 +57,9 @@ export interface GroupState<T> {
   /** Monotonic tick when first frame arrived */
   firstFrameReceivedTick: number;
 
+  /** Wall-clock time when first frame arrived (performance.now()) */
+  firstFrameReceivedAt: number;
+
   /** LOC timestamp of first frame (microseconds, -1 if not available) */
   locTimestampBase: number;
 
@@ -62,6 +68,9 @@ export interface GroupState<T> {
 
   /** Deadline tick by which group must complete */
   deadlineTick: number;
+
+  /** Deadline wall-clock time by which group must complete */
+  deadlineTime: number;
 
   /** Whether we've received objectId 0 (keyframe) */
   hasKeyframe: boolean;
@@ -190,15 +199,19 @@ export const DEFAULT_TIMING_CONFIG: TimingConfig = {
 export function createGroupState<T>(
   groupId: number,
   firstFrameReceivedTick: number,
-  deadlineTick: number
+  firstFrameReceivedAt: number,
+  deadlineTick: number,
+  deadlineTime: number
 ): GroupState<T> {
   return {
     groupId,
     frames: new Map(),
     firstFrameReceivedTick,
+    firstFrameReceivedAt,
     locTimestampBase: -1,
     locTimescale: 1_000_000,
     deadlineTick,
+    deadlineTime,
     hasKeyframe: false,
     highestObjectId: -1,
     outputObjectId: -1,
