@@ -101,12 +101,23 @@ export class ObjectRouter {
       let endOfGroup = false;
       let objectCount = 0;
       let previousObjectId = -1; // For delta decoding in draft-16 (-1 = first object)
+      let totalBytesReceived = 0;
+      let readCount = 0;
 
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const { value, done } = await reader.read();
+        readCount++;
 
         if (value) {
+          totalBytesReceived += value.length;
+          log.info('Stream read chunk', {
+            readNumber: readCount,
+            chunkSize: value.length,
+            totalBytesReceived,
+            done,
+            firstBytes: Array.from(value.slice(0, Math.min(16, value.length))).map(b => b.toString(16).padStart(2, '0')).join(' '),
+          });
           const remainingBytes = buffer.length - bufferOffset;
           if (remainingBytes === 0) {
             // No pending data, use incoming data directly
@@ -153,7 +164,13 @@ export class ObjectRouter {
               });
 
               bufferOffset += headerBytes;
-            } catch {
+            } catch (decodeErr) {
+              log.warn('Failed to decode subgroup header (draft-16)', {
+                error: (decodeErr as Error).message,
+                bufferLength: bufferView.length,
+                totalBytesReceived,
+                done,
+              });
               if (done) break;
               continue;
             }
@@ -252,7 +269,16 @@ export class ObjectRouter {
           }
         }
 
-        if (done) break;
+        if (done) {
+          log.info('Stream ended', {
+            totalBytesReceived,
+            totalReads: readCount,
+            objectCount,
+            headerParsed,
+            trackAlias: subgroupHeader?.trackAlias?.toString(),
+          });
+          break;
+        }
       }
 
       if (objectCount > 0) {
