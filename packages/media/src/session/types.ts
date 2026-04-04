@@ -121,6 +121,10 @@ export interface MediaConfig {
   skipToLatestGroup?: boolean;
   /** Number of frame intervals to wait before skipping to latest group (grace period, default: 3) */
   skipGraceFrames?: number;
+  /** Enable catch-up mode when buffer gets too deep (default: true) */
+  enableCatchUp?: boolean;
+  /** Number of ready frames that triggers catch-up mode (default: 5) */
+  catchUpThreshold?: number;
 }
 
 /**

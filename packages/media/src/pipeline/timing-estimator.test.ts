@@ -243,6 +243,8 @@ describe('group-arbiter-types', () => {
       expect(stats.estimatedGopDuration).toBe(0);
       expect(stats.avgOutputLatency).toBe(0);
       expect(stats.maxOutputLatency).toBe(0);
+      expect(stats.catchUpEvents).toBe(0);
+      expect(stats.framesFlushed).toBe(0);
     });
   });
 
@@ -256,6 +258,9 @@ describe('group-arbiter-types', () => {
       expect(DEFAULT_TIMING_CONFIG.maxFramesPerGroup).toBe(120);
       expect(DEFAULT_TIMING_CONFIG.allowPartialGroupDecode).toBe(true);
       expect(DEFAULT_TIMING_CONFIG.skipOnlyToKeyframe).toBe(true);
+      expect(DEFAULT_TIMING_CONFIG.enableCatchUp).toBe(true);
+      expect(DEFAULT_TIMING_CONFIG.catchUpThreshold).toBe(5);
+      expect(DEFAULT_TIMING_CONFIG.maxCatchUpFrames).toBe(30);
     });
   });
 });
