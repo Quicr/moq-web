@@ -52,6 +52,18 @@ export interface CodecDecodeWorkerConfig {
   debug?: boolean;
   /** Enable latency stats emission */
   enableStats?: boolean;
+
+  // Group-aware jitter buffer options (Phase 4)
+  /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
+  useGroupArbiter?: boolean;
+  /** Maximum acceptable end-to-end latency in ms (default: 500) */
+  maxLatency?: number;
+  /** Initial estimated GOP duration in ms (default: 1000) */
+  estimatedGopDuration?: number;
+  /** Framerate hint from catalog (optional, improves GOP estimation) */
+  catalogFramerate?: number;
+  /** Timescale hint from catalog in units per second (optional) */
+  catalogTimescale?: number;
 }
 
 /**

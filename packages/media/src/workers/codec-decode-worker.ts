@@ -14,6 +14,7 @@
 
 import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
 import { JitterBuffer } from '../pipeline/jitter-buffer.js';
+import { GroupArbiter } from '../pipeline/group-arbiter.js';
 import type {
   CodecDecodeWorkerRequest,
   CodecDecodeWorkerResponse,
@@ -61,8 +62,13 @@ interface DecodeChannel {
   videoDecoder: VideoDecoder | null;
   audioDecoder: AudioDecoder | null;
   unpackager: LOCUnpackager;
+  // Legacy jitter buffer (used when useGroupArbiter is false)
   videoBuffer: JitterBuffer<VideoBufferData> | null;
   audioBuffer: JitterBuffer<AudioBufferData> | null;
+  // Group-aware arbiter (used when useGroupArbiter is true)
+  videoArbiter: GroupArbiter<VideoBufferData> | null;
+  audioArbiter: GroupArbiter<AudioBufferData> | null;
+  useGroupArbiter: boolean;
   videoSequence: number;
   audioSequence: number;
   pendingVideoFrames: PendingVideoFrame[];
@@ -111,6 +117,8 @@ function respond(msg: CodecDecodeWorkerResponse, transfer?: Transferable[]): voi
  * Create a new decode channel
  */
 function createChannel(channelId: number, config: CodecDecodeWorkerConfig): DecodeChannel {
+  const useGroupArbiter = config.useGroupArbiter ?? false;
+
   const channel: DecodeChannel = {
     channelId,
     videoDecoder: null,
@@ -118,6 +126,9 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     unpackager: new LOCUnpackager(),
     videoBuffer: null,
     audioBuffer: null,
+    videoArbiter: null,
+    audioArbiter: null,
+    useGroupArbiter,
     videoSequence: 0,
     audioSequence: 0,
     pendingVideoFrames: [],
@@ -138,27 +149,59 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     lastAudioFrameInfo: null,
   };
 
-  log(`Channel ${channelId} config`, { enableStats: channel.enableStats, jitterDelay: config.jitterBufferDelay });
-
   const jitterDelay = config.jitterBufferDelay ?? 100;
+
+  log(`Channel ${channelId} config`, {
+    enableStats: channel.enableStats,
+    jitterDelay,
+    useGroupArbiter,
+  });
 
   // Initialize video if configured
   if (config.video) {
-    channel.videoBuffer = new JitterBuffer<VideoBufferData>({
-      targetDelay: jitterDelay,
-      maxDelay: 300,
-      maxFramesPerCall: 5,
-    });
+    if (useGroupArbiter) {
+      // Use GroupArbiter for group-aware ordering
+      channel.videoArbiter = new GroupArbiter<VideoBufferData>({
+        jitterDelay,
+        maxLatency: config.maxLatency ?? 500,
+        estimatedGopDuration: config.estimatedGopDuration ?? 1000,
+        catalogFramerate: config.catalogFramerate,
+        catalogTimescale: config.catalogTimescale,
+        allowPartialGroupDecode: true,
+        skipOnlyToKeyframe: true,
+      });
+      log(`Channel ${channelId} using GroupArbiter for video`);
+    } else {
+      // Use legacy JitterBuffer
+      channel.videoBuffer = new JitterBuffer<VideoBufferData>({
+        targetDelay: jitterDelay,
+        maxDelay: 300,
+        maxFramesPerCall: 5,
+      });
+    }
     initVideoDecoder(channel, config.video);
   }
 
   // Initialize audio if configured
   if (config.audio) {
-    channel.audioBuffer = new JitterBuffer<AudioBufferData>({
-      targetDelay: jitterDelay,
-      maxDelay: 300,
-      maxFramesPerCall: 5,
-    });
+    if (useGroupArbiter) {
+      // Use GroupArbiter for audio too
+      channel.audioArbiter = new GroupArbiter<AudioBufferData>({
+        jitterDelay,
+        maxLatency: config.maxLatency ?? 500,
+        estimatedGopDuration: 20, // Audio frames are typically ~20ms
+        allowPartialGroupDecode: true,
+        skipOnlyToKeyframe: false, // Audio doesn't need keyframes (Opus)
+      });
+      log(`Channel ${channelId} using GroupArbiter for audio`);
+    } else {
+      // Use legacy JitterBuffer
+      channel.audioBuffer = new JitterBuffer<AudioBufferData>({
+        targetDelay: jitterDelay,
+        maxDelay: 300,
+        maxFramesPerCall: 5,
+      });
+    }
     initAudioDecoder(channel, config.audio);
   }
 
@@ -372,7 +415,7 @@ function pushData(
   try {
     const mediaType = channel.unpackager.getMediaType(data);
 
-    if (mediaType === MediaType.VIDEO && channel.videoBuffer) {
+    if (mediaType === MediaType.VIDEO) {
       const frame = channel.unpackager.unpackage(data);
       const isKeyframe = frame.header.isKeyframe;
 
@@ -385,46 +428,172 @@ function pushData(
       }
 
       const arrivedAt = performance.now();
-      channel.videoBuffer.push({
-        data: {
-          data: frame.payload,
+      const videoData: VideoBufferData = {
+        data: frame.payload,
+        isKeyframe,
+        codecDescription: frame.codecDescription,
+        arrivedAt,
+      };
+
+      if (channel.videoArbiter) {
+        // Use GroupArbiter
+        channel.videoArbiter.addFrame({
+          groupId,
+          objectId,
+          data: videoData,
           isKeyframe,
-          codecDescription: frame.codecDescription,
-          arrivedAt,
-        },
-        timestamp: timestamp / 1000, // Convert to ms
-        sequence: channel.videoSequence++,
-        groupId,
-        objectId,
-        isKeyframe,
-        receivedAt: arrivedAt,
-      });
+          locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
+        });
 
-      log(`Pushed video (channel ${channel.channelId})`, {
-        groupId,
-        objectId,
-        isKeyframe,
-        timestamp: timestamp / 1000, // ms
-        sequence: channel.videoSequence - 1,
-        bufferSize: channel.videoBuffer.size
-      });
-    } else if (mediaType === MediaType.AUDIO && channel.audioBuffer) {
+        log(`Pushed video to arbiter (channel ${channel.channelId})`, {
+          groupId,
+          objectId,
+          isKeyframe,
+          activeGroup: channel.videoArbiter.getActiveGroupId(),
+          groupCount: channel.videoArbiter.getGroupCount(),
+        });
+      } else if (channel.videoBuffer) {
+        // Use legacy JitterBuffer
+        channel.videoBuffer.push({
+          data: videoData,
+          timestamp: timestamp / 1000, // Convert to ms
+          sequence: channel.videoSequence++,
+          groupId,
+          objectId,
+          isKeyframe,
+          receivedAt: arrivedAt,
+        });
+
+        log(`Pushed video (channel ${channel.channelId})`, {
+          groupId,
+          objectId,
+          isKeyframe,
+          timestamp: timestamp / 1000, // ms
+          sequence: channel.videoSequence - 1,
+          bufferSize: channel.videoBuffer.size
+        });
+      }
+    } else if (mediaType === MediaType.AUDIO) {
       const frame = channel.unpackager.unpackage(data);
+      const audioData: AudioBufferData = { data: frame.payload };
 
-      channel.audioBuffer.push({
-        data: { data: frame.payload },
-        timestamp: timestamp / 1000, // Convert to ms
-        sequence: channel.audioSequence++,
-        groupId,
-        objectId,
-        isKeyframe: true, // Opus is always key
-        receivedAt: performance.now(),
-      });
+      if (channel.audioArbiter) {
+        // Use GroupArbiter
+        channel.audioArbiter.addFrame({
+          groupId,
+          objectId,
+          data: audioData,
+          isKeyframe: true, // Opus is always key
+          locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
+        });
 
-      log(`Pushed audio (channel ${channel.channelId})`, { groupId, objectId, bufferSize: channel.audioBuffer.size });
+        log(`Pushed audio to arbiter (channel ${channel.channelId})`, { groupId, objectId });
+      } else if (channel.audioBuffer) {
+        // Use legacy JitterBuffer
+        channel.audioBuffer.push({
+          data: audioData,
+          timestamp: timestamp / 1000, // Convert to ms
+          sequence: channel.audioSequence++,
+          groupId,
+          objectId,
+          isKeyframe: true, // Opus is always key
+          receivedAt: performance.now(),
+        });
+
+        log(`Pushed audio (channel ${channel.channelId})`, { groupId, objectId, bufferSize: channel.audioBuffer.size });
+      }
     }
   } catch (err) {
     respond({ type: 'error', channelId: channel.channelId, message: `Unpackaging failed: ${(err as Error).message}` });
+  }
+}
+
+/**
+ * Decode a video frame entry (shared by JitterBuffer and GroupArbiter paths)
+ */
+function decodeVideoFrame(
+  channel: DecodeChannel,
+  frameData: VideoBufferData,
+  groupId: number,
+  objectId: number,
+  timestampMs: number,
+  sequence: number
+): boolean {
+  // Wait for keyframe before starting to decode
+  if (!channel.hasReceivedKeyframe && !frameData.isKeyframe) {
+    channel.droppedFramesBeforeKeyframe++;
+    log(`Dropping delta frame - waiting for keyframe (channel ${channel.channelId})`, {
+      groupId,
+      objectId,
+      droppedCount: channel.droppedFramesBeforeKeyframe,
+    });
+    return false;
+  }
+
+  if (frameData.isKeyframe) {
+    channel.hasReceivedKeyframe = true;
+    channel.videoKeyframesReceived++;
+    log(`KEYFRAME received (channel ${channel.channelId})`, {
+      groupId,
+      objectId,
+      droppedBeforeKeyframe: channel.droppedFramesBeforeKeyframe,
+    });
+  }
+
+  // Check for out-of-order decode
+  const expectedSequence = channel.lastDecodedSequence + 1;
+  const isOutOfOrder = channel.lastDecodedSequence >= 0 && sequence !== expectedSequence;
+  if (isOutOfOrder) {
+    channel.framesOutOfOrder++;
+    log(`OUT OF ORDER frame (channel ${channel.channelId})`, {
+      expected: expectedSequence,
+      got: sequence,
+      totalOutOfOrder: channel.framesOutOfOrder,
+    });
+  }
+  channel.lastDecodedSequence = sequence;
+
+  log(`Decoding frame (channel ${channel.channelId})`, {
+    groupId,
+    objectId,
+    sequence,
+    timestamp: timestampMs,
+    isKeyframe: frameData.isKeyframe,
+    dataSize: frameData.data.length,
+    outOfOrder: isOutOfOrder,
+  });
+
+  try {
+    // Set current metadata for the decoder output callback
+    channel.currentVideoMeta = {
+      groupId,
+      objectId,
+      timestamp: timestampMs * 1000, // Back to microseconds
+      arrivedAt: frameData.arrivedAt,
+    };
+
+    // Track frame info for diagnostics
+    if (!channel.lastVideoFrameInfo) {
+      channel.lastVideoFrameInfo = { groupId: 0, objectId: 0, isKeyframe: false, dataSize: 0, sequence: 0 };
+    }
+    channel.lastVideoFrameInfo.groupId = groupId;
+    channel.lastVideoFrameInfo.objectId = objectId;
+    channel.lastVideoFrameInfo.isKeyframe = frameData.isKeyframe;
+    channel.lastVideoFrameInfo.dataSize = frameData.data.length;
+    channel.lastVideoFrameInfo.sequence = sequence;
+
+    const chunk = new EncodedVideoChunk({
+      type: frameData.isKeyframe ? 'key' : 'delta',
+      timestamp: timestampMs * 1000, // Back to microseconds
+      data: frameData.data,
+    });
+
+    channel.videoDecoder!.decode(chunk);
+    channel.videoFramesDecoded++;
+    return true;
+  } catch (err) {
+    log(`Error decoding video (channel ${channel.channelId})`, err);
+    return false;
   }
 }
 
@@ -435,106 +604,102 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
   let videoCount = 0;
   let audioCount = 0;
 
-  // Process video buffer
-  if (channel.videoBuffer && channel.videoDecoder) {
+  // Process video - GroupArbiter path
+  if (channel.videoArbiter && channel.videoDecoder) {
+    const readyFrames = channel.videoArbiter.getReadyFrames(5);
+
+    for (const frame of readyFrames) {
+      // GroupArbiter uses objectId as sequence when output in order
+      const sequence = channel.videoSequence++;
+      if (decodeVideoFrame(
+        channel,
+        frame.data,
+        channel.videoArbiter.getActiveGroupId(),
+        frame.objectId,
+        frame.receivedTick, // Use receivedTick as timestamp proxy
+        sequence
+      )) {
+        videoCount++;
+      }
+    }
+
+    // Log arbiter stats periodically
+    if (videoCount > 0 && channel.videoFramesDecoded % 30 === 0) {
+      const stats = channel.videoArbiter.getStats();
+      log(`Arbiter stats (channel ${channel.channelId})`, {
+        activeGroup: channel.videoArbiter.getActiveGroupId(),
+        groupCount: channel.videoArbiter.getGroupCount(),
+        framesOutput: stats.framesOutput,
+        groupsCompleted: stats.groupsCompleted,
+        groupsSkipped: stats.groupsSkipped,
+      });
+    }
+  }
+  // Process video - JitterBuffer path (legacy)
+  else if (channel.videoBuffer && channel.videoDecoder) {
     const readyFrames = channel.videoBuffer.getReadyFrames();
 
     for (const frame of readyFrames) {
-      // Wait for keyframe before starting to decode
-      // This prevents WebCodecs decoder errors when delta frames arrive first
-      if (!channel.hasReceivedKeyframe && !frame.data.isKeyframe) {
-        channel.droppedFramesBeforeKeyframe++;
-        // Log every dropped frame for debugging
-        log(`Dropping delta frame - waiting for keyframe (channel ${channel.channelId})`, {
-          groupId: frame.groupId,
-          objectId: frame.objectId,
-          droppedCount: channel.droppedFramesBeforeKeyframe,
-        });
-        continue;
-      }
-
-      if (frame.data.isKeyframe) {
-        channel.hasReceivedKeyframe = true;
-        channel.videoKeyframesReceived++;
-        log(`KEYFRAME received (channel ${channel.channelId})`, {
-          groupId: frame.groupId,
-          objectId: frame.objectId,
-          droppedBeforeKeyframe: channel.droppedFramesBeforeKeyframe,
-        });
-      }
-
-      // Check for out-of-order decode
-      const expectedSequence = channel.lastDecodedSequence + 1;
-      const isOutOfOrder = channel.lastDecodedSequence >= 0 && frame.sequence !== expectedSequence;
-      if (isOutOfOrder) {
-        channel.framesOutOfOrder++;
-        log(`OUT OF ORDER frame (channel ${channel.channelId})`, {
-          expected: expectedSequence,
-          got: frame.sequence,
-          totalOutOfOrder: channel.framesOutOfOrder,
-        });
-      }
-      channel.lastDecodedSequence = frame.sequence;
-
-      // Log every frame being decoded for debugging
-      log(`Decoding frame (channel ${channel.channelId})`, {
-        groupId: frame.groupId,
-        objectId: frame.objectId,
-        sequence: frame.sequence,
-        timestamp: frame.timestamp,
-        isKeyframe: frame.data.isKeyframe,
-        dataSize: frame.data.data.length,
-        outOfOrder: isOutOfOrder,
-      });
-
-      try {
-        // Set current metadata for the decoder output callback
-        channel.currentVideoMeta = {
-          groupId: frame.groupId,
-          objectId: frame.objectId,
-          timestamp: frame.timestamp * 1000, // Back to microseconds
-          arrivedAt: frame.data.arrivedAt,
-        };
-
-        // Track frame info for diagnostics (reuse object to avoid allocations)
-        if (!channel.lastVideoFrameInfo) {
-          channel.lastVideoFrameInfo = { groupId: 0, objectId: 0, isKeyframe: false, dataSize: 0, sequence: 0 };
-        }
-        channel.lastVideoFrameInfo.groupId = frame.groupId;
-        channel.lastVideoFrameInfo.objectId = frame.objectId;
-        channel.lastVideoFrameInfo.isKeyframe = frame.data.isKeyframe;
-        channel.lastVideoFrameInfo.dataSize = frame.data.data.length;
-        channel.lastVideoFrameInfo.sequence = frame.sequence;
-
-        const chunk = new EncodedVideoChunk({
-          type: frame.data.isKeyframe ? 'key' : 'delta',
-          timestamp: frame.timestamp * 1000, // Back to microseconds
-          data: frame.data.data,
-        });
-
-        channel.videoDecoder.decode(chunk);
-        channel.videoFramesDecoded++;
+      if (decodeVideoFrame(
+        channel,
+        frame.data,
+        frame.groupId,
+        frame.objectId,
+        frame.timestamp,
+        frame.sequence
+      )) {
         videoCount++;
-      } catch (err) {
-        log(`Error decoding video (channel ${channel.channelId})`, err);
       }
     }
   }
 
-  // Process audio buffer
-  if (channel.audioBuffer && channel.audioDecoder) {
+  // Process audio - GroupArbiter path
+  if (channel.audioArbiter && channel.audioDecoder) {
+    const readyFrames = channel.audioArbiter.getReadyFrames(5);
+
+    for (const frame of readyFrames) {
+      try {
+        const groupId = channel.audioArbiter.getActiveGroupId();
+        channel.currentAudioMeta = {
+          groupId,
+          objectId: frame.objectId,
+          timestamp: frame.receivedTick * 1000,
+        };
+
+        if (!channel.lastAudioFrameInfo) {
+          channel.lastAudioFrameInfo = { groupId: 0, objectId: 0, dataSize: 0, sequence: 0 };
+        }
+        channel.lastAudioFrameInfo.groupId = groupId;
+        channel.lastAudioFrameInfo.objectId = frame.objectId;
+        channel.lastAudioFrameInfo.dataSize = frame.data.data.length;
+        channel.lastAudioFrameInfo.sequence = channel.audioSequence++;
+
+        const chunk = new EncodedAudioChunk({
+          type: 'key',
+          timestamp: frame.receivedTick * 1000,
+          data: frame.data.data,
+        });
+
+        channel.audioDecoder.decode(chunk);
+        channel.audioFramesDecoded++;
+        audioCount++;
+      } catch (err) {
+        log(`Error decoding audio (channel ${channel.channelId})`, err);
+      }
+    }
+  }
+  // Process audio - JitterBuffer path (legacy)
+  else if (channel.audioBuffer && channel.audioDecoder) {
     const readyFrames = channel.audioBuffer.getReadyFrames();
 
     for (const frame of readyFrames) {
       try {
-        // Set current metadata for the decoder output callback
         channel.currentAudioMeta = {
           groupId: frame.groupId,
           objectId: frame.objectId,
-          timestamp: frame.timestamp * 1000, // Back to microseconds
+          timestamp: frame.timestamp * 1000,
         };
 
-        // Track frame info for diagnostics (reuse object to avoid allocations)
         if (!channel.lastAudioFrameInfo) {
           channel.lastAudioFrameInfo = { groupId: 0, objectId: 0, dataSize: 0, sequence: 0 };
         }
@@ -544,8 +709,8 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
         channel.lastAudioFrameInfo.sequence = frame.sequence;
 
         const chunk = new EncodedAudioChunk({
-          type: 'key', // Opus is always key
-          timestamp: frame.timestamp * 1000, // Back to microseconds
+          type: 'key',
+          timestamp: frame.timestamp * 1000,
           data: frame.data.data,
         });
 
@@ -591,6 +756,8 @@ function sendPendingFrames(channel: DecodeChannel): void {
 function resetChannel(channel: DecodeChannel): void {
   channel.videoBuffer?.reset();
   channel.audioBuffer?.reset();
+  channel.videoArbiter?.reset();
+  channel.audioArbiter?.reset();
   channel.videoSequence = 0;
   channel.audioSequence = 0;
   channel.currentVideoMeta = null;
