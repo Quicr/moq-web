@@ -93,6 +93,26 @@ export type {
   JitterBufferStats,
 } from './pipeline/jitter-buffer.js';
 
+// Group-aware jitter buffer (deadline-based ordering)
+export { GroupArbiter } from './pipeline/group-arbiter.js';
+export { TimingEstimator, createTimingEstimator } from './pipeline/timing-estimator.js';
+export { MonotonicTickProvider, WallClockTickProvider } from './pipeline/tick-provider.js';
+export type { TickProvider, TickProviderConfig } from './pipeline/tick-provider.js';
+export type { TimingEstimatorConfig } from './pipeline/timing-estimator.js';
+export type {
+  GroupState,
+  GroupStatus,
+  FrameEntry,
+  ArbiterStats,
+  TimingConfig,
+  ArbiterFrameInput,
+} from './pipeline/group-arbiter-types.js';
+export {
+  DEFAULT_TIMING_CONFIG,
+  createGroupState,
+  createArbiterStats,
+} from './pipeline/group-arbiter-types.js';
+
 // Backpressure control
 export { BackpressureController } from './pipeline/backpressure.js';
 export type {
