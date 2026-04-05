@@ -208,6 +208,17 @@ export class GroupArbiter<T> {
       return;
     }
 
+    // Check if target group has at least one frame ready (past jitter delay)
+    // This prevents freezes caused by skipping to a group whose frames
+    // are all still in the jitter buffer
+    // Use tick-based comparison to avoid performance.now() in hot path
+    const keyframe = targetGroup.frames.get(0); // objectId 0 is the keyframe
+    const jitterDelayTicks = this.tickProvider.msToTicks(this.config.jitterDelay);
+    if (!keyframe || keyframe.receivedTick + jitterDelayTicks > this.tickProvider.currentTick) {
+      // Keyframe not ready yet - don't skip, wait for jitter delay
+      return;
+    }
+
     // Mark all groups between active and target as skipped
     for (const [groupId, group] of this.groups) {
       if (groupId >= this.activeGroupId && groupId < this.pendingSkipGroupId) {
@@ -357,6 +368,12 @@ export class GroupArbiter<T> {
    */
   private updateGroupStates(): void {
     const now = performance.now();
+
+    // Check if there's a pending skip-to-latest that's now ready
+    // This handles the case where the keyframe wasn't ready when skip was triggered
+    if (this.pendingSkipGroupId > 0 && this.config.skipToLatestGroup) {
+      this.executeSkipToLatest();
+    }
 
     for (const [groupId, group] of this.groups) {
       if (group.status !== 'receiving' && group.status !== 'active') {
