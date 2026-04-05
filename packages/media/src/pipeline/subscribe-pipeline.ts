@@ -382,6 +382,15 @@ export class SubscribePipeline {
       });
     }
 
+    // Forward arbiter debug logs from worker to main thread logger
+    this.decodeWorkerClient.on('arbiter-debug', (response) => {
+      if (response.data) {
+        log.debug(response.message, response.data);
+      } else {
+        log.debug(response.message);
+      }
+    });
+
     // Initialize worker channel with decoder configs
     const mediaType = this.config.mediaType;
     await this.decodeWorkerClient.init({

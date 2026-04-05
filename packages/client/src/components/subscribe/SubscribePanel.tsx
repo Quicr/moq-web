@@ -101,23 +101,36 @@ export const SubscribePanel: React.FC = () => {
 
       frameUpdateCountRef.current++;
 
-      // Update ref immediately with new frame
-      videoFramesRef.current[data.subscriptionId] = data.frame;
-
       // Per-subscription throttle to max 60fps to avoid excessive re-renders
       // Each subscription has its own throttle timer so they don't block each other
       const now = performance.now();
       const lastUpdate = lastStateUpdateRef.current[data.subscriptionId] ?? 0;
-      if (now - lastUpdate > 16) { // ~60fps per subscription
+      const shouldUpdateState = now - lastUpdate > 16; // ~60fps per subscription
+
+      // Close any existing frame in the ref that won't be rendered
+      // This prevents VideoFrame GC warnings when frames arrive faster than 60fps
+      const existingFrame = videoFramesRef.current[data.subscriptionId];
+      if (existingFrame && existingFrame !== data.frame && !shouldUpdateState) {
+        // Frame is being throttled (won't be passed to React/VideoRenderer)
+        // Close it now to prevent GC warning
+        try {
+          existingFrame.close();
+        } catch {
+          // Frame may already be closed
+        }
+      }
+
+      // Update ref with new frame
+      videoFramesRef.current[data.subscriptionId] = data.frame;
+
+      if (shouldUpdateState) {
         lastStateUpdateRef.current[data.subscriptionId] = now;
         setVideoFrames(prev => ({
           ...prev,
           [data.subscriptionId]: data.frame,
         }));
       }
-      // Don't close frames here - VideoRenderer handles frame lifecycle
-      // after rendering. This avoids race conditions where frames are
-      // closed before they can be drawn.
+      // Frames passed to React state will be closed by VideoRenderer after rendering
 
       // Log stats every 300 frames to reduce overhead (debug mode only)
       if (isDebugMode() && frameUpdateCountRef.current % 300 === 0) {

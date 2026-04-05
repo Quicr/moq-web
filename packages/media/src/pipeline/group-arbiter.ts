@@ -90,10 +90,16 @@ export class GroupArbiter<T> {
     if (!this.config.debug) return;
     const now = performance.now();
     const prefix = `[Arbiter T+${now.toFixed(0)}ms]`;
-    if (data) {
-      console.log(prefix, msg, data);
+
+    // Use callback if provided (for worker-to-main-thread relay)
+    if (this.config.debugLogCallback) {
+      this.config.debugLogCallback(`${prefix} ${msg}`, data);
     } else {
-      console.log(prefix, msg);
+      if (data) {
+        console.log(prefix, msg, data);
+      } else {
+        console.log(prefix, msg);
+      }
     }
   }
 
