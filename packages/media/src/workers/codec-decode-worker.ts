@@ -25,7 +25,7 @@ import type {
 
 // Global debug flag - disabled by default for performance
 // Enable via init message config.debug or set to true here for debugging
-let debug = true; // TEMP: enabled for freeze debugging
+let debug = false;
 
 // Jitter buffer data types
 interface VideoBufferData {
@@ -158,10 +158,11 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
   });
 
   // Create debug log relay callback for arbiter
-  // TEMP: Always enable arbiter debug for freeze debugging
-  const arbiterDebugCallback = (message: string, data?: Record<string, unknown>) => {
-    respond({ type: 'arbiter-debug', channelId, message, data });
-  };
+  const arbiterDebugCallback = config.arbiterDebug
+    ? (message: string, data?: Record<string, unknown>) => {
+        respond({ type: 'arbiter-debug', channelId, message, data });
+      }
+    : undefined;
 
   // Initialize video if configured
   if (config.video) {
@@ -180,7 +181,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         enableCatchUp: config.enableCatchUp ?? true,
         catchUpThreshold: config.catchUpThreshold ?? 5,
         useLatencyDeadline: config.useLatencyDeadline ?? true,
-        debug: true, // TEMP: forced for freeze debugging
+        debug: config.arbiterDebug ?? false,
         debugLogCallback: arbiterDebugCallback,
       });
       log(`Channel ${channelId} using GroupArbiter for video`, {
@@ -216,7 +217,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         enableCatchUp: config.enableCatchUp ?? true,
         catchUpThreshold: config.catchUpThreshold ?? 5,
         useLatencyDeadline: config.useLatencyDeadline ?? true,
-        debug: true, // TEMP: forced for freeze debugging
+        debug: config.arbiterDebug ?? false,
         debugLogCallback: arbiterDebugCallback,
       });
       log(`Channel ${channelId} using GroupArbiter for audio`);
