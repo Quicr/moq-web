@@ -239,6 +239,13 @@ export class CodecDecodeWorkerClient {
   }
 
   /**
+   * Mark a group as complete (received END_OF_GROUP signal)
+   */
+  markGroupComplete(groupId: number): void {
+    this.post({ type: 'mark-group-complete', channelId: this.channelId, groupId });
+  }
+
+  /**
    * Destroy this channel and clean up resources
    * Call this when unsubscribing
    */

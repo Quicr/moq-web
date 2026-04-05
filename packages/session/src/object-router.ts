@@ -8,7 +8,7 @@
  * appropriate subscriptions.
  */
 
-import { Logger, ObjectCodec, IS_DRAFT_16 } from '@web-moq/core';
+import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16 } from '@web-moq/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 
 const log = Logger.create('moqt:session:object-router');
@@ -221,7 +221,7 @@ export class ObjectRouter {
           while (bufferOffset < buffer.length) {
             try {
               const view = buffer.subarray(bufferOffset);
-              const [objectId, payload, , bytesConsumed] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, false, previousObjectId);
+              const [objectId, payload, status, bytesConsumed] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, false, previousObjectId);
               previousObjectId = objectId; // Update for next delta decode
               objectCount++;
 
@@ -238,6 +238,20 @@ export class ObjectRouter {
                     namespace: s.namespace.join('/'),
                   })),
                 });
+              }
+
+              // Handle END_OF_GROUP signal
+              if (status === ObjectStatus.END_OF_GROUP) {
+                log.info('Received END_OF_GROUP', {
+                  groupId: subgroupHeader.groupId,
+                  objectId,
+                  trackAlias: subgroupHeader.trackAlias.toString(),
+                });
+                if (subscription?.onEndOfGroup) {
+                  subscription.onEndOfGroup(subgroupHeader.groupId);
+                }
+                bufferOffset += bytesConsumed;
+                continue; // Don't deliver empty END_OF_GROUP marker as a regular object
               }
 
               log.debug('Looking up subscription by trackAlias', {

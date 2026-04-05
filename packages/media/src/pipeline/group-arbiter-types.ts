@@ -93,6 +93,9 @@ export interface GroupState<T> {
 
   /** Current status */
   status: GroupStatus;
+
+  /** Whether END_OF_GROUP signal has been received for this group */
+  endOfGroupReceived: boolean;
 }
 
 /**
@@ -260,6 +263,7 @@ export function createGroupState<T>(
     outputObjectId: -1,
     frameCount: 0,
     status: 'receiving',
+    endOfGroupReceived: false,
   };
 }
 
