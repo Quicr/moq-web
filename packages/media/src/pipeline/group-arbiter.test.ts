@@ -59,9 +59,10 @@ describe('GroupArbiter', () => {
     it('should reject frames from completed groups', () => {
       arbiter.addFrame({ groupId: 0, objectId: 0, data: 'g0', isKeyframe: true });
 
-      // Complete group 0
+      // Complete group 0 via END_OF_GROUP signal
       ticker.tickBy(20);
       arbiter.getReadyFrames();
+      arbiter.markGroupComplete(0); // Simulate END_OF_GROUP
 
       // Now group 0 is complete, so new frames for it should be rejected
       const result = arbiter.addFrame({
@@ -163,12 +164,13 @@ describe('GroupArbiter', () => {
       expect(frames[0].objectId).toBe(0);
     });
 
-    it('should complete group when all frames output', () => {
+    it('should complete group when END_OF_GROUP received', () => {
       arbiter.addFrame({ groupId: 0, objectId: 0, data: 'kf', isKeyframe: true });
       arbiter.addFrame({ groupId: 0, objectId: 1, data: 'p1', isKeyframe: false });
 
       ticker.tickBy(20);
       arbiter.getReadyFrames();
+      arbiter.markGroupComplete(0); // Simulate END_OF_GROUP
 
       expect(arbiter.getGroupState(0)?.status).toBe('complete');
       expect(arbiter.getStats().groupsCompleted).toBe(1);
@@ -317,6 +319,7 @@ describe('GroupArbiter', () => {
       arbiter.addFrame({ groupId: 0, objectId: 0, data: 'g0', isKeyframe: true });
       ticker.tickBy(20);
       arbiter.getReadyFrames();
+      arbiter.markGroupComplete(0); // Simulate END_OF_GROUP
 
       // Try to add frame to completed group
       arbiter.addFrame({ groupId: 0, objectId: 1, data: 'g0-late', isKeyframe: false });

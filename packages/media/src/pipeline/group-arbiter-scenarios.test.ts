@@ -57,6 +57,14 @@ async function simulateScenario(
   // Sort arrivals by delay
   const sortedArrivals = [...arrivals].sort((a, b) => a.arrivalDelay - b.arrivalDelay);
 
+  // Track expected frame counts per group to detect when all frames arrived
+  const groupFrameCounts = new Map<number, { expected: number; received: number }>();
+  for (const arrival of arrivals) {
+    const entry = groupFrameCounts.get(arrival.groupId) ?? { expected: 0, received: 0 };
+    entry.expected++;
+    groupFrameCounts.set(arrival.groupId, entry);
+  }
+
   const startTime = performance.now();
   let arrivalIndex = 0;
 
@@ -75,6 +83,14 @@ async function simulateScenario(
         isKeyframe: arrival.isKeyframe,
       });
       arrivalIndex++;
+
+      // Track received frames and send END_OF_GROUP when all frames for a group arrived
+      const entry = groupFrameCounts.get(arrival.groupId)!;
+      entry.received++;
+      if (entry.received === entry.expected) {
+        // All frames for this group have arrived - simulate END_OF_GROUP
+        arbiter.markGroupComplete(arrival.groupId);
+      }
     }
 
     // Poll for ready frames
