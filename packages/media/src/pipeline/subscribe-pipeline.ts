@@ -383,11 +383,12 @@ export class SubscribePipeline {
     }
 
     // Forward arbiter debug logs from worker to main thread logger
+    // Using INFO level so they appear in console (DEBUG often filtered)
     this.decodeWorkerClient.on('arbiter-debug', (response) => {
       if (response.data) {
-        log.debug(response.message, response.data);
+        log.info(response.message, response.data);
       } else {
-        log.debug(response.message);
+        log.info(response.message);
       }
     });
 
@@ -419,6 +420,10 @@ export class SubscribePipeline {
       catalogTimescale: this.config.catalogTimescale,
       skipToLatestGroup: this.config.skipToLatestGroup,
       skipGraceFrames: this.config.skipGraceFrames,
+      enableCatchUp: this.config.enableCatchUp,
+      catchUpThreshold: this.config.catchUpThreshold,
+      useLatencyDeadline: this.config.useLatencyDeadline,
+      arbiterDebug: this.config.arbiterDebug,
     });
 
     log.info('Decode worker channel initialized', { channelId: this.channelId });
