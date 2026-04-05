@@ -125,7 +125,16 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       if (rafIdRef.current) {
         cancelAnimationFrame(rafIdRef.current);
       }
-      // Close any remaining frame
+      // Close any remaining frames to prevent GC warnings
+      // Close frameRef if it's different from prevFrameRef (hasn't been rendered yet)
+      if (frameRef.current && frameRef.current !== prevFrameRef.current) {
+        try {
+          frameRef.current.close();
+        } catch {
+          // Frame may already be closed
+        }
+      }
+      // Close the last rendered frame
       if (prevFrameRef.current) {
         try {
           prevFrameRef.current.close();

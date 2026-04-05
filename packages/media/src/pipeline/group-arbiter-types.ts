@@ -210,6 +210,9 @@ export interface TimingConfig {
 
   /** Enable debug logging (default: false) */
   debug: boolean;
+
+  /** Optional callback for debug logs (allows relaying to main thread from worker) */
+  debugLogCallback?: (message: string, data?: Record<string, unknown>) => void;
 }
 
 /**

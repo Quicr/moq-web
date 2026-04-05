@@ -157,6 +157,13 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     useGroupArbiter,
   });
 
+  // Create debug log relay callback for arbiter
+  const arbiterDebugCallback = config.arbiterDebug
+    ? (message: string, data?: Record<string, unknown>) => {
+        respond({ type: 'arbiter-debug', channelId, message, data });
+      }
+    : undefined;
+
   // Initialize video if configured
   if (config.video) {
     if (useGroupArbiter) {
@@ -175,6 +182,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         catchUpThreshold: config.catchUpThreshold ?? 5,
         useLatencyDeadline: config.useLatencyDeadline ?? true,
         debug: config.arbiterDebug ?? false,
+        debugLogCallback: arbiterDebugCallback,
       });
       log(`Channel ${channelId} using GroupArbiter for video`, {
         skipToLatestGroup: config.skipToLatestGroup,
@@ -210,6 +218,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         catchUpThreshold: config.catchUpThreshold ?? 5,
         useLatencyDeadline: config.useLatencyDeadline ?? true,
         debug: config.arbiterDebug ?? false,
+        debugLogCallback: arbiterDebugCallback,
       });
       log(`Channel ${channelId} using GroupArbiter for audio`);
     } else {

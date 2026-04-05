@@ -186,4 +186,5 @@ export type CodecDecodeWorkerResponse =
   | { type: 'poll-result'; channelId: number; videoFrames: number; audioFrames: number }
   | { type: 'destroyed'; channelId: number }
   | { type: 'error'; channelId?: number; message: string; diagnostics?: DecodeErrorDiagnostics }
+  | { type: 'arbiter-debug'; channelId: number; message: string; data?: Record<string, unknown> }
   | { type: 'closed' };
