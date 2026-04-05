@@ -74,11 +74,27 @@ export class GroupArbiter<T> {
   private pendingSkipGroupId = -1;
   private pendingSkipFrameCount = 0;
 
+  // Debug logging
+  private pollCount = 0;
+  private emptyPollCount = 0;
+
   constructor(config: Partial<TimingConfig> = {}, tickProvider?: TickProvider) {
     this.config = { ...DEFAULT_TIMING_CONFIG, ...config };
     this.tickProvider = tickProvider ?? new MonotonicTickProvider();
     this.timingEstimator = createTimingEstimator(this.config);
     this.stats = createArbiterStats();
+  }
+
+  /** Debug log helper - only logs if debug is enabled */
+  private log(msg: string, data?: Record<string, unknown>): void {
+    if (!this.config.debug) return;
+    const now = performance.now();
+    const prefix = `[Arbiter T+${now.toFixed(0)}ms]`;
+    if (data) {
+      console.log(prefix, msg, data);
+    } else {
+      console.log(prefix, msg);
+    }
   }
 
   /**
@@ -116,6 +132,12 @@ export class GroupArbiter<T> {
       group = this.createGroup(groupId);
       this.groups.set(groupId, group);
       this.stats.groupsReceived++;
+      this.log('NEW GROUP', {
+        groupId,
+        deadlineMs: (group.deadlineTime - performance.now()).toFixed(0),
+        activeGroupId: this.activeGroupId,
+        isKeyframe,
+      });
       this.pruneOldGroups();
     }
 
@@ -216,8 +238,19 @@ export class GroupArbiter<T> {
     const jitterDelayTicks = this.tickProvider.msToTicks(this.config.jitterDelay);
     if (!keyframe || keyframe.receivedTick + jitterDelayTicks > this.tickProvider.currentTick) {
       // Keyframe not ready yet - don't skip, wait for jitter delay
+      this.log('SKIP DEFERRED (jitter)', {
+        pendingSkipGroupId: this.pendingSkipGroupId,
+        hasKeyframe: !!keyframe,
+        jitterDelayMs: this.config.jitterDelay,
+      });
       return;
     }
+
+    this.log('SKIP TO LATEST', {
+      fromGroup: this.activeGroupId,
+      toGroup: this.pendingSkipGroupId,
+      frameCount: this.pendingSkipFrameCount,
+    });
 
     // Mark all groups between active and target as skipped
     for (const [groupId, group] of this.groups) {
@@ -247,6 +280,7 @@ export class GroupArbiter<T> {
    */
   getReadyFrames(maxFrames = 5): FrameEntry<T>[] {
     const result: FrameEntry<T>[] = [];
+    this.pollCount++;
 
     // Update group states (check deadlines)
     this.updateGroupStates();
@@ -258,6 +292,17 @@ export class GroupArbiter<T> {
       this.promoteNextGroup();
       activeGroup = this.groups.get(this.activeGroupId);
       if (!activeGroup || activeGroup.status !== 'active') {
+        this.emptyPollCount++;
+        // Log periodically why we have no frames
+        if (this.config.debug && this.emptyPollCount % 60 === 1) {
+          this.log('NO ACTIVE GROUP', {
+            activeGroupId: this.activeGroupId,
+            groupCount: this.groups.size,
+            groups: [...this.groups.entries()].map(([id, g]) => ({
+              id, status: g.status, frames: g.frameCount, hasKeyframe: g.hasKeyframe
+            })),
+          });
+        }
         return result;
       }
     }
@@ -270,6 +315,11 @@ export class GroupArbiter<T> {
 
     if (inCatchUpMode) {
       this.stats.catchUpEvents++;
+      this.log('CATCH-UP MODE', {
+        groupId: this.activeGroupId,
+        readyFrames: readyFrameCount,
+        threshold: this.config.catchUpThreshold,
+      });
     }
 
     // Determine how many frames to output
@@ -282,6 +332,7 @@ export class GroupArbiter<T> {
       activeGroup.outputObjectId < 0 ? 0 : activeGroup.outputObjectId;
 
     const now = performance.now();
+    let breakReason = '';
 
     for (
       let objId = startObjectId;
@@ -293,6 +344,7 @@ export class GroupArbiter<T> {
       if (!frame) {
         // Gap in sequence
         if (this.shouldWaitForMissingFrame(activeGroup, objId)) {
+          breakReason = `gap at objId=${objId}`;
           break; // Wait for missing frame
         }
         // Skip missing frame (deadline pressure)
@@ -304,7 +356,9 @@ export class GroupArbiter<T> {
       if (!inCatchUpMode) {
         // Check jitter delay using wall-clock time (not ticks)
         // This ensures frames are released even when no new frames are arriving
-        if (frame.receivedAt + this.config.jitterDelay > now) {
+        const jitterRemaining = (frame.receivedAt + this.config.jitterDelay) - now;
+        if (jitterRemaining > 0) {
+          breakReason = `jitter delay (${jitterRemaining.toFixed(0)}ms remaining for objId=${objId})`;
           break; // Not ready yet - still within jitter buffer window
         }
       }
@@ -317,6 +371,35 @@ export class GroupArbiter<T> {
       // Update latency stats using wall-clock time for accuracy
       const latencyMs = now - frame.receivedAt;
       this.updateLatencyStats(latencyMs);
+    }
+
+    // Log when we return no frames despite having an active group
+    if (result.length === 0 && activeGroup.frameCount > 0) {
+      this.emptyPollCount++;
+      if (this.config.debug && this.emptyPollCount % 30 === 1) {
+        this.log('NO FRAMES READY', {
+          groupId: this.activeGroupId,
+          reason: breakReason || 'unknown',
+          startObjectId,
+          highestObjectId: activeGroup.highestObjectId,
+          framesInGroup: activeGroup.frameCount,
+          hasKeyframe: activeGroup.hasKeyframe,
+          deadlineIn: (activeGroup.deadlineTime - now).toFixed(0) + 'ms',
+        });
+      }
+    } else if (result.length > 0) {
+      this.emptyPollCount = 0; // Reset empty poll counter
+      // Log frame output periodically
+      if (this.config.debug && this.stats.framesOutput % 30 === 0) {
+        this.log('FRAMES OUTPUT', {
+          count: result.length,
+          groupId: this.activeGroupId,
+          objIds: result.map(f => f.objectId).join(','),
+          avgLatencyMs: this.stats.avgOutputLatency.toFixed(1),
+          totalOutput: this.stats.framesOutput,
+          skipped: this.stats.groupsSkipped,
+        });
+      }
     }
 
     // In catch-up mode, mark all but the last frame as decode-only (don't render)
@@ -401,6 +484,13 @@ export class GroupArbiter<T> {
   private handleExpiredActiveGroup(group: GroupState<T>): void {
     const now = performance.now();
 
+    this.log('DEADLINE EXPIRED', {
+      groupId: group.groupId,
+      hasKeyframe: group.hasKeyframe,
+      outputObjectId: group.outputObjectId,
+      framesRemaining: group.frames.size,
+    });
+
     // Option 1: If we have partial content and allowPartialGroupDecode, keep outputting
     if (
       this.config.allowPartialGroupDecode &&
@@ -413,6 +503,7 @@ export class GroupArbiter<T> {
         this.tickProvider.currentTick +
         this.tickProvider.msToTicks(this.config.deadlineExtension);
       this.stats.deadlinesExtended++;
+      this.log('DEADLINE EXTENDED (partial output)', { extensionMs: this.config.deadlineExtension });
       return;
     }
 
@@ -420,6 +511,10 @@ export class GroupArbiter<T> {
     if (this.config.skipOnlyToKeyframe) {
       const nextKeyframeGroup = this.findNextKeyframeGroup(group.groupId);
       if (nextKeyframeGroup) {
+        this.log('SKIP ON DEADLINE', {
+          fromGroup: group.groupId,
+          toGroup: nextKeyframeGroup.groupId,
+        });
         group.status = 'skipped';
         this.activeGroupId = nextKeyframeGroup.groupId;
         nextKeyframeGroup.status = 'active';
@@ -434,6 +529,7 @@ export class GroupArbiter<T> {
       this.tickProvider.currentTick +
       this.tickProvider.msToTicks(this.config.deadlineExtension);
     this.stats.deadlinesExtended++;
+    this.log('DEADLINE EXTENDED (no keyframe)', { extensionMs: this.config.deadlineExtension });
   }
 
   /**

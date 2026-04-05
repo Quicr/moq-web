@@ -127,6 +127,8 @@ export interface MediaConfig {
   catchUpThreshold?: number;
   /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
   useLatencyDeadline?: boolean;
+  /** Enable GroupArbiter debug logging (default: false) */
+  arbiterDebug?: boolean;
 }
 
 /**

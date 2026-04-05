@@ -174,6 +174,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         enableCatchUp: config.enableCatchUp ?? true,
         catchUpThreshold: config.catchUpThreshold ?? 5,
         useLatencyDeadline: config.useLatencyDeadline ?? true,
+        debug: config.arbiterDebug ?? false,
       });
       log(`Channel ${channelId} using GroupArbiter for video`, {
         skipToLatestGroup: config.skipToLatestGroup,
@@ -208,6 +209,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         enableCatchUp: config.enableCatchUp ?? true,
         catchUpThreshold: config.catchUpThreshold ?? 5,
         useLatencyDeadline: config.useLatencyDeadline ?? true,
+        debug: config.arbiterDebug ?? false,
       });
       log(`Channel ${channelId} using GroupArbiter for audio`);
     } else {

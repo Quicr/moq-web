@@ -102,6 +102,8 @@ export interface SubscribePipelineConfig {
   catchUpThreshold?: number;
   /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
   useLatencyDeadline?: boolean;
+  /** Enable GroupArbiter debug logging (default: false) */
+  arbiterDebug?: boolean;
 
   /**
    * Optional decode worker for offloading decoding to a web worker.
@@ -467,6 +469,7 @@ export class SubscribePipeline {
           enableCatchUp: this.config.enableCatchUp ?? true,
           catchUpThreshold: this.config.catchUpThreshold ?? 5,
           useLatencyDeadline: this.config.useLatencyDeadline ?? true,
+          debug: this.config.arbiterDebug ?? false,
         });
         log.info('Using GroupArbiter for video', {
           skipToLatestGroup: this.config.skipToLatestGroup,
@@ -511,6 +514,7 @@ export class SubscribePipeline {
           enableCatchUp: this.config.enableCatchUp ?? true,
           catchUpThreshold: this.config.catchUpThreshold ?? 5,
           useLatencyDeadline: this.config.useLatencyDeadline ?? true,
+          debug: this.config.arbiterDebug ?? false,
         });
         log.info('Using GroupArbiter for audio');
       } else {
