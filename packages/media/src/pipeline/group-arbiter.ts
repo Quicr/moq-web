@@ -419,18 +419,19 @@ export class GroupArbiter<T> {
     }
 
     // Check if group is complete
-    // Complete when: buffer empty AND (END_OF_GROUP received OR output reached highestObjectId OR next group ready)
+    // Complete ONLY when: buffer empty AND (END_OF_GROUP received OR next group ready)
+    // Do NOT use "output reached highestObjectId" - that just means we're caught up with
+    // what's arrived so far, not that the group is actually done. This caused premature
+    // completion with only 2-3 frames output before the rest of the GOP arrived.
     if (activeGroup.frames.size === 0 && activeGroup.outputObjectId >= 0) {
-      const outputReachedEnd = activeGroup.outputObjectId > activeGroup.highestObjectId;
       const nextGroup = this.findNextKeyframeGroup(this.activeGroupId);
 
-      if (activeGroup.endOfGroupReceived || outputReachedEnd || nextGroup) {
+      if (activeGroup.endOfGroupReceived || nextGroup) {
         activeGroup.status = 'complete';
         this.stats.groupsCompleted++;
         this.log('GROUP COMPLETED', {
           groupId: this.activeGroupId,
-          reason: activeGroup.endOfGroupReceived ? 'END_OF_GROUP' :
-                  outputReachedEnd ? 'output_reached_end' : 'next_group_ready',
+          reason: activeGroup.endOfGroupReceived ? 'END_OF_GROUP' : 'next_group_ready',
           nextGroupId: nextGroup?.groupId,
         });
         if (nextGroup) {
