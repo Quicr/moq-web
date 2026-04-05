@@ -418,12 +418,28 @@ export class GroupArbiter<T> {
       result[result.length - 1].shouldRender = true;
     }
 
-    // Check if group is complete (END_OF_GROUP received and all frames output)
-    if (activeGroup.endOfGroupReceived && activeGroup.frames.size === 0 && activeGroup.outputObjectId >= 0) {
-      activeGroup.status = 'complete';
-      this.stats.groupsCompleted++;
-      this.log('GROUP COMPLETED (END_OF_GROUP + all frames output)', { groupId: this.activeGroupId });
-      this.promoteNextGroup();
+    // Check if group is complete
+    // Complete when: buffer empty AND (END_OF_GROUP received OR output reached highestObjectId OR next group ready)
+    if (activeGroup.frames.size === 0 && activeGroup.outputObjectId >= 0) {
+      const outputReachedEnd = activeGroup.outputObjectId > activeGroup.highestObjectId;
+      const nextGroup = this.findNextKeyframeGroup(this.activeGroupId);
+
+      if (activeGroup.endOfGroupReceived || outputReachedEnd || nextGroup) {
+        activeGroup.status = 'complete';
+        this.stats.groupsCompleted++;
+        this.log('GROUP COMPLETED', {
+          groupId: this.activeGroupId,
+          reason: activeGroup.endOfGroupReceived ? 'END_OF_GROUP' :
+                  outputReachedEnd ? 'output_reached_end' : 'next_group_ready',
+          nextGroupId: nextGroup?.groupId,
+        });
+        if (nextGroup) {
+          this.activeGroupId = nextGroup.groupId;
+          nextGroup.status = 'active';
+        } else {
+          this.promoteNextGroup();
+        }
+      }
     }
 
     return result;
