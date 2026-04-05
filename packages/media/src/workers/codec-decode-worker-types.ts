@@ -52,6 +52,30 @@ export interface CodecDecodeWorkerConfig {
   debug?: boolean;
   /** Enable latency stats emission */
   enableStats?: boolean;
+
+  // Group-aware jitter buffer options (Phase 4)
+  /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
+  useGroupArbiter?: boolean;
+  /** Maximum acceptable end-to-end latency in ms (default: 500) */
+  maxLatency?: number;
+  /** Initial estimated GOP duration in ms (default: 1000) */
+  estimatedGopDuration?: number;
+  /** Framerate hint from catalog (optional, improves GOP estimation) */
+  catalogFramerate?: number;
+  /** Timescale hint from catalog in units per second (optional) */
+  catalogTimescale?: number;
+  /** Skip to latest group when a newer group arrives (aggressive catch-up, default: false) */
+  skipToLatestGroup?: boolean;
+  /** Number of frames to wait before skipping to latest group (grace period, default: 3) */
+  skipGraceFrames?: number;
+  /** Enable catch-up mode when buffer gets too deep (default: true) */
+  enableCatchUp?: boolean;
+  /** Number of ready frames that triggers catch-up mode (default: 5) */
+  catchUpThreshold?: number;
+  /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
+  useLatencyDeadline?: boolean;
+  /** Enable GroupArbiter debug logging (default: false) */
+  arbiterDebug?: boolean;
 }
 
 /**
@@ -71,6 +95,7 @@ export type CodecDecodeWorkerRequest =
   | { type: 'reconfigure-video'; channelId: number; config: VideoDecoderWorkerConfig }
   | { type: 'reconfigure-audio'; channelId: number; config: AudioDecoderWorkerConfig }
   | { type: 'reset'; channelId: number }
+  | { type: 'mark-group-complete'; channelId: number; groupId: number }
   | { type: 'destroy'; channelId: number }
   | { type: 'close' };
 
@@ -162,4 +187,5 @@ export type CodecDecodeWorkerResponse =
   | { type: 'poll-result'; channelId: number; videoFrames: number; audioFrames: number }
   | { type: 'destroyed'; channelId: number }
   | { type: 'error'; channelId?: number; message: string; diagnostics?: DecodeErrorDiagnostics }
+  | { type: 'arbiter-debug'; channelId: number; message: string; data?: Record<string, unknown> }
   | { type: 'closed' };

@@ -105,6 +105,30 @@ export interface MediaConfig {
   enableStats?: boolean;
   /** Jitter buffer delay in milliseconds (default: 100) */
   jitterBufferDelay?: number;
+
+  // Group-aware jitter buffer options (for parallel QUIC stream handling)
+  /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
+  useGroupArbiter?: boolean;
+  /** Maximum acceptable end-to-end latency in ms before skipping to next keyframe (default: 500) */
+  maxLatency?: number;
+  /** Initial estimated GOP duration in ms (default: 1000) */
+  estimatedGopDuration?: number;
+  /** Framerate hint from catalog (improves GOP estimation) */
+  catalogFramerate?: number;
+  /** Timescale hint from catalog in units per second (e.g., 90000 for video) */
+  catalogTimescale?: number;
+  /** Skip to latest group immediately when a new group arrives (aggressive catch-up, default: false) */
+  skipToLatestGroup?: boolean;
+  /** Number of frame intervals to wait before skipping to latest group (grace period, default: 3) */
+  skipGraceFrames?: number;
+  /** Enable catch-up mode when buffer gets too deep (default: true) */
+  enableCatchUp?: boolean;
+  /** Number of ready frames that triggers catch-up mode (default: 5) */
+  catchUpThreshold?: number;
+  /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
+  useLatencyDeadline?: boolean;
+  /** Enable GroupArbiter debug logging (default: false) */
+  arbiterDebug?: boolean;
 }
 
 /**

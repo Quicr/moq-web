@@ -719,13 +719,15 @@ export class MOQTSession {
    * @param trackName - Track name
    * @param options - Subscribe options
    * @param onObject - Callback for received objects
+   * @param onEndOfGroup - Callback when END_OF_GROUP is received
    * @returns Subscription ID
    */
   async subscribe(
     namespace: string[],
     trackName: string,
     options?: SubscribeOptions,
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void
+    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
+    onEndOfGroup?: (groupId: number) => void
   ): Promise<number> {
     if (!this.isReady) {
       throw new Error('Session not ready');
@@ -754,6 +756,7 @@ export class MOQTSession {
       trackAlias,
       paused: false,
       onObject,
+      onEndOfGroup,
     };
     this.subscriptionManager.add(subscription);
 

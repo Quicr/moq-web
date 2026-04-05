@@ -334,6 +334,24 @@ interface SettingsSlice {
   vadVisualizationEnabled: boolean;
   /** Audio delivery mode: datagram (low latency) or stream (reliable) */
   audioDeliveryMode: 'datagram' | 'stream';
+  /** Use GroupArbiter for group-aware jitter buffering (handles parallel QUIC streams) */
+  useGroupArbiter: boolean;
+  /** Maximum acceptable latency before skipping to next keyframe (ms) */
+  maxLatency: number;
+  /** Initial estimated GOP duration (ms) */
+  estimatedGopDuration: number;
+  /** Skip to latest group immediately when a new group arrives (aggressive catch-up) */
+  skipToLatestGroup: boolean;
+  /** Number of frame intervals to wait before skipping to latest group (grace period) */
+  skipGraceFrames: number;
+  /** Enable catch-up mode when buffer gets too deep */
+  enableCatchUp: boolean;
+  /** Number of ready frames that triggers catch-up mode */
+  catchUpThreshold: number;
+  /** Use latency-only deadline (true=interactive, false=streaming) */
+  useLatencyDeadline: boolean;
+  /** Enable GroupArbiter debug logging */
+  arbiterDebug: boolean;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -352,6 +370,15 @@ interface SettingsSlice {
   setVadProvider: (provider: VADProvider) => void;
   setVadVisualizationEnabled: (value: boolean) => void;
   setAudioDeliveryMode: (mode: 'datagram' | 'stream') => void;
+  setUseGroupArbiter: (value: boolean) => void;
+  setMaxLatency: (value: number) => void;
+  setEstimatedGopDuration: (value: number) => void;
+  setSkipToLatestGroup: (value: boolean) => void;
+  setSkipGraceFrames: (value: number) => void;
+  setEnableCatchUp: (value: boolean) => void;
+  setCatchUpThreshold: (value: number) => void;
+  setUseLatencyDeadline: (value: boolean) => void;
+  setArbiterDebug: (value: boolean) => void;
 }
 
 // ============================================================================
@@ -810,7 +837,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -821,6 +848,15 @@ export const useStore = create<AppStore>()(
           videoResolution,
           enableStats,
           jitterBufferDelay,
+          useGroupArbiter,
+          maxLatency,
+          estimatedGopDuration,
+          skipToLatestGroup,
+          skipGraceFrames,
+          enableCatchUp,
+          catchUpThreshold,
+          useLatencyDeadline,
+          arbiterDebug,
         };
 
         const subscriptionId = await session.subscribe(
@@ -1012,7 +1048,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1027,6 +1063,15 @@ export const useStore = create<AppStore>()(
           videoResolution,
           enableStats,
           jitterBufferDelay,
+          useGroupArbiter,
+          maxLatency,
+          estimatedGopDuration,
+          skipToLatestGroup,
+          skipGraceFrames,
+          enableCatchUp,
+          catchUpThreshold,
+          useLatencyDeadline,
+          arbiterDebug,
         };
 
         const subscriptionId = await session.subscribeNamespace(namespacePrefix, config);
@@ -1125,6 +1170,15 @@ export const useStore = create<AppStore>()(
       vadProvider: 'libfvad', // Default to lightweight libfvad
       vadVisualizationEnabled: false, // Default viz off for performance
       audioDeliveryMode: 'datagram', // Default to datagram for low latency
+      useGroupArbiter: false, // Default to legacy JitterBuffer
+      maxLatency: 500, // Default 500ms max latency
+      estimatedGopDuration: 1000, // Default 1s GOP
+      skipToLatestGroup: false, // Default: complete current GOP before switching
+      skipGraceFrames: 3, // Default: wait 3 frame intervals before skipping
+      enableCatchUp: true, // Default: enable catch-up when buffer gets deep
+      catchUpThreshold: 5, // Default: trigger catch-up after 5 ready frames
+      useLatencyDeadline: true, // Default: use latency-only deadline (interactive mode)
+      arbiterDebug: false, // Default: no debug logging
 
       setTheme: (theme) => {
         set({ theme });
@@ -1161,6 +1215,15 @@ export const useStore = create<AppStore>()(
       setVadProvider: (provider) => set({ vadProvider: provider }),
       setVadVisualizationEnabled: (value) => set({ vadVisualizationEnabled: value }),
       setAudioDeliveryMode: (mode) => set({ audioDeliveryMode: mode }),
+      setUseGroupArbiter: (value) => set({ useGroupArbiter: value }),
+      setMaxLatency: (value) => set({ maxLatency: value }),
+      setEstimatedGopDuration: (value) => set({ estimatedGopDuration: value }),
+      setSkipToLatestGroup: (value) => set({ skipToLatestGroup: value }),
+      setSkipGraceFrames: (value) => set({ skipGraceFrames: value }),
+      setEnableCatchUp: (value) => set({ enableCatchUp: value }),
+      setCatchUpThreshold: (value) => set({ catchUpThreshold: value }),
+      setUseLatencyDeadline: (value) => set({ useLatencyDeadline: value }),
+      setArbiterDebug: (value) => set({ arbiterDebug: value }),
     }),
     {
       name: 'moqt-client-storage',
@@ -1184,6 +1247,15 @@ export const useStore = create<AppStore>()(
         vadProvider: state.vadProvider,
         vadVisualizationEnabled: state.vadVisualizationEnabled,
         audioDeliveryMode: state.audioDeliveryMode,
+        useGroupArbiter: state.useGroupArbiter,
+        maxLatency: state.maxLatency,
+        estimatedGopDuration: state.estimatedGopDuration,
+        skipToLatestGroup: state.skipToLatestGroup,
+        skipGraceFrames: state.skipGraceFrames,
+        enableCatchUp: state.enableCatchUp,
+        catchUpThreshold: state.catchUpThreshold,
+        useLatencyDeadline: state.useLatencyDeadline,
+        arbiterDebug: state.arbiterDebug,
       }),
     }
   )

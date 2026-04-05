@@ -239,6 +239,13 @@ export class CodecDecodeWorkerClient {
   }
 
   /**
+   * Mark a group as complete (received END_OF_GROUP signal)
+   */
+  markGroupComplete(groupId: number): void {
+    this.post({ type: 'mark-group-complete', channelId: this.channelId, groupId });
+  }
+
+  /**
    * Destroy this channel and clean up resources
    * Call this when unsubscribing
    */
@@ -274,6 +281,7 @@ export class CodecDecodeWorkerClient {
   on(type: 'latency-stats', handler: (data: ChannelLatencyStatsResponse) => void): void;
   on(type: 'error', handler: (data: ChannelErrorResponse) => void): void;
   on(type: 'destroyed', handler: (data: { channelId: number }) => void): void;
+  on(type: 'arbiter-debug', handler: (data: { channelId: number; message: string; data?: Record<string, unknown> }) => void): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(type: string, handler: (data: any) => void): void {
     if (!this.handlers.has(type)) {

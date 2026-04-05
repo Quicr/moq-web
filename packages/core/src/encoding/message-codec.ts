@@ -1123,12 +1123,45 @@ export class MessageCodec {
   private static encodeSubscribeUpdatePayload(writer: BufferWriter, message: SubscribeUpdateMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.subscriptionRequestId);
-    writer.writeVarInt(message.startLocation.groupId);
-    writer.writeVarInt(message.startLocation.objectId);
-    writer.writeVarInt(message.endGroup);
-    writer.writeByte(message.subscriberPriority);
-    writer.writeByte(message.forward);
-    MessageCodec.encodeRequestParameters(writer, message.parameters);
+
+    if (IS_DRAFT_16) {
+      // Draft-16: All fields are encoded as parameters
+      const params = new Map<RequestParameter, Uint8Array>();
+
+      // FORWARD (0x10)
+      if (message.forward !== undefined) {
+        params.set(RequestParameter.FORWARD, VarInt.encode(message.forward));
+      }
+
+      // SUBSCRIBER_PRIORITY (0x20)
+      if (message.subscriberPriority !== undefined && message.subscriberPriority !== 128) {
+        params.set(RequestParameter.SUBSCRIBER_PRIORITY, VarInt.encode(message.subscriberPriority));
+      }
+
+      // SUBSCRIPTION_FILTER (0x21) - encode start/end location
+      if (message.startLocation || message.endGroup) {
+        const filterWriter = new BufferWriter();
+        // LocationType: 0x01 = AbsoluteStart, 0x02 = AbsoluteRange
+        const locationType = message.endGroup ? 0x02 : 0x01;
+        filterWriter.writeVarInt(locationType);
+        filterWriter.writeVarInt(message.startLocation?.groupId ?? 0);
+        filterWriter.writeVarInt(message.startLocation?.objectId ?? 0);
+        if (message.endGroup) {
+          filterWriter.writeVarInt(message.endGroup);
+        }
+        params.set(RequestParameter.SUBSCRIPTION_FILTER, filterWriter.toUint8Array());
+      }
+
+      MessageCodec.encodeRequestParameters(writer, params);
+    } else {
+      // Draft-14: Fixed fields
+      writer.writeVarInt(message.startLocation.groupId);
+      writer.writeVarInt(message.startLocation.objectId);
+      writer.writeVarInt(message.endGroup);
+      writer.writeByte(message.subscriberPriority);
+      writer.writeByte(message.forward);
+      MessageCodec.encodeRequestParameters(writer, message.parameters);
+    }
   }
 
   private static decodeSubscribeUpdatePayload(reader: BufferReader): SubscribeUpdateMessage {
@@ -1136,6 +1169,62 @@ export class MessageCodec {
     log.info('SUBSCRIBE_UPDATE field', { field: 'requestId', value: requestId });
     const subscriptionRequestId = reader.readVarIntNumber();
     log.info('SUBSCRIBE_UPDATE field', { field: 'subscriptionRequestId', value: subscriptionRequestId });
+
+    if (IS_DRAFT_16) {
+      // Draft-16: All fields are in parameters
+      const parameters = MessageCodec.decodeRequestParameters(reader);
+
+      // Extract fields from parameters with defaults
+      let forward = 1; // Default: forward enabled
+      let subscriberPriority = 128; // Default priority
+      let startLocation = { groupId: 0, objectId: 0 };
+      let endGroup = 0;
+
+      if (parameters) {
+        // FORWARD (0x10)
+        const forwardParam = parameters.get(RequestParameter.FORWARD);
+        if (forwardParam && forwardParam.length > 0) {
+          const [fwd] = VarInt.decodeNumber(forwardParam);
+          forward = fwd;
+        }
+        log.info('SUBSCRIBE_UPDATE field', { field: 'forward', value: forward });
+
+        // SUBSCRIBER_PRIORITY (0x20)
+        const priorityParam = parameters.get(RequestParameter.SUBSCRIBER_PRIORITY);
+        if (priorityParam && priorityParam.length > 0) {
+          const [priority] = VarInt.decodeNumber(priorityParam);
+          subscriberPriority = priority;
+        }
+        log.info('SUBSCRIBE_UPDATE field', { field: 'subscriberPriority', value: subscriberPriority });
+
+        // SUBSCRIPTION_FILTER (0x21)
+        const filterParam = parameters.get(RequestParameter.SUBSCRIPTION_FILTER);
+        if (filterParam && filterParam.length > 0) {
+          const filterReader = new BufferReader(filterParam);
+          const locationType = filterReader.readVarIntNumber();
+          startLocation = {
+            groupId: filterReader.readVarIntNumber(),
+            objectId: filterReader.readVarIntNumber(),
+          };
+          if (locationType === 0x02 && filterReader.remaining > 0) {
+            endGroup = filterReader.readVarIntNumber();
+          }
+        }
+        log.info('SUBSCRIBE_UPDATE field', { field: 'startLocation', ...startLocation, endGroup });
+      }
+
+      return {
+        type: MessageType.SUBSCRIBE_UPDATE,
+        requestId,
+        subscriptionRequestId,
+        startLocation,
+        endGroup,
+        subscriberPriority,
+        forward,
+      };
+    }
+
+    // Draft-14: Fixed fields
     const startGroupId = reader.readVarIntNumber();
     const startObjectId = reader.readVarIntNumber();
     log.info('SUBSCRIBE_UPDATE field', { field: 'startLocation', groupId: startGroupId, objectId: startObjectId });
