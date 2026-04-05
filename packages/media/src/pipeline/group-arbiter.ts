@@ -475,8 +475,12 @@ export class GroupArbiter<T> {
     const now = performance.now();
 
     // Calculate deadline in both ticks and wall-clock time
+    // useLatencyDeadline: deadline = maxLatency (interactive, skip quickly)
+    // !useLatencyDeadline: deadline = gopDuration + maxLatency (streaming, wait for GOP)
     const gopDurationMs = this.timingEstimator.getEstimatedGopDuration();
-    const deadlineMs = gopDurationMs + this.config.maxLatency;
+    const deadlineMs = this.config.useLatencyDeadline
+      ? this.config.maxLatency
+      : gopDurationMs + this.config.maxLatency;
     const deadlineTicks = this.tickProvider.msToTicks(deadlineMs);
 
     const group = createGroupState<T>(

@@ -125,6 +125,8 @@ export interface MediaConfig {
   enableCatchUp?: boolean;
   /** Number of ready frames that triggers catch-up mode (default: 5) */
   catchUpThreshold?: number;
+  /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
+  useLatencyDeadline?: boolean;
 }
 
 /**

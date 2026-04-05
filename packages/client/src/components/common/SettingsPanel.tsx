@@ -58,6 +58,8 @@ export const SettingsPanel: React.FC = () => {
     setEnableCatchUp,
     catchUpThreshold,
     setCatchUpThreshold,
+    useLatencyDeadline,
+    setUseLatencyDeadline,
   } = useStore();
 
   return (
@@ -442,6 +444,34 @@ export const SettingsPanel: React.FC = () => {
                 {/* GroupArbiter Settings (only shown when enabled) */}
                 {useGroupArbiter && (
                   <>
+                    {/* Deadline Mode Toggle */}
+                    <div>
+                      <label className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Interactive Mode
+                          </span>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {useLatencyDeadline
+                              ? 'Deadline = Max Latency (fast skip)'
+                              : 'Deadline = GOP + Max Latency (wait for GOP)'}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setUseLatencyDeadline(!useLatencyDeadline)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            useLatencyDeadline ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              useLatencyDeadline ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </label>
+                    </div>
+
                     <div>
                       <label className="label">
                         Max Latency: {maxLatency}ms
