@@ -509,9 +509,10 @@ export class GroupArbiter<T> {
     }
 
     // Check if next group has enough frames to indicate current group is done
+    // BUT only skip if we have no more frames to output in current group
     const nextGroup = this.findNextKeyframeGroup(group.groupId);
-    if (nextGroup && nextGroup.frameCount >= 3) {
-      this.log('SKIP TO NEXT GROUP (next has 3+ frames)', {
+    if (nextGroup && nextGroup.frameCount >= 3 && group.frames.size === 0) {
+      this.log('SKIP TO NEXT GROUP (current empty, next has 3+ frames)', {
         fromGroup: group.groupId,
         toGroup: nextGroup.groupId,
         nextGroupFrames: nextGroup.frameCount,
