@@ -72,6 +72,8 @@ export const SubscribePanel: React.FC = () => {
   const frameUpdateCountRef = useRef<number>(0);
   // Per-subscription throttling to avoid second subscription waiting for first
   const lastStateUpdateRef = useRef<{ [subscriptionId: number]: number }>({});
+  // Track the last frame passed to React state (so we don't close it while VideoRenderer needs it)
+  const lastStateFrameRef = useRef<VideoFrameMap>({});
 
   // Track active subscription IDs for video frame handler
   const activeSubscriptionIds = subscriptionConfigs
@@ -101,23 +103,38 @@ export const SubscribePanel: React.FC = () => {
 
       frameUpdateCountRef.current++;
 
-      // Update ref immediately with new frame
-      videoFramesRef.current[data.subscriptionId] = data.frame;
-
       // Per-subscription throttle to max 60fps to avoid excessive re-renders
       // Each subscription has its own throttle timer so they don't block each other
       const now = performance.now();
       const lastUpdate = lastStateUpdateRef.current[data.subscriptionId] ?? 0;
-      if (now - lastUpdate > 16) { // ~60fps per subscription
+      const shouldUpdateState = now - lastUpdate > 16; // ~60fps per subscription
+
+      // Close any existing frame in the ref that won't be rendered
+      // BUT don't close the frame that's currently in React state (VideoRenderer may still need it)
+      const existingFrame = videoFramesRef.current[data.subscriptionId];
+      const frameInState = lastStateFrameRef.current[data.subscriptionId];
+      if (existingFrame && existingFrame !== data.frame && existingFrame !== frameInState) {
+        // This is an intermediate throttled frame that was never passed to React state
+        // Close it now to prevent GC warning
+        try {
+          existingFrame.close();
+        } catch {
+          // Frame may already be closed
+        }
+      }
+
+      // Update ref with new frame
+      videoFramesRef.current[data.subscriptionId] = data.frame;
+
+      if (shouldUpdateState) {
         lastStateUpdateRef.current[data.subscriptionId] = now;
+        lastStateFrameRef.current[data.subscriptionId] = data.frame;
         setVideoFrames(prev => ({
           ...prev,
           [data.subscriptionId]: data.frame,
         }));
       }
-      // Don't close frames here - VideoRenderer handles frame lifecycle
-      // after rendering. This avoids race conditions where frames are
-      // closed before they can be drawn.
+      // Frames passed to React state will be closed by VideoRenderer after rendering
 
       // Log stats every 300 frames to reduce overhead (debug mode only)
       if (isDebugMode() && frameUpdateCountRef.current % 300 === 0) {

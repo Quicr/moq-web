@@ -7,12 +7,14 @@
  * Application settings including theme, codec settings, and delivery options.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useStore } from '../../store';
 import { LogLevel } from '../../types';
 import { VarIntType } from '@web-moq/core';
 
 export const SettingsPanel: React.FC = () => {
+  const [showAdvancedJitter, setShowAdvancedJitter] = useState(false);
+
   const {
     theme,
     setTheme,
@@ -42,6 +44,24 @@ export const SettingsPanel: React.FC = () => {
     setVadVisualizationEnabled,
     audioDeliveryMode,
     setAudioDeliveryMode,
+    useGroupArbiter,
+    setUseGroupArbiter,
+    maxLatency,
+    setMaxLatency,
+    estimatedGopDuration,
+    setEstimatedGopDuration,
+    skipToLatestGroup,
+    setSkipToLatestGroup,
+    skipGraceFrames,
+    setSkipGraceFrames,
+    enableCatchUp,
+    setEnableCatchUp,
+    catchUpThreshold,
+    setCatchUpThreshold,
+    useLatencyDeadline,
+    setUseLatencyDeadline,
+    arbiterDebug,
+    setArbiterDebug,
   } = useStore();
 
   return (
@@ -369,6 +389,247 @@ export const SettingsPanel: React.FC = () => {
               <span>50ms (low latency)</span>
               <span>300ms (smooth)</span>
             </div>
+          </div>
+
+          {/* Advanced Jitter Buffer Settings (collapsible) */}
+          <div className="border border-gray-200 dark:border-gray-700 rounded-md">
+            <button
+              onClick={() => setShowAdvancedJitter(!showAdvancedJitter)}
+              className="w-full flex items-center justify-between p-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800 rounded-md transition-colors"
+            >
+              <div>
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Advanced Jitter Settings
+                </span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Group-aware buffering for parallel streams
+                </p>
+              </div>
+              <svg
+                className={`w-5 h-5 text-gray-500 transition-transform ${showAdvancedJitter ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {showAdvancedJitter && (
+              <div className="p-3 pt-0 space-y-4 border-t border-gray-200 dark:border-gray-700">
+                {/* Group-Aware Buffer Toggle */}
+                <div>
+                  <label className="flex items-center justify-between">
+                    <div>
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Enable GroupArbiter
+                      </span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Deadline-based ordering for QUIC streams
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setUseGroupArbiter(!useGroupArbiter)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                        useGroupArbiter ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          useGroupArbiter ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
+                </div>
+
+                {/* GroupArbiter Settings (only shown when enabled) */}
+                {useGroupArbiter && (
+                  <>
+                    {/* Deadline Mode Toggle */}
+                    <div>
+                      <label className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Interactive Mode
+                          </span>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {useLatencyDeadline
+                              ? 'Deadline = Max Latency (fast skip)'
+                              : 'Deadline = GOP + Max Latency (wait for GOP)'}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setUseLatencyDeadline(!useLatencyDeadline)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            useLatencyDeadline ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              useLatencyDeadline ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </label>
+                    </div>
+
+                    <div>
+                      <label className="label">
+                        Max Latency: {maxLatency}ms
+                      </label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="5000"
+                        step="50"
+                        value={maxLatency}
+                        onChange={(e) => setMaxLatency(Number(e.target.value))}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-gray-500 mt-1">
+                        <span>0ms (immediate)</span>
+                        <span>5000ms (tolerant)</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="label">
+                        GOP Duration: {estimatedGopDuration}ms
+                      </label>
+                      <input
+                        type="range"
+                        min="100"
+                        max="5000"
+                        step="100"
+                        value={estimatedGopDuration}
+                        onChange={(e) => setEstimatedGopDuration(Number(e.target.value))}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-gray-500 mt-1">
+                        <span>100ms (short)</span>
+                        <span>5000ms (long)</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Skip to Latest Group
+                          </span>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Jump to newest GOP when behind (aggressive catch-up)
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setSkipToLatestGroup(!skipToLatestGroup)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            skipToLatestGroup ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              skipToLatestGroup ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </label>
+                    </div>
+                    {skipToLatestGroup && (
+                      <div>
+                        <label className="label">
+                          Grace Period: {skipGraceFrames} frame{skipGraceFrames !== 1 ? 's' : ''}
+                        </label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="10"
+                          step="1"
+                          value={skipGraceFrames}
+                          onChange={(e) => setSkipGraceFrames(Number(e.target.value))}
+                          className="w-full"
+                        />
+                        <div className="flex justify-between text-xs text-gray-500 mt-1">
+                          <span>0 (immediate)</span>
+                          <span>10 (patient)</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Catch-up Mode */}
+                    <div className="pt-2">
+                      <label className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Buffer Catch-Up
+                          </span>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Fast-forward when buffer gets too deep
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setEnableCatchUp(!enableCatchUp)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            enableCatchUp ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              enableCatchUp ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </label>
+                    </div>
+                    {enableCatchUp && (
+                      <div>
+                        <label className="label">
+                          Catch-Up Threshold: {catchUpThreshold} frame{catchUpThreshold !== 1 ? 's' : ''}
+                        </label>
+                        <input
+                          type="range"
+                          min="3"
+                          max="15"
+                          step="1"
+                          value={catchUpThreshold}
+                          onChange={(e) => setCatchUpThreshold(Number(e.target.value))}
+                          className="w-full"
+                        />
+                        <div className="flex justify-between text-xs text-gray-500 mt-1">
+                          <span>3 (aggressive)</span>
+                          <span>15 (tolerant)</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Debug Mode */}
+                    <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                      <label className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Arbiter Debug Logging
+                          </span>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Log frame flow to console (for debugging)
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setArbiterDebug(!arbiterDebug)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            arbiterDebug ? 'bg-orange-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              arbiterDebug ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </label>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* MOQT VarInt Encoding Toggle */}
