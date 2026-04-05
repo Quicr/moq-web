@@ -502,13 +502,16 @@ export class MediaSession {
     // Start pipeline before subscribing (so it's ready to receive)
     await pipeline.start();
 
-    // Subscribe via session with object callback
+    // Subscribe via session with object callback and end-of-group handler
     const subscriptionId = await this.session.subscribe(
       namespace,
       trackName,
       options,
       (data, groupId, objectId, timestamp) => {
         pipeline.push(data, groupId, objectId, timestamp);
+      },
+      (groupId) => {
+        pipeline.markGroupComplete(groupId);
       }
     );
 

@@ -951,6 +951,24 @@ export class SubscribePipeline {
   }
 
   /**
+   * Mark a group as complete (received END_OF_GROUP signal)
+   * @param groupId - The group ID that is complete
+   */
+  markGroupComplete(groupId: number): void {
+    log.info('Group marked complete (END_OF_GROUP received)', { groupId, channelId: this.channelId });
+
+    // Worker mode: send message to worker
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.markGroupComplete(groupId);
+      return;
+    }
+
+    // Main thread mode: signal arbiters directly
+    this.videoArbiter?.markGroupComplete(groupId);
+    this.audioArbiter?.markGroupComplete(groupId);
+  }
+
+  /**
    * Emit jitter sample (called periodically when stats enabled)
    */
   private emitJitterSample(): void {

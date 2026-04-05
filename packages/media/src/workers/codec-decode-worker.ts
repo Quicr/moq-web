@@ -948,6 +948,19 @@ self.onmessage = (event: MessageEvent<CodecDecodeWorkerRequest>): void => {
       break;
     }
 
+    case 'mark-group-complete': {
+      const channel = channels.get(msg.channelId);
+      if (!channel) {
+        log(`Channel ${msg.channelId} not found for mark-group-complete`);
+        return;
+      }
+      // Signal the arbiters that the group is complete
+      channel.videoArbiter?.markGroupComplete(msg.groupId);
+      channel.audioArbiter?.markGroupComplete(msg.groupId);
+      log(`Group ${msg.groupId} marked complete (channel ${msg.channelId})`);
+      break;
+    }
+
     case 'destroy':
       destroyChannel(msg.channelId);
       break;

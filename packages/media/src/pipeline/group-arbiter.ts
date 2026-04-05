@@ -418,6 +418,14 @@ export class GroupArbiter<T> {
       result[result.length - 1].shouldRender = true;
     }
 
+    // Check if group is complete (END_OF_GROUP received and all frames output)
+    if (activeGroup.endOfGroupReceived && activeGroup.frames.size === 0 && activeGroup.outputObjectId >= 0) {
+      activeGroup.status = 'complete';
+      this.stats.groupsCompleted++;
+      this.log('GROUP COMPLETED (END_OF_GROUP + all frames output)', { groupId: this.activeGroupId });
+      this.promoteNextGroup();
+    }
+
     return result;
   }
 
@@ -488,13 +496,40 @@ export class GroupArbiter<T> {
       hasKeyframe: group.hasKeyframe,
       outputObjectId: group.outputObjectId,
       framesRemaining: group.frames.size,
+      endOfGroupReceived: group.endOfGroupReceived,
     });
 
+    // If END_OF_GROUP was received and no frames remaining, complete the group
+    if (group.endOfGroupReceived && group.frames.size === 0) {
+      this.log('GROUP COMPLETED (END_OF_GROUP + no frames)', { groupId: group.groupId });
+      group.status = 'complete';
+      this.stats.groupsCompleted++;
+      this.promoteNextGroup();
+      return;
+    }
+
+    // Check if next group has enough frames to indicate current group is done
+    const nextGroup = this.findNextKeyframeGroup(group.groupId);
+    if (nextGroup && nextGroup.frameCount >= 3) {
+      this.log('SKIP TO NEXT GROUP (next has 3+ frames)', {
+        fromGroup: group.groupId,
+        toGroup: nextGroup.groupId,
+        nextGroupFrames: nextGroup.frameCount,
+      });
+      group.status = 'skipped';
+      this.activeGroupId = nextGroup.groupId;
+      nextGroup.status = 'active';
+      this.stats.groupsSkipped++;
+      return;
+    }
+
     // Option 1: If we have partial content and allowPartialGroupDecode, keep outputting
+    // But only extend if there are frames remaining to output
     if (
       this.config.allowPartialGroupDecode &&
       group.hasKeyframe &&
-      group.outputObjectId >= 0
+      group.outputObjectId >= 0 &&
+      group.frames.size > 0
     ) {
       // Extend deadline slightly to finish partial output
       group.deadlineTime = now + this.config.deadlineExtension;
@@ -507,28 +542,33 @@ export class GroupArbiter<T> {
     }
 
     // Option 2: Find next group with keyframe to skip to
-    if (this.config.skipOnlyToKeyframe) {
-      const nextKeyframeGroup = this.findNextKeyframeGroup(group.groupId);
-      if (nextKeyframeGroup) {
-        this.log('SKIP ON DEADLINE', {
-          fromGroup: group.groupId,
-          toGroup: nextKeyframeGroup.groupId,
-        });
-        group.status = 'skipped';
-        this.activeGroupId = nextKeyframeGroup.groupId;
-        nextKeyframeGroup.status = 'active';
-        this.stats.groupsSkipped++;
-        return;
-      }
+    if (this.config.skipOnlyToKeyframe && nextGroup) {
+      this.log('SKIP ON DEADLINE', {
+        fromGroup: group.groupId,
+        toGroup: nextGroup.groupId,
+      });
+      group.status = 'skipped';
+      this.activeGroupId = nextGroup.groupId;
+      nextGroup.status = 'active';
+      this.stats.groupsSkipped++;
+      return;
     }
 
-    // Option 3: No keyframe available - extend deadline
-    group.deadlineTime = now + this.config.deadlineExtension;
-    group.deadlineTick =
-      this.tickProvider.currentTick +
-      this.tickProvider.msToTicks(this.config.deadlineExtension);
-    this.stats.deadlinesExtended++;
-    this.log('DEADLINE EXTENDED (no keyframe)', { extensionMs: this.config.deadlineExtension });
+    // Option 3: No keyframe available - extend deadline (but only if frames remaining or no END_OF_GROUP)
+    if (group.frames.size > 0 || !group.endOfGroupReceived) {
+      group.deadlineTime = now + this.config.deadlineExtension;
+      group.deadlineTick =
+        this.tickProvider.currentTick +
+        this.tickProvider.msToTicks(this.config.deadlineExtension);
+      this.stats.deadlinesExtended++;
+      this.log('DEADLINE EXTENDED (waiting for frames/EOG)', { extensionMs: this.config.deadlineExtension });
+    } else {
+      // END_OF_GROUP received and no frames - mark complete
+      this.log('GROUP COMPLETED (EOG, no frames, no next)', { groupId: group.groupId });
+      group.status = 'complete';
+      this.stats.groupsCompleted++;
+      this.promoteNextGroup();
+    }
   }
 
   /**
@@ -628,6 +668,33 @@ export class GroupArbiter<T> {
     if (nextGroup) {
       this.activeGroupId = nextGroupId;
       nextGroup.status = 'active';
+    }
+  }
+
+  /**
+   * Mark a group as complete (received END_OF_GROUP signal from publisher)
+   * This prevents infinite deadline extensions when all frames have been output.
+   */
+  markGroupComplete(groupId: number): void {
+    const group = this.groups.get(groupId);
+    if (!group) {
+      this.log('MARK COMPLETE - group not found', { groupId });
+      return;
+    }
+
+    group.endOfGroupReceived = true;
+    this.log('GROUP MARKED COMPLETE', {
+      groupId,
+      framesRemaining: group.frames.size,
+      outputObjectId: group.outputObjectId,
+    });
+
+    // If this is the active group with no frames remaining, complete it now
+    if (groupId === this.activeGroupId && group.frames.size === 0 && group.outputObjectId >= 0) {
+      group.status = 'complete';
+      this.stats.groupsCompleted++;
+      this.log('GROUP COMPLETED (all frames output)', { groupId });
+      this.promoteNextGroup();
     }
   }
 
