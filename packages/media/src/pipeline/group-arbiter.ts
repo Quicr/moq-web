@@ -418,13 +418,6 @@ export class GroupArbiter<T> {
       result[result.length - 1].shouldRender = true;
     }
 
-    // Check if group is complete (all frames output)
-    if (activeGroup.frames.size === 0 && activeGroup.outputObjectId > 0) {
-      activeGroup.status = 'complete';
-      this.stats.groupsCompleted++;
-      this.promoteNextGroup();
-    }
-
     return result;
   }
 
