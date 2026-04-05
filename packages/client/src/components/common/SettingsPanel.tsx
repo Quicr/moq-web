@@ -60,6 +60,8 @@ export const SettingsPanel: React.FC = () => {
     setCatchUpThreshold,
     useLatencyDeadline,
     setUseLatencyDeadline,
+    arbiterDebug,
+    setArbiterDebug,
   } = useStore();
 
   return (
@@ -598,6 +600,32 @@ export const SettingsPanel: React.FC = () => {
                         </div>
                       </div>
                     )}
+
+                    {/* Debug Mode */}
+                    <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                      <label className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Arbiter Debug Logging
+                          </span>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Log frame flow to console (for debugging)
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setArbiterDebug(!arbiterDebug)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            arbiterDebug ? 'bg-orange-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              arbiterDebug ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </label>
+                    </div>
                   </>
                 )}
               </div>

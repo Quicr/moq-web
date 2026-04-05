@@ -207,6 +207,9 @@ export interface TimingConfig {
 
   /** Maximum frames to flush in a single catch-up batch (default: 30) */
   maxCatchUpFrames: number;
+
+  /** Enable debug logging (default: false) */
+  debug: boolean;
 }
 
 /**
@@ -227,6 +230,7 @@ export const DEFAULT_TIMING_CONFIG: TimingConfig = {
   catchUpThreshold: 5,
   maxCatchUpFrames: 30,
   useLatencyDeadline: true, // Default to interactive mode
+  debug: false,
 };
 
 /**
