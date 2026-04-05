@@ -261,6 +261,7 @@ describe('group-arbiter-types', () => {
       expect(DEFAULT_TIMING_CONFIG.enableCatchUp).toBe(true);
       expect(DEFAULT_TIMING_CONFIG.catchUpThreshold).toBe(5);
       expect(DEFAULT_TIMING_CONFIG.maxCatchUpFrames).toBe(30);
+      expect(DEFAULT_TIMING_CONFIG.useLatencyDeadline).toBe(true);
     });
   });
 });

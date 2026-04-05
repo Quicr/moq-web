@@ -348,6 +348,8 @@ interface SettingsSlice {
   enableCatchUp: boolean;
   /** Number of ready frames that triggers catch-up mode */
   catchUpThreshold: number;
+  /** Use latency-only deadline (true=interactive, false=streaming) */
+  useLatencyDeadline: boolean;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -373,6 +375,7 @@ interface SettingsSlice {
   setSkipGraceFrames: (value: number) => void;
   setEnableCatchUp: (value: boolean) => void;
   setCatchUpThreshold: (value: number) => void;
+  setUseLatencyDeadline: (value: boolean) => void;
 }
 
 // ============================================================================
@@ -831,7 +834,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -849,6 +852,7 @@ export const useStore = create<AppStore>()(
           skipGraceFrames,
           enableCatchUp,
           catchUpThreshold,
+          useLatencyDeadline,
         };
 
         const subscriptionId = await session.subscribe(
@@ -1040,7 +1044,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1062,6 +1066,7 @@ export const useStore = create<AppStore>()(
           skipGraceFrames,
           enableCatchUp,
           catchUpThreshold,
+          useLatencyDeadline,
         };
 
         const subscriptionId = await session.subscribeNamespace(namespacePrefix, config);
@@ -1167,6 +1172,7 @@ export const useStore = create<AppStore>()(
       skipGraceFrames: 3, // Default: wait 3 frame intervals before skipping
       enableCatchUp: true, // Default: enable catch-up when buffer gets deep
       catchUpThreshold: 5, // Default: trigger catch-up after 5 ready frames
+      useLatencyDeadline: true, // Default: use latency-only deadline (interactive mode)
 
       setTheme: (theme) => {
         set({ theme });
@@ -1210,6 +1216,7 @@ export const useStore = create<AppStore>()(
       setSkipGraceFrames: (value) => set({ skipGraceFrames: value }),
       setEnableCatchUp: (value) => set({ enableCatchUp: value }),
       setCatchUpThreshold: (value) => set({ catchUpThreshold: value }),
+      setUseLatencyDeadline: (value) => set({ useLatencyDeadline: value }),
     }),
     {
       name: 'moqt-client-storage',
@@ -1240,6 +1247,7 @@ export const useStore = create<AppStore>()(
         skipGraceFrames: state.skipGraceFrames,
         enableCatchUp: state.enableCatchUp,
         catchUpThreshold: state.catchUpThreshold,
+        useLatencyDeadline: state.useLatencyDeadline,
       }),
     }
   )

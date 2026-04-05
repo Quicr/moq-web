@@ -100,6 +100,8 @@ export interface SubscribePipelineConfig {
   enableCatchUp?: boolean;
   /** Number of ready frames that triggers catch-up mode (default: 5) */
   catchUpThreshold?: number;
+  /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
+  useLatencyDeadline?: boolean;
 
   /**
    * Optional decode worker for offloading decoding to a web worker.
@@ -464,12 +466,14 @@ export class SubscribePipeline {
           skipGraceFrames: this.config.skipGraceFrames ?? 3,
           enableCatchUp: this.config.enableCatchUp ?? true,
           catchUpThreshold: this.config.catchUpThreshold ?? 5,
+          useLatencyDeadline: this.config.useLatencyDeadline ?? true,
         });
         log.info('Using GroupArbiter for video', {
           skipToLatestGroup: this.config.skipToLatestGroup,
           skipGraceFrames: this.config.skipGraceFrames,
           enableCatchUp: this.config.enableCatchUp,
           catchUpThreshold: this.config.catchUpThreshold,
+          useLatencyDeadline: this.config.useLatencyDeadline,
         });
       } else {
         this.videoBuffer = new JitterBuffer({
@@ -506,6 +510,7 @@ export class SubscribePipeline {
           skipGraceFrames: this.config.skipGraceFrames ?? 3,
           enableCatchUp: this.config.enableCatchUp ?? true,
           catchUpThreshold: this.config.catchUpThreshold ?? 5,
+          useLatencyDeadline: this.config.useLatencyDeadline ?? true,
         });
         log.info('Using GroupArbiter for audio');
       } else {

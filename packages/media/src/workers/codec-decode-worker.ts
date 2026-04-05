@@ -173,12 +173,14 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         skipGraceFrames: config.skipGraceFrames ?? 3,
         enableCatchUp: config.enableCatchUp ?? true,
         catchUpThreshold: config.catchUpThreshold ?? 5,
+        useLatencyDeadline: config.useLatencyDeadline ?? true,
       });
       log(`Channel ${channelId} using GroupArbiter for video`, {
         skipToLatestGroup: config.skipToLatestGroup,
         skipGraceFrames: config.skipGraceFrames,
         enableCatchUp: config.enableCatchUp,
         catchUpThreshold: config.catchUpThreshold,
+        useLatencyDeadline: config.useLatencyDeadline,
       });
     } else {
       // Use legacy JitterBuffer
@@ -205,6 +207,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         skipGraceFrames: config.skipGraceFrames ?? 3,
         enableCatchUp: config.enableCatchUp ?? true,
         catchUpThreshold: config.catchUpThreshold ?? 5,
+        useLatencyDeadline: config.useLatencyDeadline ?? true,
       });
       log(`Channel ${channelId} using GroupArbiter for audio`);
     } else {

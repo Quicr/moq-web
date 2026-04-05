@@ -197,6 +197,14 @@ export interface TimingConfig {
   /** Number of ready frames that triggers catch-up mode (default: 5) */
   catchUpThreshold: number;
 
+  // Deadline mode
+  /**
+   * Use latency-only deadline calculation (default: true for interactive use).
+   * - true: deadline = maxLatency (skip quickly when behind, good for conferencing)
+   * - false: deadline = gopDuration + maxLatency (wait for full GOP, good for streaming)
+   */
+  useLatencyDeadline: boolean;
+
   /** Maximum frames to flush in a single catch-up batch (default: 30) */
   maxCatchUpFrames: number;
 }
@@ -218,6 +226,7 @@ export const DEFAULT_TIMING_CONFIG: TimingConfig = {
   enableCatchUp: true,
   catchUpThreshold: 5,
   maxCatchUpFrames: 30,
+  useLatencyDeadline: true, // Default to interactive mode
 };
 
 /**
