@@ -72,6 +72,8 @@ export const SubscribePanel: React.FC = () => {
   const frameUpdateCountRef = useRef<number>(0);
   // Per-subscription throttling to avoid second subscription waiting for first
   const lastStateUpdateRef = useRef<{ [subscriptionId: number]: number }>({});
+  // Track the last frame passed to React state (so we don't close it while VideoRenderer needs it)
+  const lastStateFrameRef = useRef<VideoFrameMap>({});
 
   // Track active subscription IDs for video frame handler
   const activeSubscriptionIds = subscriptionConfigs
@@ -108,10 +110,11 @@ export const SubscribePanel: React.FC = () => {
       const shouldUpdateState = now - lastUpdate > 16; // ~60fps per subscription
 
       // Close any existing frame in the ref that won't be rendered
-      // This prevents VideoFrame GC warnings when frames arrive faster than 60fps
+      // BUT don't close the frame that's currently in React state (VideoRenderer may still need it)
       const existingFrame = videoFramesRef.current[data.subscriptionId];
-      if (existingFrame && existingFrame !== data.frame && !shouldUpdateState) {
-        // Frame is being throttled (won't be passed to React/VideoRenderer)
+      const frameInState = lastStateFrameRef.current[data.subscriptionId];
+      if (existingFrame && existingFrame !== data.frame && existingFrame !== frameInState) {
+        // This is an intermediate throttled frame that was never passed to React state
         // Close it now to prevent GC warning
         try {
           existingFrame.close();
@@ -125,6 +128,7 @@ export const SubscribePanel: React.FC = () => {
 
       if (shouldUpdateState) {
         lastStateUpdateRef.current[data.subscriptionId] = now;
+        lastStateFrameRef.current[data.subscriptionId] = data.frame;
         setVideoFrames(prev => ({
           ...prev,
           [data.subscriptionId]: data.frame,
