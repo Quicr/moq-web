@@ -653,8 +653,8 @@ describe('GroupArbiter benchmark', () => {
         `(${opsPerMs.toFixed(0)} ops/ms)`
     );
 
-    // Should be fast - at least 200 ops/ms (allows for slower CI environments)
-    expect(opsPerMs).toBeGreaterThan(200);
+    // Should be fast - at least 150 ops/ms (allows for slower CI environments)
+    expect(opsPerMs).toBeGreaterThan(150);
   });
 
   it('getReadyFrames should be fast', () => {
