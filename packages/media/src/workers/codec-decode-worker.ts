@@ -25,7 +25,7 @@ import type {
 
 // Global debug flag - disabled by default for performance
 // Enable via init message config.debug or set to true here for debugging
-let debug = false;
+let debug = true;
 
 // Jitter buffer data types
 interface VideoBufferData {
@@ -181,7 +181,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         enableCatchUp: config.enableCatchUp ?? true,
         catchUpThreshold: config.catchUpThreshold ?? 5,
         useLatencyDeadline: config.useLatencyDeadline ?? true,
-        debug: config.arbiterDebug ?? false,
+        debug: true, // Force enabled for debugging
         debugLogCallback: arbiterDebugCallback,
       });
       log(`Channel ${channelId} using GroupArbiter for video`, {
@@ -217,7 +217,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         enableCatchUp: config.enableCatchUp ?? true,
         catchUpThreshold: config.catchUpThreshold ?? 5,
         useLatencyDeadline: config.useLatencyDeadline ?? true,
-        debug: config.arbiterDebug ?? false,
+        debug: true, // Force enabled for debugging
         debugLogCallback: arbiterDebugCallback,
       });
       log(`Channel ${channelId} using GroupArbiter for audio`);
