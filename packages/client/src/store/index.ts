@@ -12,8 +12,15 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType } from '@web-moq/core';
-import type { VADProvider } from '@web-moq/media';
-import { MediaSession, type SessionState, type MediaConfig, type WorkerConfig } from '@web-moq/media';
+import type { VADProvider, ExperienceProfileName } from '@web-moq/media';
+import {
+  MediaSession,
+  type SessionState,
+  type MediaConfig,
+  type WorkerConfig,
+  EXPERIENCE_PROFILES,
+  detectCurrentProfile,
+} from '@web-moq/media';
 import { TransportState, LogLevel } from '../types';
 import { isDebugMode } from '../components/common/DevSettingsPanel';
 
@@ -334,6 +341,8 @@ interface SettingsSlice {
   vadVisualizationEnabled: boolean;
   /** Audio delivery mode: datagram (low latency) or stream (reliable) */
   audioDeliveryMode: 'datagram' | 'stream';
+  /** Selected experience profile for subscriber-side settings */
+  experienceProfile: ExperienceProfileName;
   /** Use GroupArbiter for group-aware jitter buffering (handles parallel QUIC streams) */
   useGroupArbiter: boolean;
   /** Maximum acceptable latency before skipping to next keyframe (ms) */
@@ -379,6 +388,10 @@ interface SettingsSlice {
   setCatchUpThreshold: (value: number) => void;
   setUseLatencyDeadline: (value: boolean) => void;
   setArbiterDebug: (value: boolean) => void;
+  /** Apply an experience profile (sets all related settings) */
+  applyExperienceProfile: (profile: ExperienceProfileName) => void;
+  /** Update detected profile based on current settings */
+  updateDetectedProfile: () => void;
 }
 
 // ============================================================================
@@ -1170,6 +1183,7 @@ export const useStore = create<AppStore>()(
       vadProvider: 'libfvad', // Default to lightweight libfvad
       vadVisualizationEnabled: false, // Default viz off for performance
       audioDeliveryMode: 'datagram', // Default to datagram for low latency
+      experienceProfile: 'interactive', // Default to interactive profile
       useGroupArbiter: false, // Default to legacy JitterBuffer
       maxLatency: 500, // Default 500ms max latency
       estimatedGopDuration: 1000, // Default 1s GOP
@@ -1224,6 +1238,46 @@ export const useStore = create<AppStore>()(
       setCatchUpThreshold: (value) => set({ catchUpThreshold: value }),
       setUseLatencyDeadline: (value) => set({ useLatencyDeadline: value }),
       setArbiterDebug: (value) => set({ arbiterDebug: value }),
+
+      applyExperienceProfile: (profileName) => {
+        if (profileName === 'custom') {
+          set({ experienceProfile: 'custom' });
+          return;
+        }
+        const profile = EXPERIENCE_PROFILES[profileName];
+        if (!profile) return;
+
+        set({
+          experienceProfile: profileName,
+          useGroupArbiter: true, // Enable GroupArbiter when applying a profile
+          jitterBufferDelay: profile.settings.jitterBufferDelay,
+          useLatencyDeadline: profile.settings.useLatencyDeadline,
+          maxLatency: profile.settings.maxLatency,
+          estimatedGopDuration: profile.settings.estimatedGopDuration,
+          skipToLatestGroup: profile.settings.skipToLatestGroup,
+          skipGraceFrames: profile.settings.skipGraceFrames,
+          enableCatchUp: profile.settings.enableCatchUp,
+          catchUpThreshold: profile.settings.catchUpThreshold,
+        });
+      },
+
+      updateDetectedProfile: () => {
+        const state = get();
+        const currentSettings = {
+          jitterBufferDelay: state.jitterBufferDelay,
+          useLatencyDeadline: state.useLatencyDeadline,
+          maxLatency: state.maxLatency,
+          estimatedGopDuration: state.estimatedGopDuration,
+          skipToLatestGroup: state.skipToLatestGroup,
+          skipGraceFrames: state.skipGraceFrames,
+          enableCatchUp: state.enableCatchUp,
+          catchUpThreshold: state.catchUpThreshold,
+        };
+        const detected = detectCurrentProfile(currentSettings);
+        if (detected !== state.experienceProfile) {
+          set({ experienceProfile: detected });
+        }
+      },
     }),
     {
       name: 'moqt-client-storage',
@@ -1247,6 +1301,7 @@ export const useStore = create<AppStore>()(
         vadProvider: state.vadProvider,
         vadVisualizationEnabled: state.vadVisualizationEnabled,
         audioDeliveryMode: state.audioDeliveryMode,
+        experienceProfile: state.experienceProfile,
         useGroupArbiter: state.useGroupArbiter,
         maxLatency: state.maxLatency,
         estimatedGopDuration: state.estimatedGopDuration,
