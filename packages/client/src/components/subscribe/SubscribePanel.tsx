@@ -16,6 +16,7 @@ import { JitterGraph } from './JitterGraph';
 import { LatencyStatsGraph } from './LatencyStatsGraph';
 import { SubscribeNamespacePanel } from './SubscribeNamespacePanel';
 import { isDebugMode } from '../common/DevSettingsPanel';
+import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@web-moq/media';
 
 type MediaType = 'video' | 'audio';
 
@@ -49,7 +50,13 @@ export const SubscribePanel: React.FC = () => {
     onJitterSample,
     onLatencyStats,
     enableStats,
+    experienceProfile,
   } = useStore();
+
+  // Get target latency from experience profile for graph color thresholds
+  const targetLatency = experienceProfile === 'custom'
+    ? 100 // Default for custom
+    : EXPERIENCE_PROFILES[experienceProfile as Exclude<ExperienceProfileName, 'custom'>]?.targetLatency ?? 100;
 
   // Subscribe mode toggle
   const [subscribeMode, setSubscribeMode] = useState<SubscribeMode>('track');
@@ -532,10 +539,12 @@ export const SubscribePanel: React.FC = () => {
                       <JitterGraph
                         subscriptionId={config.subscriptionId}
                         onJitterSample={onJitterSample}
+                        targetLatency={targetLatency}
                       />
                       <LatencyStatsGraph
                         subscriptionId={config.subscriptionId}
                         onLatencyStats={onLatencyStats}
+                        targetLatency={targetLatency}
                       />
                     </div>
                   )}
@@ -574,10 +583,12 @@ export const SubscribePanel: React.FC = () => {
                     <JitterGraph
                       subscriptionId={config.subscriptionId}
                       onJitterSample={onJitterSample}
+                      targetLatency={targetLatency}
                     />
                     <LatencyStatsGraph
                       subscriptionId={config.subscriptionId}
                       onLatencyStats={onLatencyStats}
+                      targetLatency={targetLatency}
                     />
                   </div>
                 )}
