@@ -17,15 +17,34 @@ import {
   type ExperienceProfileName,
 } from '@web-moq/media';
 
-// Info tooltip component
-const InfoTip: React.FC<{ text: string }> = ({ text }) => (
-  <span
-    className="ml-1 inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-gray-200 dark:bg-gray-600 text-gray-500 dark:text-gray-400 text-[10px] cursor-help hover:bg-gray-300 dark:hover:bg-gray-500"
-    title={text}
-  >
-    ?
-  </span>
-);
+// Glassmorphism tooltip component
+const InfoTip: React.FC<{ text: string }> = ({ text }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <span className="relative inline-block ml-1">
+      <span
+        className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-gray-300/50 dark:bg-gray-500/50 text-gray-600 dark:text-gray-300 text-[10px] cursor-help hover:bg-gray-400/50 dark:hover:bg-gray-400/50 transition-colors"
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        onClick={() => setShow(!show)}
+      >
+        ?
+      </span>
+      {show && (
+        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 rounded-lg
+          bg-white/80 dark:bg-gray-900/80 backdrop-blur-md
+          border border-white/20 dark:border-gray-700/50
+          shadow-lg shadow-black/10 dark:shadow-black/30
+          text-xs leading-relaxed text-gray-700 dark:text-gray-200 font-medium">
+          {text}
+          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px">
+            <div className="border-4 border-transparent border-t-white/80 dark:border-t-gray-900/80" />
+          </div>
+        </div>
+      )}
+    </span>
+  );
+};
 
 export const SettingsPanel: React.FC = () => {
   const [showFineTune, setShowFineTune] = useState(false);
@@ -524,30 +543,54 @@ export const SettingsPanel: React.FC = () => {
                     {isSelected && (
                       <div className={`px-3 pb-3 border-l-4 ${colors.border} ${colors.bg}`}>
                         {/* Settings Summary */}
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 py-2 text-xs border-b border-primary-200 dark:border-primary-800/30 mb-2">
-                          <div className="flex justify-between">
-                            <span className="text-gray-500">Jitter Buffer:</span>
-                            <span className="font-mono text-gray-700 dark:text-gray-300">{jitterBufferDelay}ms</span>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 py-3 text-xs border-b border-gray-200/50 dark:border-gray-700/50 mb-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
+                              Jitter Buffer
+                              <InfoTip text="Buffer size to absorb network timing variations. Higher = smoother but more delay." />
+                            </span>
+                            <span className="font-mono font-semibold text-gray-900 dark:text-white bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">{jitterBufferDelay}ms</span>
                           </div>
-                          <div className="flex justify-between">
-                            <span className="text-gray-500">Max Latency:</span>
-                            <span className="font-mono text-gray-700 dark:text-gray-300">{maxLatency}ms</span>
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
+                              Max Latency
+                              <InfoTip text="Maximum acceptable delay from capture to display. Frames arriving later are skipped." />
+                            </span>
+                            <span className="font-mono font-semibold text-gray-900 dark:text-white bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">{maxLatency}ms</span>
                           </div>
-                          <div className="flex justify-between">
-                            <span className="text-gray-500">GOP Duration:</span>
-                            <span className="font-mono text-gray-700 dark:text-gray-300">{estimatedGopDuration}ms</span>
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
+                              GOP Duration
+                              <InfoTip text="Expected time between keyframes. Used to calculate when to wait vs. skip ahead." />
+                            </span>
+                            <span className="font-mono font-semibold text-gray-900 dark:text-white bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">{estimatedGopDuration}ms</span>
                           </div>
-                          <div className="flex justify-between">
-                            <span className="text-gray-500">Skip to Latest:</span>
-                            <span className="font-mono text-gray-700 dark:text-gray-300">{skipToLatestGroup ? 'On' : 'Off'}</span>
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
+                              Skip to Latest
+                              <InfoTip text="Jump directly to newest video segment when falling behind. Aggressive catch-up." />
+                            </span>
+                            <span className={`font-mono font-semibold px-1.5 py-0.5 rounded ${skipToLatestGroup ? 'text-green-700 dark:text-green-400 bg-green-100 dark:bg-green-900/30' : 'text-gray-500 dark:text-gray-500 bg-gray-100 dark:bg-gray-800'}`}>
+                              {skipToLatestGroup ? 'On' : 'Off'}
+                            </span>
                           </div>
-                          <div className="flex justify-between">
-                            <span className="text-gray-500">Catch-up:</span>
-                            <span className="font-mono text-gray-700 dark:text-gray-300">{enableCatchUp ? `On (${catchUpThreshold}f)` : 'Off'}</span>
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
+                              Catch-up
+                              <InfoTip text="Speed through buffered frames when buffer gets too deep. Prevents latency accumulation." />
+                            </span>
+                            <span className={`font-mono font-semibold px-1.5 py-0.5 rounded ${enableCatchUp ? 'text-green-700 dark:text-green-400 bg-green-100 dark:bg-green-900/30' : 'text-gray-500 dark:text-gray-500 bg-gray-100 dark:bg-gray-800'}`}>
+                              {enableCatchUp ? `On (${catchUpThreshold}f)` : 'Off'}
+                            </span>
                           </div>
-                          <div className="flex justify-between">
-                            <span className="text-gray-500">Interactive:</span>
-                            <span className="font-mono text-gray-700 dark:text-gray-300">{useLatencyDeadline ? 'On' : 'Off'}</span>
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
+                              Interactive
+                              <InfoTip text="ON: Skip frames immediately when behind. OFF: Wait for complete video segments." />
+                            </span>
+                            <span className={`font-mono font-semibold px-1.5 py-0.5 rounded ${useLatencyDeadline ? 'text-green-700 dark:text-green-400 bg-green-100 dark:bg-green-900/30' : 'text-gray-500 dark:text-gray-500 bg-gray-100 dark:bg-gray-800'}`}>
+                              {useLatencyDeadline ? 'On' : 'Off'}
+                            </span>
                           </div>
                         </div>
 
