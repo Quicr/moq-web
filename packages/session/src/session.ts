@@ -1923,8 +1923,89 @@ export class MOQTSession {
     };
     this.publicationManager.add(publication);
 
+    // If relay tells us to forward (subscribers waiting), start streaming VOD content
+    if (publishOkResult.forward === 1) {
+      log.info('VOD track has subscribers, starting auto-stream', { trackAlias: trackAlias.toString() });
+      this.startVODAutoStream(trackAlias, options);
+    }
+
     log.info('VOD publishing started', { trackAlias: trackAlias.toString() });
     return trackAlias;
+  }
+
+  /**
+   * Auto-stream VOD content to subscribers at realtime pace
+   */
+  private async startVODAutoStream(trackAlias: bigint, options: VODPublishOptions): Promise<void> {
+    const { metadata, getObject, objectsPerGroup = 30 } = options;
+    const frameDuration = 1000 / (metadata.framerate ?? 30); // ms per frame
+    const totalGroups = Math.min(metadata.totalGroups, Number.MAX_SAFE_INTEGER);
+
+    log.info('Starting VOD auto-stream', {
+      trackAlias: trackAlias.toString(),
+      totalGroups,
+      framerate: metadata.framerate,
+      frameDuration,
+    });
+
+    const publication = this.publicationManager.get(trackAlias);
+    if (!publication) {
+      log.warn('No publication found for VOD auto-stream', { trackAlias: trackAlias.toString() });
+      return;
+    }
+
+    // Stream VOD content in realtime
+    const streamLoop = async () => {
+      let groupId = 0;
+
+      while (true) {
+        // Check if publication still exists
+        if (!this.publicationManager.get(trackAlias)) {
+          log.info('VOD publication ended, stopping auto-stream');
+          break;
+        }
+
+        // Loop group ID for looping content
+        const effectiveGroupId = groupId % (totalGroups || 1);
+
+        // Stream all objects in this group
+        for (let objectId = 0; objectId < objectsPerGroup; objectId++) {
+          const data = await getObject(effectiveGroupId, objectId);
+          if (!data) {
+            // No more objects in this group
+            break;
+          }
+
+          try {
+            // Send object using normal publish flow
+            await this.sendObject(trackAlias, data, {
+              groupId,
+              objectId,
+              type: 'video',
+              isKeyframe: objectId === 0, // First object in group is keyframe
+            });
+          } catch (err) {
+            log.warn('Failed to send VOD object', { groupId, objectId, error: err });
+          }
+
+          // Wait for frame duration to maintain realtime playback
+          await new Promise(resolve => setTimeout(resolve, frameDuration));
+        }
+
+        groupId++;
+
+        // For non-looping content, stop at end
+        if (groupId >= totalGroups && totalGroups !== Number.MAX_SAFE_INTEGER) {
+          log.info('VOD auto-stream completed', { totalGroups: groupId });
+          break;
+        }
+      }
+    };
+
+    // Start streaming in background
+    streamLoop().catch(err => {
+      log.error('VOD auto-stream error', { error: err });
+    });
   }
 
   /**
