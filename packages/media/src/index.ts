@@ -197,3 +197,18 @@ export type {
   LibfvadModule,
   SileroVADFactory,
 } from './vad/index.js';
+
+// Experience Profiles
+export {
+  EXPERIENCE_PROFILES,
+  EXPERIENCE_PROFILE_ORDER,
+  getExperienceProfile,
+  profileFromTargetLatency,
+  detectCurrentProfile,
+} from './profiles/index.js';
+export type {
+  ExperienceProfileName,
+  DefinedProfileName,
+  ExperienceProfileSettings,
+  ExperienceProfile,
+} from './profiles/index.js';
