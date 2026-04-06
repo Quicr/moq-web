@@ -215,3 +215,7 @@ export type {
   ExperienceProfileSettings,
   ExperienceProfile,
 } from './profiles/index.js';
+
+// VOD Loader
+export { VODLoader } from './vod/vod-loader.js';
+export type { VODLoadProgress, VODLoaderOptions } from './vod/vod-loader.js';
