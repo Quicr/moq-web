@@ -61,8 +61,6 @@ export const SettingsPanel: React.FC = () => {
     setAudioBitrate,
     videoResolution,
     setVideoResolution,
-    deliveryMode,
-    setDeliveryMode,
     useAnnounceFlow,
     setUseAnnounceFlow,
     enableStats,
@@ -77,8 +75,6 @@ export const SettingsPanel: React.FC = () => {
     setVadProvider,
     vadVisualizationEnabled,
     setVadVisualizationEnabled,
-    audioDeliveryMode,
-    setAudioDeliveryMode,
     useGroupArbiter,
     setUseGroupArbiter,
     maxLatency,
@@ -364,73 +360,6 @@ export const SettingsPanel: React.FC = () => {
           Delivery Settings
         </h3>
         <div className="space-y-4">
-          <div>
-            <label className="label">Delivery Mode</label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setDeliveryMode('stream')}
-                className={`p-3 rounded-md border text-left ${
-                  deliveryMode === 'stream'
-                    ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/30'
-                    : 'border-gray-200 dark:border-gray-700'
-                }`}
-              >
-                <div className="font-medium text-sm">Stream</div>
-                <div className="text-xs text-gray-500 mt-1">
-                  Reliable, ordered delivery
-                </div>
-              </button>
-              <button
-                onClick={() => setDeliveryMode('datagram')}
-                className={`p-3 rounded-md border text-left ${
-                  deliveryMode === 'datagram'
-                    ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/30'
-                    : 'border-gray-200 dark:border-gray-700'
-                }`}
-              >
-                <div className="font-medium text-sm">Datagram</div>
-                <div className="text-xs text-gray-500 mt-1">
-                  Low-latency, best-effort
-                </div>
-              </button>
-            </div>
-          </div>
-
-          {/* Audio Delivery Mode (only shown when main mode is stream) */}
-          {deliveryMode === 'stream' && (
-            <div>
-              <label className="label">Audio Delivery</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setAudioDeliveryMode('datagram')}
-                  className={`p-3 rounded-md border text-left ${
-                    audioDeliveryMode === 'datagram'
-                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/30'
-                      : 'border-gray-200 dark:border-gray-700'
-                  }`}
-                >
-                  <div className="font-medium text-sm">Datagram</div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    Low-latency (default)
-                  </div>
-                </button>
-                <button
-                  onClick={() => setAudioDeliveryMode('stream')}
-                  className={`p-3 rounded-md border text-left ${
-                    audioDeliveryMode === 'stream'
-                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/30'
-                      : 'border-gray-200 dark:border-gray-700'
-                  }`}
-                >
-                  <div className="font-medium text-sm">Stream</div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    Reliable, ordered
-                  </div>
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Use Announce Flow Toggle */}
           <div>
             <label className="flex items-center justify-between">
