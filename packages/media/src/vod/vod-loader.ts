@@ -43,7 +43,7 @@ export interface VODLoaderOptions {
   framesPerGroup?: number;
   /** Target framerate, default 30 */
   framerate?: number;
-  /** Video codec to use for encoding, default 'avc1.42E01F' */
+  /** Video codec to use for encoding, default 'avc1.42E01F' (use 'avc1.640033' for 4K) */
   codec?: string;
   /** Target width (will scale if needed) */
   width?: number;
@@ -51,6 +51,8 @@ export interface VODLoaderOptions {
   height?: number;
   /** Bitrate for encoding stored frames */
   bitrate?: number;
+  /** Loop the video indefinitely (wraps group IDs) */
+  loop?: boolean;
   /** Progress callback */
   onProgress?: (progress: VODLoadProgress) => void;
 }
@@ -94,9 +96,13 @@ export class VODLoader {
       width: options.width ?? 1280,
       height: options.height ?? 720,
       bitrate: options.bitrate ?? 2_000_000,
+      loop: options.loop ?? false,
       onProgress: options.onProgress ?? (() => {}),
     };
   }
+
+  /** Number of groups in the original video (for loop calculations) */
+  private originalTotalGroups = 0;
 
   /**
    * Load video from URL
@@ -202,14 +208,22 @@ export class VODLoader {
       const frameDuration = 1000 / this.options.framerate;
       const totalFrames = Math.ceil(duration / frameDuration);
       const totalGroups = Math.ceil(totalFrames / this.options.framesPerGroup);
+      this.originalTotalGroups = totalGroups;
 
       this.metadata = {
-        duration,
-        totalGroups,
+        duration: this.options.loop ? Number.MAX_SAFE_INTEGER : duration,
+        totalGroups: this.options.loop ? Number.MAX_SAFE_INTEGER : totalGroups,
         framerate: this.options.framerate,
         gopDuration: (this.options.framesPerGroup / this.options.framerate) * 1000,
         timescale: 1000,
       };
+
+      log.info('VOD metadata', {
+        duration,
+        totalGroups,
+        loop: this.options.loop,
+        effectiveTotalGroups: this.metadata.totalGroups
+      });
 
       // Create canvas for frame extraction
       const canvas = document.createElement('canvas');
@@ -368,13 +382,23 @@ export class VODLoader {
       throw new Error('VOD not loaded. Call load() first.');
     }
 
+    // When looping, wrap the group ID to loop through content
+    const wrapGroupId = (groupId: number): number => {
+      if (this.options.loop && this.originalTotalGroups > 0) {
+        return groupId % this.originalTotalGroups;
+      }
+      return groupId;
+    };
+
     return {
       metadata: this.metadata,
       getObject: async (groupId: number, objectId: number) => {
-        return this.getFrame(groupId, objectId);
+        const wrappedGroupId = wrapGroupId(groupId);
+        return this.getFrame(wrappedGroupId, objectId);
       },
       isKeyframe: (groupId: number, objectId: number) => {
-        return this.isKeyframe(groupId, objectId);
+        const wrappedGroupId = wrapGroupId(groupId);
+        return this.isKeyframe(wrappedGroupId, objectId);
       },
       objectsPerGroup: this.options.framesPerGroup,
     };

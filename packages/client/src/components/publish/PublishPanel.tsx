@@ -17,7 +17,7 @@ import { VADIndicator, VADDot } from '../common/VADIndicator';
 import { VODLoader, type VODLoadProgress } from '@web-moq/media';
 
 type MediaType = 'video' | 'audio';
-type Resolution = '1080p' | '720p' | '480p';
+type Resolution = '4k' | '1080p' | '720p' | '480p';
 type Framerate = 30 | 24 | 15;
 type DeliveryMode = 'stream' | 'datagram';
 
@@ -37,6 +37,7 @@ interface TrackConfig {
   // VOD-specific fields
   isVod?: boolean;
   vodUrl?: string;
+  vodLoop?: boolean;
   vodLoader?: VODLoader;
   vodProgress?: VODLoadProgress;
 }
@@ -83,6 +84,7 @@ export const PublishPanel: React.FC = () => {
     deliveryMode: 'stream', // Video defaults to stream
     isVod: false,
     vodUrl: '',
+    vodLoop: false,
   });
 
   // Voice Activity Detection
@@ -207,6 +209,7 @@ export const PublishPanel: React.FC = () => {
       isPublishing: false,
       isVod: newTrack.isVod,
       vodUrl: newTrack.vodUrl,
+      vodLoop: newTrack.vodLoop,
     };
 
     setTrackConfigs([...trackConfigs, config]);
@@ -232,13 +235,27 @@ export const PublishPanel: React.FC = () => {
           return;
         }
 
+        // Get resolution dimensions
+        const getResolutionDimensions = (res: Resolution | undefined) => {
+          switch (res) {
+            case '4k': return { width: 3840, height: 2160 };
+            case '1080p': return { width: 1920, height: 1080 };
+            case '720p': return { width: 1280, height: 720 };
+            case '480p': return { width: 854, height: 480 };
+            default: return { width: 1280, height: 720 };
+          }
+        };
+        const { width, height } = getResolutionDimensions(config.resolution);
+
         // Create VOD loader and load the video
         const loader = new VODLoader({
           framesPerGroup: 30,
           framerate: config.framerate ?? 30,
-          width: config.resolution === '1080p' ? 1920 : config.resolution === '720p' ? 1280 : 854,
-          height: config.resolution === '1080p' ? 1080 : config.resolution === '720p' ? 720 : 480,
-          bitrate: config.bitrate ?? 2000000,
+          width,
+          height,
+          bitrate: config.bitrate ?? (config.resolution === '4k' ? 15000000 : 2000000),
+          loop: config.vodLoop ?? false,
+          codec: config.resolution === '4k' ? 'avc1.640033' : 'avc1.42E01F',
           onProgress: (progress) => {
             setTrackConfigs(prev => prev.map(t =>
               t.id === config.id ? { ...t, vodProgress: progress } : t
@@ -495,18 +512,29 @@ export const PublishPanel: React.FC = () => {
 
           {/* VOD URL Input */}
           {newTrack.isVod && (
-            <div className="mb-4">
-              <label className="label">Video URL</label>
-              <input
-                type="text"
-                value={newTrack.vodUrl ?? ''}
-                onChange={(e) => setNewTrack({ ...newTrack, vodUrl: e.target.value })}
-                placeholder="https://example.com/video.mp4"
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Must be a direct link to an MP4 file (CORS-enabled)
-              </p>
+            <div className="mb-4 space-y-3">
+              <div>
+                <label className="label">Video URL</label>
+                <input
+                  type="text"
+                  value={newTrack.vodUrl ?? ''}
+                  onChange={(e) => setNewTrack({ ...newTrack, vodUrl: e.target.value })}
+                  placeholder="https://example.com/video.mp4"
+                  className="input"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Must be a direct link to an MP4 file (CORS-enabled)
+                </p>
+              </div>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={newTrack.vodLoop ?? false}
+                  onChange={(e) => setNewTrack({ ...newTrack, vodLoop: e.target.checked })}
+                  className="w-4 h-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">Loop video continuously</span>
+              </label>
             </div>
           )}
 
@@ -537,6 +565,7 @@ export const PublishPanel: React.FC = () => {
                     onChange={(e) => setNewTrack({ ...newTrack, resolution: e.target.value as Resolution })}
                     className="input"
                   >
+                    <option value="4k">4K (3840x2160)</option>
                     <option value="1080p">1080p (1920x1080)</option>
                     <option value="720p">720p (1280x720)</option>
                     <option value="480p">480p (854x480)</option>
@@ -561,6 +590,9 @@ export const PublishPanel: React.FC = () => {
                     onChange={(e) => setNewTrack({ ...newTrack, bitrate: Number(e.target.value) })}
                     className="input"
                   >
+                    <option value={20000000}>20 Mbps (4K)</option>
+                    <option value={15000000}>15 Mbps (4K)</option>
+                    <option value={8000000}>8 Mbps</option>
                     <option value={4000000}>4 Mbps</option>
                     <option value={2000000}>2 Mbps</option>
                     <option value={1000000}>1 Mbps</option>
@@ -712,6 +744,11 @@ export const PublishPanel: React.FC = () => {
                     {config.isVod && (
                       <span className="px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded text-xs">
                         VOD
+                      </span>
+                    )}
+                    {config.vodLoop && (
+                      <span className="px-2 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded text-xs">
+                        Loop
                       </span>
                     )}
                   </div>
