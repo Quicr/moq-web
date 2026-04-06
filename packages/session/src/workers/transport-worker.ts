@@ -75,9 +75,16 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     // Only set protocols (WT-Available-Protocols) for draft-16+
     // Draft-14 relays don't support WebTransport protocol negotiation
     const options: WebTransportOptions & { protocols?: string[] } = {};
+    const alpnProtocol = getCurrentALPNProtocol();
+    console.log('[transport-worker] Version check:', {
+      IS_DRAFT_16,
+      alpnProtocol,
+      willSetProtocols: IS_DRAFT_16,
+    });
     if (IS_DRAFT_16) {
-      options.protocols = [getCurrentALPNProtocol()];
+      options.protocols = [alpnProtocol];
     }
+    console.log('[transport-worker] WebTransport options:', JSON.stringify(options));
     if (config.serverCertificateHashes?.length) {
       options.serverCertificateHashes = config.serverCertificateHashes.map((hash) => ({
         algorithm: 'sha-256',
