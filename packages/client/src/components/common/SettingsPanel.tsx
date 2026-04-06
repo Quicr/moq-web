@@ -7,7 +7,7 @@
  * Application settings including theme, codec settings, and delivery options.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useStore } from '../../store';
 import { LogLevel } from '../../types';
 import { VarIntType } from '@web-moq/core';
@@ -69,13 +69,26 @@ export const SettingsPanel: React.FC = () => {
     setArbiterDebug,
     experienceProfile,
     applyExperienceProfile,
-    updateDetectedProfile,
   } = useStore();
 
-  // Update detected profile when individual settings change
-  useEffect(() => {
-    updateDetectedProfile();
+  // Check if current settings differ from the selected profile
+  const isModified = React.useMemo(() => {
+    if (experienceProfile === 'custom') return false;
+    const profile = EXPERIENCE_PROFILES[experienceProfile];
+    if (!profile) return false;
+    const s = profile.settings;
+    return (
+      jitterBufferDelay !== s.jitterBufferDelay ||
+      useLatencyDeadline !== s.useLatencyDeadline ||
+      maxLatency !== s.maxLatency ||
+      estimatedGopDuration !== s.estimatedGopDuration ||
+      skipToLatestGroup !== s.skipToLatestGroup ||
+      skipGraceFrames !== s.skipGraceFrames ||
+      enableCatchUp !== s.enableCatchUp ||
+      catchUpThreshold !== s.catchUpThreshold
+    );
   }, [
+    experienceProfile,
     jitterBufferDelay,
     useLatencyDeadline,
     maxLatency,
@@ -84,7 +97,6 @@ export const SettingsPanel: React.FC = () => {
     skipGraceFrames,
     enableCatchUp,
     catchUpThreshold,
-    updateDetectedProfile,
   ]);
 
   const handleProfileChange = (profileName: ExperienceProfileName) => {
@@ -439,6 +451,11 @@ export const SettingsPanel: React.FC = () => {
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-sm text-gray-900 dark:text-gray-100">
                           {profile.displayName}
+                          {isSelected && isModified && (
+                            <span className="ml-1.5 text-xs font-normal text-amber-600 dark:text-amber-400">
+                              (modified)
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-gray-500 truncate">
                           {profile.description}
