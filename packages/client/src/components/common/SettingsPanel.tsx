@@ -31,14 +31,14 @@ const InfoTip: React.FC<{ text: string }> = ({ text }) => {
         ?
       </span>
       {show && (
-        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 rounded-lg
-          bg-white/80 dark:bg-gray-900/80 backdrop-blur-md
-          border border-white/20 dark:border-gray-700/50
+        <div className="absolute z-50 bottom-full left-0 mb-2 w-56 p-2.5 rounded-lg
+          bg-white/90 dark:bg-gray-900/90 backdrop-blur-md
+          border border-gray-200/50 dark:border-gray-700/50
           shadow-lg shadow-black/10 dark:shadow-black/30
           text-xs leading-relaxed text-gray-700 dark:text-gray-200 font-medium">
           {text}
-          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px">
-            <div className="border-4 border-transparent border-t-white/80 dark:border-t-gray-900/80" />
+          <div className="absolute top-full left-3 -mt-px">
+            <div className="border-4 border-transparent border-t-white/90 dark:border-t-gray-900/90" />
           </div>
         </div>
       )}
