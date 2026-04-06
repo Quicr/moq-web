@@ -489,7 +489,7 @@ export const SettingsPanel: React.FC = () => {
                 Experience Profile
               </span>
               <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
-                (Subscriber Only)
+                (Playback Only)
               </span>
             </div>
 
