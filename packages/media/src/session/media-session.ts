@@ -20,6 +20,8 @@ import {
   type IncomingPublishEvent,
   type SubscribeNamespaceOptions,
   type NamespaceSubscriptionInfo,
+  type FetchCompleteEvent,
+  type FetchErrorEvent,
 } from '@web-moq/session';
 import {
   SecureObjectsContext,
@@ -939,6 +941,232 @@ export class MediaSession {
     return this.session.isSubscriptionPaused(subscriptionId);
   }
 
+  // ============================================================================
+  // DVR / Seek Support
+  // ============================================================================
+
+  /**
+   * Seek to a specific time position in a subscription (DVR/Rewind)
+   *
+   * This uses FETCH to request historical content from the specified time.
+   * The subscription pipeline will buffer and decode the fetched content.
+   *
+   * @param subscriptionId - Active subscription to seek
+   * @param timeMs - Target time in milliseconds from start
+   * @param durationMs - Duration to fetch in milliseconds (optional, default 5000ms)
+   * @returns Fetch request ID
+   *
+   * @example
+   * ```typescript
+   * // Seek to 30 seconds into the video
+   * await session.seek(subscriptionId, 30000);
+   *
+   * // Seek to 1 minute and fetch 10 seconds of content
+   * await session.seek(subscriptionId, 60000, 10000);
+   * ```
+   */
+  async seek(
+    subscriptionId: number,
+    timeMs: number,
+    durationMs = 5000
+  ): Promise<number> {
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (!subscription) {
+      throw new Error(`Subscription ${subscriptionId} not found`);
+    }
+
+    // Calculate group range from time
+    // Assume 1 second per group by default (can be configured via track metadata)
+    const gopDuration = 1000; // TODO: Get from track metadata
+    const startGroup = Math.floor(timeMs / gopDuration);
+    const endGroup = Math.floor((timeMs + durationMs) / gopDuration);
+
+    log.info('Seeking subscription', {
+      subscriptionId,
+      timeMs,
+      durationMs,
+      startGroup,
+      endGroup,
+    });
+
+    // Use FETCH to request the range
+    const fetchId = await this.session.fetch(
+      subscription.namespace,
+      subscription.trackName,
+      {
+        startGroup,
+        startObject: 0,
+        endGroup,
+        endObject: 0, // 0 = all objects in group
+      },
+      {},
+      (data, groupId, objectId) => {
+        // Push fetched data into the subscription pipeline for decoding
+        // Use current time as timestamp since we're seeking
+        subscription.pipeline.push(data, groupId, objectId, Date.now() * 1000);
+      }
+    );
+
+    log.info('Seek fetch started', {
+      subscriptionId,
+      fetchId,
+      startGroup,
+      endGroup,
+    });
+
+    return fetchId;
+  }
+
+  /**
+   * Fetch a specific range of content from a track
+   *
+   * Lower-level method for DVR - fetches specific groups/objects.
+   * Use `seek()` for time-based seeking.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param startGroup - Start group ID
+   * @param endGroup - End group ID
+   * @param config - Media configuration for decoding
+   * @param mediaType - Optional media type for decoder
+   * @returns Fetch request ID
+   */
+  async fetchRange(
+    namespace: string[],
+    trackName: string,
+    startGroup: number,
+    endGroup: number,
+    config: MediaConfig,
+    mediaType?: 'video' | 'audio'
+  ): Promise<number> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    log.info('Fetching range', {
+      namespace: namespace.join('/'),
+      trackName,
+      startGroup,
+      endGroup,
+      mediaType,
+    });
+
+    // Create a temporary pipeline for decoding fetched content
+    const resolution = getResolutionConfig(config.videoResolution);
+    const pipeline = new SubscribePipeline({
+      mediaType,
+      video: mediaType !== 'audio' ? {
+        codec: resolution.codec,
+        codedWidth: resolution.width,
+        codedHeight: resolution.height,
+      } : undefined,
+      audio: mediaType !== 'video' ? {
+        sampleRate: 48000,
+        numberOfChannels: 2,
+      } : undefined,
+      jitterBufferDelay: config.jitterBufferDelay ?? 100,
+      decodeWorker: this.workers?.decodeWorker,
+      enableStats: config.enableStats,
+      useGroupArbiter: config.useGroupArbiter,
+      maxLatency: config.maxLatency,
+      estimatedGopDuration: config.estimatedGopDuration,
+    });
+
+    // Track the fetch pipeline separately
+    const fetchId = Date.now(); // Temporary ID for tracking
+
+    // Forward events from pipeline
+    pipeline.on('video-frame', (frame: VideoFrame) => {
+      this.emit('video-frame', { subscriptionId: -fetchId, frame });
+    });
+
+    pipeline.on('audio-data', (audioData: AudioData) => {
+      this.emit('audio-data', { subscriptionId: -fetchId, audioData });
+    });
+
+    pipeline.on('error', (err: Error) => {
+      log.error('Fetch pipeline error', err);
+      this.emit('error', err);
+    });
+
+    // Start the fetch
+    const actualFetchId = await this.session.fetch(
+      namespace,
+      trackName,
+      {
+        startGroup,
+        startObject: 0,
+        endGroup,
+        endObject: 0,
+      },
+      {},
+      (data, groupId, objectId) => {
+        pipeline.push(data, groupId, objectId, Date.now() * 1000);
+      }
+    );
+
+    log.info('Range fetch started', {
+      fetchId: actualFetchId,
+      startGroup,
+      endGroup,
+    });
+
+    return actualFetchId;
+  }
+
+  /**
+   * Cancel an in-progress fetch/seek operation
+   *
+   * @param fetchId - Fetch request ID to cancel
+   */
+  async cancelFetch(fetchId: number): Promise<void> {
+    await this.session.cancelFetch(fetchId);
+  }
+
+  /**
+   * Get track info for DVR (available range, duration, etc.)
+   *
+   * This information comes from FETCH_OK responses or track metadata.
+   *
+   * @param subscriptionId - Subscription to get info for
+   * @returns Track DVR info or undefined if not available
+   */
+  getTrackDVRInfo(subscriptionId: number): {
+    largestGroupId?: number;
+    largestObjectId?: number;
+    estimatedDuration?: number;
+  } | undefined {
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (!subscription) {
+      return undefined;
+    }
+
+    // Get info from any completed fetches
+    const fetches = this.session.getActiveFetches();
+    const completedFetch = fetches.find(f =>
+      f.namespace.join('/') === subscription.namespace.join('/') &&
+      f.trackName === subscription.trackName &&
+      f.completed
+    );
+
+    if (completedFetch) {
+      return {
+        largestGroupId: completedFetch.largestGroupId,
+        largestObjectId: completedFetch.largestObjectId,
+        // Estimate duration assuming 1 second per group
+        estimatedDuration: completedFetch.largestGroupId !== undefined
+          ? (completedFetch.largestGroupId + 1) * 1000
+          : undefined,
+      };
+    }
+
+    return undefined;
+  }
+
+  // ============================================================================
+  // End DVR Support
+  // ============================================================================
+
   /**
    * Register an event handler
    */
@@ -953,6 +1181,9 @@ export class MediaSession {
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
+  // DVR/FETCH events
+  on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
+  on(event: 'fetch-error', handler: (event: FetchErrorEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: MediaSessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -1018,6 +1249,17 @@ export class MediaSession {
       this.emit('incoming-publish', event);
     });
     this.sessionCleanup.push(incomingPublishCleanup);
+
+    // Forward FETCH/DVR events
+    const fetchCompleteCleanup = this.session.on('fetch-complete', (event: FetchCompleteEvent) => {
+      this.emit('fetch-complete', event);
+    });
+    this.sessionCleanup.push(fetchCompleteCleanup);
+
+    const fetchErrorCleanup = this.session.on('fetch-error', (event: FetchErrorEvent) => {
+      this.emit('fetch-error', event);
+    });
+    this.sessionCleanup.push(fetchErrorCleanup);
   }
 
   /**
