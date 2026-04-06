@@ -1958,6 +1958,11 @@ export class MOQTSession {
     const streamLoop = async () => {
       let groupId = 0;
 
+      // Wait for subscriber to set up decode pipeline
+      // This gives time for incoming-publish event to be processed
+      await new Promise(resolve => setTimeout(resolve, 500));
+      log.info('VOD auto-stream starting after subscriber setup delay');
+
       while (true) {
         // Check if publication still exists
         if (!this.publicationManager.get(trackAlias)) {
