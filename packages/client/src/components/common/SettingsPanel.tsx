@@ -106,6 +106,46 @@ export const SettingsPanel: React.FC = () => {
     }
   };
 
+  // Profile accent colors (from urgent/fast to relaxed/slow)
+  const profileColors: Record<string, { border: string; bg: string; text: string; badge: string }> = {
+    'ultra-low': {
+      border: 'border-l-red-500',
+      bg: 'bg-red-50 dark:bg-red-900/20',
+      text: 'text-red-700 dark:text-red-300',
+      badge: 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300',
+    },
+    'interactive': {
+      border: 'border-l-blue-500',
+      bg: 'bg-blue-50 dark:bg-blue-900/20',
+      text: 'text-blue-700 dark:text-blue-300',
+      badge: 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300',
+    },
+    'low-latency-live': {
+      border: 'border-l-green-500',
+      bg: 'bg-green-50 dark:bg-green-900/20',
+      text: 'text-green-700 dark:text-green-300',
+      badge: 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300',
+    },
+    'live-streaming': {
+      border: 'border-l-purple-500',
+      bg: 'bg-purple-50 dark:bg-purple-900/20',
+      text: 'text-purple-700 dark:text-purple-300',
+      badge: 'bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300',
+    },
+    'broadcast': {
+      border: 'border-l-gray-500',
+      bg: 'bg-gray-100 dark:bg-gray-800/50',
+      text: 'text-gray-700 dark:text-gray-300',
+      badge: 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
+    },
+    'custom': {
+      border: 'border-l-amber-500',
+      bg: 'bg-amber-50 dark:bg-amber-900/20',
+      text: 'text-amber-700 dark:text-amber-300',
+      badge: 'bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300',
+    },
+  };
+
   return (
     <div className="p-4 space-y-6">
       {/* Appearance */}
@@ -426,30 +466,31 @@ export const SettingsPanel: React.FC = () => {
               {EXPERIENCE_PROFILE_ORDER.map((profileName) => {
                 const profile = EXPERIENCE_PROFILES[profileName];
                 const isSelected = experienceProfile === profileName;
+                const colors = profileColors[profileName];
                 return (
                   <div key={profileName}>
                     {/* Profile Row Header */}
                     <button
                       onClick={() => handleProfileChange(profileName)}
-                      className={`w-full px-3 py-2.5 flex items-center text-left transition-colors ${
+                      className={`w-full px-3 py-2.5 flex items-center text-left transition-all border-l-4 ${
                         isSelected
-                          ? 'bg-primary-50 dark:bg-primary-900/20'
-                          : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                          ? `${colors.border} ${colors.bg}`
+                          : 'border-l-transparent hover:bg-gray-50 dark:hover:bg-gray-800/50'
                       }`}
                     >
                       {/* Radio indicator */}
-                      <div className={`w-4 h-4 rounded-full border-2 mr-3 flex items-center justify-center flex-shrink-0 ${
+                      <div className={`w-4 h-4 rounded-full border-2 mr-3 flex items-center justify-center flex-shrink-0 transition-colors ${
                         isSelected
-                          ? 'border-primary-500'
+                          ? `${colors.border.replace('border-l-', 'border-')}`
                           : 'border-gray-300 dark:border-gray-600'
                       }`}>
                         {isSelected && (
-                          <div className="w-2 h-2 rounded-full bg-primary-500" />
+                          <div className={`w-2 h-2 rounded-full ${colors.border.replace('border-l-', 'bg-')}`} />
                         )}
                       </div>
                       {/* Profile info */}
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium text-sm text-gray-900 dark:text-gray-100">
+                        <div className={`font-medium text-sm ${isSelected ? colors.text : 'text-gray-900 dark:text-gray-100'}`}>
                           {profile.displayName}
                           {isSelected && isModified && (
                             <span className="ml-1.5 text-xs font-normal text-amber-600 dark:text-amber-400">
@@ -462,14 +503,16 @@ export const SettingsPanel: React.FC = () => {
                         </div>
                       </div>
                       {/* Latency badge */}
-                      <div className="ml-2 px-2 py-0.5 rounded text-xs font-mono bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400">
+                      <div className={`ml-2 px-2 py-0.5 rounded text-xs font-mono ${
+                        isSelected ? colors.badge : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
+                      }`}>
                         {profile.targetLatency}ms
                       </div>
                     </button>
 
                     {/* Expanded Settings (only for selected profile) */}
                     {isSelected && (
-                      <div className="px-3 pb-3 bg-primary-50/50 dark:bg-primary-900/10">
+                      <div className={`px-3 pb-3 border-l-4 ${colors.border} ${colors.bg}`}>
                         {/* Settings Summary */}
                         <div className="grid grid-cols-2 gap-x-4 gap-y-1 py-2 text-xs border-b border-primary-200 dark:border-primary-800/30 mb-2">
                           <div className="flex justify-between">
@@ -694,23 +737,23 @@ export const SettingsPanel: React.FC = () => {
               <div>
                 <button
                   onClick={() => handleProfileChange('custom')}
-                  className={`w-full px-3 py-2.5 flex items-center text-left transition-colors ${
+                  className={`w-full px-3 py-2.5 flex items-center text-left transition-all border-l-4 ${
                     experienceProfile === 'custom'
-                      ? 'bg-primary-50 dark:bg-primary-900/20'
-                      : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                      ? `${profileColors.custom.border} ${profileColors.custom.bg}`
+                      : 'border-l-transparent hover:bg-gray-50 dark:hover:bg-gray-800/50'
                   }`}
                 >
-                  <div className={`w-4 h-4 rounded-full border-2 mr-3 flex items-center justify-center flex-shrink-0 ${
+                  <div className={`w-4 h-4 rounded-full border-2 mr-3 flex items-center justify-center flex-shrink-0 transition-colors ${
                     experienceProfile === 'custom'
-                      ? 'border-primary-500'
+                      ? 'border-amber-500'
                       : 'border-gray-300 dark:border-gray-600'
                   }`}>
                     {experienceProfile === 'custom' && (
-                      <div className="w-2 h-2 rounded-full bg-primary-500" />
+                      <div className="w-2 h-2 rounded-full bg-amber-500" />
                     )}
                   </div>
                   <div className="flex-1">
-                    <div className="font-medium text-sm text-gray-900 dark:text-gray-100">
+                    <div className={`font-medium text-sm ${experienceProfile === 'custom' ? profileColors.custom.text : 'text-gray-900 dark:text-gray-100'}`}>
                       Custom
                     </div>
                     <div className="text-xs text-gray-500">
@@ -721,7 +764,7 @@ export const SettingsPanel: React.FC = () => {
 
                 {/* Custom expanded state */}
                 {experienceProfile === 'custom' && (
-                  <div className="px-3 pb-3 bg-primary-50/50 dark:bg-primary-900/10">
+                  <div className={`px-3 pb-3 border-l-4 ${profileColors.custom.border} ${profileColors.custom.bg}`}>
                     <div className="py-2 text-xs text-gray-500 border-b border-primary-200 dark:border-primary-800/30 mb-2">
                       Settings have been customized and don't match any profile.
                     </div>
