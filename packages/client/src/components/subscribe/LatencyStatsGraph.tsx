@@ -24,6 +24,8 @@ interface LatencyStatsGraphProps {
   subscriptionId: number;
   /** Handler to register for latency stats */
   onLatencyStats: (handler: (data: { subscriptionId: number; stats: LatencyStatsSample }) => void) => () => void;
+  /** Target latency from experience profile (used for color thresholds) */
+  targetLatency?: number;
 }
 
 /** Number of samples to display */
@@ -35,7 +37,10 @@ const BAR_WIDTH = 3;
 /** Gap between bars */
 const BAR_GAP = 1;
 
-export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscriptionId, onLatencyStats }) => {
+export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscriptionId, onLatencyStats, targetLatency = 100 }) => {
+  // Color thresholds based on target latency
+  const greenThreshold = targetLatency;
+  const yellowThreshold = targetLatency * 2;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const delaySamplesRef = useRef<number[]>([]);
   const depthSamplesRef = useRef<number[]>([]);
@@ -85,13 +90,13 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       const x = startX + i * (BAR_WIDTH + BAR_GAP);
       const y = GRAPH_HEIGHT - barHeight - 2;
 
-      // Color based on delay: green < 100ms, yellow < 200ms, red >= 200ms
-      if (value < 100) {
-        ctx.fillStyle = '#22c55e';
-      } else if (value < 200) {
-        ctx.fillStyle = '#eab308';
+      // Color based on delay relative to target latency
+      if (value <= greenThreshold) {
+        ctx.fillStyle = '#22c55e'; // green - within target
+      } else if (value <= yellowThreshold) {
+        ctx.fillStyle = '#eab308'; // yellow - up to 2x target
       } else {
-        ctx.fillStyle = '#ef4444';
+        ctx.fillStyle = '#ef4444'; // red - exceeds 2x target
       }
 
       ctx.fillRect(x, y, BAR_WIDTH, barHeight);
@@ -117,8 +122,8 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       ctx.stroke();
     }
 
-    // Draw reference line at 100ms
-    const lineY = GRAPH_HEIGHT - (100 / maxDelay) * (GRAPH_HEIGHT - 8) - 2;
+    // Draw reference line at target latency
+    const lineY = GRAPH_HEIGHT - (greenThreshold / maxDelay) * (GRAPH_HEIGHT - 8) - 2;
     if (lineY > 0 && lineY < GRAPH_HEIGHT) {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
       ctx.setLineDash([2, 2]);
@@ -132,7 +137,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
 
     needsDrawRef.current = false;
     rafIdRef.current = requestAnimationFrame(draw);
-  }, [canvasWidth]);
+  }, [canvasWidth, greenThreshold, yellowThreshold]);
 
   // Start draw loop
   useEffect(() => {
@@ -188,7 +193,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       <div className="flex items-center justify-between mb-1">
         <span className="text-xs text-gray-400">E2E Delay</span>
         <span className="text-xs font-mono">
-          <span className={`${latestDelay < 100 ? 'text-green-400' : latestDelay < 200 ? 'text-yellow-400' : 'text-red-400'}`}>
+          <span className={`${latestDelay <= greenThreshold ? 'text-green-400' : latestDelay <= yellowThreshold ? 'text-yellow-400' : 'text-red-400'}`}>
             {latestDelay.toFixed(0)}ms
           </span>
           <span className="text-gray-500 ml-2">avg: {avgDelay.toFixed(0)}ms</span>

@@ -22,6 +22,8 @@ interface JitterGraphProps {
   subscriptionId: number;
   /** Handler to register for jitter samples */
   onJitterSample: (handler: (data: { subscriptionId: number; sample: JitterSample }) => void) => () => void;
+  /** Target latency from experience profile (used for color thresholds) */
+  targetLatency?: number;
 }
 
 /** Number of samples to display in the graph */
@@ -33,7 +35,10 @@ const BAR_WIDTH = 3;
 /** Gap between bars */
 const BAR_GAP = 1;
 
-export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitterSample }) => {
+export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitterSample, targetLatency = 100 }) => {
+  // Color thresholds based on target latency (20% and 50% of target, with minimums)
+  const greenThreshold = Math.max(10, targetLatency * 0.2);
+  const yellowThreshold = Math.max(25, targetLatency * 0.5);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const samplesRef = useRef<number[]>([]);
   const rafIdRef = useRef<number | null>(null);
@@ -83,20 +88,20 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
       const x = startX + i * (BAR_WIDTH + BAR_GAP);
       const y = GRAPH_HEIGHT - barHeight - 2;
 
-      // Color based on value: green < 20ms, yellow < 50ms, red >= 50ms
-      if (value < 20) {
-        ctx.fillStyle = '#22c55e'; // green
-      } else if (value < 50) {
-        ctx.fillStyle = '#eab308'; // yellow
+      // Color based on value relative to target latency
+      if (value <= greenThreshold) {
+        ctx.fillStyle = '#22c55e'; // green - low jitter
+      } else if (value <= yellowThreshold) {
+        ctx.fillStyle = '#eab308'; // yellow - moderate jitter
       } else {
-        ctx.fillStyle = '#ef4444'; // red
+        ctx.fillStyle = '#ef4444'; // red - high jitter
       }
 
       ctx.fillRect(x, y, BAR_WIDTH, barHeight);
     });
 
-    // Draw scale line at 50ms
-    const lineY = GRAPH_HEIGHT - (50 / maxVal) * (GRAPH_HEIGHT - 4) - 2;
+    // Draw scale line at yellow threshold
+    const lineY = GRAPH_HEIGHT - (yellowThreshold / maxVal) * (GRAPH_HEIGHT - 4) - 2;
     if (lineY > 0 && lineY < GRAPH_HEIGHT) {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
       ctx.setLineDash([2, 2]);
@@ -109,7 +114,7 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
 
     needsDrawRef.current = false;
     rafIdRef.current = requestAnimationFrame(draw);
-  }, [canvasWidth]);
+  }, [canvasWidth, greenThreshold, yellowThreshold]);
 
   // Start draw loop
   useEffect(() => {
@@ -151,7 +156,7 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
       <div className="flex items-center justify-between mb-1">
         <span className="text-xs text-gray-400">Jitter</span>
         <span className="text-xs font-mono">
-          <span className={`${latestAvg < 20 ? 'text-green-400' : latestAvg < 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+          <span className={`${latestAvg <= greenThreshold ? 'text-green-400' : latestAvg <= yellowThreshold ? 'text-yellow-400' : 'text-red-400'}`}>
             {latestAvg.toFixed(1)}ms
           </span>
           <span className="text-gray-500 ml-2">max: {maxJitter.toFixed(1)}ms</span>
