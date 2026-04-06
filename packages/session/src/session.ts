@@ -31,6 +31,7 @@ import {
   Logger,
   IS_DRAFT_16,
   getCurrentALPNProtocol,
+  DataStreamType,
   type ClientSetupMessage,
   type ServerSetupMessage,
   type PublishMessage,
@@ -43,6 +44,10 @@ import {
   type MOQTMessage,
   type ControlMessage,
   type ObjectHeader,
+  type FetchMessage,
+  type FetchOkMessage,
+  type FetchErrorMessage,
+  type FetchCancelMessage,
 } from '@web-moq/core';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
@@ -67,6 +72,15 @@ import type {
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,
+  FetchOptions,
+  FetchRange,
+  FetchInfo,
+  FetchObjectEvent,
+  FetchCompleteEvent,
+  FetchErrorEvent,
+  VODPublishOptions,
+  VODTrackInfo,
+  IncomingFetchEvent,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -167,6 +181,30 @@ export class MOQTSession {
   private namespaceSubscriptionStreams = new Map<number, number>();
   /** Our own namespace prefix for filtering out self-publishes */
   private ownNamespacePrefix: string | null = null;
+
+  // ============================================================================
+  // FETCH / DVR State
+  // ============================================================================
+
+  /** Active fetch requests (we are the fetcher/subscriber) */
+  private activeFetches = new Map<number, FetchInfo>();
+  /** Request ID to fetch stream mapping for receiving fetch data */
+  private fetchStreamBuffers = new Map<number, Uint8Array[]>();
+
+  // ============================================================================
+  // VOD Publishing State
+  // ============================================================================
+
+  /** VOD tracks we are publishing */
+  private vodTracks = new Map<string, VODTrackInfo>();
+  /** Pending fetch responses we need to send (VOD publisher serving fetches) */
+  private pendingFetchResponses = new Map<number, {
+    trackAlias: bigint;
+    range: FetchRange;
+    getObject: (groupId: number, objectId: number) => Promise<Uint8Array | null>;
+    isKeyframe?: (groupId: number, objectId: number) => boolean;
+    objectsPerGroup?: number;
+  }>();
 
   /**
    * Create a new MOQTSession
@@ -820,6 +858,163 @@ export class MOQTSession {
     // Remove from manager
     this.subscriptionManager.remove(subscriptionId);
     log.info('Unsubscribed', { subscriptionId });
+  }
+
+  // ============================================================================
+  // FETCH Methods (DVR/Rewind Support)
+  // ============================================================================
+
+  /**
+   * Fetch historical objects from a track
+   *
+   * Use this to request a specific range of past objects for DVR/rewind functionality.
+   * Objects are delivered via 'fetch-object' events, completion via 'fetch-complete'.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param range - Range of objects to fetch (startGroup/Object to endGroup/Object)
+   * @param options - Fetch options
+   * @param onObject - Optional callback for received objects
+   * @returns Fetch request ID
+   *
+   * @example
+   * ```typescript
+   * // Fetch objects from group 10 to group 20
+   * const fetchId = await session.fetch(
+   *   ['conference', 'room-1', 'media'],
+   *   'video',
+   *   { startGroup: 10, startObject: 0, endGroup: 20, endObject: 0 },
+   *   {},
+   *   (data, groupId, objectId) => {
+   *     console.log('Fetched object:', { groupId, objectId, bytes: data.length });
+   *   }
+   * );
+   *
+   * // Listen for completion
+   * session.on('fetch-complete', (event) => {
+   *   if (event.requestId === fetchId) {
+   *     console.log('Fetch complete, largest group:', event.largestGroupId);
+   *   }
+   * });
+   * ```
+   */
+  async fetch(
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+    onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
+  ): Promise<number> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+    const fullTrackNameStr = [...namespace, trackName].join('/');
+
+    log.info('Fetching historical objects', {
+      namespace: namespace.join('/'),
+      trackName,
+      fullTrackName: fullTrackNameStr,
+      range,
+      requestId,
+    });
+
+    // Create fetch info
+    const fetchInfo: FetchInfo = {
+      requestId,
+      namespace,
+      trackName,
+      range,
+      completed: false,
+    };
+    this.activeFetches.set(requestId, fetchInfo);
+
+    // Build FETCH message
+    const fetchMessage: FetchMessage = {
+      type: MessageType.FETCH,
+      requestId,
+      fullTrackName: { namespace, trackName },
+      subscriberPriority: options?.priority ?? 128,
+      groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
+      startGroup: range.startGroup,
+      startObject: range.startObject,
+      endGroup: range.endGroup,
+      endObject: range.endObject,
+      parameters: new Map(),
+    };
+
+    const fetchBytes = MessageCodec.encode(fetchMessage);
+    const hexBytes = Array.from(fetchBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log.info('FETCH bytes', { length: fetchBytes.length, hex: hexBytes });
+
+    await this.doSendControl(fetchBytes);
+    log.info('Sent FETCH message', {
+      requestId,
+      namespace: namespace.join('/'),
+      trackName,
+      range,
+    });
+
+    // Store object callback if provided
+    if (onObject) {
+      const handler = (event: FetchObjectEvent) => {
+        if (event.requestId === requestId) {
+          onObject(event.data, event.groupId, event.objectId);
+        }
+      };
+      this.on('fetch-object', handler);
+    }
+
+    return requestId;
+  }
+
+  /**
+   * Cancel an in-progress fetch
+   *
+   * @param requestId - Fetch request ID to cancel
+   */
+  async cancelFetch(requestId: number): Promise<void> {
+    const fetchInfo = this.activeFetches.get(requestId);
+    if (!fetchInfo) {
+      log.warn('No fetch found to cancel', { requestId });
+      return;
+    }
+
+    log.info('Cancelling fetch', { requestId });
+
+    // Send FETCH_CANCEL message
+    const cancelMessage: FetchCancelMessage = {
+      type: MessageType.FETCH_CANCEL,
+      requestId,
+    };
+
+    try {
+      const cancelBytes = MessageCodec.encode(cancelMessage);
+      await this.doSendControl(cancelBytes);
+      log.info('Sent FETCH_CANCEL message', { requestId });
+    } catch (err) {
+      log.error('Failed to send FETCH_CANCEL message', { error: (err as Error).message });
+    }
+
+    // Remove from active fetches
+    this.activeFetches.delete(requestId);
+    this.fetchStreamBuffers.delete(requestId);
+    log.info('Fetch cancelled', { requestId });
+  }
+
+  /**
+   * Get active fetch info
+   */
+  getFetch(requestId: number): FetchInfo | undefined {
+    return this.activeFetches.get(requestId);
+  }
+
+  /**
+   * Get all active fetches
+   */
+  getActiveFetches(): FetchInfo[] {
+    return Array.from(this.activeFetches.values());
   }
 
   /**
@@ -1610,6 +1805,316 @@ export class MOQTSession {
   // End Announce Flow
   // ============================================================================
 
+  // ============================================================================
+  // VOD Publishing (for DVR/Rewind support)
+  // ============================================================================
+
+  /**
+   * Publish VOD (Video on Demand) content
+   *
+   * VOD tracks respond to FETCH requests from subscribers, allowing them to
+   * seek/rewind to any point in the content.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param options - VOD publish options including metadata and object retrieval callback
+   * @returns Track alias
+   *
+   * @example
+   * ```typescript
+   * // Publish a pre-recorded video as VOD
+   * const trackAlias = await session.publishVOD(
+   *   ['vod', 'movie-1'],
+   *   'video',
+   *   {
+   *     metadata: {
+   *       duration: 120000, // 2 minutes
+   *       totalGroups: 240, // 30fps * 2min / 15 frames per GOP = 240 GOPs
+   *       gopDuration: 500, // 500ms per GOP
+   *       framerate: 30,
+   *     },
+   *     getObject: async (groupId, objectId) => {
+   *       // Return the encoded frame data for this group/object
+   *       return await loadFrameFromStorage(groupId, objectId);
+   *     },
+   *     isKeyframe: (groupId, objectId) => objectId === 0,
+   *     objectsPerGroup: 15, // 15 frames per GOP
+   *   }
+   * );
+   * ```
+   */
+  async publishVOD(
+    namespace: string[],
+    trackName: string,
+    options: VODPublishOptions
+  ): Promise<bigint> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+    const trackAlias = BigInt(requestId);
+    const fullTrackName = [...namespace, trackName].join('/');
+
+    log.info('Publishing VOD content', {
+      namespace: namespace.join('/'),
+      trackName,
+      fullTrackName,
+      duration: options.metadata.duration,
+      totalGroups: options.metadata.totalGroups,
+    });
+
+    // Create VOD track info
+    const vodTrack: VODTrackInfo = {
+      trackAlias,
+      namespace,
+      trackName,
+      metadata: options.metadata,
+      activeFetches: new Map(),
+    };
+    this.vodTracks.set(trackAlias.toString(), vodTrack);
+
+    // Store the object retrieval callback for serving fetch requests
+    // This will be used when we receive FETCH messages
+    const vodKey = `${namespace.join('/')}/${trackName}`;
+    // Store in a separate map keyed by track name for incoming fetch lookup
+    (this as unknown as { vodCallbacks: Map<string, VODPublishOptions> }).vodCallbacks =
+      (this as unknown as { vodCallbacks: Map<string, VODPublishOptions> }).vodCallbacks || new Map();
+    (this as unknown as { vodCallbacks: Map<string, VODPublishOptions> }).vodCallbacks.set(vodKey, options);
+
+    // Send PUBLISH message with contentExists=true to indicate VOD content
+    const publishMessage: PublishMessage = {
+      type: MessageType.PUBLISH,
+      requestId,
+      fullTrackName: { namespace, trackName },
+      trackAlias,
+      groupOrder: options.groupOrder ?? GroupOrder.ASCENDING,
+      contentExists: true, // VOD content exists
+      forward: 0, // Not forwarding live content
+      parameters: new Map(),
+    };
+
+    const publishBytes = MessageCodec.encode(publishMessage);
+    await this.doSendControl(publishBytes);
+    log.info('Sent VOD PUBLISH message', {
+      requestId,
+      trackAlias: trackAlias.toString(),
+      namespace: namespace.join('/'),
+      trackName,
+    });
+
+    // Wait for PUBLISH_OK
+    const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
+    log.info('Received PUBLISH_OK for VOD track', {
+      requestId,
+      forward: publishOkResult.forward,
+    });
+
+    // Create publication entry
+    const publication: InternalPublication = {
+      trackAlias,
+      namespace,
+      trackName,
+      priority: options.priority ?? 128,
+      deliveryMode: options.deliveryMode ?? 'stream',
+      audioDeliveryMode: options.audioDeliveryMode ?? 'datagram',
+      requestId,
+      cleanupHandlers: [],
+    };
+    this.publicationManager.add(publication);
+
+    log.info('VOD publishing started', { trackAlias: trackAlias.toString() });
+    return trackAlias;
+  }
+
+  /**
+   * Handle incoming FETCH request (we are the VOD publisher)
+   */
+  private async handleIncomingFetch(message: FetchMessage): Promise<void> {
+    const { namespace, trackName } = message.fullTrackName;
+    const fullTrackNameStr = [...namespace, trackName].join('/');
+    const vodKey = `${namespace.join('/')}/${trackName}`;
+
+    log.info('Received FETCH request', {
+      requestId: message.requestId,
+      namespace: namespace.join('/'),
+      trackName,
+      startGroup: message.startGroup,
+      startObject: message.startObject,
+      endGroup: message.endGroup,
+      endObject: message.endObject,
+    });
+
+    // Find VOD track by name
+    const vodCallbacks = (this as unknown as { vodCallbacks: Map<string, VODPublishOptions> }).vodCallbacks;
+    const vodOptions = vodCallbacks?.get(vodKey);
+
+    if (!vodOptions) {
+      log.warn('FETCH for unknown VOD track', { fullTrackName: fullTrackNameStr });
+      await this.sendFetchError(message.requestId, 0x03, 'Track not found');
+      return;
+    }
+
+    // Emit event for application to handle (optional custom handling)
+    this.emit('incoming-fetch', {
+      requestId: message.requestId,
+      namespace,
+      trackName,
+      range: {
+        startGroup: message.startGroup,
+        startObject: message.startObject,
+        endGroup: message.endGroup,
+        endObject: message.endObject,
+      },
+      priority: message.subscriberPriority,
+      groupOrder: message.groupOrder,
+    } as IncomingFetchEvent);
+
+    // Send FETCH_OK first
+    const fetchOk: FetchOkMessage = {
+      type: MessageType.FETCH_OK,
+      requestId: message.requestId,
+      groupOrder: message.groupOrder,
+      endOfTrack: message.endGroup >= vodOptions.metadata.totalGroups - 1,
+      largestGroupId: vodOptions.metadata.totalGroups - 1,
+      largestObjectId: (vodOptions.objectsPerGroup ?? 1) - 1,
+    };
+
+    const fetchOkBytes = MessageCodec.encode(fetchOk);
+    await this.doSendControl(fetchOkBytes);
+    log.info('Sent FETCH_OK', { requestId: message.requestId });
+
+    // Create a stream to send the fetched objects
+    await this.sendFetchedObjects(message, vodOptions);
+  }
+
+  /**
+   * Send fetched objects on a FETCH stream
+   */
+  private async sendFetchedObjects(
+    fetchMessage: FetchMessage,
+    vodOptions: VODPublishOptions
+  ): Promise<void> {
+    const requestId = fetchMessage.requestId;
+    const { startGroup, startObject, endGroup, endObject } = fetchMessage;
+    const objectsPerGroup = vodOptions.objectsPerGroup ?? 1;
+
+    log.info('Sending fetched objects', {
+      requestId,
+      startGroup,
+      startObject,
+      endGroup,
+      endObject,
+      objectsPerGroup,
+    });
+
+    try {
+      // Create a unidirectional stream for the FETCH response
+      const streamInfo = await this.doCreateStream();
+
+      // Send FETCH_HEADER first (stream type + request ID)
+      const headerWriter = new BufferWriter();
+      headerWriter.writeVarInt(DataStreamType.FETCH_HEADER);
+      headerWriter.writeVarInt(requestId);
+      await this.doWriteStream(streamInfo, headerWriter.toUint8Array());
+
+      // Send objects in requested range
+      for (let groupId = startGroup; groupId <= endGroup; groupId++) {
+        const objStart = groupId === startGroup ? startObject : 0;
+        const objEnd = groupId === endGroup && endObject > 0
+          ? endObject
+          : objectsPerGroup - 1;
+
+        for (let objectId = objStart; objectId <= objEnd; objectId++) {
+          // Check if fetch was cancelled
+          if (this.pendingFetchResponses.has(requestId) === false && requestId !== fetchMessage.requestId) {
+            log.info('Fetch cancelled, stopping send', { requestId });
+            await this.doCloseStream(streamInfo);
+            return;
+          }
+
+          // Get object data
+          const data = await vodOptions.getObject(groupId, objectId);
+          if (!data) {
+            log.warn('Object not found', { groupId, objectId });
+            continue;
+          }
+
+          const isKeyframe = vodOptions.isKeyframe?.(groupId, objectId) ?? objectId === 0;
+          const isLastInGroup = objectId === objEnd;
+          const isLastObject = groupId === endGroup && isLastInGroup;
+
+          // Encode and send object
+          const objectData = ObjectCodec.encodeStreamObject(
+            objectId,
+            data,
+            isLastObject ? ObjectStatus.END_OF_GROUP : ObjectStatus.NORMAL,
+            objectId > 0 ? objectId - 1 : -1,
+            false
+          );
+
+          await this.doWriteStream(streamInfo, objectData);
+
+          log.trace('Sent fetched object', {
+            requestId,
+            groupId,
+            objectId,
+            isKeyframe,
+            bytes: data.byteLength,
+          });
+        }
+      }
+
+      // Close the stream
+      await this.doCloseStream(streamInfo);
+      log.info('Fetch stream completed', { requestId });
+
+    } catch (err) {
+      log.error('Error sending fetched objects', {
+        requestId,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Send FETCH_ERROR response
+   */
+  private async sendFetchError(
+    requestId: number,
+    errorCode: number,
+    reasonPhrase: string
+  ): Promise<void> {
+    const fetchError: FetchErrorMessage = {
+      type: MessageType.FETCH_ERROR,
+      requestId,
+      errorCode: errorCode as import('@web-moq/core').RequestErrorCode,
+      reasonPhrase,
+    };
+
+    const bytes = MessageCodec.encode(fetchError);
+    await this.doSendControl(bytes);
+    log.info('Sent FETCH_ERROR', { requestId, errorCode, reasonPhrase });
+  }
+
+  /**
+   * Get VOD track info
+   */
+  getVODTrack(trackAlias: bigint | string): VODTrackInfo | undefined {
+    return this.vodTracks.get(trackAlias.toString());
+  }
+
+  /**
+   * Get all VOD tracks
+   */
+  getVODTracks(): VODTrackInfo[] {
+    return Array.from(this.vodTracks.values());
+  }
+
+  // ============================================================================
+  // End VOD Publishing
+  // ============================================================================
+
   /**
    * Stop publishing a track
    *
@@ -2096,6 +2601,11 @@ export class MOQTSession {
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
+  // FETCH / DVR events
+  on(event: 'fetch-object', handler: (event: FetchObjectEvent) => void): () => void;
+  on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
+  on(event: 'fetch-error', handler: (event: FetchErrorEvent) => void): () => void;
+  on(event: 'incoming-fetch', handler: (event: IncomingFetchEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -2486,6 +2996,83 @@ export class MOQTSession {
         this.handleIncomingPublish(publishMessage).catch(err => {
           log.error('Error handling incoming PUBLISH', { error: (err as Error).message });
         });
+        break;
+      }
+
+      // FETCH message handlers (DVR support)
+      case MessageType.FETCH_OK: {
+        const fetchOk = message as FetchOkMessage;
+        log.info('Received FETCH_OK', {
+          requestId: fetchOk.requestId,
+          groupOrder: fetchOk.groupOrder,
+          endOfTrack: fetchOk.endOfTrack,
+          largestGroupId: fetchOk.largestGroupId,
+          largestObjectId: fetchOk.largestObjectId,
+        });
+
+        const fetchInfo = this.activeFetches.get(fetchOk.requestId);
+        if (fetchInfo) {
+          fetchInfo.completed = true;
+          fetchInfo.largestGroupId = fetchOk.largestGroupId;
+          fetchInfo.largestObjectId = fetchOk.largestObjectId;
+          fetchInfo.endOfTrack = fetchOk.endOfTrack;
+
+          // Emit fetch complete event
+          this.emit('fetch-complete', {
+            requestId: fetchOk.requestId,
+            largestGroupId: fetchOk.largestGroupId,
+            largestObjectId: fetchOk.largestObjectId,
+            endOfTrack: fetchOk.endOfTrack,
+          } as FetchCompleteEvent);
+        } else {
+          log.warn('FETCH_OK for unknown fetch request', { requestId: fetchOk.requestId });
+        }
+        break;
+      }
+
+      case MessageType.FETCH_ERROR: {
+        const fetchError = message as FetchErrorMessage;
+        log.error('Received FETCH_ERROR', {
+          requestId: fetchError.requestId,
+          errorCode: fetchError.errorCode,
+          reasonPhrase: fetchError.reasonPhrase,
+        });
+
+        const fetchInfo = this.activeFetches.get(fetchError.requestId);
+        if (fetchInfo) {
+          // Remove from active fetches
+          this.activeFetches.delete(fetchError.requestId);
+          this.fetchStreamBuffers.delete(fetchError.requestId);
+
+          // Emit fetch error event
+          this.emit('fetch-error', {
+            requestId: fetchError.requestId,
+            errorCode: fetchError.errorCode,
+            reason: fetchError.reasonPhrase,
+          } as FetchErrorEvent);
+        }
+        break;
+      }
+
+      case MessageType.FETCH: {
+        // Handle incoming FETCH (we are the VOD publisher)
+        const fetchMessage = message as FetchMessage;
+        this.handleIncomingFetch(fetchMessage).catch(err => {
+          log.error('Error handling incoming FETCH', { error: (err as Error).message });
+        });
+        break;
+      }
+
+      case MessageType.FETCH_CANCEL: {
+        const fetchCancel = message as FetchCancelMessage;
+        log.info('Received FETCH_CANCEL', { requestId: fetchCancel.requestId });
+
+        // Cancel any pending fetch response
+        const pendingResponse = this.pendingFetchResponses.get(fetchCancel.requestId);
+        if (pendingResponse) {
+          this.pendingFetchResponses.delete(fetchCancel.requestId);
+          log.info('Cancelled pending fetch response', { requestId: fetchCancel.requestId });
+        }
         break;
       }
 

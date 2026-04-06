@@ -27,7 +27,11 @@ export type SessionEventType =
   | 'subscribe-stats'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
-  | 'incoming-publish';
+  | 'incoming-publish'
+  | 'fetch-object'
+  | 'fetch-complete'
+  | 'fetch-error'
+  | 'incoming-fetch';
 
 /**
  * Options for subscribing to a track
@@ -258,5 +262,163 @@ export interface IncomingPublishEvent {
   /** Track alias to use for receiving objects */
   trackAlias: bigint;
   /** Group order */
+  groupOrder: GroupOrder;
+}
+
+// ============================================================================
+// FETCH / DVR Types
+// ============================================================================
+
+/**
+ * Options for fetching historical objects
+ */
+export interface FetchOptions {
+  /** Subscriber priority (0-255, default 128) */
+  priority?: number;
+  /** Group ordering preference */
+  groupOrder?: GroupOrder;
+}
+
+/**
+ * Range specification for FETCH request
+ */
+export interface FetchRange {
+  /** Start group ID */
+  startGroup: number;
+  /** Start object ID within start group */
+  startObject: number;
+  /** End group ID */
+  endGroup: number;
+  /** End object ID within end group (0 = end of group) */
+  endObject: number;
+}
+
+/**
+ * Active fetch info
+ */
+export interface FetchInfo {
+  /** Fetch request ID */
+  requestId: number;
+  /** Namespace */
+  namespace: string[];
+  /** Track name */
+  trackName: string;
+  /** Requested range */
+  range: FetchRange;
+  /** Whether fetch completed */
+  completed: boolean;
+  /** Largest group ID available (from FETCH_OK) */
+  largestGroupId?: number;
+  /** Largest object ID in largest group (from FETCH_OK) */
+  largestObjectId?: number;
+  /** Whether end of track is known */
+  endOfTrack?: boolean;
+}
+
+/**
+ * Event fired when fetch receives objects
+ */
+export interface FetchObjectEvent {
+  /** Fetch request ID */
+  requestId: number;
+  /** Object payload */
+  data: Uint8Array;
+  /** Group ID */
+  groupId: number;
+  /** Object ID */
+  objectId: number;
+}
+
+/**
+ * Event fired when fetch completes successfully
+ */
+export interface FetchCompleteEvent {
+  /** Fetch request ID */
+  requestId: number;
+  /** Largest group ID available */
+  largestGroupId: number;
+  /** Largest object ID in largest group */
+  largestObjectId: number;
+  /** Whether this is the end of the track */
+  endOfTrack: boolean;
+}
+
+/**
+ * Event fired when fetch fails
+ */
+export interface FetchErrorEvent {
+  /** Fetch request ID */
+  requestId: number;
+  /** Error code */
+  errorCode: number;
+  /** Error reason */
+  reason: string;
+}
+
+// ============================================================================
+// VOD Publishing Types
+// ============================================================================
+
+/**
+ * VOD (Video on Demand) content metadata
+ */
+export interface VODMetadata {
+  /** Total duration in milliseconds */
+  duration: number;
+  /** Total number of groups */
+  totalGroups: number;
+  /** Frames per second (for time-to-group mapping) */
+  framerate?: number;
+  /** GOP duration in milliseconds (for time-to-group mapping) */
+  gopDuration?: number;
+  /** Timescale (ticks per second, default 1000) */
+  timescale?: number;
+}
+
+/**
+ * Options for publishing VOD content
+ */
+export interface VODPublishOptions extends PublishOptions {
+  /** VOD metadata */
+  metadata: VODMetadata;
+  /** Callback to fetch object data by group/object ID */
+  getObject: (groupId: number, objectId: number) => Promise<Uint8Array | null>;
+  /** Callback to check if object is a keyframe */
+  isKeyframe?: (groupId: number, objectId: number) => boolean;
+  /** Number of objects per group (if uniform) */
+  objectsPerGroup?: number;
+}
+
+/**
+ * VOD track info
+ */
+export interface VODTrackInfo {
+  /** Track alias */
+  trackAlias: bigint;
+  /** Namespace */
+  namespace: string[];
+  /** Track name */
+  trackName: string;
+  /** VOD metadata */
+  metadata: VODMetadata;
+  /** Active fetch requests being served */
+  activeFetches: Map<number, FetchRange>;
+}
+
+/**
+ * Event fired when a subscriber sends a FETCH request (VOD publisher receives this)
+ */
+export interface IncomingFetchEvent {
+  /** Request ID from the fetch */
+  requestId: number;
+  /** Namespace */
+  namespace: string[];
+  /** Track name */
+  trackName: string;
+  /** Requested range */
+  range: FetchRange;
+  /** Subscriber priority */
+  priority: number;
+  /** Group order preference */
   groupOrder: GroupOrder;
 }

@@ -76,6 +76,18 @@ export type {
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,
+  // FETCH / DVR types
+  FetchOptions,
+  FetchRange,
+  FetchInfo,
+  FetchObjectEvent,
+  FetchCompleteEvent,
+  FetchErrorEvent,
+  // VOD types
+  VODMetadata,
+  VODPublishOptions,
+  VODTrackInfo,
+  IncomingFetchEvent,
 } from './types.js';
 
 // Worker API

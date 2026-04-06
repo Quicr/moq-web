@@ -28,7 +28,11 @@ export type MediaSessionEventType =
   | 'subscribe-stats'
   | 'incoming-subscribe'
   | 'incoming-publish'
-  | 'namespace-acknowledged';
+  | 'namespace-acknowledged'
+  // DVR/FETCH events
+  | 'fetch-object'
+  | 'fetch-complete'
+  | 'fetch-error';
 
 /**
  * Worker configuration for offloading processing to web workers
