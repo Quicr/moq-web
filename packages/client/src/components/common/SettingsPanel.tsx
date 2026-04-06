@@ -18,7 +18,7 @@ import {
 } from '@web-moq/media';
 
 // Glassmorphism tooltip component
-const InfoTip: React.FC<{ text: string }> = ({ text }) => {
+const InfoTip: React.FC<{ text: string; align?: 'left' | 'right' }> = ({ text, align = 'left' }) => {
   const [show, setShow] = useState(false);
   return (
     <span className="relative inline-block ml-1">
@@ -31,13 +31,14 @@ const InfoTip: React.FC<{ text: string }> = ({ text }) => {
         ?
       </span>
       {show && (
-        <div className="absolute z-50 bottom-full left-0 mb-2 w-56 p-2.5 rounded-lg
+        <div className={`absolute z-50 bottom-full mb-2 w-56 p-2.5 rounded-lg
           bg-white/90 dark:bg-gray-900/90 backdrop-blur-md
           border border-gray-200/50 dark:border-gray-700/50
           shadow-lg shadow-black/10 dark:shadow-black/30
-          text-xs leading-relaxed text-gray-700 dark:text-gray-200 font-medium">
+          text-xs leading-relaxed text-gray-700 dark:text-gray-200 font-medium
+          ${align === 'left' ? 'left-0' : 'right-0'}`}>
           {text}
-          <div className="absolute top-full left-3 -mt-px">
+          <div className={`absolute top-full -mt-px ${align === 'left' ? 'left-3' : 'right-3'}`}>
             <div className="border-4 border-transparent border-t-white/90 dark:border-t-gray-900/90" />
           </div>
         </div>
@@ -557,7 +558,7 @@ export const SettingsPanel: React.FC = () => {
                           <div className="flex items-center justify-between">
                             <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
                               Max Latency
-                              <InfoTip text="Maximum acceptable delay from capture to display. Frames arriving later are skipped." />
+                              <InfoTip text="Maximum acceptable delay from capture to display. Frames arriving later are skipped." align="right" />
                             </span>
                             <span className="font-mono font-semibold text-gray-900 dark:text-white bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">{maxLatency}ms</span>
                           </div>
@@ -571,7 +572,7 @@ export const SettingsPanel: React.FC = () => {
                           <div className="flex items-center justify-between">
                             <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
                               Skip to Latest
-                              <InfoTip text="Jump directly to newest video segment when falling behind. Aggressive catch-up." />
+                              <InfoTip text="Jump directly to newest video segment when falling behind. Aggressive catch-up." align="right" />
                             </span>
                             <span className={`font-mono font-semibold px-1.5 py-0.5 rounded ${skipToLatestGroup ? 'text-green-700 dark:text-green-400 bg-green-100 dark:bg-green-900/30' : 'text-gray-500 dark:text-gray-500 bg-gray-100 dark:bg-gray-800'}`}>
                               {skipToLatestGroup ? 'On' : 'Off'}
@@ -589,7 +590,7 @@ export const SettingsPanel: React.FC = () => {
                           <div className="flex items-center justify-between">
                             <span className="text-gray-600 dark:text-gray-400 font-medium flex items-center">
                               Interactive
-                              <InfoTip text="ON: Skip frames immediately when behind. OFF: Wait for complete video segments." />
+                              <InfoTip text="ON: Skip frames immediately when behind. OFF: Wait for complete video segments." align="right" />
                             </span>
                             <span className={`font-mono font-semibold px-1.5 py-0.5 rounded ${useLatencyDeadline ? 'text-green-700 dark:text-green-400 bg-green-100 dark:bg-green-900/30' : 'text-gray-500 dark:text-gray-500 bg-gray-100 dark:bg-gray-800'}`}>
                               {useLatencyDeadline ? 'On' : 'Off'}
