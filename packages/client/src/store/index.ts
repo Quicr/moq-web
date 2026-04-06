@@ -374,6 +374,8 @@ interface SettingsSlice {
   quicrInteropEnabled: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId: number;
+  /** Enable VOD publishing mode (load video from URL) */
+  vodPublishEnabled: boolean;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -407,6 +409,7 @@ interface SettingsSlice {
   setSecureObjectsBaseKey: (value: string) => void;
   setQuicrInteropEnabled: (value: boolean) => void;
   setQuicrParticipantId: (value: number) => void;
+  setVodPublishEnabled: (value: boolean) => void;
   /** Apply an experience profile (sets all related settings) */
   applyExperienceProfile: (profile: ExperienceProfileName) => void;
   /** Update detected profile based on current settings */
@@ -1253,6 +1256,7 @@ export const useStore = create<AppStore>()(
       secureObjectsBaseKey: '', // Default: empty (user must provide)
       quicrInteropEnabled: false, // Default: standard LOC packaging
       quicrParticipantId: 0, // Default: 0 (should be set by user)
+      vodPublishEnabled: false, // Default: VOD publishing off
 
       setTheme: (theme) => {
         set({ theme });
@@ -1304,6 +1308,7 @@ export const useStore = create<AppStore>()(
       setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
       setQuicrInteropEnabled: (value) => set({ quicrInteropEnabled: value }),
       setQuicrParticipantId: (value) => set({ quicrParticipantId: value }),
+      setVodPublishEnabled: (value) => set({ vodPublishEnabled: value }),
 
       applyExperienceProfile: (profileName) => {
         if (profileName === 'custom') {
@@ -1382,6 +1387,7 @@ export const useStore = create<AppStore>()(
         secureObjectsBaseKey: state.secureObjectsBaseKey,
         quicrInteropEnabled: state.quicrInteropEnabled,
         quicrParticipantId: state.quicrParticipantId,
+        vodPublishEnabled: state.vodPublishEnabled,
       }),
     }
   )

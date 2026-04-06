@@ -14,6 +14,7 @@ import { useStore } from '../../store';
 import { isDebugMode } from '../common/DevSettingsPanel';
 import { useVAD } from '../../hooks/useVAD';
 import { VADIndicator, VADDot } from '../common/VADIndicator';
+import { VODLoader, type VODLoadProgress } from '@web-moq/media';
 
 type MediaType = 'video' | 'audio';
 type Resolution = '1080p' | '720p' | '480p';
@@ -33,6 +34,11 @@ interface TrackConfig {
   deliveryMode: DeliveryMode;
   isPublishing: boolean;
   trackAlias?: bigint;
+  // VOD-specific fields
+  isVod?: boolean;
+  vodUrl?: string;
+  vodLoader?: VODLoader;
+  vodProgress?: VODLoadProgress;
 }
 
 export const PublishPanel: React.FC = () => {
@@ -50,6 +56,9 @@ export const PublishPanel: React.FC = () => {
     announceStatus,
     cancelAnnounce,
     secureObjectsEnabled,
+    vodPublishEnabled,
+    session,
+    addPublishedTrack,
   } = useStore();
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -72,6 +81,8 @@ export const PublishPanel: React.FC = () => {
     deliveryTimeout: 5000,
     priority: 128,
     deliveryMode: 'stream', // Video defaults to stream
+    isVod: false,
+    vodUrl: '',
   });
 
   // Voice Activity Detection
@@ -177,6 +188,7 @@ export const PublishPanel: React.FC = () => {
 
   const addTrackConfig = () => {
     if (!newTrack.namespace || !newTrack.trackName) return;
+    if (newTrack.isVod && !newTrack.vodUrl) return;
 
     // Default delivery mode: stream for video, datagram for audio
     const defaultDeliveryMode: DeliveryMode = newTrack.mediaType === 'video' ? 'stream' : 'datagram';
@@ -193,12 +205,15 @@ export const PublishPanel: React.FC = () => {
       priority: newTrack.priority ?? 128,
       deliveryMode: newTrack.deliveryMode ?? defaultDeliveryMode,
       isPublishing: false,
+      isVod: newTrack.isVod,
+      vodUrl: newTrack.vodUrl,
     };
 
     setTrackConfigs([...trackConfigs, config]);
     setNewTrack({
       ...newTrack,
       trackName: '',
+      vodUrl: '',
     });
   };
 
@@ -210,6 +225,67 @@ export const PublishPanel: React.FC = () => {
     setPublishError(null);
 
     try {
+      // Handle VOD track publishing
+      if (config.isVod && config.vodUrl) {
+        if (!session) {
+          setPublishError('No session available');
+          return;
+        }
+
+        // Create VOD loader and load the video
+        const loader = new VODLoader({
+          framesPerGroup: 30,
+          framerate: config.framerate ?? 30,
+          width: config.resolution === '1080p' ? 1920 : config.resolution === '720p' ? 1280 : 854,
+          height: config.resolution === '1080p' ? 1080 : config.resolution === '720p' ? 720 : 480,
+          bitrate: config.bitrate ?? 2000000,
+          onProgress: (progress) => {
+            setTrackConfigs(prev => prev.map(t =>
+              t.id === config.id ? { ...t, vodProgress: progress } : t
+            ));
+          },
+        });
+
+        // Update config with loader
+        setTrackConfigs(prev => prev.map(t =>
+          t.id === config.id ? { ...t, vodLoader: loader, vodProgress: { phase: 'fetching', progress: 0 } } : t
+        ));
+
+        // Load the video
+        await loader.load(config.vodUrl);
+
+        // Get publish options from loader
+        const publishOptions = loader.getPublishOptions();
+
+        // Publish VOD track
+        const trackAlias = await session.publishVOD(
+          config.namespace.split('/'),
+          config.trackName,
+          {
+            ...publishOptions,
+            priority: config.priority,
+            deliveryTimeout: config.deliveryTimeout,
+            deliveryMode: config.deliveryMode,
+          }
+        );
+
+        // Add to published tracks for stats display
+        addPublishedTrack({
+          id: `pub-${trackAlias.toString()}`,
+          type: 'video',
+          namespace: config.namespace.split('/'),
+          trackName: config.trackName,
+          active: true,
+          stats: { groupId: 0, objectId: 0, bytesTransferred: 0 },
+        });
+
+        setTrackConfigs(prev => prev.map(t =>
+          t.id === config.id ? { ...t, isPublishing: true, trackAlias, vodLoader: loader } : t
+        ));
+        return;
+      }
+
+      // Standard live track publishing
       let stream = localStream;
       if (!stream) {
         await startCapture();
@@ -236,7 +312,7 @@ export const PublishPanel: React.FC = () => {
         audioEnabled
       );
 
-      setTrackConfigs(trackConfigs.map(t =>
+      setTrackConfigs(prev => prev.map(t =>
         t.id === config.id ? { ...t, isPublishing: true, trackAlias } : t
       ));
     } catch (err) {
@@ -251,8 +327,12 @@ export const PublishPanel: React.FC = () => {
       if (config.trackAlias !== undefined) {
         await storeStopPublishing(config.trackAlias);
       }
-      setTrackConfigs(trackConfigs.map(t =>
-        t.id === config.id ? { ...t, isPublishing: false, trackAlias: undefined } : t
+      // Clean up VOD loader if present
+      if (config.vodLoader) {
+        config.vodLoader.clear();
+      }
+      setTrackConfigs(prev => prev.map(t =>
+        t.id === config.id ? { ...t, isPublishing: false, trackAlias: undefined, vodLoader: undefined, vodProgress: undefined } : t
       ));
     } catch (err) {
       console.error('Failed to stop publishing:', err);
@@ -391,6 +471,45 @@ export const PublishPanel: React.FC = () => {
       <div className="panel">
         <div className="panel-header">Add Track to Publish</div>
         <div className="panel-body space-y-4">
+          {/* VOD Mode Toggle (when enabled in settings) */}
+          {vodPublishEnabled && (
+            <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+              <label className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={newTrack.isVod ?? false}
+                  onChange={(e) => setNewTrack({ ...newTrack, isVod: e.target.checked, mediaType: 'video' })}
+                  className="w-4 h-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500"
+                />
+                <div>
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    VOD Track (from URL)
+                  </span>
+                  <p className="text-xs text-gray-500">
+                    Load video from URL for DVR/rewind playback
+                  </p>
+                </div>
+              </label>
+            </div>
+          )}
+
+          {/* VOD URL Input */}
+          {newTrack.isVod && (
+            <div className="mb-4">
+              <label className="label">Video URL</label>
+              <input
+                type="text"
+                value={newTrack.vodUrl ?? ''}
+                onChange={(e) => setNewTrack({ ...newTrack, vodUrl: e.target.value })}
+                placeholder="https://example.com/video.mp4"
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Must be a direct link to an MP4 file (CORS-enabled)
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">Media Type</label>
@@ -400,9 +519,10 @@ export const PublishPanel: React.FC = () => {
                   const mediaType = e.target.value as MediaType;
                   // Auto-set delivery mode default: stream for video, datagram for audio
                   const deliveryMode: DeliveryMode = mediaType === 'video' ? 'stream' : 'datagram';
-                  setNewTrack({ ...newTrack, mediaType, deliveryMode });
+                  setNewTrack({ ...newTrack, mediaType, deliveryMode, isVod: mediaType === 'audio' ? false : newTrack.isVod });
                 }}
                 className="input"
+                disabled={newTrack.isVod}
               >
                 <option value="video">Video</option>
                 <option value="audio">Audio</option>
@@ -525,10 +645,10 @@ export const PublishPanel: React.FC = () => {
           </div>
           <button
             onClick={addTrackConfig}
-            disabled={!newTrack.namespace || !newTrack.trackName}
+            disabled={!newTrack.namespace || !newTrack.trackName || (newTrack.isVod && !newTrack.vodUrl)}
             className="btn-primary w-full"
           >
-            Add Track
+            Add {newTrack.isVod ? 'VOD' : ''} Track
           </button>
         </div>
       </div>
@@ -589,6 +709,42 @@ export const PublishPanel: React.FC = () => {
                     <span>{config.resolution}</span>
                     <span>{config.framerate} fps</span>
                     <span>{((config.bitrate || 0) / 1000000).toFixed(1)} Mbps</span>
+                    {config.isVod && (
+                      <span className="px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded text-xs">
+                        VOD
+                      </span>
+                    )}
+                  </div>
+                )}
+                {config.isVod && config.vodUrl && (
+                  <div className="text-xs text-gray-500 truncate max-w-md" title={config.vodUrl}>
+                    {config.vodUrl}
+                  </div>
+                )}
+                {config.vodProgress && config.vodProgress.phase !== 'complete' && (
+                  <div className="mt-2">
+                    <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                      <span className="capitalize">{config.vodProgress.phase}...</span>
+                      <div className="flex-1 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ${
+                            config.vodProgress.phase === 'error' ? 'bg-red-500' : 'bg-primary-500'
+                          }`}
+                          style={{ width: `${config.vodProgress.progress}%` }}
+                        />
+                      </div>
+                      <span>{config.vodProgress.progress}%</span>
+                    </div>
+                    {config.vodProgress.phase === 'decoding' && config.vodProgress.framesDecoded !== undefined && (
+                      <div className="text-xs text-gray-500 mt-1">
+                        Frames: {config.vodProgress.framesDecoded}/{config.vodProgress.totalFrames ?? '?'}
+                      </div>
+                    )}
+                    {config.vodProgress.phase === 'error' && config.vodProgress.error && (
+                      <div className="text-xs text-red-500 mt-1">
+                        {config.vodProgress.error}
+                      </div>
+                    )}
                   </div>
                 )}
                 {config.mediaType === 'audio' && (

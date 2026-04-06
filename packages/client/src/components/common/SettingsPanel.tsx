@@ -312,6 +312,8 @@ export const SettingsPanel: React.FC = () => {
     setQuicrInteropEnabled,
     quicrParticipantId,
     setQuicrParticipantId,
+    vodPublishEnabled,
+    setVodPublishEnabled,
   } = useStore();
 
   // Check if current settings differ from the selected profile
@@ -625,7 +627,6 @@ export const SettingsPanel: React.FC = () => {
                   </div>
                 </div>
               </div>
-            </div>
 
             <div className="p-4 rounded-xl bg-gradient-to-br from-amber-50 to-white dark:from-amber-900/20 dark:to-gray-900 border border-amber-100 dark:border-amber-900/30">
               <SectionHeader icon={Icons.audio} title="Audio" description="Audio quality settings" colorScheme={sectionColors.audio} />

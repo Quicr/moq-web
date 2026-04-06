@@ -22,6 +22,7 @@ import {
   type NamespaceSubscriptionInfo,
   type FetchCompleteEvent,
   type FetchErrorEvent,
+  type VODPublishOptions,
 } from '@web-moq/session';
 import {
   SecureObjectsContext,
@@ -500,6 +501,54 @@ export class MediaSession {
     await this.session.unpublish(trackAlias);
 
     log.info('Publishing stopped', { trackAlias: key });
+  }
+
+  /**
+   * Publish VOD content for DVR/rewind playback
+   *
+   * VOD content is served via FETCH requests rather than continuous streaming.
+   * The content provider supplies a getObject callback to serve individual objects.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param options - VOD publish options including metadata and object callback
+   * @returns Track alias
+   *
+   * @example
+   * ```typescript
+   * // Using with VODLoader
+   * const loader = new VODLoader({ framerate: 30 });
+   * await loader.load('https://example.com/video.mp4');
+   *
+   * const trackAlias = await session.publishVOD(
+   *   ['vod', 'my-video'],
+   *   'video',
+   *   {
+   *     ...loader.getPublishOptions(),
+   *     priority: 128,
+   *     deliveryTimeout: 5000,
+   *   }
+   * );
+   * ```
+   */
+  async publishVOD(
+    namespace: string[],
+    trackName: string,
+    options: VODPublishOptions
+  ): Promise<bigint> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    log.info('Publishing VOD content', {
+      namespace: namespace.join('/'),
+      trackName,
+      duration: options.metadata.duration,
+      totalGroups: options.metadata.totalGroups,
+    });
+
+    // Delegate to underlying session's publishVOD
+    return this.session.publishVOD(namespace, trackName, options);
   }
 
   /**
