@@ -17,6 +17,16 @@ import {
   type ExperienceProfileName,
 } from '@web-moq/media';
 
+// Info tooltip component
+const InfoTip: React.FC<{ text: string }> = ({ text }) => (
+  <span
+    className="ml-1 inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-gray-200 dark:bg-gray-600 text-gray-500 dark:text-gray-400 text-[10px] cursor-help hover:bg-gray-300 dark:hover:bg-gray-500"
+    title={text}
+  >
+    ?
+  </span>
+);
+
 export const SettingsPanel: React.FC = () => {
   const [showFineTune, setShowFineTune] = useState(false);
 
@@ -564,6 +574,7 @@ export const SettingsPanel: React.FC = () => {
                             <div>
                               <label className="label text-xs">
                                 Jitter Buffer: {jitterBufferDelay}ms
+                                <InfoTip text="Buffer size to absorb network timing variations. Higher = smoother but more delay. Lower = less delay but may stutter on unstable networks." />
                               </label>
                               <input
                                 type="range"
@@ -581,6 +592,7 @@ export const SettingsPanel: React.FC = () => {
                               <label className="flex items-center justify-between">
                                 <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
                                   Interactive Mode
+                                  <InfoTip text="ON: Skip frames immediately when behind (fast recovery, may drop frames). OFF: Wait for complete video segments before skipping (smoother but higher latency)." />
                                 </span>
                                 <button
                                   onClick={() => setUseLatencyDeadline(!useLatencyDeadline)}
@@ -601,6 +613,7 @@ export const SettingsPanel: React.FC = () => {
                             <div>
                               <label className="label text-xs">
                                 Max Latency: {maxLatency}ms
+                                <InfoTip text="Maximum acceptable delay from capture to display. Frames arriving later than this are skipped to maintain real-time sync." />
                               </label>
                               <input
                                 type="range"
@@ -617,6 +630,7 @@ export const SettingsPanel: React.FC = () => {
                             <div>
                               <label className="label text-xs">
                                 GOP Duration: {estimatedGopDuration}ms
+                                <InfoTip text="Expected time between keyframes (I-frames). Used to calculate when to wait for a new keyframe vs. skip ahead. Match this to your encoder's keyframe interval." />
                               </label>
                               <input
                                 type="range"
@@ -634,6 +648,7 @@ export const SettingsPanel: React.FC = () => {
                               <label className="flex items-center justify-between">
                                 <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
                                   Skip to Latest Group
+                                  <InfoTip text="When falling behind, jump directly to the newest video segment instead of playing through buffered frames. Aggressive catch-up for real-time scenarios." />
                                 </span>
                                 <button
                                   onClick={() => setSkipToLatestGroup(!skipToLatestGroup)}
@@ -654,6 +669,7 @@ export const SettingsPanel: React.FC = () => {
                               <div>
                                 <label className="label text-xs">
                                   Grace Period: {skipGraceFrames} frames
+                                  <InfoTip text="Wait this many frame intervals before skipping to latest. Gives slow frames a chance to arrive. 0 = skip immediately, higher = more patient." />
                                 </label>
                                 <input
                                   type="range"
@@ -672,6 +688,7 @@ export const SettingsPanel: React.FC = () => {
                               <label className="flex items-center justify-between">
                                 <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
                                   Buffer Catch-Up
+                                  <InfoTip text="Automatically speed through buffered frames when the buffer gets too deep. Prevents latency from accumulating over time." />
                                 </span>
                                 <button
                                   onClick={() => setEnableCatchUp(!enableCatchUp)}
@@ -692,6 +709,7 @@ export const SettingsPanel: React.FC = () => {
                               <div>
                                 <label className="label text-xs">
                                   Catch-Up Threshold: {catchUpThreshold} frames
+                                  <InfoTip text="Trigger catch-up when this many frames are buffered and ready. Lower = more aggressive (catches up sooner), higher = more tolerant (allows deeper buffer)." />
                                 </label>
                                 <input
                                   type="range"
