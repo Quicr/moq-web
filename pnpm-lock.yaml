@@ -53,6 +53,9 @@ importers:
       '@web-moq/media':
         specifier: workspace:*
         version: link:../media
+      '@web-moq/secure-objects':
+        specifier: workspace:*
+        version: link:../secure-objects
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -105,6 +108,9 @@ importers:
       '@web-moq/core':
         specifier: workspace:*
         version: link:../core
+      '@web-moq/secure-objects':
+        specifier: workspace:*
+        version: link:../secure-objects
       '@web-moq/session':
         specifier: workspace:*
         version: link:../session
@@ -124,6 +130,12 @@ importers:
       zod:
         specifier: ^3.23.0
         version: 3.25.76
+    devDependencies:
+      vitest:
+        specifier: ^4.0.18
+        version: 4.0.18(@types/node@20.19.30)(jiti@1.21.7)
+
+  packages/secure-objects:
     devDependencies:
       vitest:
         specifier: ^4.0.18

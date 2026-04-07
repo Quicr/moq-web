@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@web-moq/core": "workspace:*",
+    "@web-moq/secure-objects": "workspace:*",
     "@web-moq/session": "workspace:*"
   },
   "devDependencies": {
