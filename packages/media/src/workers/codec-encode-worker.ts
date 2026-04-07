@@ -195,12 +195,16 @@ function handleEncodedVideoChunk(
     }
   }
 
-  // Package with LOC
-  const locData = channel.packager.packageVideo(data, {
+  // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+  const videoOptions = {
     isKeyframe,
     captureTimestamp: performance.now(),
     codecDescription,
-  });
+  };
+  const videoPacketSize = channel.packager.calculateVideoPacketSize(data, videoOptions);
+  const videoBuffer = new Uint8Array(videoPacketSize);
+  const videoBytesWritten = channel.packager.packageVideoInto(videoBuffer, data, videoOptions);
+  const locData = videoBuffer.subarray(0, videoBytesWritten);
 
   const result: VideoEncodedResult = {
     data: locData,
@@ -233,10 +237,14 @@ function handleEncodedAudioChunk(channel: EncodeChannel, chunk: EncodedAudioChun
   channel.audioGroupId++;
   channel.audioObjectId = 0;
 
-  // Package with LOC
-  const locData = channel.packager.packageAudio(data, {
+  // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+  const audioOptions = {
     captureTimestamp: performance.now(),
-  });
+  };
+  const audioPacketSize = channel.packager.calculateAudioPacketSize(data, audioOptions);
+  const audioBuffer = new Uint8Array(audioPacketSize);
+  const audioBytesWritten = channel.packager.packageAudioInto(audioBuffer, data, audioOptions);
+  const locData = audioBuffer.subarray(0, audioBytesWritten);
 
   const result: AudioEncodedResult = {
     data: locData,
