@@ -305,12 +305,8 @@ export class LOCPackager {
     let size = 1; // Header byte
     size += varintEncodedLength(this.videoSequence);
 
-    // Count extensions
-    let extensionCount = 0;
-
     // Timestamp extension: type(1) + length_varint + data_varint(up to 8)
     if (options.captureTimestamp !== undefined) {
-      extensionCount++;
       const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
       const tsLen = varintBigIntEncodedLength(timestampMicros);
       size += 1 + varintEncodedLength(tsLen) + tsLen;
@@ -318,13 +314,11 @@ export class LOCPackager {
 
     // Frame marking extension: type(1) + length_varint(1) + data(1)
     if (options.frameMarking) {
-      extensionCount++;
       size += 1 + 1 + 1; // type + length(1) + marking byte
     }
 
     // Codec description extension: type(1) + length_varint + data
     if (options.codecDescription) {
-      extensionCount++;
       size += 1 + varintEncodedLength(options.codecDescription.byteLength) + options.codecDescription.byteLength;
     }
 
