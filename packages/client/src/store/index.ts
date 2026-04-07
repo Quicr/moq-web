@@ -199,6 +199,7 @@ interface ConnectionSlice {
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
   isSubscriptionPaused: (subscriptionId: number) => boolean;
+  seekSubscription: (subscriptionId: number, timeMs: number) => Promise<void>;
 
   // Video frame handler registration
   onVideoFrame: (handler: (data: { subscriptionId: number; frame: VideoFrame }) => void) => () => void;
@@ -970,6 +971,13 @@ export const useStore = create<AppStore>()(
         if (!session) return false;
 
         return session.isSubscriptionPaused(subscriptionId);
+      },
+
+      seekSubscription: async (subscriptionId: number, timeMs: number) => {
+        const { session } = get();
+        if (!session) return;
+
+        await session.seek(subscriptionId, timeMs);
       },
 
       onVideoFrame: (handler) => {
