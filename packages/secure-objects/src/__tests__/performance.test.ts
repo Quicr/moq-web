@@ -56,10 +56,11 @@ describe('Performance', () => {
   describe('AES-GCM encryption', () => {
     // Test realistic frame sizes for video encoding
     // Small frames have more overhead per-byte, so we use different thresholds
+    // Note: Thresholds are set conservatively for CI runners which are much slower than local machines
     const dataSizes = [
-      { name: '1KB', size: 1024, minThroughput: 10 }, // Audio frame
-      { name: '16KB', size: 16 * 1024, minThroughput: 50 }, // Small video frame
-      { name: '64KB', size: 64 * 1024, minThroughput: 100 }, // Typical video frame
+      { name: '1KB', size: 1024, minThroughput: 1 }, // Audio frame (CI runners have high per-op overhead)
+      { name: '16KB', size: 16 * 1024, minThroughput: 20 }, // Small video frame
+      { name: '64KB', size: 64 * 1024, minThroughput: 50 }, // Typical video frame
     ];
 
     for (const { name, size, minThroughput } of dataSizes) {
@@ -149,7 +150,8 @@ describe('Performance', () => {
 
       console.log(`AES-CTR-HMAC encrypt 64KB: ${throughputMBps.toFixed(1)} MB/s`);
       // CTR-HMAC is slower due to separate MAC computation
-      expect(throughputMBps).toBeGreaterThan(50);
+      // Threshold set conservatively for CI runners
+      expect(throughputMBps).toBeGreaterThan(30);
     });
   });
 
