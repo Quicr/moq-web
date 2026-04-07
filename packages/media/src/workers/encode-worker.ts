@@ -72,12 +72,16 @@ function handleMessage(event: MessageEvent<EncodeWorkerRequest>): void {
           videoObjectId++;
         }
 
-        // Package with LOC
-        const videoData = packager.packageVideo(msg.data, {
+        // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+        const videoOptions = {
           isKeyframe: msg.isKeyframe,
           captureTimestamp: msg.timestamp / 1000, // Convert to ms
           codecDescription: msg.codecDescription,
-        });
+        };
+        const videoPacketSize = packager.calculateVideoPacketSize(msg.data, videoOptions);
+        const videoBuffer = new Uint8Array(videoPacketSize);
+        const videoBytesWritten = packager.packageVideoInto(videoBuffer, msg.data, videoOptions);
+        const videoData = videoBuffer.subarray(0, videoBytesWritten);
 
         log('Packaged video', {
           id: msg.id,
@@ -111,10 +115,14 @@ function handleMessage(event: MessageEvent<EncodeWorkerRequest>): void {
         audioGroupId++;
         audioObjectId = 0;
 
-        // Package with LOC
-        const audioData = packager.packageAudio(msg.data, {
+        // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+        const audioOptions = {
           captureTimestamp: msg.timestamp / 1000,
-        });
+        };
+        const audioPacketSize = packager.calculateAudioPacketSize(msg.data, audioOptions);
+        const audioBuffer = new Uint8Array(audioPacketSize);
+        const audioBytesWritten = packager.packageAudioInto(audioBuffer, msg.data, audioOptions);
+        const audioData = audioBuffer.subarray(0, audioBytesWritten);
 
         log('Packaged audio', {
           id: msg.id,

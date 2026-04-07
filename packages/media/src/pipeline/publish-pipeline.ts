@@ -440,12 +440,16 @@ export class PublishPipeline {
       this.videoObjectId++;
     }
 
-    // Package with LOC
-    const locData = this.packager.packageVideo(frame.data, {
+    // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+    const options = {
       isKeyframe: frame.isKeyframe,
       captureTimestamp: performance.now(),
       codecDescription: frame.codecDescription,
-    });
+    };
+    const packetSize = this.packager.calculateVideoPacketSize(frame.data, options);
+    const buffer = new Uint8Array(packetSize);
+    const bytesWritten = this.packager.packageVideoInto(buffer, frame.data, options);
+    const locData = buffer.subarray(0, bytesWritten);
 
     const obj: PublishedObject = {
       type: 'video',
@@ -694,10 +698,14 @@ export class PublishPipeline {
     this.audioGroupId++;
     this.audioObjectId = 0;
 
-    // Package with LOC
-    const locData = this.packager.packageAudio(frame.data, {
+    // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+    const options = {
       captureTimestamp: performance.now(),
-    });
+    };
+    const packetSize = this.packager.calculateAudioPacketSize(frame.data, options);
+    const buffer = new Uint8Array(packetSize);
+    const bytesWritten = this.packager.packageAudioInto(buffer, frame.data, options);
+    const locData = buffer.subarray(0, bytesWritten);
 
     const obj: PublishedObject = {
       type: 'audio',
