@@ -361,6 +361,12 @@ interface SettingsSlice {
   useLatencyDeadline: boolean;
   /** Enable GroupArbiter debug logging */
   arbiterDebug: boolean;
+  /** Enable Secure Objects encryption */
+  secureObjectsEnabled: boolean;
+  /** Secure Objects cipher suite (hex string, e.g., "0x0004") */
+  secureObjectsCipherSuite: string;
+  /** Track base key for encryption (hex string, 32-64 hex chars = 16-32 bytes) */
+  secureObjectsBaseKey: string;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -388,6 +394,9 @@ interface SettingsSlice {
   setCatchUpThreshold: (value: number) => void;
   setUseLatencyDeadline: (value: boolean) => void;
   setArbiterDebug: (value: boolean) => void;
+  setSecureObjectsEnabled: (value: boolean) => void;
+  setSecureObjectsCipherSuite: (value: string) => void;
+  setSecureObjectsBaseKey: (value: string) => void;
   /** Apply an experience profile (sets all related settings) */
   applyExperienceProfile: (profile: ExperienceProfileName) => void;
   /** Update detected profile based on current settings */
@@ -537,7 +546,7 @@ export const useStore = create<AppStore>()(
               trackAlias: event.trackAlias.toString(),
             });
 
-            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode } = get();
+            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
 
             if (pendingAnnounceStream && pendingAnnounceConfig) {
               try {
@@ -563,6 +572,10 @@ export const useStore = create<AppStore>()(
                   audioDeliveryMode,
                   videoEnabled,
                   audioEnabled,
+                  // Secure Objects encryption settings
+                  secureObjectsEnabled,
+                  secureObjectsCipherSuite,
+                  secureObjectsBaseKey,
                 };
 
                 await session.startAnnouncePublish(
@@ -711,6 +724,7 @@ export const useStore = create<AppStore>()(
         const hasVideoTracks = localStream.getVideoTracks().length > 0;
         const hasAudioTracks = localStream.getAudioTracks().length > 0;
 
+        const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
         const config: MediaConfig = {
           videoBitrate,
           audioBitrate,
@@ -723,6 +737,10 @@ export const useStore = create<AppStore>()(
           // Only enable video/audio if both the setting is enabled AND the stream has those tracks
           videoEnabled: effectiveVideoEnabled && hasVideoTracks,
           audioEnabled: effectiveAudioEnabled && hasAudioTracks,
+          // Secure Objects encryption settings
+          secureObjectsEnabled,
+          secureObjectsCipherSuite,
+          secureObjectsBaseKey,
         };
 
         // Use announce flow if enabled
@@ -850,7 +868,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -870,6 +888,10 @@ export const useStore = create<AppStore>()(
           catchUpThreshold,
           useLatencyDeadline,
           arbiterDebug,
+          // Secure Objects encryption settings
+          secureObjectsEnabled,
+          secureObjectsCipherSuite,
+          secureObjectsBaseKey,
         };
 
         const subscriptionId = await session.subscribe(
@@ -1061,7 +1083,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1085,6 +1107,10 @@ export const useStore = create<AppStore>()(
           catchUpThreshold,
           useLatencyDeadline,
           arbiterDebug,
+          // Secure Objects encryption settings
+          secureObjectsEnabled,
+          secureObjectsCipherSuite,
+          secureObjectsBaseKey,
         };
 
         const subscriptionId = await session.subscribeNamespace(namespacePrefix, config);
@@ -1193,6 +1219,9 @@ export const useStore = create<AppStore>()(
       catchUpThreshold: 5, // Default: trigger catch-up after 5 ready frames
       useLatencyDeadline: true, // Default: use latency-only deadline (interactive mode)
       arbiterDebug: false, // Default: no debug logging
+      secureObjectsEnabled: false, // Default: encryption off
+      secureObjectsCipherSuite: '0x0004', // Default: AES_128_GCM_SHA256_128
+      secureObjectsBaseKey: '', // Default: empty (user must provide)
 
       setTheme: (theme) => {
         set({ theme });
@@ -1238,6 +1267,9 @@ export const useStore = create<AppStore>()(
       setCatchUpThreshold: (value) => set({ catchUpThreshold: value }),
       setUseLatencyDeadline: (value) => set({ useLatencyDeadline: value }),
       setArbiterDebug: (value) => set({ arbiterDebug: value }),
+      setSecureObjectsEnabled: (value) => set({ secureObjectsEnabled: value }),
+      setSecureObjectsCipherSuite: (value) => set({ secureObjectsCipherSuite: value }),
+      setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
 
       applyExperienceProfile: (profileName) => {
         if (profileName === 'custom') {
@@ -1311,6 +1343,9 @@ export const useStore = create<AppStore>()(
         catchUpThreshold: state.catchUpThreshold,
         useLatencyDeadline: state.useLatencyDeadline,
         arbiterDebug: state.arbiterDebug,
+        secureObjectsEnabled: state.secureObjectsEnabled,
+        secureObjectsCipherSuite: state.secureObjectsCipherSuite,
+        secureObjectsBaseKey: state.secureObjectsBaseKey,
       }),
     }
   )

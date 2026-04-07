@@ -129,6 +129,14 @@ export interface MediaConfig {
   useLatencyDeadline?: boolean;
   /** Enable GroupArbiter debug logging (default: false) */
   arbiterDebug?: boolean;
+
+  // Secure Objects (E2E encryption) options
+  /** Enable Secure Objects encryption/decryption */
+  secureObjectsEnabled?: boolean;
+  /** Cipher suite for encryption (hex string, e.g., "0x0004") */
+  secureObjectsCipherSuite?: string;
+  /** Track base key for encryption (hex string, 32-64 hex chars = 16-32 bytes) */
+  secureObjectsBaseKey?: string;
 }
 
 /**
