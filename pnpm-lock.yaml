@@ -53,6 +53,9 @@ importers:
       '@web-moq/media':
         specifier: workspace:*
         version: link:../media
+      '@web-moq/secure-objects':
+        specifier: workspace:*
+        version: link:../secure-objects
       react:
         specifier: ^18.2.0
         version: 18.3.1
