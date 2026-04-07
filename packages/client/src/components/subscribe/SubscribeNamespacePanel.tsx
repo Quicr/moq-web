@@ -10,7 +10,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../../store';
-import { VideoRenderer } from './VideoRenderer';
+import { VODVideoPlayer } from './VODVideoPlayer';
 import { AudioPlayer } from './AudioPlayer';
 
 export const SubscribeNamespacePanel: React.FC = () => {
@@ -188,8 +188,11 @@ export const SubscribeNamespacePanel: React.FC = () => {
                         </div>
                         <div className="flex-1 min-h-0">
                           {track.subscriptionId !== undefined && (
-                            <VideoRenderer
+                            <VODVideoPlayer
                               frame={videoFrames[track.subscriptionId] || null}
+                              subscriptionId={track.subscriptionId}
+                              duration={0}
+                              showControls={true}
                             />
                           )}
                         </div>

@@ -10,7 +10,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
-import { VideoRenderer } from './VideoRenderer';
+import { VODVideoPlayer } from './VODVideoPlayer';
 import { AudioPlayer } from './AudioPlayer';
 import { JitterGraph } from './JitterGraph';
 import { LatencyStatsGraph } from './LatencyStatsGraph';
@@ -546,8 +546,11 @@ export const SubscribePanel: React.FC = () => {
                       </span>
                     )}
                   </div>
-                  <VideoRenderer
+                  <VODVideoPlayer
                     frame={config.subscriptionId !== undefined ? videoFrames[config.subscriptionId] || null : null}
+                    subscriptionId={config.subscriptionId!}
+                    duration={0}
+                    showControls={true}
                   />
                   {enableStats && config.subscriptionId !== undefined && (
                     <div className="space-y-2">
