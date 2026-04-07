@@ -7,6 +7,7 @@
  * Components for building and subscribing to MSF catalogs.
  */
 
+export { CatalogPanel } from './CatalogPanel';
 export { CatalogBuilderPanel } from './CatalogBuilderPanel';
 export { TrackCard } from './TrackCard';
 export { AddTrackModal } from './AddTrackModal';

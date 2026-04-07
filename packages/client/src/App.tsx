@@ -16,13 +16,14 @@ import { ConnectionStatus } from './components/connection/ConnectionStatus';
 import { PublishPanel } from './components/publish/PublishPanel';
 import { SubscribePanel } from './components/subscribe/SubscribePanel';
 import { ChatPanel } from './components/chat/ChatPanel';
+import { CatalogPanel } from './components/catalog/CatalogPanel';
 import { SettingsPanel } from './components/common/SettingsPanel';
 import { StatusPanel } from './components/common/StatusPanel';
 import { DevSettingsPanel } from './components/common/DevSettingsPanel';
 import { DecodeErrorToast } from './components/common/DecodeErrorToast';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = React.useState<'publish' | 'subscribe' | 'chat'>('publish');
+  const [activeTab, setActiveTab] = React.useState<'publish' | 'subscribe' | 'chat' | 'catalog'>('publish');
   const [showSettings, setShowSettings] = React.useState(false);
   const { state } = useStore();
 
@@ -100,6 +101,16 @@ const App: React.FC = () => {
               >
                 Chat
               </button>
+              <button
+                onClick={() => setActiveTab('catalog')}
+                className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+                  activeTab === 'catalog'
+                    ? 'border-primary-500 text-primary-600 dark:text-primary-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                Catalog
+              </button>
             </div>
 
             {/* Tab Content */}
@@ -122,6 +133,7 @@ const App: React.FC = () => {
               <div className={activeTab === 'publish' ? '' : 'hidden'}>{isConnected && <PublishPanel />}</div>
               <div className={activeTab === 'subscribe' ? '' : 'hidden'}>{isConnected && <SubscribePanel />}</div>
               <div className={activeTab === 'chat' ? '' : 'hidden'}>{isConnected && <ChatPanel />}</div>
+              <div className={activeTab === 'catalog' ? '' : 'hidden'}>{isConnected && <CatalogPanel />}</div>
             </div>
           </div>
         </div>
