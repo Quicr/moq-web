@@ -361,6 +361,12 @@ interface SettingsSlice {
   useLatencyDeadline: boolean;
   /** Enable GroupArbiter debug logging */
   arbiterDebug: boolean;
+  /** Enable Secure Objects encryption */
+  secureObjectsEnabled: boolean;
+  /** Secure Objects cipher suite (hex string, e.g., "0x0004") */
+  secureObjectsCipherSuite: string;
+  /** Track base key for encryption (hex string, 32-64 hex chars = 16-32 bytes) */
+  secureObjectsBaseKey: string;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -388,6 +394,9 @@ interface SettingsSlice {
   setCatchUpThreshold: (value: number) => void;
   setUseLatencyDeadline: (value: boolean) => void;
   setArbiterDebug: (value: boolean) => void;
+  setSecureObjectsEnabled: (value: boolean) => void;
+  setSecureObjectsCipherSuite: (value: string) => void;
+  setSecureObjectsBaseKey: (value: string) => void;
   /** Apply an experience profile (sets all related settings) */
   applyExperienceProfile: (profile: ExperienceProfileName) => void;
   /** Update detected profile based on current settings */
@@ -1193,6 +1202,9 @@ export const useStore = create<AppStore>()(
       catchUpThreshold: 5, // Default: trigger catch-up after 5 ready frames
       useLatencyDeadline: true, // Default: use latency-only deadline (interactive mode)
       arbiterDebug: false, // Default: no debug logging
+      secureObjectsEnabled: false, // Default: encryption off
+      secureObjectsCipherSuite: '0x0004', // Default: AES_128_GCM_SHA256_128
+      secureObjectsBaseKey: '', // Default: empty (user must provide)
 
       setTheme: (theme) => {
         set({ theme });
@@ -1238,6 +1250,9 @@ export const useStore = create<AppStore>()(
       setCatchUpThreshold: (value) => set({ catchUpThreshold: value }),
       setUseLatencyDeadline: (value) => set({ useLatencyDeadline: value }),
       setArbiterDebug: (value) => set({ arbiterDebug: value }),
+      setSecureObjectsEnabled: (value) => set({ secureObjectsEnabled: value }),
+      setSecureObjectsCipherSuite: (value) => set({ secureObjectsCipherSuite: value }),
+      setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
 
       applyExperienceProfile: (profileName) => {
         if (profileName === 'custom') {
@@ -1311,6 +1326,9 @@ export const useStore = create<AppStore>()(
         catchUpThreshold: state.catchUpThreshold,
         useLatencyDeadline: state.useLatencyDeadline,
         arbiterDebug: state.arbiterDebug,
+        secureObjectsEnabled: state.secureObjectsEnabled,
+        secureObjectsCipherSuite: state.secureObjectsCipherSuite,
+        secureObjectsBaseKey: state.secureObjectsBaseKey,
       }),
     }
   )
