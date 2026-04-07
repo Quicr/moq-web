@@ -95,6 +95,12 @@ export const SettingsPanel: React.FC = () => {
     setArbiterDebug,
     experienceProfile,
     applyExperienceProfile,
+    secureObjectsEnabled,
+    setSecureObjectsEnabled,
+    secureObjectsCipherSuite,
+    setSecureObjectsCipherSuite,
+    secureObjectsBaseKey,
+    setSecureObjectsBaseKey,
   } = useStore();
 
   // Check if current settings differ from the selected profile
@@ -906,6 +912,105 @@ export const SettingsPanel: React.FC = () => {
               </button>
             </label>
           </div>
+        </div>
+      </div>
+
+      {/* Secure Objects (E2E Encryption) */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
+          Secure Objects (E2E Encryption)
+        </h3>
+        <div className="space-y-4">
+          {/* Enable Encryption Toggle */}
+          <div>
+            <label className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Enable Encryption
+                </span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Encrypt media with MOQT Secure Objects
+                </p>
+              </div>
+              <button
+                onClick={() => setSecureObjectsEnabled(!secureObjectsEnabled)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  secureObjectsEnabled ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    secureObjectsEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </label>
+          </div>
+
+          {secureObjectsEnabled && (
+            <>
+              {/* Cipher Suite Selection */}
+              <div>
+                <label className="label">Cipher Suite</label>
+                <select
+                  value={secureObjectsCipherSuite}
+                  onChange={(e) => setSecureObjectsCipherSuite(e.target.value)}
+                  className="input"
+                >
+                  <option value="0x0004">AES-128-GCM (recommended)</option>
+                  <option value="0x0005">AES-256-GCM</option>
+                  <option value="0x0001">AES-128-CTR-HMAC-80</option>
+                  <option value="0x0002">AES-128-CTR-HMAC-64</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  AES-GCM is recommended for best WebCrypto performance
+                </p>
+              </div>
+
+              {/* Track Base Key Input */}
+              <div>
+                <label className="label">
+                  Track Base Key
+                  <InfoTip text="Shared secret for encryption. Must be 32-64 hex characters (16-32 bytes). Both publisher and subscriber need the same key." align="right" />
+                </label>
+                <input
+                  type="password"
+                  value={secureObjectsBaseKey}
+                  onChange={(e) => setSecureObjectsBaseKey(e.target.value)}
+                  placeholder="Enter hex key (e.g., 0123456789abcdef...)"
+                  className="input font-mono text-sm"
+                />
+                <div className="flex items-center justify-between mt-1">
+                  <p className="text-xs text-gray-500">
+                    {secureObjectsBaseKey.length > 0
+                      ? `${secureObjectsBaseKey.length} hex chars (${Math.floor(secureObjectsBaseKey.length / 2)} bytes)`
+                      : 'Required for encryption'}
+                  </p>
+                  <button
+                    onClick={() => {
+                      const bytes = new Uint8Array(32);
+                      crypto.getRandomValues(bytes);
+                      const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+                      setSecureObjectsBaseKey(hex);
+                    }}
+                    className="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                  >
+                    Generate Random Key
+                  </button>
+                </div>
+                {secureObjectsBaseKey.length > 0 && secureObjectsBaseKey.length < 32 && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Key too short. Minimum 32 hex characters (16 bytes) required.
+                  </p>
+                )}
+                {secureObjectsBaseKey.length > 0 && !/^[0-9a-fA-F]*$/.test(secureObjectsBaseKey) && (
+                  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                    Invalid characters. Only hex digits (0-9, a-f) allowed.
+                  </p>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
