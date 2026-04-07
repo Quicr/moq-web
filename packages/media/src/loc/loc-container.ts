@@ -8,6 +8,12 @@
  * draft-ietf-moq-loc. LOC provides minimal overhead packaging of media
  * frames for MOQT transmission.
  *
+ * Performance optimized for high-throughput media pipelines with:
+ * - Zero-copy packaging via outputBuffer option
+ * - Pre-calculated buffer sizes
+ * - Direct buffer writes (no intermediate allocations)
+ * - Inline varint encoding
+ *
  * @see https://datatracker.ietf.org/doc/draft-ietf-moq-loc/
  *
  * @example
@@ -21,13 +27,14 @@
  *   captureTimestamp: Date.now(),
  * });
  *
- * // Unpackage
- * const unpackager = new LOCUnpackager();
- * const frame = unpackager.unpackage(packet);
+ * // Zero-copy with buffer pool
+ * const size = packager.calculateVideoPacketSize(payload, options);
+ * const buffer = pool.acquire(size);
+ * const packet = packager.packageVideo(payload, { ...options, outputBuffer: buffer });
  * ```
  */
 
-import { Logger, BufferReader, BufferWriter } from '@web-moq/core';
+import { Logger, BufferReader } from '@web-moq/core';
 
 const log = Logger.create('moqt:media:loc');
 
@@ -83,6 +90,8 @@ export interface LOCVideoOptions {
   frameMarking?: VideoFrameMarking;
   /** Codec description (for keyframes) */
   codecDescription?: Uint8Array;
+  /** Optional pre-allocated output buffer for zero-copy packaging */
+  outputBuffer?: Uint8Array;
 }
 
 /**
@@ -95,6 +104,8 @@ export interface LOCAudioOptions {
   audioLevel?: number;
   /** Whether voice activity was detected */
   voiceActivity?: boolean;
+  /** Optional pre-allocated output buffer for zero-copy packaging */
+  outputBuffer?: Uint8Array;
 }
 
 /**
@@ -139,31 +150,130 @@ export interface LOCFrame {
   codecDescription?: Uint8Array;
 }
 
+// ============================================================================
+// Inline VarInt encoding for maximum performance (avoids function call overhead)
+// ============================================================================
+
+/** Maximum values for each varint encoding length */
+const VARINT_MAX_1BYTE = 63;
+const VARINT_MAX_2BYTE = 16383;
+const VARINT_MAX_4BYTE = 1073741823;
+
+/**
+ * Get encoded length of a varint (inline for performance)
+ */
+function varintEncodedLength(value: number): 1 | 2 | 4 | 8 {
+  if (value <= VARINT_MAX_1BYTE) return 1;
+  if (value <= VARINT_MAX_2BYTE) return 2;
+  if (value <= VARINT_MAX_4BYTE) return 4;
+  return 8;
+}
+
+/**
+ * Write varint directly to buffer at offset, return bytes written
+ * Optimized inline implementation avoiding VarInt class overhead
+ */
+function writeVarintAt(buffer: Uint8Array, offset: number, value: number): number {
+  if (value <= VARINT_MAX_1BYTE) {
+    buffer[offset] = value;
+    return 1;
+  }
+  if (value <= VARINT_MAX_2BYTE) {
+    buffer[offset] = 0x40 | (value >> 8);
+    buffer[offset + 1] = value & 0xff;
+    return 2;
+  }
+  if (value <= VARINT_MAX_4BYTE) {
+    buffer[offset] = 0x80 | (value >> 24);
+    buffer[offset + 1] = (value >> 16) & 0xff;
+    buffer[offset + 2] = (value >> 8) & 0xff;
+    buffer[offset + 3] = value & 0xff;
+    return 4;
+  }
+  // 8-byte encoding for large values
+  const high = Math.floor(value / 0x100000000);
+  const low = value >>> 0;
+  buffer[offset] = 0xc0 | (high >> 24);
+  buffer[offset + 1] = (high >> 16) & 0xff;
+  buffer[offset + 2] = (high >> 8) & 0xff;
+  buffer[offset + 3] = high & 0xff;
+  buffer[offset + 4] = (low >> 24) & 0xff;
+  buffer[offset + 5] = (low >> 16) & 0xff;
+  buffer[offset + 6] = (low >> 8) & 0xff;
+  buffer[offset + 7] = low & 0xff;
+  return 8;
+}
+
+/**
+ * Write varint for bigint values (timestamps in microseconds)
+ */
+function writeVarintBigIntAt(buffer: Uint8Array, offset: number, value: bigint): number {
+  if (value <= BigInt(VARINT_MAX_1BYTE)) {
+    buffer[offset] = Number(value);
+    return 1;
+  }
+  if (value <= BigInt(VARINT_MAX_2BYTE)) {
+    const v = Number(value);
+    buffer[offset] = 0x40 | (v >> 8);
+    buffer[offset + 1] = v & 0xff;
+    return 2;
+  }
+  if (value <= BigInt(VARINT_MAX_4BYTE)) {
+    const v = Number(value);
+    buffer[offset] = 0x80 | (v >> 24);
+    buffer[offset + 1] = (v >> 16) & 0xff;
+    buffer[offset + 2] = (v >> 8) & 0xff;
+    buffer[offset + 3] = v & 0xff;
+    return 4;
+  }
+  // 8-byte encoding
+  buffer[offset] = Number(0xc0n | ((value >> 56n) & 0x3fn));
+  buffer[offset + 1] = Number((value >> 48n) & 0xffn);
+  buffer[offset + 2] = Number((value >> 40n) & 0xffn);
+  buffer[offset + 3] = Number((value >> 32n) & 0xffn);
+  buffer[offset + 4] = Number((value >> 24n) & 0xffn);
+  buffer[offset + 5] = Number((value >> 16n) & 0xffn);
+  buffer[offset + 6] = Number((value >> 8n) & 0xffn);
+  buffer[offset + 7] = Number(value & 0xffn);
+  return 8;
+}
+
+/**
+ * Get encoded length for bigint varint
+ */
+function varintBigIntEncodedLength(value: bigint): number {
+  if (value <= BigInt(VARINT_MAX_1BYTE)) return 1;
+  if (value <= BigInt(VARINT_MAX_2BYTE)) return 2;
+  if (value <= BigInt(VARINT_MAX_4BYTE)) return 4;
+  return 8;
+}
+
+// ============================================================================
+// LOC Packager - High Performance Implementation
+// ============================================================================
+
 /**
  * LOC Packager
  *
  * @remarks
  * Packages encoded media frames into LOC format for MOQT transmission.
- * LOC provides minimal overhead while supporting optional extensions
- * for timing, layering, and codec information.
+ * Optimized for high-throughput with zero-copy buffer support.
  *
  * @example
  * ```typescript
  * const packager = new LOCPackager();
  *
- * // Package video keyframe
- * const videoPacket = packager.packageVideo(videoData, {
+ * // Standard packaging (allocates new buffer)
+ * const packet = packager.packageVideo(videoData, {
  *   isKeyframe: true,
  *   captureTimestamp: performance.now(),
- *   codecDescription: codecDescription,
  * });
  *
- * // Package audio frame
- * const audioPacket = packager.packageAudio(audioData, {
- *   captureTimestamp: performance.now(),
- *   audioLevel: 64,
- *   voiceActivity: true,
- * });
+ * // Zero-copy with pre-allocated buffer
+ * const size = packager.calculateVideoPacketSize(videoData, options);
+ * const buffer = bufferPool.acquire(size);
+ * const packet = packager.packageVideo(videoData, { ...options, outputBuffer: buffer });
+ * // packet is a view into buffer, release buffer when done
  * ```
  */
 export class LOCPackager {
@@ -171,12 +281,220 @@ export class LOCPackager {
   private videoSequence = 0;
   /** Audio sequence counter */
   private audioSequence = 0;
+  /** Reusable internal buffer for when no outputBuffer provided */
+  private internalBuffer: Uint8Array;
 
   /**
    * Create a new LOCPackager
+   *
+   * @param initialBufferSize - Initial size for internal buffer (default: 256KB)
    */
-  constructor() {
-    log.debug('LOCPackager created');
+  constructor(initialBufferSize = 262144) {
+    this.internalBuffer = new Uint8Array(initialBufferSize);
+    log.debug('LOCPackager created', { bufferSize: initialBufferSize });
+  }
+
+  /**
+   * Calculate the exact packet size for a video frame
+   *
+   * @param payload - Encoded video data
+   * @param options - Packaging options
+   * @returns Exact size in bytes needed for the LOC packet
+   */
+  calculateVideoPacketSize(payload: Uint8Array, options: LOCVideoOptions): number {
+    let size = 1; // Header byte
+    size += varintEncodedLength(this.videoSequence);
+
+    // Count extensions
+    let extensionCount = 0;
+
+    // Timestamp extension: type(1) + length_varint + data_varint(up to 8)
+    if (options.captureTimestamp !== undefined) {
+      extensionCount++;
+      const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
+      const tsLen = varintBigIntEncodedLength(timestampMicros);
+      size += 1 + varintEncodedLength(tsLen) + tsLen;
+    }
+
+    // Frame marking extension: type(1) + length_varint(1) + data(1)
+    if (options.frameMarking) {
+      extensionCount++;
+      size += 1 + 1 + 1; // type + length(1) + marking byte
+    }
+
+    // Codec description extension: type(1) + length_varint + data
+    if (options.codecDescription) {
+      extensionCount++;
+      size += 1 + varintEncodedLength(options.codecDescription.byteLength) + options.codecDescription.byteLength;
+    }
+
+    // Payload length + payload
+    size += varintEncodedLength(payload.byteLength);
+    size += payload.byteLength;
+
+    return size;
+  }
+
+  /**
+   * Calculate the exact packet size for an audio frame
+   *
+   * @param payload - Encoded audio data
+   * @param options - Packaging options
+   * @returns Exact size in bytes needed for the LOC packet
+   */
+  calculateAudioPacketSize(payload: Uint8Array, options: LOCAudioOptions = {}): number {
+    let size = 1; // Header byte
+    size += varintEncodedLength(this.audioSequence);
+
+    // Timestamp extension
+    if (options.captureTimestamp !== undefined) {
+      const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
+      const tsLen = varintBigIntEncodedLength(timestampMicros);
+      size += 1 + varintEncodedLength(tsLen) + tsLen;
+    }
+
+    // Audio level extension: type(1) + length(1=varint for 1) + data(1)
+    if (options.audioLevel !== undefined) {
+      size += 1 + 1 + 1;
+    }
+
+    // Payload length + payload
+    size += varintEncodedLength(payload.byteLength);
+    size += payload.byteLength;
+
+    return size;
+  }
+
+  /**
+   * Package a video frame directly into a buffer
+   *
+   * @param buffer - Target buffer (must be large enough)
+   * @param payload - Encoded video data
+   * @param options - Packaging options
+   * @returns Number of bytes written
+   */
+  packageVideoInto(buffer: Uint8Array, payload: Uint8Array, options: LOCVideoOptions): number {
+    let offset = 0;
+
+    // Count extensions for header byte
+    let extensionCount = 0;
+    if (options.captureTimestamp !== undefined) extensionCount++;
+    if (options.frameMarking) extensionCount++;
+    if (options.codecDescription) extensionCount++;
+
+    // Header byte: MKKK EEEE
+    // M=0 (video), K=keyframe, EEEE=extension count
+    const headerByte = (options.isKeyframe ? 0x40 : 0) | (extensionCount & 0x0f);
+    buffer[offset++] = headerByte;
+
+    // Sequence number
+    offset += writeVarintAt(buffer, offset, this.videoSequence++);
+
+    // Extensions
+    if (options.captureTimestamp !== undefined) {
+      const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
+      const tsLen = varintBigIntEncodedLength(timestampMicros);
+
+      buffer[offset++] = LOCExtensionType.CAPTURE_TIMESTAMP;
+      offset += writeVarintAt(buffer, offset, tsLen);
+      offset += writeVarintBigIntAt(buffer, offset, timestampMicros);
+    }
+
+    if (options.frameMarking) {
+      const m = options.frameMarking;
+      const markingByte =
+        ((m.temporalId & 0x07) << 5) |
+        ((m.spatialId & 0x03) << 3) |
+        (m.baseLayer ? 0x04 : 0) |
+        (m.discardable ? 0x02 : 0) |
+        (m.endOfFrame ? 0x01 : 0);
+
+      buffer[offset++] = LOCExtensionType.VIDEO_FRAME_MARKING;
+      buffer[offset++] = 1; // length = 1 (varint encoded)
+      buffer[offset++] = markingByte;
+    }
+
+    if (options.codecDescription) {
+      buffer[offset++] = LOCExtensionType.CODEC_DATA;
+      offset += writeVarintAt(buffer, offset, options.codecDescription.byteLength);
+      buffer.set(options.codecDescription, offset);
+      offset += options.codecDescription.byteLength;
+    }
+
+    // Payload length
+    offset += writeVarintAt(buffer, offset, payload.byteLength);
+
+    // Payload (direct copy)
+    buffer.set(payload, offset);
+    offset += payload.byteLength;
+
+    log.trace('Packed LOC video', {
+      isKeyframe: options.isKeyframe,
+      sequence: this.videoSequence - 1,
+      extensions: extensionCount,
+      payloadSize: payload.byteLength,
+      totalSize: offset,
+    });
+
+    return offset;
+  }
+
+  /**
+   * Package an audio frame directly into a buffer
+   *
+   * @param buffer - Target buffer (must be large enough)
+   * @param payload - Encoded audio data
+   * @param options - Packaging options
+   * @returns Number of bytes written
+   */
+  packageAudioInto(buffer: Uint8Array, payload: Uint8Array, options: LOCAudioOptions = {}): number {
+    let offset = 0;
+
+    // Count extensions
+    let extensionCount = 0;
+    if (options.captureTimestamp !== undefined) extensionCount++;
+    if (options.audioLevel !== undefined) extensionCount++;
+
+    // Header byte: MKKK EEEE
+    // M=1 (audio), K=1 (opus always keyframe), EEEE=extension count
+    const headerByte = 0x80 | 0x40 | (extensionCount & 0x0f);
+    buffer[offset++] = headerByte;
+
+    // Sequence number
+    offset += writeVarintAt(buffer, offset, this.audioSequence++);
+
+    // Extensions
+    if (options.captureTimestamp !== undefined) {
+      const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
+      const tsLen = varintBigIntEncodedLength(timestampMicros);
+
+      buffer[offset++] = LOCExtensionType.CAPTURE_TIMESTAMP;
+      offset += writeVarintAt(buffer, offset, tsLen);
+      offset += writeVarintBigIntAt(buffer, offset, timestampMicros);
+    }
+
+    if (options.audioLevel !== undefined) {
+      const levelByte = (options.voiceActivity ? 0x80 : 0) | (options.audioLevel & 0x7f);
+      buffer[offset++] = LOCExtensionType.AUDIO_LEVEL;
+      buffer[offset++] = 1; // length = 1
+      buffer[offset++] = levelByte;
+    }
+
+    // Payload length
+    offset += writeVarintAt(buffer, offset, payload.byteLength);
+
+    // Payload
+    buffer.set(payload, offset);
+    offset += payload.byteLength;
+
+    log.trace('Packed LOC audio', {
+      sequence: this.audioSequence - 1,
+      extensions: extensionCount,
+      payloadSize: payload.byteLength,
+      totalSize: offset,
+    });
+
+    return offset;
   }
 
   /**
@@ -184,45 +502,39 @@ export class LOCPackager {
    *
    * @param payload - Encoded video data
    * @param options - Packaging options
-   * @returns LOC-formatted packet
+   * @returns LOC-formatted packet (view into outputBuffer if provided)
    *
-   * @example
+   * @remarks
+   * When `outputBuffer` is provided, returns a view into that buffer (zero-copy).
+   * When not provided, uses internal buffer and returns a copy.
+   *
+   * For maximum performance with buffer pooling:
    * ```typescript
-   * const packet = packager.packageVideo(h264Data, {
-   *   isKeyframe: true,
-   *   captureTimestamp: Date.now(),
-   * });
+   * const size = packager.calculateVideoPacketSize(payload, options);
+   * const buffer = pool.acquire(size);
+   * const packet = packager.packageVideo(payload, { ...options, outputBuffer: buffer });
+   * await send(packet);
+   * pool.release(buffer);
    * ```
    */
   packageVideo(payload: Uint8Array, options: LOCVideoOptions): Uint8Array {
-    const extensions: LOCExtension[] = [];
-
-    // Add capture timestamp extension
-    if (options.captureTimestamp !== undefined) {
-      extensions.push(this.createTimestampExtension(options.captureTimestamp));
+    if (options.outputBuffer) {
+      // Zero-copy path: write directly to provided buffer
+      const bytesWritten = this.packageVideoInto(options.outputBuffer, payload, options);
+      return options.outputBuffer.subarray(0, bytesWritten);
     }
 
-    // Add video frame marking extension
-    if (options.frameMarking) {
-      extensions.push(this.createFrameMarkingExtension(options.frameMarking));
+    // Allocation path: ensure internal buffer is large enough
+    const requiredSize = this.calculateVideoPacketSize(payload, options);
+    if (requiredSize > this.internalBuffer.byteLength) {
+      // Grow buffer (2x or required, whichever is larger)
+      this.internalBuffer = new Uint8Array(Math.max(requiredSize, this.internalBuffer.byteLength * 2));
     }
 
-    // Add codec description extension
-    if (options.codecDescription) {
-      extensions.push({
-        type: LOCExtensionType.CODEC_DATA,
-        data: options.codecDescription,
-      });
-    }
+    const bytesWritten = this.packageVideoInto(this.internalBuffer, payload, options);
 
-    const header: LOCHeader = {
-      mediaType: MediaType.VIDEO,
-      isKeyframe: options.isKeyframe,
-      sequenceNumber: this.videoSequence++,
-      extensions,
-    };
-
-    return this.encodePacket(header, payload);
+    // Return a copy (caller owns the returned buffer)
+    return this.internalBuffer.slice(0, bytesWritten);
   }
 
   /**
@@ -230,135 +542,37 @@ export class LOCPackager {
    *
    * @param payload - Encoded audio data
    * @param options - Packaging options
-   * @returns LOC-formatted packet
-   *
-   * @example
-   * ```typescript
-   * const packet = packager.packageAudio(opusData, {
-   *   captureTimestamp: Date.now(),
-   *   audioLevel: 80,
-   * });
-   * ```
+   * @returns LOC-formatted packet (view into outputBuffer if provided)
    */
   packageAudio(payload: Uint8Array, options: LOCAudioOptions = {}): Uint8Array {
-    const extensions: LOCExtension[] = [];
-
-    // Add capture timestamp extension
-    if (options.captureTimestamp !== undefined) {
-      extensions.push(this.createTimestampExtension(options.captureTimestamp));
+    if (options.outputBuffer) {
+      // Zero-copy path
+      const bytesWritten = this.packageAudioInto(options.outputBuffer, payload, options);
+      return options.outputBuffer.subarray(0, bytesWritten);
     }
 
-    // Add audio level extension
-    if (options.audioLevel !== undefined) {
-      extensions.push(this.createAudioLevelExtension(
-        options.audioLevel,
-        options.voiceActivity ?? false
-      ));
+    // Allocation path
+    const requiredSize = this.calculateAudioPacketSize(payload, options);
+    if (requiredSize > this.internalBuffer.byteLength) {
+      this.internalBuffer = new Uint8Array(Math.max(requiredSize, this.internalBuffer.byteLength * 2));
     }
 
-    const header: LOCHeader = {
-      mediaType: MediaType.AUDIO,
-      isKeyframe: true, // Opus frames are always key frames
-      sequenceNumber: this.audioSequence++,
-      extensions,
-    };
-
-    return this.encodePacket(header, payload);
+    const bytesWritten = this.packageAudioInto(this.internalBuffer, payload, options);
+    return this.internalBuffer.slice(0, bytesWritten);
   }
 
   /**
-   * Create a capture timestamp extension
+   * Get current video sequence number (for debugging/stats)
    */
-  private createTimestampExtension(timestamp: number): LOCExtension {
-    const writer = new BufferWriter();
-    // 64-bit timestamp in microseconds
-    writer.writeVarInt(Math.floor(timestamp * 1000));
-    return {
-      type: LOCExtensionType.CAPTURE_TIMESTAMP,
-      data: writer.toUint8Array(),
-    };
+  get currentVideoSequence(): number {
+    return this.videoSequence;
   }
 
   /**
-   * Create a video frame marking extension
+   * Get current audio sequence number (for debugging/stats)
    */
-  private createFrameMarkingExtension(marking: VideoFrameMarking): LOCExtension {
-    // Pack into single byte: TTTSSBDE
-    // TTT = temporalId (3 bits), SS = spatialId (2 bits),
-    // B = baseLayer, D = discardable, E = endOfFrame
-    let byte = 0;
-    byte |= (marking.temporalId & 0x07) << 5;
-    byte |= (marking.spatialId & 0x03) << 3;
-    byte |= marking.baseLayer ? 0x04 : 0;
-    byte |= marking.discardable ? 0x02 : 0;
-    byte |= marking.endOfFrame ? 0x01 : 0;
-
-    return {
-      type: LOCExtensionType.VIDEO_FRAME_MARKING,
-      data: new Uint8Array([byte]),
-    };
-  }
-
-  /**
-   * Create an audio level extension
-   */
-  private createAudioLevelExtension(
-    level: number,
-    voiceActivity: boolean
-  ): LOCExtension {
-    // RFC 6464 format: V + level (7 bits)
-    const byte = (voiceActivity ? 0x80 : 0) | (level & 0x7F);
-    return {
-      type: LOCExtensionType.AUDIO_LEVEL,
-      data: new Uint8Array([byte]),
-    };
-  }
-
-  /**
-   * Encode a LOC packet
-   */
-  private encodePacket(header: LOCHeader, payload: Uint8Array): Uint8Array {
-    const writer = new BufferWriter();
-
-    // Header byte: MKKK EEEE
-    // M = media type (0=video, 1=audio)
-    // KKK = keyframe + reserved (1 bit keyframe, 2 bits reserved)
-    // EEEE = extension count (4 bits)
-    let headerByte = 0;
-    headerByte |= (header.mediaType & 0x01) << 7;
-    headerByte |= header.isKeyframe ? 0x40 : 0;
-    headerByte |= Math.min(header.extensions.length, 15);
-
-    writer.writeByte(headerByte);
-
-    // Sequence number
-    writer.writeVarInt(header.sequenceNumber);
-
-    // Extensions
-    for (const ext of header.extensions) {
-      writer.writeByte(ext.type);
-      writer.writeVarInt(ext.data.length);
-      writer.writeBytes(ext.data);
-    }
-
-    // Payload length
-    writer.writeVarInt(payload.length);
-
-    // Payload
-    writer.writeBytes(payload);
-
-    const packet = writer.toUint8Array();
-
-    log.trace('Packed LOC', {
-      mediaType: header.mediaType,
-      isKeyframe: header.isKeyframe,
-      sequence: header.sequenceNumber,
-      extensions: header.extensions.length,
-      payloadSize: payload.length,
-      totalSize: packet.length,
-    });
-
-    return packet;
+  get currentAudioSequence(): number {
+    return this.audioSequence;
   }
 
   /**
@@ -370,6 +584,10 @@ export class LOCPackager {
     log.debug('LOCPackager reset');
   }
 }
+
+// ============================================================================
+// LOC Unpackager
+// ============================================================================
 
 /**
  * LOC Unpackager
@@ -408,24 +626,7 @@ export class LOCUnpackager {
    * @remarks
    * This method handles two LOC format variants:
    * 1. Standard LOC with payload length field
-   * 2. LOC without payload length (for datagram delivery where object boundaries are implicit)
-   *
-   * When the payload length field is missing or invalid (exceeds remaining bytes),
-   * the remaining bytes after header and extensions are used as the payload.
-   * This is common in datagram delivery where the MOQT layer already defines object boundaries.
-   *
-   * @example
-   * ```typescript
-   * const frame = unpackager.unpackage(packet);
-   *
-   * console.log('Media type:', frame.header.mediaType);
-   * console.log('Is keyframe:', frame.header.isKeyframe);
-   * console.log('Payload size:', frame.payload.length);
-   *
-   * if (frame.captureTimestamp) {
-   *   console.log('Capture delay:', Date.now() - frame.captureTimestamp);
-   * }
-   * ```
+   * 2. LOC without payload length (for datagram delivery)
    */
   unpackage(packet: Uint8Array): LOCFrame {
     const reader = new BufferReader(packet);
@@ -434,7 +635,7 @@ export class LOCUnpackager {
     const headerByte = reader.readByte();
     const mediaType = (headerByte >> 7) & 0x01;
     const isKeyframe = (headerByte & 0x40) !== 0;
-    const extensionCount = headerByte & 0x0F;
+    const extensionCount = headerByte & 0x0f;
 
     // Sequence number
     const sequenceNumber = reader.readVarIntNumber();
@@ -475,7 +676,7 @@ export class LOCUnpackager {
           const byte = data[0];
           audioLevel = {
             voiceActivity: (byte & 0x80) !== 0,
-            level: byte & 0x7F,
+            level: byte & 0x7f,
           };
           break;
         }
@@ -485,41 +686,26 @@ export class LOCUnpackager {
       }
     }
 
-    // Try to read payload length - some LOC variants omit this field for datagram delivery
-    // where the object boundary is already defined by the transport layer
+    // Read payload - handle both variants (with/without length field)
     let payload: Uint8Array;
     const positionBeforePayloadLength = reader.offset;
 
     try {
-      // Payload length - read as bigint first for validation
       const payloadLengthBigInt = reader.readVarInt();
 
-      // Check if payload length is reasonable
-      // In datagram delivery, remaining bytes after header should equal the payload
-      // Allow small tolerance for padding or trailing bytes
-      if (payloadLengthBigInt <= BigInt(reader.remaining) &&
-          payloadLengthBigInt <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      if (
+        payloadLengthBigInt <= BigInt(reader.remaining) &&
+        payloadLengthBigInt <= BigInt(Number.MAX_SAFE_INTEGER)
+      ) {
         const payloadLength = Number(payloadLengthBigInt);
         payload = reader.readBytes(payloadLength);
       } else {
-        // Payload length doesn't match remaining bytes - likely LOC variant without length field
-        // Rewind and use remaining bytes as payload
-        log.debug('LOC payload length mismatch, using remaining bytes', {
-          payloadLengthBigInt: payloadLengthBigInt.toString(),
-          remaining: reader.remaining,
-        });
-        // Reset position to before we read the invalid payload length
-        // and read all remaining bytes as payload
         throw new Error('fallback to remaining bytes');
       }
     } catch {
-      // Failed to read valid payload length - assume LOC without length field
-      // This is common in datagram delivery where object boundaries are implicit
-      // Create a new reader from the position where payload should start
-      const remainingFromPosition = packet.slice(positionBeforePayloadLength);
-      payload = remainingFromPosition;
-
-      log.debug('Using remaining bytes as LOC payload (no length field)', {
+      // LOC variant without length field (datagram delivery)
+      payload = packet.slice(positionBeforePayloadLength);
+      log.debug('Using remaining bytes as LOC payload', {
         payloadSize: payload.length,
         position: positionBeforePayloadLength,
       });
@@ -551,7 +737,7 @@ export class LOCUnpackager {
   }
 
   /**
-   * Quick check if packet is a video keyframe
+   * Quick check if packet is a video keyframe (no full parse)
    *
    * @param packet - LOC packet
    * @returns True if packet is a video keyframe
@@ -565,7 +751,7 @@ export class LOCUnpackager {
   }
 
   /**
-   * Quick check for media type
+   * Quick check for media type (no full parse)
    *
    * @param packet - LOC packet
    * @returns Media type
@@ -576,6 +762,10 @@ export class LOCUnpackager {
   }
 }
 
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
 /**
  * Create a simple LOC packet without extensions (minimal overhead)
  *
@@ -583,25 +773,48 @@ export class LOCUnpackager {
  * @param isKeyframe - Whether this is a keyframe
  * @param sequenceNumber - Sequence number
  * @param payload - Media payload
+ * @param outputBuffer - Optional pre-allocated buffer
  * @returns LOC packet
  */
 export function createSimpleLOCPacket(
   mediaType: MediaType,
   isKeyframe: boolean,
   sequenceNumber: number,
-  payload: Uint8Array
+  payload: Uint8Array,
+  outputBuffer?: Uint8Array
 ): Uint8Array {
-  const writer = new BufferWriter();
+  // Calculate size: header(1) + seq(varint) + payloadLen(varint) + payload
+  const seqLen = varintEncodedLength(sequenceNumber);
+  const payloadLenLen = varintEncodedLength(payload.byteLength);
+  const totalSize = 1 + seqLen + payloadLenLen + payload.byteLength;
+
+  const buffer = outputBuffer && outputBuffer.byteLength >= totalSize
+    ? outputBuffer
+    : new Uint8Array(totalSize);
+
+  let offset = 0;
 
   // Header byte (no extensions)
-  let headerByte = 0;
-  headerByte |= (mediaType & 0x01) << 7;
-  headerByte |= isKeyframe ? 0x40 : 0;
+  let headerByte = (mediaType & 0x01) << 7;
+  if (isKeyframe) headerByte |= 0x40;
+  buffer[offset++] = headerByte;
 
-  writer.writeByte(headerByte);
-  writer.writeVarInt(sequenceNumber);
-  writer.writeVarInt(payload.length);
-  writer.writeBytes(payload);
+  // Sequence
+  offset += writeVarintAt(buffer, offset, sequenceNumber);
 
-  return writer.toUint8Array();
+  // Payload length
+  offset += writeVarintAt(buffer, offset, payload.byteLength);
+
+  // Payload
+  buffer.set(payload, offset);
+  offset += payload.byteLength;
+
+  return outputBuffer ? buffer.subarray(0, offset) : buffer;
+}
+
+/**
+ * Calculate size for a simple LOC packet (no extensions)
+ */
+export function calculateSimpleLOCPacketSize(sequenceNumber: number, payloadLength: number): number {
+  return 1 + varintEncodedLength(sequenceNumber) + varintEncodedLength(payloadLength) + payloadLength;
 }
