@@ -627,6 +627,7 @@ export const SettingsPanel: React.FC = () => {
                   </div>
                 </div>
               </div>
+            </div>
 
             <div className="p-4 rounded-xl bg-gradient-to-br from-amber-50 to-white dark:from-amber-900/20 dark:to-gray-900 border border-amber-100 dark:border-amber-900/30">
               <SectionHeader icon={Icons.audio} title="Audio" description="Audio quality settings" colorScheme={sectionColors.audio} />
@@ -691,6 +692,9 @@ export const SettingsPanel: React.FC = () => {
                 </SettingRow>
                 <SettingRow label="MOQT VarInt Encoding" description={varIntType === VarIntType.MOQT ? 'MOQT varint (Section 1.4.1)' : 'QUIC varint (RFC 9000)'}>
                   <Toggle enabled={varIntType === VarIntType.MOQT} onChange={() => setVarIntType(varIntType === VarIntType.MOQT ? VarIntType.QUIC : VarIntType.MOQT)} color="bg-cyan-500" />
+                </SettingRow>
+                <SettingRow label="Enable VOD Publishing" description="Publish video from URL for DVR/rewind playback">
+                  <Toggle enabled={vodPublishEnabled} onChange={() => setVodPublishEnabled(!vodPublishEnabled)} color="bg-cyan-500" />
                 </SettingRow>
               </div>
             </div>
