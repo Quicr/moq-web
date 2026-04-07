@@ -546,7 +546,7 @@ export const useStore = create<AppStore>()(
               trackAlias: event.trackAlias.toString(),
             });
 
-            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode } = get();
+            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
 
             if (pendingAnnounceStream && pendingAnnounceConfig) {
               try {
@@ -572,6 +572,10 @@ export const useStore = create<AppStore>()(
                   audioDeliveryMode,
                   videoEnabled,
                   audioEnabled,
+                  // Secure Objects encryption settings
+                  secureObjectsEnabled,
+                  secureObjectsCipherSuite,
+                  secureObjectsBaseKey,
                 };
 
                 await session.startAnnouncePublish(
@@ -720,6 +724,7 @@ export const useStore = create<AppStore>()(
         const hasVideoTracks = localStream.getVideoTracks().length > 0;
         const hasAudioTracks = localStream.getAudioTracks().length > 0;
 
+        const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
         const config: MediaConfig = {
           videoBitrate,
           audioBitrate,
@@ -732,6 +737,10 @@ export const useStore = create<AppStore>()(
           // Only enable video/audio if both the setting is enabled AND the stream has those tracks
           videoEnabled: effectiveVideoEnabled && hasVideoTracks,
           audioEnabled: effectiveAudioEnabled && hasAudioTracks,
+          // Secure Objects encryption settings
+          secureObjectsEnabled,
+          secureObjectsCipherSuite,
+          secureObjectsBaseKey,
         };
 
         // Use announce flow if enabled
@@ -859,7 +868,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -879,6 +888,10 @@ export const useStore = create<AppStore>()(
           catchUpThreshold,
           useLatencyDeadline,
           arbiterDebug,
+          // Secure Objects encryption settings
+          secureObjectsEnabled,
+          secureObjectsCipherSuite,
+          secureObjectsBaseKey,
         };
 
         const subscriptionId = await session.subscribe(
@@ -1070,7 +1083,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1094,6 +1107,10 @@ export const useStore = create<AppStore>()(
           catchUpThreshold,
           useLatencyDeadline,
           arbiterDebug,
+          // Secure Objects encryption settings
+          secureObjectsEnabled,
+          secureObjectsCipherSuite,
+          secureObjectsBaseKey,
         };
 
         const subscriptionId = await session.subscribeNamespace(namespacePrefix, config);

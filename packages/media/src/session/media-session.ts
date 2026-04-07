@@ -21,6 +21,11 @@ import {
   type SubscribeNamespaceOptions,
   type NamespaceSubscriptionInfo,
 } from '@web-moq/session';
+import {
+  SecureObjectsContext,
+  CipherSuite,
+  type TrackIdentifier,
+} from '@web-moq/secure-objects';
 import { PublishPipeline, type PublishedObject } from '../pipeline/publish-pipeline.js';
 import { SubscribePipeline, type JitterSample, type LatencyStatsSample } from '../pipeline/subscribe-pipeline.js';
 import type {
@@ -57,6 +62,8 @@ interface ActivePublication {
   trackName: string;
   pipeline: PublishPipeline;
   cleanupHandlers: Array<() => void>;
+  /** Secure Objects context for encryption (if enabled) */
+  secureContext?: SecureObjectsContext;
 }
 
 /**
@@ -68,6 +75,8 @@ interface ActiveSubscription {
   trackName: string;
   pipeline: SubscribePipeline;
   mediaType?: 'video' | 'audio';
+  /** Secure Objects context for decryption (if enabled) */
+  secureContext?: SecureObjectsContext;
 }
 
 /**
@@ -233,6 +242,45 @@ export class MediaSession {
   }
 
   /**
+   * Create a SecureObjectsContext from MediaConfig if encryption is enabled
+   *
+   * @param config - Media configuration
+   * @param track - Track identifier (namespace + trackName)
+   * @returns SecureObjectsContext or undefined if encryption is disabled
+   */
+  private async createSecureContext(
+    config: MediaConfig,
+    track: TrackIdentifier
+  ): Promise<SecureObjectsContext | undefined> {
+    if (!config.secureObjectsEnabled || !config.secureObjectsBaseKey) {
+      return undefined;
+    }
+
+    // Parse cipher suite from hex string (e.g., "0x0004" -> 4)
+    const cipherSuiteValue = parseInt(config.secureObjectsCipherSuite || '0x0004', 16);
+    const cipherSuite = cipherSuiteValue as CipherSuite;
+
+    // Parse base key from hex string
+    const baseKeyHex = config.secureObjectsBaseKey.replace(/^0x/i, '');
+    const baseKey = new Uint8Array(baseKeyHex.length / 2);
+    for (let i = 0; i < baseKey.length; i++) {
+      baseKey[i] = parseInt(baseKeyHex.substring(i * 2, i * 2 + 2), 16);
+    }
+
+    log.info('Creating SecureObjectsContext', {
+      track: `${track.namespace.join('/')}/${track.trackName}`,
+      cipherSuite: `0x${cipherSuiteValue.toString(16).padStart(4, '0')}`,
+      keyLength: baseKey.length,
+    });
+
+    return SecureObjectsContext.create({
+      trackBaseKey: baseKey,
+      track,
+      cipherSuite,
+    });
+  }
+
+  /**
    * Close the session
    */
   async close(): Promise<void> {
@@ -327,27 +375,64 @@ export class MediaSession {
     // Publish to the session (get track alias)
     const trackAlias = await this.session.publish(namespace, trackName, publishOptions);
 
+    // Create secure context if encryption is enabled
+    const secureContext = await this.createSecureContext(config, { namespace, trackName });
+
     const cleanupHandlers: Array<() => void> = [];
 
-    // Handle video objects
+    // Handle video objects (with optional encryption)
     const videoCleanup = pipeline.on('video-object', (obj: PublishedObject) => {
-      this.session.sendObject(trackAlias, obj.data, {
-        groupId: obj.groupId,
-        objectId: obj.objectId,
-        isKeyframe: obj.isKeyframe,
-        type: 'video',
-      });
+      if (secureContext) {
+        // Encrypt before sending
+        secureContext.encrypt(obj.data, {
+          groupId: BigInt(obj.groupId),
+          objectId: obj.objectId,
+        }).then(({ ciphertext }) => {
+          this.session.sendObject(trackAlias, ciphertext, {
+            groupId: obj.groupId,
+            objectId: obj.objectId,
+            isKeyframe: obj.isKeyframe,
+            type: 'video',
+          });
+        }).catch((err) => {
+          log.error('Encryption failed for video object', err as Error);
+        });
+      } else {
+        this.session.sendObject(trackAlias, obj.data, {
+          groupId: obj.groupId,
+          objectId: obj.objectId,
+          isKeyframe: obj.isKeyframe,
+          type: 'video',
+        });
+      }
     });
     cleanupHandlers.push(videoCleanup);
 
-    // Handle audio objects
+    // Handle audio objects (with optional encryption)
     const audioCleanup = pipeline.on('audio-object', (obj: PublishedObject) => {
-      this.session.sendObject(trackAlias, obj.data, {
-        groupId: obj.groupId,
-        objectId: obj.objectId,
-        isKeyframe: obj.isKeyframe,
-        type: 'audio',
-      });
+      if (secureContext) {
+        // Encrypt before sending
+        secureContext.encrypt(obj.data, {
+          groupId: BigInt(obj.groupId),
+          objectId: obj.objectId,
+        }).then(({ ciphertext }) => {
+          this.session.sendObject(trackAlias, ciphertext, {
+            groupId: obj.groupId,
+            objectId: obj.objectId,
+            isKeyframe: obj.isKeyframe,
+            type: 'audio',
+          });
+        }).catch((err) => {
+          log.error('Encryption failed for audio object', err as Error);
+        });
+      } else {
+        this.session.sendObject(trackAlias, obj.data, {
+          groupId: obj.groupId,
+          objectId: obj.objectId,
+          isKeyframe: obj.isKeyframe,
+          type: 'audio',
+        });
+      }
     });
     cleanupHandlers.push(audioCleanup);
 
@@ -365,11 +450,12 @@ export class MediaSession {
       trackName,
       pipeline,
       cleanupHandlers,
+      secureContext,
     });
 
     // Start the pipeline
     await pipeline.start(stream);
-    log.info('Publishing started', { trackAlias: trackAlias.toString() });
+    log.info('Publishing started', { trackAlias: trackAlias.toString(), encrypted: !!secureContext });
 
     return trackAlias;
   }
@@ -502,13 +588,28 @@ export class MediaSession {
     // Start pipeline before subscribing (so it's ready to receive)
     await pipeline.start();
 
+    // Create secure context if encryption is enabled
+    const secureContext = await this.createSecureContext(config, { namespace, trackName });
+
     // Subscribe via session with object callback and end-of-group handler
     const subscriptionId = await this.session.subscribe(
       namespace,
       trackName,
       options,
       (data, groupId, objectId, timestamp) => {
-        pipeline.push(data, groupId, objectId, timestamp);
+        if (secureContext) {
+          // Decrypt before pushing to pipeline
+          secureContext.decrypt(data, {
+            groupId: BigInt(groupId),
+            objectId,
+          }).then(({ plaintext }) => {
+            pipeline.push(plaintext, groupId, objectId, timestamp);
+          }).catch((err) => {
+            log.error('Decryption failed', { groupId, objectId, error: (err as Error).message });
+          });
+        } else {
+          pipeline.push(data, groupId, objectId, timestamp);
+        }
       },
       (groupId) => {
         pipeline.markGroupComplete(groupId);
@@ -522,10 +623,11 @@ export class MediaSession {
       trackName,
       pipeline,
       mediaType,
+      secureContext,
     });
     this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
 
-    log.info('Subscription started', { subscriptionId, namespace, trackName });
+    log.info('Subscription started', { subscriptionId, namespace, trackName, encrypted: !!secureContext });
     return subscriptionId;
   }
 
@@ -691,27 +793,62 @@ export class MediaSession {
       encodeWorker: this.workers?.encodeWorker,
     });
 
+    // Create secure context if encryption is enabled
+    const secureContext = await this.createSecureContext(config, { namespace, trackName });
+
     const cleanupHandlers: Array<() => void> = [];
 
-    // Handle video objects
+    // Handle video objects (with optional encryption)
     const videoCleanup = pipeline.on('video-object', (obj: PublishedObject) => {
-      this.session.sendObject(trackAlias, obj.data, {
-        groupId: obj.groupId,
-        objectId: obj.objectId,
-        isKeyframe: obj.isKeyframe,
-        type: 'video',
-      });
+      if (secureContext) {
+        secureContext.encrypt(obj.data, {
+          groupId: BigInt(obj.groupId),
+          objectId: obj.objectId,
+        }).then(({ ciphertext }) => {
+          this.session.sendObject(trackAlias, ciphertext, {
+            groupId: obj.groupId,
+            objectId: obj.objectId,
+            isKeyframe: obj.isKeyframe,
+            type: 'video',
+          });
+        }).catch((err) => {
+          log.error('Encryption failed for video object', err as Error);
+        });
+      } else {
+        this.session.sendObject(trackAlias, obj.data, {
+          groupId: obj.groupId,
+          objectId: obj.objectId,
+          isKeyframe: obj.isKeyframe,
+          type: 'video',
+        });
+      }
     });
     cleanupHandlers.push(videoCleanup);
 
-    // Handle audio objects
+    // Handle audio objects (with optional encryption)
     const audioCleanup = pipeline.on('audio-object', (obj: PublishedObject) => {
-      this.session.sendObject(trackAlias, obj.data, {
-        groupId: obj.groupId,
-        objectId: obj.objectId,
-        isKeyframe: obj.isKeyframe,
-        type: 'audio',
-      });
+      if (secureContext) {
+        secureContext.encrypt(obj.data, {
+          groupId: BigInt(obj.groupId),
+          objectId: obj.objectId,
+        }).then(({ ciphertext }) => {
+          this.session.sendObject(trackAlias, ciphertext, {
+            groupId: obj.groupId,
+            objectId: obj.objectId,
+            isKeyframe: obj.isKeyframe,
+            type: 'audio',
+          });
+        }).catch((err) => {
+          log.error('Encryption failed for audio object', err as Error);
+        });
+      } else {
+        this.session.sendObject(trackAlias, obj.data, {
+          groupId: obj.groupId,
+          objectId: obj.objectId,
+          isKeyframe: obj.isKeyframe,
+          type: 'audio',
+        });
+      }
     });
     cleanupHandlers.push(audioCleanup);
 
@@ -729,11 +866,12 @@ export class MediaSession {
       trackName,
       pipeline,
       cleanupHandlers,
+      secureContext,
     });
 
     // Start the pipeline
     await pipeline.start(stream);
-    log.info('Announce publish started', { trackAlias: trackAlias.toString() });
+    log.info('Announce publish started', { trackAlias: trackAlias.toString(), encrypted: !!secureContext });
   }
 
   // ============================================================================
@@ -959,6 +1097,12 @@ export class MediaSession {
     // Start pipeline
     await pipeline.start();
 
+    // Create secure context if encryption is enabled
+    const secureContext = await this.createSecureContext(config, {
+      namespace: event.namespace,
+      trackName: event.trackName,
+    });
+
     // Store subscription with pipeline
     this.subscriptions.set(subscriptionId, {
       subscriptionId,
@@ -966,18 +1110,32 @@ export class MediaSession {
       trackName: event.trackName,
       pipeline,
       mediaType,
+      secureContext,
     });
     this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
 
-    // Update the subscription's onObject callback to push to pipeline
+    // Update the subscription's onObject callback to push to pipeline (with optional decryption)
     this.session.setSubscriptionCallback(subscriptionId, (data, groupId, objectId, timestamp) => {
-      pipeline.push(data, groupId, objectId, timestamp);
+      if (secureContext) {
+        // Decrypt before pushing to pipeline
+        secureContext.decrypt(data, {
+          groupId: BigInt(groupId),
+          objectId,
+        }).then(({ plaintext }) => {
+          pipeline.push(plaintext, groupId, objectId, timestamp);
+        }).catch((err) => {
+          log.error('Decryption failed', { groupId, objectId, error: (err as Error).message });
+        });
+      } else {
+        pipeline.push(data, groupId, objectId, timestamp);
+      }
     });
 
     log.info('Pipeline attached to discovered track', {
       subscriptionId,
       trackName: event.trackName,
       mediaType,
+      encrypted: !!secureContext,
     });
   }
 
