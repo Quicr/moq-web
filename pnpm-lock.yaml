@@ -53,6 +53,9 @@ importers:
       '@web-moq/media':
         specifier: workspace:*
         version: link:../media
+      '@web-moq/msf':
+        specifier: workspace:*
+        version: link:../msf
       '@web-moq/secure-objects':
         specifier: workspace:*
         version: link:../secure-objects
