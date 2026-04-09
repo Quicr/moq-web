@@ -198,15 +198,34 @@ export enum DataStreamType {
   SUBGROUP_HEADER = 0x04,
   /** Fetch stream header */
   FETCH_HEADER = 0x05,
-  /**
-   * LAPS-compatible stream header types
-   * Subgroup ID is 0 (not serialized), no extensions
-   */
-  LAPS_SUBGROUP_0_NOT_END_NO_EXT = 0x10,
-  /** LAPS: Subgroup ID is 0, not end of group, with extensions */
-  LAPS_SUBGROUP_0_NOT_END_WITH_EXT = 0x11,
-  /** LAPS: Subgroup ID from first object, not end of group, no extensions */
-  LAPS_SUBGROUP_FIRST_OBJ_NOT_END_NO_EXT = 0x12,
+
+  // Draft-14/16 Subgroup Header Types (0x10-0x1D range)
+  // Bit layout: 0b000EPSMM where E=EndOfGroup, P=Priority, S=hasExtensions, MM=SubgroupIdMode
+
+  /** Subgroup header: subgroup_id=0 implicit, no extensions */
+  SUBGROUP_ZERO_ID = 0x10,
+  /** Subgroup header: subgroup_id=0 implicit, has extensions */
+  SUBGROUP_ZERO_ID_EXT = 0x11,
+  /** Subgroup header: subgroup_id from first object, no extensions */
+  SUBGROUP_FIRST_OBJECT_ID = 0x12,
+  /** Subgroup header: subgroup_id from first object, has extensions */
+  SUBGROUP_FIRST_OBJECT_ID_EXT = 0x13,
+  /** Subgroup header: subgroup_id explicit, no extensions */
+  SUBGROUP_ID = 0x14,
+  /** Subgroup header: subgroup_id explicit, has extensions */
+  SUBGROUP_ID_EXT = 0x15,
+  /** Subgroup header: subgroup_id=0 implicit, no extensions, signals EndOfGroup */
+  SUBGROUP_ZERO_ID_END_OF_GROUP = 0x18,
+  /** Subgroup header: subgroup_id=0 implicit, has extensions, signals EndOfGroup */
+  SUBGROUP_ZERO_ID_EXT_END_OF_GROUP = 0x19,
+  /** Subgroup header: subgroup_id from first object, no extensions, signals EndOfGroup */
+  SUBGROUP_FIRST_OBJECT_ID_END_OF_GROUP = 0x1a,
+  /** Subgroup header: subgroup_id from first object, has extensions, signals EndOfGroup */
+  SUBGROUP_FIRST_OBJECT_ID_EXT_END_OF_GROUP = 0x1b,
+  /** Subgroup header: subgroup_id explicit, no extensions, signals EndOfGroup */
+  SUBGROUP_ID_END_OF_GROUP = 0x1c,
+  /** Subgroup header: subgroup_id explicit, has extensions, signals EndOfGroup */
+  SUBGROUP_ID_EXT_END_OF_GROUP = 0x1d,
 }
 
 /**
