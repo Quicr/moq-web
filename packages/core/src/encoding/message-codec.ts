@@ -2457,14 +2457,18 @@ export class ObjectCodec {
       // No Subgroup ID when SUBGROUP_ID_MODE = 0b00
       writer.writeByte(header.publisherPriority);
     } else {
-      // Draft-14: Use LAPS-compatible format (0x11): subgroupId is implicitly 0, with extensions
-      // This format requires extension length field in objects (we use 0 for no extensions)
-      writer.writeVarInt(DataStreamType.LAPS_SUBGROUP_0_NOT_END_WITH_EXT);
+      // Draft-14: Use subgroup header with subgroup_id=0 implicit, with extensions
+      // 0x11 = SUBGROUP_ZERO_ID_EXT (no EndOfGroup)
+      // 0x19 = SUBGROUP_ZERO_ID_EXT_END_OF_GROUP (signals EndOfGroup)
+      const headerType = endOfGroup
+        ? DataStreamType.SUBGROUP_ZERO_ID_EXT_END_OF_GROUP
+        : DataStreamType.SUBGROUP_ZERO_ID_EXT;
+      writer.writeVarInt(headerType);
       writer.writeVarInt(header.trackAlias);
       writer.writeVarInt(header.groupId);
-      // subgroupId not written for type 0x11 (implied 0)
+      // subgroupId not written for SUBGROUP_ZERO_ID variants (implied 0)
       writer.writeByte(header.publisherPriority);
-      hasExtensions = true; // 0x11 has extensions bit set
+      hasExtensions = true; // Both 0x11 and 0x19 have extensions bit set
     }
     return [writer.toUint8Array(), hasExtensions];
   }
@@ -2517,34 +2521,43 @@ export class ObjectCodec {
 
     // Draft-14 format
     const streamType = reader.readVarIntNumber();
-    // LAPS odd types (0x11, 0x13, etc.) have extensions
-    const hasExtensions = (streamType >= 0x10 && streamType <= 0x1D) && (streamType % 2 === 1);
 
-    // LAPS format: type 0x10/0x11 (subgroupId = 0)
-    if (streamType === DataStreamType.LAPS_SUBGROUP_0_NOT_END_NO_EXT ||
-        streamType === DataStreamType.LAPS_SUBGROUP_0_NOT_END_WITH_EXT) {
-      return [{
-        trackAlias: reader.readVarInt(),
-        groupId: reader.readVarIntNumber(),
-        subgroupId: 0,
-        publisherPriority: reader.readByte(),
-      }, reader.offset, false, hasExtensions];
-    }
+    // Parse header type bits for 0x10-0x1D range:
+    // Bit 0: hasExtensions (odd types: 0x11, 0x13, 0x15, 0x19, 0x1b, 0x1d)
+    // Bit 3: endOfGroup (0x18-0x1D)
+    // Bits 1-2: subgroupIdMode (0=zero, 1=firstObject, 2=explicit)
+    const isSubgroupType = streamType >= 0x10 && streamType <= 0x1d;
+    if (isSubgroupType) {
+      const hasExtensions = (streamType & 0x01) !== 0;
+      const endOfGroup = (streamType & 0x08) !== 0;
+      const subgroupIdMode = (streamType & 0x06) >> 1;
 
-    // LAPS format: type 0x12 (subgroupId from first object)
-    if (streamType === DataStreamType.LAPS_SUBGROUP_FIRST_OBJ_NOT_END_NO_EXT) {
+      const trackAlias = reader.readVarInt();
+      const groupId = reader.readVarIntNumber();
+
+      // Read subgroupId based on mode
+      let subgroupId = 0;
+      if (subgroupIdMode === 2) {
+        // Explicit subgroup ID (0x14, 0x15, 0x1c, 0x1d)
+        subgroupId = reader.readVarIntNumber();
+      }
+      // Mode 0 (0x10, 0x11, 0x18, 0x19) = implicit 0
+      // Mode 1 (0x12, 0x13, 0x1a, 0x1b) = from first object (treat as 0 in header)
+
+      const publisherPriority = reader.readByte();
+
       return [{
-        trackAlias: reader.readVarInt(),
-        groupId: reader.readVarIntNumber(),
-        subgroupId: 0,
-        publisherPriority: reader.readByte(),
-      }, reader.offset, false, false];
+        trackAlias,
+        groupId,
+        subgroupId,
+        publisherPriority,
+      }, reader.offset, endOfGroup, hasExtensions];
     }
 
     // Standard MOQT format (0x04)
     if (streamType !== DataStreamType.SUBGROUP_HEADER) {
       throw new MessageCodecError(
-        `Expected SUBGROUP_HEADER or LAPS_SUBGROUP, got 0x${streamType.toString(16)}`,
+        `Expected subgroup header type (0x04 or 0x10-0x1D), got 0x${streamType.toString(16)}`,
         streamType
       );
     }
