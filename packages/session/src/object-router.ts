@@ -284,12 +284,24 @@ export class ObjectRouter {
         }
 
         if (done) {
+          // If header type signals END_OF_GROUP, notify subscription when stream closes
+          if (endOfGroup && subgroupHeader) {
+            const subscription = this.subscriptionManager.getByAlias(subgroupHeader.trackAlias);
+            if (subscription?.onEndOfGroup) {
+              log.info('Stream closed with END_OF_GROUP signal', {
+                groupId: subgroupHeader.groupId,
+                trackAlias: subgroupHeader.trackAlias.toString(),
+              });
+              subscription.onEndOfGroup(subgroupHeader.groupId);
+            }
+          }
           log.info('Stream ended', {
             totalBytesReceived,
             totalReads: readCount,
             objectCount,
             headerParsed,
             trackAlias: subgroupHeader?.trackAlias?.toString(),
+            endOfGroup,
           });
           break;
         }
