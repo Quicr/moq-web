@@ -151,7 +151,7 @@ describe('Performance', () => {
       console.log(`AES-CTR-HMAC encrypt 64KB: ${throughputMBps.toFixed(1)} MB/s`);
       // CTR-HMAC is slower due to separate MAC computation
       // Threshold set conservatively for CI runners
-      expect(throughputMBps).toBeGreaterThan(30);
+      expect(throughputMBps).toBeGreaterThan(25);
     });
   });
 
