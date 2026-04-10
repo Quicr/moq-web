@@ -8,12 +8,12 @@
  * Supports offline configuration with "Connect & Go" workflow.
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { CatalogBuilderPanel } from './CatalogBuilderPanel';
 import { CatalogSubscriberPanel } from './CatalogSubscriberPanel';
 import type { CatalogTrackConfig, VODTrackConfig } from './types';
-import type { FullCatalog } from '@web-moq/msf';
+import { createMSFSession, type FullCatalog, type MSFSession } from '@web-moq/msf';
 import { VODLoader } from '@web-moq/media';
 
 type CatalogMode = 'publish' | 'subscribe';
@@ -29,6 +29,9 @@ export const CatalogPanel: React.FC = () => {
 
   // Track VOD loaders for each VOD track
   const [vodLoaders] = useState<Map<string, VODLoader>>(new Map());
+
+  // MSF Session wrapper
+  const msfSessionRef = useRef<MSFSession | null>(null);
 
   const isConnected = state === 'connected' && sessionState === 'ready';
   const isConnecting = state === 'connecting' || sessionState === 'setup';
@@ -87,48 +90,62 @@ export const CatalogPanel: React.FC = () => {
       console.log('[CatalogPanel] Publishing catalog:', catalog);
       console.log('[CatalogPanel] Tracks to publish:', tracks);
 
-      // Load VOD tracks
+      // Create MSFSession wrapper for this namespace
+      const namespaceParts = namespace.split('/');
+      if (!msfSessionRef.current) {
+        // Get underlying MOQTSession from MediaSession
+        const moqtSession = currentSession.getMOQTSession();
+        msfSessionRef.current = createMSFSession(moqtSession, namespaceParts);
+      }
+      const msfSession = msfSessionRef.current;
+
+      // Load VOD tracks and collect publish options
+      const vodTrackOptions = new Map<string, ReturnType<VODLoader['getPublishOptions']>>();
+
       for (const track of tracks) {
         if (track.type === 'video-vod') {
           const vodTrack = track as VODTrackConfig;
           const hasSource = vodTrack.videoFile || vodTrack.videoUrl;
 
-          if (hasSource && !vodLoaders.has(track.id)) {
-            const sourceName = vodTrack.videoFile ? vodTrack.videoFile.name : vodTrack.videoUrl;
-            console.log('[CatalogPanel] Loading VOD:', sourceName);
+          if (hasSource) {
+            // Get or create loader for this track
+            let loader = vodLoaders.get(track.id);
+            if (!loader) {
+              const sourceName = vodTrack.videoFile ? vodTrack.videoFile.name : vodTrack.videoUrl;
+              console.log('[CatalogPanel] Loading VOD:', sourceName);
 
-            const loader = new VODLoader({
-              framerate: vodTrack.framerate,
-              width: vodTrack.width,
-              height: vodTrack.height,
-              bitrate: vodTrack.bitrate,
-              loop: vodTrack.loopPlayback,
-              onProgress: (progress) => {
-                console.log(`[CatalogPanel] VOD load progress: ${progress.phase} ${progress.progress}%`);
-              },
-            });
+              loader = new VODLoader({
+                framerate: vodTrack.framerate,
+                width: vodTrack.width,
+                height: vodTrack.height,
+                bitrate: vodTrack.bitrate,
+                loop: vodTrack.loopPlayback,
+                onProgress: (progress) => {
+                  console.log(`[CatalogPanel] VOD load progress: ${progress.phase} ${progress.progress}%`);
+                },
+              });
 
-            vodLoaders.set(track.id, loader);
+              vodLoaders.set(track.id, loader);
 
-            try {
-              // Use loadFile for uploaded files, load for URLs
+              // Load the video
               if (vodTrack.videoFile) {
                 await loader.loadFile(vodTrack.videoFile);
               } else {
                 await loader.load(vodTrack.videoUrl);
               }
               console.log('[CatalogPanel] VOD loaded:', loader.getMetadata());
-            } catch (err) {
-              console.error('[CatalogPanel] Failed to load VOD:', err);
             }
+
+            // Collect publish options
+            vodTrackOptions.set(vodTrack.name, loader.getPublishOptions());
           }
         }
       }
 
-      // TODO: Phase 4 - Use MSFSession to publish catalog
-      // const msfSession = createMSFSession(currentSession, namespace.split('/'));
-      // await msfSession.startCatalogPublishing();
-      // await msfSession.publishCatalog(catalog);
+      // Use MSFSession to publish catalog and all VOD tracks
+      console.log('[CatalogPanel] Publishing via MSFSession:', vodTrackOptions.size, 'VOD tracks');
+      await msfSession.publishAll(catalog, vodTrackOptions);
+      console.log('[CatalogPanel] Catalog and tracks published successfully');
 
       setPublishedCatalog(catalog);
       setPublishStatus('published');
@@ -137,7 +154,7 @@ export const CatalogPanel: React.FC = () => {
       setPublishError((err as Error).message);
       setPublishStatus('error');
     }
-  }, [session, sessionState, serverUrl, connect, vodLoaders]);
+  }, [session, sessionState, serverUrl, connect, namespace, vodLoaders]);
 
   /**
    * Get button text based on connection and publish state

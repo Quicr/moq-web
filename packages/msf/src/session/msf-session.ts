@@ -8,7 +8,7 @@
  * management and track discovery.
  */
 
-import type { MOQTSession } from '@web-moq/session';
+import type { MOQTSession, VODPublishOptions } from '@web-moq/session';
 import type { FullCatalog, Track } from '../schemas/index.js';
 import {
   CatalogSubscriber,
@@ -18,6 +18,15 @@ import {
   type CatalogPublishOptions,
 } from './catalog-track.js';
 import { generateMsfUrl, generateCatalogUrl, parseMsfUrl } from '../url/index.js';
+
+/**
+ * Published track info
+ */
+export interface PublishedTrackInfo {
+  trackAlias: bigint;
+  trackName: string;
+  type: 'vod' | 'live';
+}
 
 /**
  * MSF Session configuration
@@ -61,6 +70,7 @@ export class MSFSession {
   private catalogSubscriber: CatalogSubscriber | null = null;
   private catalogPublisher: CatalogPublisher | null = null;
   private config: MSFSessionConfig;
+  private publishedTracks: Map<string, PublishedTrackInfo> = new Map();
 
   constructor(
     session: MOQTSession,
@@ -247,9 +257,121 @@ export class MSFSession {
   }
 
   /**
+   * Publish a VOD track
+   *
+   * Registers the track with the relay so subscribers can FETCH objects.
+   * The track should already be defined in the catalog.
+   *
+   * @param trackName - Name of the track (must match catalog track name)
+   * @param options - VOD publish options from VODLoader.getPublishOptions()
+   * @returns Track alias for the published track
+   *
+   * @example
+   * ```typescript
+   * // Load VOD
+   * const loader = new VODLoader();
+   * await loader.loadFile(videoFile);
+   *
+   * // Publish track
+   * const trackAlias = await msfSession.publishVODTrack(
+   *   'video-1',
+   *   loader.getPublishOptions()
+   * );
+   * ```
+   */
+  async publishVODTrack(
+    trackName: string,
+    options: Omit<VODPublishOptions, 'priority' | 'groupOrder' | 'deliveryTimeout' | 'deliveryMode' | 'audioDeliveryMode'>
+  ): Promise<bigint> {
+    const trackAlias = await this.session.publishVOD(
+      this.namespace,
+      trackName,
+      options as VODPublishOptions
+    );
+
+    this.publishedTracks.set(trackName, {
+      trackAlias,
+      trackName,
+      type: 'vod',
+    });
+
+    return trackAlias;
+  }
+
+  /**
+   * Get all published tracks
+   */
+  getPublishedTracks(): PublishedTrackInfo[] {
+    return Array.from(this.publishedTracks.values());
+  }
+
+  /**
+   * Get a published track by name
+   */
+  getPublishedTrack(trackName: string): PublishedTrackInfo | null {
+    return this.publishedTracks.get(trackName) ?? null;
+  }
+
+  /**
+   * Unpublish a track
+   */
+  async unpublishTrack(trackName: string): Promise<void> {
+    const track = this.publishedTracks.get(trackName);
+    if (track) {
+      await this.session.unpublish(track.trackAlias);
+      this.publishedTracks.delete(trackName);
+    }
+  }
+
+  /**
+   * Publish catalog and all VOD tracks in one call
+   *
+   * Convenience method that:
+   * 1. Starts catalog publishing
+   * 2. Publishes each VOD track
+   * 3. Publishes the catalog JSON
+   *
+   * @param catalog - The full catalog to publish
+   * @param vodTracks - Map of track name to VOD options
+   *
+   * @example
+   * ```typescript
+   * const vodTracks = new Map([
+   *   ['video-1', loader1.getPublishOptions()],
+   *   ['video-2', loader2.getPublishOptions()],
+   * ]);
+   *
+   * await msfSession.publishAll(catalog, vodTracks);
+   * ```
+   */
+  async publishAll(
+    catalog: FullCatalog,
+    vodTracks: Map<string, Omit<VODPublishOptions, 'priority' | 'groupOrder' | 'deliveryTimeout' | 'deliveryMode' | 'audioDeliveryMode'>>
+  ): Promise<void> {
+    // Start catalog publishing if not already started
+    if (!this.catalogPublisher) {
+      await this.startCatalogPublishing();
+    }
+
+    // Publish each VOD track
+    for (const [trackName, options] of vodTracks) {
+      if (!this.publishedTracks.has(trackName)) {
+        await this.publishVODTrack(trackName, options);
+      }
+    }
+
+    // Publish the catalog
+    await this.publishCatalog(catalog);
+  }
+
+  /**
    * Close the MSF session
    */
   async close(): Promise<void> {
+    // Unpublish all tracks
+    for (const trackName of this.publishedTracks.keys()) {
+      await this.unpublishTrack(trackName);
+    }
     await this.unsubscribeCatalog();
     await this.stopCatalogPublishing();
   }
