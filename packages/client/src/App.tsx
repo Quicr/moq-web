@@ -159,10 +159,10 @@ const App: React.FC = () => {
         <div className="fixed inset-0 z-50 overflow-y-auto">
           <div className="flex items-center justify-center min-h-screen px-4">
             <div
-              className="frosted-overlay"
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm"
               onClick={() => setShowSettings(false)}
             />
-            <div className="relative glass-panel-glow max-w-md w-full">
+            <div className="relative z-10 glass-panel-glow max-w-md w-full">
               <div className="flex items-center justify-between p-5 border-b border-white/10">
                 <h2 className="text-lg font-semibold text-white">Settings</h2>
                 <button
