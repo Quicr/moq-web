@@ -225,10 +225,10 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
-      <div className="frosted-overlay" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative glass-panel-glow w-full max-w-lg max-h-[90vh] overflow-y-auto mx-4">
+      <div className="relative z-10 glass-panel-glow w-full max-w-lg max-h-[90vh] overflow-y-auto mx-4">
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-white/10">
           <div className="flex items-center gap-3">
