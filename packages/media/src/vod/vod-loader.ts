@@ -406,6 +406,21 @@ export class VODLoader {
         effectiveTotalGroups: this.metadata.totalGroups
       });
 
+      // Auto-detect codec for 4K resolution
+      // H.264 Baseline/Main don't support resolutions above 1920x1080
+      let codec = this.options.codec;
+      if (width > 1920 || height > 1080) {
+        const isBaselineOrMain = codec.startsWith('avc1.42') || codec.startsWith('avc1.4D');
+        if (isBaselineOrMain) {
+          codec = 'avc1.640033'; // H.264 High Level 5.1 for 4K
+          log.info('Auto-upgraded codec for 4K resolution', {
+            original: this.options.codec,
+            upgraded: codec,
+            resolution: `${width}x${height}`
+          });
+        }
+      }
+
       // Create canvas for frame extraction
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -466,7 +481,7 @@ export class VODLoader {
       });
 
       encoder.configure({
-        codec: this.options.codec,
+        codec,
         width,
         height,
         bitrate: this.options.bitrate,
