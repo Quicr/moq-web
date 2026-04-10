@@ -40,9 +40,10 @@ For higher resolution or longer samples, download directly from:
 
 ### 4K / Higher Resolution (large files, not included in repo)
 
-- **Big Buck Bunny 4K:** https://download.blender.org/demo/movies/BBB/bbb_sunflower_2160p_60fps_normal.mp4 (~600 MB)
-- **Sintel 4K:** https://download.blender.org/demo/movies/Sintel-4k/sintel-4k.mp4 (~5 GB)
-- **Tears of Steel 4K:** https://download.blender.org/demo/movies/ToS/ToS-4k-1920.mov (~4 GB)
+- **Big Buck Bunny 4K (zipped):** https://download.blender.org/demo/movies/BBB/bbb_sunflower_2160p_60fps_normal.mp4.zip (~640 MB zip)
+- **Big Buck Bunny 4K 30fps (zipped):** https://download.blender.org/demo/movies/BBB/bbb_sunflower_2160p_30fps_normal.mp4.zip (~600 MB zip)
+- **Tears of Steel 4K (smaller):** https://download.blender.org/demo/movies/ToS/ToS-4k-1920.mov (~700 MB)
+- **Tears of Steel 4K (full):** https://download.blender.org/demo/movies/ToS/tearsofsteel_4k.mov (~6.3 GB)
 
 ### Full Movies
 
