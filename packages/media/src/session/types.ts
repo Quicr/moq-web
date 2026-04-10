@@ -147,6 +147,14 @@ export interface MediaConfig {
   quicrInteropEnabled?: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId?: number;
+
+  // Video decoder config override (from catalog track info)
+  /** Override video decoder configuration instead of using videoResolution preset */
+  videoDecoderConfig?: {
+    codec?: string;
+    codedWidth?: number;
+    codedHeight?: number;
+  };
 }
 
 /**
