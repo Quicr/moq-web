@@ -194,7 +194,7 @@ interface ConnectionSlice {
     videoEnabled?: boolean;
     audioEnabled?: boolean;
   } | null;
-  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => Promise<number>;
+  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }) => Promise<number>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
@@ -895,7 +895,7 @@ export const useStore = create<AppStore>()(
         log.info('Namespace announcement cancelled', { namespace });
       },
 
-      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
+      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }) => {
         const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
@@ -922,6 +922,12 @@ export const useStore = create<AppStore>()(
           secureObjectsBaseKey,
           // QuicR-Mac interop settings
           quicrInteropEnabled,
+          // Override video decoder config from catalog track info
+          videoDecoderConfig: videoConfig ? {
+            codec: videoConfig.codec,
+            codedWidth: videoConfig.width,
+            codedHeight: videoConfig.height,
+          } : undefined,
         };
 
         const subscriptionId = await session.subscribe(

@@ -581,15 +581,30 @@ export class MediaSession {
 
     const resolution = getResolutionConfig(config.videoResolution);
 
+    // Use explicit video decoder config if provided (e.g., from catalog track info)
+    // Otherwise fall back to resolution preset
+    const videoDecoderConfig = config.videoDecoderConfig && (config.videoDecoderConfig.codec || config.videoDecoderConfig.codedWidth) ? {
+      codec: config.videoDecoderConfig.codec ?? resolution.codec,
+      codedWidth: config.videoDecoderConfig.codedWidth ?? resolution.width,
+      codedHeight: config.videoDecoderConfig.codedHeight ?? resolution.height,
+    } : {
+      codec: resolution.codec,
+      codedWidth: resolution.width,
+      codedHeight: resolution.height,
+    };
+
+    log.info('Video decoder config', {
+      fromCatalog: !!(config.videoDecoderConfig?.codec || config.videoDecoderConfig?.codedWidth),
+      codec: videoDecoderConfig.codec,
+      width: videoDecoderConfig.codedWidth,
+      height: videoDecoderConfig.codedHeight,
+    });
+
     // Create subscribe pipeline with shared decode worker
     // The worker supports multiplexing via channelId - each pipeline gets its own channel
     const pipeline = new SubscribePipeline({
       mediaType,
-      video: mediaType !== 'audio' ? {
-        codec: resolution.codec,
-        codedWidth: resolution.width,
-        codedHeight: resolution.height,
-      } : undefined,
+      video: mediaType !== 'audio' ? videoDecoderConfig : undefined,
       audio: mediaType !== 'video' ? {
         sampleRate: 48000,
         numberOfChannels: 2,
