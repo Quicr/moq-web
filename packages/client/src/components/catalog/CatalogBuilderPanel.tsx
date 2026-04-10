@@ -136,6 +136,24 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
       return;
     }
 
+    // Validate URL format before attempting to preload
+    const urlString = track.videoUrl.trim();
+    try {
+      const url = new URL(urlString);
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        updateTrackStatus(track.id, 'error', 'URL must use http or https protocol');
+        return;
+      }
+    } catch {
+      // Check if it looks like multiple URLs or comments were pasted
+      if (urlString.includes('\n') || urlString.includes('#')) {
+        updateTrackStatus(track.id, 'error', 'Invalid URL: contains multiple lines or comments. Please enter a single URL.');
+      } else {
+        updateTrackStatus(track.id, 'error', `Invalid URL format: "${urlString.slice(0, 50)}${urlString.length > 50 ? '...' : ''}"`);
+      }
+      return;
+    }
+
     updateTrackStatus(track.id, 'loading');
     updateVODProgress(track.id, { phase: 'fetching', progress: 0 });
 
