@@ -16,8 +16,6 @@ interface TrackCardProps {
   track: CatalogTrackConfig;
   onEdit: () => void;
   onRemove: () => void;
-  onStartPublish: () => void;
-  onStopPublish: () => void;
   onPreload?: () => void;
 }
 
@@ -185,14 +183,10 @@ export const TrackCard: React.FC<TrackCardProps> = ({
   track,
   onEdit,
   onRemove,
-  onStartPublish,
-  onStopPublish,
   onPreload,
 }) => {
   const profileInfo = EXPERIENCE_PROFILE_INFO[track.experienceProfile];
-  const isPublishing = track.status === 'publishing';
   const isLoading = track.status === 'loading';
-  const canPublish = track.status === 'ready' || track.status === 'idle';
   const canPreload = track.type === 'video-vod' && track.status === 'idle' && onPreload;
 
   return (
@@ -240,44 +234,26 @@ export const TrackCard: React.FC<TrackCardProps> = ({
 
       {/* Actions */}
       <div className="flex gap-2 mt-4">
-        {!isPublishing ? (
-          <>
-            {canPreload && (
-              <button
-                onClick={onPreload}
-                disabled={isLoading}
-                className="btn-primary btn-sm"
-                title="Preload video to verify it can be decoded"
-              >
-                {isLoading ? 'Loading...' : 'Preload'}
-              </button>
-            )}
-            <button
-              onClick={onStartPublish}
-              disabled={!canPublish}
-              className="btn-success btn-sm flex-1"
-            >
-              Start
-            </button>
-          </>
-        ) : (
+        {canPreload && (
           <button
-            onClick={onStopPublish}
-            className="btn-secondary btn-sm flex-1"
+            onClick={onPreload}
+            disabled={isLoading}
+            className="btn-primary btn-sm flex-1"
+            title="Preload video to verify it can be loaded"
           >
-            Stop
+            {isLoading ? 'Loading...' : 'Preload'}
           </button>
         )}
         <button
           onClick={onEdit}
-          disabled={isPublishing || isLoading}
+          disabled={isLoading}
           className="btn-secondary btn-sm"
         >
           Edit
         </button>
         <button
           onClick={onRemove}
-          disabled={isPublishing || isLoading}
+          disabled={isLoading}
           className="btn-danger btn-sm"
         >
           Remove
