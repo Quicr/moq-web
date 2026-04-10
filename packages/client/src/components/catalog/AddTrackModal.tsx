@@ -218,7 +218,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
           </svg>
         )}
       </div>
-      <span className="text-sm text-white/70">{label}</span>
+      <span className="text-sm text-tertiary">{label}</span>
     </label>
   );
 
@@ -237,7 +237,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={TRACK_TYPE_ICONS[type]} />
               </svg>
             </div>
-            <h2 className="text-lg font-semibold text-white">
+            <h2 className="text-lg font-semibold text-primary">
               {isEditing ? 'Edit' : 'Add'} {TRACK_TYPE_LABELS[type]} Track
             </h2>
           </div>
@@ -277,7 +277,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                   placeholder="https://example.com/video.mp4"
                   className="input"
                 />
-                <p className="text-xs text-white/40 mt-2">
+                <p className="text-xs text-subtle mt-2">
                   URL to MP4/WebM video file (must support CORS)
                 </p>
               </div>
@@ -465,7 +465,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                 <option value={90000}>90000 (MPEG-TS)</option>
                 <option value={48000}>48000 (audio samples)</option>
               </select>
-              <p className="text-xs text-white/40 mt-2">
+              <p className="text-xs text-subtle mt-2">
                 Media timeline for seeking in VOD content
               </p>
             </div>
@@ -499,8 +499,8 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                       )}
                     </div>
                     <div className="flex-1">
-                      <div className="font-medium text-sm text-white/90">{info.label}</div>
-                      <div className="text-xs text-white/50 mt-0.5">
+                      <div className="font-medium text-sm text-secondary">{info.label}</div>
+                      <div className="text-xs text-muted mt-0.5">
                         {info.description}
                         <span className="text-accent-cyan ml-1">({info.targetLatency})</span>
                       </div>
@@ -530,7 +530,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                 min={1}
                 className="input"
               />
-              <p className="text-xs text-white/40 mt-1">
+              <p className="text-xs text-subtle mt-1">
                 Tracks in same group sync together
               </p>
             </div>
@@ -544,7 +544,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                 placeholder="Optional"
                 className="input"
               />
-              <p className="text-xs text-white/40 mt-1">
+              <p className="text-xs text-subtle mt-1">
                 Quality variants share same altGroup
               </p>
             </div>

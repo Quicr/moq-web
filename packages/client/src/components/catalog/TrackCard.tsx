@@ -65,21 +65,21 @@ const TrackDetails: React.FC<{ track: CatalogTrackConfig }> = ({ track }) => {
     case 'video-vod': {
       const t = track as VODTrackConfig;
       return (
-        <div className="text-xs text-white/50 space-y-1">
+        <div className="text-xs text-muted space-y-1">
           <div className="truncate" title={t.videoUrl}>
-            <span className="text-white/30">URL:</span> {t.videoUrl || 'Not set'}
+            <span className="text-hint">URL:</span> {t.videoUrl || 'Not set'}
           </div>
           <div>
-            <span className="text-white/70">{t.width}x{t.height}</span>
-            <span className="text-white/30"> @ </span>
-            <span className="text-white/70">{t.framerate}fps</span>
-            <span className="text-white/30"> | </span>
-            <span className="text-white/70">{formatBitrate(t.bitrate)}</span>
+            <span className="text-tertiary">{t.width}x{t.height}</span>
+            <span className="text-hint"> @ </span>
+            <span className="text-tertiary">{t.framerate}fps</span>
+            <span className="text-hint"> | </span>
+            <span className="text-tertiary">{formatBitrate(t.bitrate)}</span>
           </div>
           <div>
-            <span className="text-white/30">Duration:</span> {formatDuration(t.duration)}
-            <span className="text-white/30"> | DVR:</span> {t.enableDvr ? 'Yes' : 'No'}
-            <span className="text-white/30"> | Loop:</span> {t.loopPlayback ? 'Yes' : 'No'}
+            <span className="text-hint">Duration:</span> {formatDuration(t.duration)}
+            <span className="text-hint"> | DVR:</span> {t.enableDvr ? 'Yes' : 'No'}
+            <span className="text-hint"> | Loop:</span> {t.loopPlayback ? 'Yes' : 'No'}
           </div>
         </div>
       );
@@ -87,14 +87,14 @@ const TrackDetails: React.FC<{ track: CatalogTrackConfig }> = ({ track }) => {
     case 'video-live': {
       const t = track as LiveTrackConfig;
       return (
-        <div className="text-xs text-white/50 space-y-1">
-          <div><span className="text-white/30">Source:</span> {t.deviceId ? 'Camera selected' : 'Default camera'}</div>
+        <div className="text-xs text-muted space-y-1">
+          <div><span className="text-hint">Source:</span> {t.deviceId ? 'Camera selected' : 'Default camera'}</div>
           <div>
-            <span className="text-white/70">{t.width}x{t.height}</span>
-            <span className="text-white/30"> @ </span>
-            <span className="text-white/70">{t.framerate}fps</span>
-            <span className="text-white/30"> | </span>
-            <span className="text-white/70">{formatBitrate(t.bitrate)}</span>
+            <span className="text-tertiary">{t.width}x{t.height}</span>
+            <span className="text-hint"> @ </span>
+            <span className="text-tertiary">{t.framerate}fps</span>
+            <span className="text-hint"> | </span>
+            <span className="text-tertiary">{formatBitrate(t.bitrate)}</span>
           </div>
         </div>
       );
@@ -102,14 +102,14 @@ const TrackDetails: React.FC<{ track: CatalogTrackConfig }> = ({ track }) => {
     case 'audio': {
       const t = track as AudioTrackConfig;
       return (
-        <div className="text-xs text-white/50 space-y-1">
-          <div><span className="text-white/30">Source:</span> {t.deviceId ? 'Microphone selected' : 'Default microphone'}</div>
+        <div className="text-xs text-muted space-y-1">
+          <div><span className="text-hint">Source:</span> {t.deviceId ? 'Microphone selected' : 'Default microphone'}</div>
           <div>
-            <span className="text-white/70">{t.codec}</span>
-            <span className="text-white/30"> | </span>
-            <span className="text-white/70">{t.samplerate}Hz</span>
-            <span className="text-white/30"> | </span>
-            <span className="text-white/70">{t.channelConfig}</span>
+            <span className="text-tertiary">{t.codec}</span>
+            <span className="text-hint"> | </span>
+            <span className="text-tertiary">{t.samplerate}Hz</span>
+            <span className="text-hint"> | </span>
+            <span className="text-tertiary">{t.channelConfig}</span>
           </div>
         </div>
       );
@@ -117,18 +117,18 @@ const TrackDetails: React.FC<{ track: CatalogTrackConfig }> = ({ track }) => {
     case 'subtitle': {
       const t = track as SubtitleTrackConfig;
       return (
-        <div className="text-xs text-white/50 space-y-1">
-          <div><span className="text-white/30">Language:</span> {t.label} ({t.language})</div>
-          <div><span className="text-white/30">Format:</span> {t.format.toUpperCase()}</div>
+        <div className="text-xs text-muted space-y-1">
+          <div><span className="text-hint">Language:</span> {t.label} ({t.language})</div>
+          <div><span className="text-hint">Format:</span> {t.format.toUpperCase()}</div>
         </div>
       );
     }
     case 'timeline': {
       const t = track as TimelineTrackConfig;
       return (
-        <div className="text-xs text-white/50 space-y-1">
-          <div><span className="text-white/30">Timescale:</span> {t.timescale} units/sec</div>
-          <div className="text-white/30">Media timeline for VOD seeking</div>
+        <div className="text-xs text-muted space-y-1">
+          <div><span className="text-hint">Timescale:</span> {t.timescale} units/sec</div>
+          <div className="text-hint">Media timeline for VOD seeking</div>
         </div>
       );
     }
@@ -196,7 +196,7 @@ export const TrackCard: React.FC<TrackCardProps> = ({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <TrackTypeIcon type={track.type} />
-          <span className="font-medium text-white/90">{track.name}</span>
+          <span className="font-medium text-secondary">{track.name}</span>
           <TrackTypeBadge track={track} />
         </div>
         <StatusIndicator status={track.status} error={track.error} />
@@ -207,17 +207,17 @@ export const TrackCard: React.FC<TrackCardProps> = ({
 
       {/* Experience Profile */}
       <div className="mt-3 text-xs">
-        <span className="text-white/30">Profile:</span>{' '}
+        <span className="text-hint">Profile:</span>{' '}
         <span className="text-accent-cyan">
           {profileInfo.label}
         </span>
-        <span className="text-white/30"> ({profileInfo.targetLatency})</span>
+        <span className="text-hint"> ({profileInfo.targetLatency})</span>
       </div>
 
       {/* Loading Progress (for VOD) */}
       {track.type === 'video-vod' && (track as VODTrackConfig).loadProgress && (
         <div className="mt-3">
-          <div className="flex items-center justify-between text-xs text-white/50 mb-1">
+          <div className="flex items-center justify-between text-xs text-muted mb-1">
             <span>{(track as VODTrackConfig).loadProgress?.phase}</span>
             <span>{(track as VODTrackConfig).loadProgress?.progress}%</span>
           </div>

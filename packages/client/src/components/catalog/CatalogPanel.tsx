@@ -178,8 +178,8 @@ export const CatalogPanel: React.FC = () => {
                 </svg>
               </div>
               <div>
-                <p className="text-white/90 font-medium">Catalog Published</p>
-                <p className="text-white/50 text-sm">
+                <p className="text-secondary font-medium">Catalog Published</p>
+                <p className="text-muted text-sm">
                   {publishedCatalog.tracks.length} tracks on <span className="text-accent-cyan">{namespace}</span>
                 </p>
               </div>
@@ -226,21 +226,21 @@ export const CatalogPanel: React.FC = () => {
           </svg>
           About MSF Catalogs
         </div>
-        <div className="glass-panel-body text-sm text-white/60 space-y-3">
+        <div className="glass-panel-body text-sm text-tertiary space-y-3">
           <p>
-            <span className="text-white/90 font-medium">MSF (MOQT Streaming Format)</span> catalogs describe available media tracks
+            <span className="text-secondary font-medium">MSF (MOQT Streaming Format)</span> catalogs describe available media tracks
             for a session, including codec, resolution, bitrate, and experience profile information.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="glass-panel-subtle p-3 rounded-lg">
-              <p className="text-white/80 font-medium text-xs uppercase tracking-wide mb-1">VOD/DVR</p>
-              <p className="text-white/50 text-xs">
+              <p className="text-secondary font-medium text-xs uppercase tracking-wide mb-1">VOD/DVR</p>
+              <p className="text-muted text-xs">
                 Publisher creates catalog with VOD and live tracks. Subscribers can seek and rewind content.
               </p>
             </div>
             <div className="glass-panel-subtle p-3 rounded-lg">
-              <p className="text-white/80 font-medium text-xs uppercase tracking-wide mb-1">Conferencing</p>
-              <p className="text-white/50 text-xs">
+              <p className="text-secondary font-medium text-xs uppercase tracking-wide mb-1">Conferencing</p>
+              <p className="text-muted text-xs">
                 Catalog defines room template. All participants follow the template when publishing.
               </p>
             </div>

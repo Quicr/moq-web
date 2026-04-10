@@ -417,21 +417,15 @@ export const PublishPanel: React.FC = () => {
         defaultOpen={!localStream}
       >
         <div className="space-y-4">
-          {/* Compact Preview */}
-          <div className="video-container" style={{ paddingBottom: '40%', maxHeight: '200px' }}>
+          {/* Compact Preview - 16:9 aspect ratio */}
+          <div className="video-container" style={{ paddingBottom: '56.25%' }}>
             <video
               ref={videoRef}
               autoPlay
               muted
               playsInline
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: '100%',
-                display: localStream ? 'block' : 'none',
-              }}
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{ display: localStream ? 'block' : 'none' }}
             />
             {!localStream && (
               <div className="absolute inset-0 flex items-center justify-center">
