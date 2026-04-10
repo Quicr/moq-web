@@ -67,8 +67,9 @@ const TrackDetails: React.FC<{ track: CatalogTrackConfig }> = ({ track }) => {
       const t = track as VODTrackConfig;
       return (
         <div className="text-xs text-muted space-y-1">
-          <div className="truncate" title={t.videoUrl}>
-            <span className="text-hint">URL:</span> {t.videoUrl || 'Not set'}
+          <div className="truncate" title={t.videoFile ? t.videoFile.name : t.videoUrl}>
+            <span className="text-hint">{t.videoFile ? 'File:' : 'URL:'}</span>{' '}
+            {t.videoFile ? `${t.videoFile.name} (${(t.videoFile.size / 1024 / 1024).toFixed(1)} MB)` : (t.videoUrl || 'Not set')}
           </div>
           <div>
             <span className="text-tertiary">{t.width}x{t.height}</span>

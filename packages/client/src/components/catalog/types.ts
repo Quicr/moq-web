@@ -42,7 +42,10 @@ export interface BaseTrackConfig {
  */
 export interface VODTrackConfig extends BaseTrackConfig {
   type: 'video-vod';
+  /** Video source: URL or local file */
   videoUrl: string;
+  /** Local video file (alternative to URL) */
+  videoFile?: File;
   codec: string;
   width: number;
   height: number;

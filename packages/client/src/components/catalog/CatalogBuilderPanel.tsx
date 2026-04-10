@@ -131,27 +131,32 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
 
   // Preload VOD video - fetches and validates without full decode
   const handlePreloadVOD = async (track: VODTrackConfig) => {
-    if (!track.videoUrl) {
-      updateTrackStatus(track.id, 'error', 'No video URL specified');
+    const useFile = !!track.videoFile;
+
+    // Validate source is provided
+    if (!useFile && !track.videoUrl) {
+      updateTrackStatus(track.id, 'error', 'No video source specified');
       return;
     }
 
-    // Validate URL format before attempting to preload
-    const urlString = track.videoUrl.trim();
-    try {
-      const url = new URL(urlString);
-      if (!['http:', 'https:'].includes(url.protocol)) {
-        updateTrackStatus(track.id, 'error', 'URL must use http or https protocol');
+    // Validate URL format if using URL
+    if (!useFile) {
+      const urlString = track.videoUrl.trim();
+      try {
+        const url = new URL(urlString);
+        if (!['http:', 'https:'].includes(url.protocol)) {
+          updateTrackStatus(track.id, 'error', 'URL must use http or https protocol');
+          return;
+        }
+      } catch {
+        // Check if it looks like multiple URLs or comments were pasted
+        if (urlString.includes('\n') || urlString.includes('#')) {
+          updateTrackStatus(track.id, 'error', 'Invalid URL: contains multiple lines or comments. Please enter a single URL.');
+        } else {
+          updateTrackStatus(track.id, 'error', `Invalid URL format: "${urlString.slice(0, 50)}${urlString.length > 50 ? '...' : ''}"`);
+        }
         return;
       }
-    } catch {
-      // Check if it looks like multiple URLs or comments were pasted
-      if (urlString.includes('\n') || urlString.includes('#')) {
-        updateTrackStatus(track.id, 'error', 'Invalid URL: contains multiple lines or comments. Please enter a single URL.');
-      } else {
-        updateTrackStatus(track.id, 'error', `Invalid URL format: "${urlString.slice(0, 50)}${urlString.length > 50 ? '...' : ''}"`);
-      }
-      return;
     }
 
     updateTrackStatus(track.id, 'loading');
@@ -174,8 +179,15 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
         vodLoadersRef.current.set(track.id, loader);
       }
 
-      console.log('[CatalogBuilder] Preloading VOD:', track.videoUrl);
-      const metadata = await loader.preload(track.videoUrl);
+      let metadata: { duration: number; width: number; height: number };
+
+      if (useFile) {
+        console.log('[CatalogBuilder] Preloading VOD from file:', track.videoFile!.name);
+        metadata = await loader.preloadFile(track.videoFile!);
+      } else {
+        console.log('[CatalogBuilder] Preloading VOD from URL:', track.videoUrl);
+        metadata = await loader.preload(track.videoUrl);
+      }
       console.log('[CatalogBuilder] VOD preloaded:', metadata);
 
       // Update track with actual video metadata

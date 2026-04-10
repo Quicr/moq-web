@@ -64,6 +64,8 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
 
   // VOD-specific fields
   const [videoUrl, setVideoUrl] = useState((existingTrack as VODTrackConfig)?.videoUrl || '');
+  const [videoFile, setVideoFile] = useState<File | undefined>((existingTrack as VODTrackConfig)?.videoFile);
+  const [useFileInput, setUseFileInput] = useState(!!((existingTrack as VODTrackConfig)?.videoFile));
   const [enableDvr, setEnableDvr] = useState((existingTrack as VODTrackConfig)?.enableDvr ?? true);
   const [loopPlayback, setLoopPlayback] = useState((existingTrack as VODTrackConfig)?.loopPlayback ?? false);
 
@@ -146,7 +148,8 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
       case 'video-vod':
         onSave({
           ...baseConfig,
-          videoUrl,
+          videoUrl: useFileInput ? (videoFile?.name || '') : videoUrl,
+          videoFile: useFileInput ? videoFile : undefined,
           codec,
           width,
           height,
@@ -265,21 +268,82 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
             />
           </div>
 
-          {/* VOD: Video URL */}
+          {/* VOD: Video Source */}
           {type === 'video-vod' && (
             <>
               <div>
-                <label className="label">Video URL</label>
-                <input
-                  type="url"
-                  value={videoUrl}
-                  onChange={(e) => setVideoUrl(e.target.value)}
-                  placeholder="https://example.com/video.mp4"
-                  className="input"
-                />
-                <p className="text-xs text-subtle mt-2">
-                  URL to MP4/WebM video file (must support CORS)
-                </p>
+                <label className="label">Video Source</label>
+                <div className="flex gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setUseFileInput(false)}
+                    className={`flex-1 px-3 py-2 text-sm rounded-lg transition-all ${
+                      !useFileInput
+                        ? 'bg-gradient-to-r from-accent-purple/30 to-primary-500/30 border border-accent-purple/40 text-primary'
+                        : 'bg-white/5 border border-white/10 text-tertiary hover:border-white/20'
+                    }`}
+                  >
+                    URL
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUseFileInput(true)}
+                    className={`flex-1 px-3 py-2 text-sm rounded-lg transition-all ${
+                      useFileInput
+                        ? 'bg-gradient-to-r from-accent-purple/30 to-primary-500/30 border border-accent-purple/40 text-primary'
+                        : 'bg-white/5 border border-white/10 text-tertiary hover:border-white/20'
+                    }`}
+                  >
+                    Local File
+                  </button>
+                </div>
+
+                {useFileInput ? (
+                  <div>
+                    <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-white/20 rounded-xl cursor-pointer hover:border-white/40 transition-colors bg-white/5">
+                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                        {videoFile ? (
+                          <>
+                            <svg className="w-6 h-6 mb-1 text-accent-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                            <p className="text-sm text-secondary">{videoFile.name}</p>
+                            <p className="text-xs text-muted">{(videoFile.size / 1024 / 1024).toFixed(1)} MB</p>
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-6 h-6 mb-1 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                            <p className="text-sm text-muted">Click to select video file</p>
+                          </>
+                        )}
+                      </div>
+                      <input
+                        type="file"
+                        accept="video/mp4,video/webm,video/*"
+                        onChange={(e) => setVideoFile(e.target.files?.[0])}
+                        className="hidden"
+                      />
+                    </label>
+                    <p className="text-xs text-subtle mt-2">
+                      Select a local MP4 or WebM file (no CORS restrictions)
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <input
+                      type="url"
+                      value={videoUrl}
+                      onChange={(e) => setVideoUrl(e.target.value)}
+                      placeholder="https://example.com/video.mp4"
+                      className="input"
+                    />
+                    <p className="text-xs text-subtle mt-2">
+                      URL to MP4/WebM video file (must support CORS)
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-6">
