@@ -312,6 +312,8 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                     }}
                     className="input"
                   >
+                    <option value="3840x2160">4K UHD (3840x2160)</option>
+                    <option value="2560x1440">1440p QHD (2560x1440)</option>
                     <option value="1920x1080">1080p (1920x1080)</option>
                     <option value="1280x720">720p (1280x720)</option>
                     <option value="854x480">480p (854x480)</option>
@@ -355,6 +357,8 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                     onChange={(e) => setBitrate(Number(e.target.value))}
                     className="input"
                   >
+                    <option value={25_000_000}>25 Mbps (4K)</option>
+                    <option value={15_000_000}>15 Mbps (4K/1440p)</option>
                     <option value={8_000_000}>8 Mbps</option>
                     <option value={4_000_000}>4 Mbps</option>
                     <option value={2_000_000}>2 Mbps</option>
