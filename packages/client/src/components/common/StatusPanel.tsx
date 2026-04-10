@@ -5,6 +5,7 @@
  * @fileoverview Status Panel Component
  *
  * Displays connection status, MOQT version, and control message errors.
+ * Glassmorphic design with status-aware styling.
  */
 
 import React from 'react';
@@ -15,10 +16,10 @@ const getMoqtVersionInfo = () => {
   const version = __MOQT_VERSION__;
   switch (version) {
     case 'draft-16':
-      return { label: 'Draft-16', color: 'bg-purple-500', textColor: 'text-purple-700 dark:text-purple-300' };
+      return { label: 'Draft-16', className: 'badge-purple' };
     case 'draft-14':
     default:
-      return { label: 'Draft-14', color: 'bg-blue-500', textColor: 'text-blue-700 dark:text-blue-300' };
+      return { label: 'Draft-14', className: 'badge-blue' };
   }
 };
 
@@ -26,67 +27,79 @@ export const StatusPanel: React.FC = () => {
   const { state, sessionState, error, serverUrl, useWorkers } = useStore();
   const versionInfo = getMoqtVersionInfo();
 
-  // Determine status color
-  const getStatusColor = () => {
-    if (error) return 'bg-red-500';
-    if (state === 'connected' && sessionState === 'ready') return 'bg-green-500';
-    if (state === 'connecting' || sessionState === 'setup') return 'bg-yellow-500';
-    return 'bg-gray-500';
+  // Determine status indicator
+  const getStatusIndicator = () => {
+    if (error) return { color: 'bg-red-400', glow: 'rgba(248, 113, 113, 0.6)', text: 'Error', textColor: 'text-red-400' };
+    if (state === 'connected' && sessionState === 'ready') return { color: 'bg-emerald-400', glow: 'rgba(52, 211, 153, 0.6)', text: 'Connected', textColor: 'text-emerald-400' };
+    if (state === 'connecting' || sessionState === 'setup') return { color: 'bg-amber-400', glow: 'rgba(251, 191, 36, 0.6)', text: 'Connecting...', textColor: 'text-amber-400', pulse: true };
+    return { color: 'bg-white/30', glow: 'transparent', text: 'Disconnected', textColor: 'text-white/50' };
   };
 
-  // Determine status text
-  const getStatusText = () => {
-    if (error) return 'Error';
-    if (state === 'connected' && sessionState === 'ready') return 'Connected';
-    if (state === 'connecting') return 'Connecting...';
-    if (sessionState === 'setup') return 'Setting up session...';
-    return 'Disconnected';
-  };
+  const status = getStatusIndicator();
 
   return (
-    <div className="panel">
-      <div className="panel-header flex items-center justify-between">
+    <div className="glass-panel">
+      <div className="glass-panel-header justify-between">
         <div className="flex items-center gap-2">
-          <span>Status</span>
-          <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${versionInfo.color} text-white`}>
-            {versionInfo.label}
-          </span>
-          <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${useWorkers ? 'bg-green-500' : 'bg-gray-400'} text-white`}>
+          <svg className="w-5 h-5 text-accent-purple" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          Status
+        </div>
+        <div className="flex items-center gap-2">
+          <div
+            className={`w-2 h-2 rounded-full ${status.color} ${status.pulse ? 'animate-pulse' : ''}`}
+            style={{ boxShadow: `0 0 8px ${status.glow}` }}
+          />
+          <span className={`text-xs font-medium ${status.textColor}`}>{status.text}</span>
+        </div>
+      </div>
+
+      <div className="glass-panel-body space-y-3">
+        {/* Badges row */}
+        <div className="flex flex-wrap gap-2">
+          <span className={versionInfo.className}>{versionInfo.label}</span>
+          <span className={useWorkers ? 'badge-green' : 'badge'}>
             {useWorkers ? 'Workers' : 'Main Thread'}
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${getStatusColor()}`} />
-          <span className="text-xs font-normal">{getStatusText()}</span>
-        </div>
-      </div>
-      <div className="panel-body">
+
         {/* Connection info */}
         {state === 'connected' && (
-          <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+          <div className="text-xs text-white/40 truncate">
             {serverUrl}
           </div>
         )}
 
         {/* Error display */}
         {error && (
-          <div className="p-3 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-md text-sm">
-            <div className="font-medium mb-1">MOQT Error</div>
-            <div>{error}</div>
+          <div className="glass-panel-subtle p-3 border-red-500/30">
+            <div className="text-red-300 font-medium text-sm mb-1">MOQT Error</div>
+            <div className="text-red-400/70 text-xs">{error}</div>
           </div>
         )}
 
-        {/* No error - show success state */}
+        {/* Success state */}
         {!error && state === 'connected' && sessionState === 'ready' && (
-          <div className="p-2 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-md text-xs">
-            Session ready. You can publish or subscribe to tracks.
+          <div className="glass-panel-subtle p-3 flex items-center gap-2">
+            <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span className="text-xs text-white/60">
+              Session ready. Publish or subscribe to tracks.
+            </span>
           </div>
         )}
 
         {/* Disconnected state */}
         {!error && state === 'disconnected' && (
-          <div className="p-2 bg-gray-100 dark:bg-gray-900/30 text-gray-500 dark:text-gray-400 rounded-md text-xs">
-            Not connected. Enter a relay URL and click Connect.
+          <div className="glass-panel-subtle p-3 flex items-center gap-2">
+            <svg className="w-4 h-4 text-white/30 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span className="text-xs text-white/40">
+              Configure settings, then connect when ready.
+            </span>
           </div>
         )}
       </div>

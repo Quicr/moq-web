@@ -5,17 +5,24 @@
  * @fileoverview Catalog Subscriber Panel
  *
  * Component for subscribing to MSF catalogs and displaying received tracks.
- * Automatically subscribes to media tracks based on catalog content.
+ * Supports offline configuration with "Connect & Go" workflow.
  */
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useStore } from '../../store';
 import { createMSFSession, type MSFSession, type FullCatalog, type Track } from '@web-moq/msf';
-import { parseSubtitles } from '../player/SubtitleOverlay';
+import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
 
 interface CatalogSubscriberPanelProps {
   namespace: string;
   onNamespaceChange: (namespace: string) => void;
+}
+
+// Timeline data type for VOD seeking
+interface TimelineData {
+  duration: number;
+  entries: Array<{ groupId: number; timestamp: number; objectCount: number }>;
+  framerate: number;
 }
 
 /**
@@ -46,7 +53,6 @@ function getTrackType(track: Track): 'video' | 'audio' | 'subtitle' | 'timeline'
   if (track.width || track.height || track.framerate) return 'video';
   if (track.samplerate || track.channelConfig) return 'audio';
   if (track.role === 'subtitle' || track.lang) return 'subtitle';
-  // Check for timeline track by packaging or name
   if (track.packaging === 'mediatimeline' || track.name.toLowerCase().includes('timeline')) return 'timeline';
   return 'data';
 }
@@ -55,17 +61,30 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   namespace,
   onNamespaceChange,
 }) => {
-  const { session, sessionState, startSubscription, setSubtitleCues, setActiveSubtitleTrack, activeSubtitleTrack, setTimelineData } = useStore();
+  const { session, sessionState, state, connect, serverUrl, startSubscription } = useStore();
 
-  const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'subscribing' | 'subscribed' | 'error'>('idle');
+  const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
   const [receivedCatalog, setReceivedCatalog] = useState<FullCatalog | null>(null);
   const [subscribedTracks, setSubscribedTracks] = useState<Set<string>>(new Set());
   const [loadingSubtitles, setLoadingSubtitles] = useState<Set<string>>(new Set());
   const [loadingTimeline, setLoadingTimeline] = useState<Set<string>>(new Set());
 
+  // Local state for subtitles and timeline (TODO: integrate with store)
+  const [_subtitleCuesMap, setSubtitleCuesMap] = useState<Map<string, SubtitleCue[]>>(new Map());
+  const [activeSubtitleTrack, setActiveSubtitleTrack] = useState<string | null>(null);
+  const [_timelineData, setTimelineData] = useState<TimelineData | null>(null);
+  // Note: _subtitleCuesMap and _timelineData are set but read access will be added when player integration is complete
+
+  // Helper to set subtitle cues for a track
+  const setSubtitleCues = useCallback((trackName: string, cues: SubtitleCue[]) => {
+    setSubtitleCuesMap(prev => new Map(prev).set(trackName, cues));
+  }, []);
+
   // MSF Session reference
   const msfSessionRef = useRef<MSFSession | null>(null);
+
+  const isConnected = state === 'connected' && sessionState === 'ready';
 
   // Clean up on unmount
   useEffect(() => {
@@ -76,20 +95,59 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     };
   }, []);
 
-  // Subscribe to catalog
+  /**
+   * Connect & Subscribe flow - handles connection if needed
+   */
   const handleSubscribe = useCallback(async () => {
+    setSubscribeError(null);
+    setReceivedCatalog(null);
+
+    // If not connected, connect first
     if (!session || sessionState !== 'ready') {
-      setSubscribeError('Session not ready');
+      setSubscribeStatus('connecting');
+
+      try {
+        await connect(serverUrl);
+
+        // Wait for session to be ready
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Session setup timeout')), 10000);
+
+          const checkReady = () => {
+            const { sessionState: currentState } = useStore.getState();
+            if (currentState === 'ready') {
+              clearTimeout(timeout);
+              resolve();
+            } else if (currentState === 'error') {
+              clearTimeout(timeout);
+              reject(new Error('Session setup failed'));
+            } else {
+              setTimeout(checkReady, 100);
+            }
+          };
+          checkReady();
+        });
+      } catch (err) {
+        console.error('[CatalogSubscriber] Failed to connect:', err);
+        setSubscribeError(`Connection failed: ${(err as Error).message}`);
+        setSubscribeStatus('error');
+        return;
+      }
+    }
+
+    // Get fresh session reference
+    const { session: currentSession } = useStore.getState();
+    if (!currentSession) {
+      setSubscribeError('No session after connect');
+      setSubscribeStatus('error');
       return;
     }
 
     setSubscribeStatus('subscribing');
-    setSubscribeError(null);
-    setReceivedCatalog(null);
 
     try {
       // Create MSFSession for catalog subscription
-      const moqtSession = session.getMOQTSession();
+      const moqtSession = currentSession.getMOQTSession();
       const msfSession = createMSFSession(moqtSession, namespace.split('/'));
       msfSessionRef.current = msfSession;
 
@@ -117,7 +175,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       setSubscribeError((err as Error).message);
       setSubscribeStatus('error');
     }
-  }, [session, sessionState, namespace]);
+  }, [session, sessionState, namespace, serverUrl, connect]);
 
   // Unsubscribe from catalog
   const handleUnsubscribe = useCallback(async () => {
@@ -140,7 +198,6 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     try {
       const mediaType = getTrackType(track) === 'audio' ? 'audio' : 'video';
 
-      // Subscribe to the track using store action
       await startSubscription(
         trackNamespace.join('/'),
         trackName,
@@ -161,24 +218,17 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     const trackNamespace = track.namespace ?? namespace.split('/');
     const trackName = track.name;
 
-    // Mark as loading
     setLoadingSubtitles(prev => new Set([...prev, trackName]));
 
     try {
-      // Get the underlying MOQT session for data track subscription
       const moqtSession = msfSessionRef.current.getMOQTSession();
-
-      // Accumulated subtitle content (may come in multiple objects)
       let accumulatedContent = '';
 
-      // Subscribe to subtitle track directly via MOQTSession
-      // Subtitle tracks return text content (WebVTT or SRT format)
       await moqtSession.subscribe(
         trackNamespace,
         trackName,
-        {}, // Default options
+        {},
         (data: Uint8Array, groupId: number, objectId: number) => {
-          // Convert Uint8Array to string
           const textContent = new TextDecoder().decode(data);
 
           console.log('[CatalogSubscriber] Received subtitle data:', {
@@ -188,10 +238,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
             size: data.byteLength,
           });
 
-          // Accumulate content (full subtitle file may be split across objects)
           accumulatedContent += textContent;
-
-          // Try to parse accumulated content
           const cues = parseSubtitles(accumulatedContent);
 
           if (cues.length > 0) {
@@ -200,10 +247,8 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
               cueCount: cues.length,
             });
 
-            // Store cues in state
             setSubtitleCues(trackName, cues);
 
-            // Auto-set as active if no active subtitle track
             if (!activeSubtitleTrack) {
               setActiveSubtitleTrack(trackName);
             }
@@ -236,20 +281,16 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     const trackNamespace = track.namespace ?? namespace.split('/');
     const trackName = track.name;
 
-    // Mark as loading
     setLoadingTimeline(prev => new Set([...prev, trackName]));
 
     try {
-      // Get the underlying MOQT session for data track subscription
       const moqtSession = msfSessionRef.current.getMOQTSession();
 
-      // Subscribe to timeline track directly via MOQTSession
       await moqtSession.subscribe(
         trackNamespace,
         trackName,
-        {}, // Default options
+        {},
         (data: Uint8Array, groupId: number, objectId: number) => {
-          // Convert Uint8Array to string and parse as JSON
           const textContent = new TextDecoder().decode(data);
 
           console.log('[CatalogSubscriber] Received timeline data:', {
@@ -267,7 +308,6 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
               framerate: timelineData.framerate,
             });
 
-            // Store timeline data in state
             setTimelineData(timelineData);
           } catch (parseErr) {
             console.error('[CatalogSubscriber] Failed to parse timeline:', parseErr);
@@ -293,10 +333,50 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     }
   }, [receivedCatalog, namespace, setTimelineData]);
 
+  /**
+   * Get button text based on connection state
+   */
+  const getSubscribeButtonText = () => {
+    if (subscribeStatus === 'connecting') return 'Connecting...';
+    if (subscribeStatus === 'subscribing') return 'Subscribing...';
+    if (isConnected) return 'Subscribe';
+    return 'Connect & Subscribe';
+  };
+
+  // Track type icons
+  const TrackIcon: React.FC<{ type: string; className?: string }> = ({ type, className = 'w-5 h-5' }) => {
+    const icons: Record<string, string> = {
+      video: 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z',
+      audio: 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z',
+      subtitle: 'M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z',
+      timeline: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
+      data: 'M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4',
+    };
+
+    const colors: Record<string, string> = {
+      video: 'text-accent-purple',
+      audio: 'text-emerald-400',
+      subtitle: 'text-blue-400',
+      timeline: 'text-orange-400',
+      data: 'text-white/50',
+    };
+
+    return (
+      <svg className={`${className} ${colors[type] || colors.data}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icons[type] || icons.data} />
+      </svg>
+    );
+  };
+
   return (
-    <div className="panel">
-      <div className="panel-header">Subscribe to Catalog</div>
-      <div className="panel-body space-y-4">
+    <div className="glass-panel">
+      <div className="glass-panel-header">
+        <svg className="w-5 h-5 text-accent-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
+        </svg>
+        Subscribe to Catalog
+      </div>
+      <div className="glass-panel-body space-y-4">
         {/* Namespace Input */}
         <div>
           <label className="label">Catalog Namespace</label>
@@ -312,54 +392,59 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
             {subscribeStatus !== 'subscribed' ? (
               <button
                 onClick={handleSubscribe}
-                disabled={sessionState !== 'ready' || subscribeStatus === 'subscribing'}
-                className="btn-primary"
+                disabled={subscribeStatus === 'connecting' || subscribeStatus === 'subscribing'}
+                className="btn-primary whitespace-nowrap"
               >
-                {subscribeStatus === 'subscribing' ? 'Subscribing...' : 'Subscribe'}
+                {getSubscribeButtonText()}
               </button>
             ) : (
               <button
                 onClick={handleUnsubscribe}
-                className="btn-secondary"
+                className="btn-secondary whitespace-nowrap"
               >
                 Unsubscribe
               </button>
             )}
           </div>
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-white/40 mt-2">
             Subscribe to receive the catalog and auto-discover tracks
           </p>
         </div>
 
         {/* Error Display */}
         {subscribeError && (
-          <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-            <div className="flex items-center gap-2 text-red-700 dark:text-red-300 text-sm">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="glass-panel-subtle p-4 flex items-center gap-3 border-red-500/30">
+            <div className="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center flex-shrink-0">
+              <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <span>{subscribeError}</span>
+            </div>
+            <div>
+              <p className="text-red-300 font-medium text-sm">Subscribe Error</p>
+              <p className="text-red-400/70 text-xs">{subscribeError}</p>
             </div>
           </div>
         )}
 
         {/* Received Catalog */}
         {receivedCatalog ? (
-          <div className="space-y-3">
+          <div className="space-y-4">
             {/* Catalog Info */}
-            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-              <div className="flex items-center gap-2 text-blue-700 dark:text-blue-300 text-sm font-medium">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div className="glass-panel-subtle p-4 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                Catalog Received
               </div>
-              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                {receivedCatalog.tracks.length} tracks available
-                {receivedCatalog.generatedAt && (
-                  <> - Generated: {new Date(receivedCatalog.generatedAt).toLocaleString()}</>
-                )}
-              </p>
+              <div>
+                <p className="text-white/90 font-medium text-sm">Catalog Received</p>
+                <p className="text-white/50 text-xs">
+                  {receivedCatalog.tracks.length} tracks available
+                  {receivedCatalog.generatedAt && (
+                    <> &middot; {new Date(receivedCatalog.generatedAt).toLocaleString()}</>
+                  )}
+                </p>
+              </div>
             </div>
 
             {/* Track List */}
@@ -371,45 +456,17 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                 return (
                   <div
                     key={`${track.name}-${index}`}
-                    className={`p-3 border rounded-lg transition-colors ${
-                      isSubscribed
-                        ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
-                        : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700'
+                    className={`glass-panel-subtle p-4 transition-all ${
+                      isSubscribed ? 'border-emerald-500/30' : ''
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        {/* Track Type Icon */}
-                        {trackType === 'video' && (
-                          <svg className="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                        {trackType === 'audio' && (
-                          <svg className="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                          </svg>
-                        )}
-                        {trackType === 'subtitle' && (
-                          <svg className="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                          </svg>
-                        )}
-                        {trackType === 'timeline' && (
-                          <svg className="w-5 h-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        )}
-                        {trackType === 'data' && (
-                          <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
-                          </svg>
-                        )}
-
+                      <div className="flex items-center gap-3">
+                        <TrackIcon type={trackType} />
                         <div>
-                          <span className="font-medium text-sm">{track.name}</span>
+                          <span className="font-medium text-sm text-white/90">{track.name}</span>
                           {track.label && (
-                            <span className="text-xs text-gray-500 ml-2">({track.label})</span>
+                            <span className="text-xs text-white/40 ml-2">({track.label})</span>
                           )}
                         </div>
                       </div>
@@ -419,7 +476,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                         <button
                           onClick={() => handleTrackSubscribe(track)}
                           disabled={isSubscribed}
-                          className={`btn-sm ${isSubscribed ? 'btn-secondary opacity-50' : 'btn-primary'}`}
+                          className={`btn-sm ${isSubscribed ? 'btn-success opacity-60' : 'btn-primary'}`}
                         >
                           {isSubscribed ? 'Subscribed' : 'Subscribe'}
                         </button>
@@ -433,7 +490,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                               )}
                               className={`btn-sm ${
                                 activeSubtitleTrack === track.name
-                                  ? 'bg-green-500 hover:bg-green-600 text-white'
+                                  ? 'btn-success'
                                   : 'btn-secondary'
                               }`}
                             >
@@ -454,7 +511,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                         <button
                           onClick={() => handleTimelineSubscribe(track)}
                           disabled={isSubscribed || loadingTimeline.has(track.name)}
-                          className={`btn-sm ${isSubscribed ? 'btn-secondary opacity-50' : 'btn-primary'}`}
+                          className={`btn-sm ${isSubscribed ? 'btn-success opacity-60' : 'btn-primary'}`}
                         >
                           {loadingTimeline.has(track.name) ? 'Loading...' : isSubscribed ? 'Loaded' : 'Load'}
                         </button>
@@ -462,60 +519,40 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                     </div>
 
                     {/* Track Details */}
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                    <div className="mt-3 flex flex-wrap gap-2">
                       {track.codec && (
-                        <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
-                          {track.codec}
-                        </span>
+                        <span className="badge">{track.codec}</span>
                       )}
                       {track.width && track.height && (
-                        <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
-                          {track.width}x{track.height}
-                        </span>
+                        <span className="badge">{track.width}x{track.height}</span>
                       )}
                       {track.framerate && (
-                        <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
-                          {track.framerate}fps
-                        </span>
+                        <span className="badge">{track.framerate}fps</span>
                       )}
                       {track.bitrate && (
-                        <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
-                          {formatBitrate(track.bitrate)}
-                        </span>
+                        <span className="badge">{formatBitrate(track.bitrate)}</span>
                       )}
                       {track.samplerate && (
-                        <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
-                          {track.samplerate / 1000}kHz
-                        </span>
+                        <span className="badge">{track.samplerate / 1000}kHz</span>
                       )}
                       {track.channelConfig && (
-                        <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
-                          {track.channelConfig}
-                        </span>
+                        <span className="badge">{track.channelConfig}</span>
                       )}
                       {track.isLive !== undefined && (
-                        <span className={`px-2 py-0.5 rounded ${
-                          track.isLive
-                            ? 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
-                            : 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'
-                        }`}>
+                        <span className={track.isLive ? 'badge-red' : 'badge-blue'}>
                           {track.isLive ? 'LIVE' : 'VOD'}
                         </span>
                       )}
                       {track.targetLatency && (
-                        <span className="px-2 py-0.5 bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 rounded">
+                        <span className="badge-yellow">
                           {getExperienceProfile(track.targetLatency)}
                         </span>
                       )}
                       {track.lang && (
-                        <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
-                          {track.lang}
-                        </span>
+                        <span className="badge">{track.lang}</span>
                       )}
                       {trackType === 'subtitle' && activeSubtitleTrack === track.name && (
-                        <span className="px-2 py-0.5 bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded">
-                          active
-                        </span>
+                        <span className="badge-green">active</span>
                       )}
                     </div>
                   </div>
@@ -524,23 +561,27 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
             </div>
           </div>
         ) : subscribeStatus === 'idle' ? (
-          <div className="text-center py-8 text-gray-500">
-            <svg className="w-12 h-12 mx-auto mb-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-            <p>No catalog subscribed</p>
-            <p className="text-sm">Enter a namespace and subscribe to view catalog</p>
+          <div className="text-center py-12">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
+              <svg className="w-8 h-8 text-white/20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
+            </div>
+            <p className="text-white/60 font-medium">No catalog subscribed</p>
+            <p className="text-white/40 text-sm mt-1">Enter a namespace and subscribe to view catalog</p>
           </div>
-        ) : subscribeStatus === 'subscribing' ? (
-          <div className="text-center py-8 text-gray-500">
-            <svg className="w-8 h-8 mx-auto mb-3 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24">
+        ) : (subscribeStatus === 'connecting' || subscribeStatus === 'subscribing') ? (
+          <div className="text-center py-12">
+            <svg className="w-10 h-10 mx-auto mb-4 animate-spin text-accent-purple" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
-            <p>Subscribing to catalog...</p>
+            <p className="text-white/60">
+              {subscribeStatus === 'connecting' ? 'Connecting to relay...' : 'Subscribing to catalog...'}
+            </p>
           </div>
         ) : (
-          <div className="text-center py-8 text-gray-500">
+          <div className="text-center py-12 text-white/50">
             <p>Waiting for catalog...</p>
           </div>
         )}

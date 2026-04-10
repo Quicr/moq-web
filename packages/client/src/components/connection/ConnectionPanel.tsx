@@ -5,6 +5,7 @@
  * @fileoverview Connection Panel Component
  *
  * Provides server URL input and connect/disconnect controls.
+ * Glassmorphic design with glow effects on connection state.
  */
 
 import React, { useState } from 'react';
@@ -35,16 +36,50 @@ export const ConnectionPanel: React.FC = () => {
     }
   };
 
+  // Toggle switch component
+  const Toggle: React.FC<{
+    id: string;
+    checked: boolean;
+    onChange: () => void;
+    disabled?: boolean;
+  }> = ({ id, checked, onChange, disabled }) => (
+    <button
+      id={id}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onChange}
+      disabled={disabled}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all duration-200 ${
+        checked
+          ? 'bg-gradient-to-r from-accent-purple to-primary-500'
+          : 'bg-white/10'
+      } ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-lg transition-transform duration-200 ${
+          checked ? 'translate-x-6' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  );
+
   return (
-    <div className="panel">
-      <div className="panel-header flex items-center gap-2">
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <div className={`glass-panel ${isConnected ? 'border-emerald-500/30' : ''}`}>
+      <div className="glass-panel-header">
+        <svg className="w-5 h-5 text-accent-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
         </svg>
         Connection
+        {isConnected && (
+          <span className="ml-auto flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" style={{ boxShadow: '0 0 8px rgba(52, 211, 153, 0.6)' }} />
+            <span className="text-xs font-normal text-emerald-400">Live</span>
+          </span>
+        )}
       </div>
 
-      <div className="panel-body space-y-4">
+      <div className="glass-panel-body space-y-4">
         <div>
           <label htmlFor="serverUrl" className="label">
             Relay URL
@@ -65,74 +100,52 @@ export const ConnectionPanel: React.FC = () => {
         </div>
 
         <div className="flex items-center justify-between">
-          <label htmlFor="localDev" className="text-sm text-gray-700 dark:text-gray-300">
+          <label htmlFor="localDev" className="text-sm text-white/70">
             Local Development
           </label>
-          <button
+          <Toggle
             id="localDev"
-            type="button"
-            role="switch"
-            aria-checked={localDevelopment}
-            onClick={() => setLocalDevelopment(!localDevelopment)}
+            checked={localDevelopment}
+            onChange={() => setLocalDevelopment(!localDevelopment)}
             disabled={isConnected || isConnecting}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              localDevelopment ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'
-            } ${isConnected || isConnecting ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                localDevelopment ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
+          />
         </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2">
-          Enable for self-signed certificates (reads from /certificate.pem)
+        <p className="text-xs text-white/40 -mt-2">
+          Enable for self-signed certificates
         </p>
 
         <div className="flex items-center justify-between">
-          <label htmlFor="useWorkers" className="text-sm text-gray-700 dark:text-gray-300">
-            Use Web Workers
+          <label htmlFor="useWorkers" className="text-sm text-white/70">
+            Web Workers
           </label>
-          <button
+          <Toggle
             id="useWorkers"
-            type="button"
-            role="switch"
-            aria-checked={useWorkers}
-            onClick={() => setUseWorkers(!useWorkers)}
+            checked={useWorkers}
+            onChange={() => setUseWorkers(!useWorkers)}
             disabled={isConnected || isConnecting}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              useWorkers ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'
-            } ${isConnected || isConnecting ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                useWorkers ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
+          />
         </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2">
+        <p className="text-xs text-white/40 -mt-2">
           Offload encoding/decoding to background threads
         </p>
 
         {error && (
-          <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-3">
-            <div className="flex items-center gap-2 text-red-700 dark:text-red-400 text-sm">
+          <div className="glass-panel-subtle p-3 border-red-500/30">
+            <div className="flex items-center gap-2 text-red-400 text-sm">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              {error}
+              <span className="truncate">{error}</span>
             </div>
           </div>
         )}
 
-        <div className="flex gap-2">
+        <div className="pt-2">
           {!isConnected ? (
             <button
               onClick={handleConnect}
               disabled={isConnecting || !inputUrl}
-              className="btn-primary flex-1 flex items-center justify-center gap-2"
+              className="btn-primary w-full flex items-center justify-center gap-2"
             >
               {isConnecting ? (
                 <>
@@ -154,7 +167,7 @@ export const ConnectionPanel: React.FC = () => {
           ) : (
             <button
               onClick={handleDisconnect}
-              className="btn-danger flex-1 flex items-center justify-center gap-2"
+              className="btn-danger w-full flex items-center justify-center gap-2"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
@@ -166,13 +179,11 @@ export const ConnectionPanel: React.FC = () => {
 
         {/* Connection Info */}
         {isConnected && (
-          <div className="bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-md p-3">
-            <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              Connected to relay
-            </div>
+          <div className="glass-panel-subtle p-3 flex items-center gap-2">
+            <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            <span className="text-sm text-emerald-300">Connected to relay</span>
           </div>
         )}
       </div>
