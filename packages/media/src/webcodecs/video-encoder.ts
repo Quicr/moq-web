@@ -39,6 +39,8 @@ const log = Logger.create('moqt:media:video-encoder');
  * Level 3.0 (1E) supports 480p@30fps
  * Level 3.1 (1F) supports 720p@30fps
  * Level 4.0 (28) supports 1080p@30fps
+ * Level 5.1 (33) supports 4K@30fps
+ * Level 5.2 (34) supports 4K@60fps
  */
 export const H264Profiles = {
   /** Constrained Baseline Profile Level 3.1 (720p) - best compatibility */
@@ -61,17 +63,25 @@ export const H264Profiles = {
   HIGH: 'avc1.64001f',
   /** High Profile Level 4.0 (1080p) */
   HIGH_L40: 'avc1.640028',
+  /** High Profile Level 5.1 (4K@30fps) */
+  HIGH_L51: 'avc1.640033',
+  /** High Profile Level 5.2 (4K@60fps) */
+  HIGH_L52: 'avc1.640034',
 } as const;
 
 /**
  * Get appropriate H.264 codec string for resolution
  * @param width - Video width
  * @param height - Video height
+ * @param framerate - Optional framerate (default 30)
  * @returns Codec string with appropriate level
  */
-export function getCodecForResolution(width: number, height: number): string {
+export function getCodecForResolution(width: number, height: number, framerate = 30): string {
   const pixels = width * height;
-  if (pixels > 1280 * 720) {
+  if (pixels > 1920 * 1080) {
+    // 4K - Level 5.1 or 5.2 (High profile required)
+    return framerate > 30 ? H264Profiles.HIGH_L52 : H264Profiles.HIGH_L51;
+  } else if (pixels > 1280 * 720) {
     // 1080p - Level 4.0
     return H264Profiles.CONSTRAINED_BASELINE_L40;
   } else if (pixels > 854 * 480) {
@@ -82,6 +92,14 @@ export function getCodecForResolution(width: number, height: number): string {
     return H264Profiles.CONSTRAINED_BASELINE_L30;
   }
 }
+
+/**
+ * Fallback profile order for 4K (High profile required for this resolution)
+ */
+const PROFILE_FALLBACK_ORDER_4K = [
+  H264Profiles.HIGH_L51,
+  H264Profiles.HIGH_L52,
+];
 
 /**
  * Fallback profile order for 720p (most to least compatible)
@@ -118,7 +136,9 @@ const PROFILE_FALLBACK_ORDER_480P = [
  */
 function getProfileFallbackOrder(width: number, height: number): string[] {
   const pixels = width * height;
-  if (pixels > 1280 * 720) {
+  if (pixels > 1920 * 1080) {
+    return PROFILE_FALLBACK_ORDER_4K;
+  } else if (pixels > 1280 * 720) {
     return PROFILE_FALLBACK_ORDER_1080P;
   } else if (pixels > 854 * 480) {
     return PROFILE_FALLBACK_ORDER_720P;
