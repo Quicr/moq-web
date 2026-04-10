@@ -5,7 +5,7 @@
  * @fileoverview Add/Edit Track Modal
  *
  * Modal dialog for adding or editing tracks in the catalog builder.
- * Supports VOD, live video, audio, subtitle, and timeline track types.
+ * Glassmorphic design with frosted overlay.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -34,6 +34,14 @@ const TRACK_TYPE_LABELS: Record<CatalogTrackType, string> = {
   'audio': 'Audio',
   'subtitle': 'Subtitle',
   'timeline': 'Media Timeline',
+};
+
+const TRACK_TYPE_ICONS: Record<CatalogTrackType, string> = {
+  'video-vod': 'M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z',
+  'video-live': 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z',
+  'audio': 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z',
+  'subtitle': 'M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z',
+  'timeline': 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
 };
 
 export const AddTrackModal: React.FC<AddTrackModalProps> = ({
@@ -146,7 +154,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
           bitrate,
           enableDvr,
           loopPlayback,
-          duration: 0, // Will be set when video is loaded
+          duration: 0,
         } as Partial<VODTrackConfig>);
         break;
 
@@ -189,17 +197,53 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
     }
   };
 
+  // Checkbox component
+  const Checkbox: React.FC<{
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+    label: string;
+  }> = ({ checked, onChange, label }) => (
+    <label className="flex items-center gap-2 cursor-pointer group">
+      <div
+        className={`w-5 h-5 rounded border flex items-center justify-center transition-all ${
+          checked
+            ? 'bg-gradient-to-r from-accent-purple to-primary-500 border-transparent'
+            : 'border-white/20 bg-white/5 group-hover:border-white/30'
+        }`}
+        onClick={() => onChange(!checked)}
+      >
+        {checked && (
+          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+          </svg>
+        )}
+      </div>
+      <span className="text-sm text-white/70">{label}</span>
+    </label>
+  );
+
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <div className="frosted-overlay" onClick={onClose} />
+
+      {/* Modal */}
+      <div className="relative glass-panel-glow w-full max-w-lg max-h-[90vh] overflow-y-auto mx-4">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-semibold">
-            {isEditing ? 'Edit' : 'Add'} {TRACK_TYPE_LABELS[type]} Track
-          </h2>
+        <div className="flex items-center justify-between p-5 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent-purple/30 to-primary-500/30 flex items-center justify-center">
+              <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={TRACK_TYPE_ICONS[type]} />
+              </svg>
+            </div>
+            <h2 className="text-lg font-semibold text-white">
+              {isEditing ? 'Edit' : 'Add'} {TRACK_TYPE_LABELS[type]} Track
+            </h2>
+          </div>
           <button
             onClick={onClose}
-            className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+            className="btn-icon btn-ghost"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -208,7 +252,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-4 space-y-4">
+        <div className="p-5 space-y-5">
           {/* Common: Track Name */}
           <div>
             <label className="label">Track Name</label>
@@ -233,30 +277,22 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                   placeholder="https://example.com/video.mp4"
                   className="input"
                 />
-                <p className="text-xs text-gray-500 mt-1">
+                <p className="text-xs text-white/40 mt-2">
                   URL to MP4/WebM video file (must support CORS)
                 </p>
               </div>
 
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={enableDvr}
-                    onChange={(e) => setEnableDvr(e.target.checked)}
-                    className="rounded"
-                  />
-                  <span className="text-sm">Enable DVR (seeking)</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={loopPlayback}
-                    onChange={(e) => setLoopPlayback(e.target.checked)}
-                    className="rounded"
-                  />
-                  <span className="text-sm">Loop playback</span>
-                </label>
+              <div className="flex gap-6">
+                <Checkbox
+                  checked={enableDvr}
+                  onChange={setEnableDvr}
+                  label="Enable DVR (seeking)"
+                />
+                <Checkbox
+                  checked={loopPlayback}
+                  onChange={setLoopPlayback}
+                  label="Loop playback"
+                />
               </div>
             </>
           )}
@@ -429,7 +465,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                 <option value={90000}>90000 (MPEG-TS)</option>
                 <option value={48000}>48000 (audio samples)</option>
               </select>
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-white/40 mt-2">
                 Media timeline for seeking in VOD content
               </p>
             </div>
@@ -441,29 +477,42 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
             <div className="space-y-2">
               {(['interactive', 'streaming', 'broadcast'] as CatalogExperienceProfile[]).map((profile) => {
                 const info = EXPERIENCE_PROFILE_INFO[profile];
+                const isSelected = experienceProfile === profile;
                 return (
                   <label
                     key={profile}
-                    className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
-                      experienceProfile === profile
-                        ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                    className={`flex items-start gap-3 p-3 rounded-xl cursor-pointer transition-all ${
+                      isSelected
+                        ? 'bg-gradient-to-r from-accent-purple/20 to-primary-500/20 border border-accent-purple/40'
+                        : 'bg-white/5 border border-white/5 hover:border-white/10'
                     }`}
                   >
+                    <div
+                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all mt-0.5 ${
+                        isSelected
+                          ? 'border-accent-purple bg-accent-purple'
+                          : 'border-white/30'
+                      }`}
+                    >
+                      {isSelected && (
+                        <div className="w-2 h-2 rounded-full bg-white" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <div className="font-medium text-sm text-white/90">{info.label}</div>
+                      <div className="text-xs text-white/50 mt-0.5">
+                        {info.description}
+                        <span className="text-accent-cyan ml-1">({info.targetLatency})</span>
+                      </div>
+                    </div>
                     <input
                       type="radio"
                       name="experienceProfile"
                       value={profile}
-                      checked={experienceProfile === profile}
+                      checked={isSelected}
                       onChange={() => setExperienceProfile(profile)}
-                      className="mt-1"
+                      className="sr-only"
                     />
-                    <div>
-                      <div className="font-medium text-sm">{info.label}</div>
-                      <div className="text-xs text-gray-500">
-                        {info.description} ({info.targetLatency})
-                      </div>
-                    </div>
                   </label>
                 );
               })}
@@ -481,7 +530,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                 min={1}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-white/40 mt-1">
                 Tracks in same group sync together
               </p>
             </div>
@@ -495,7 +544,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                 placeholder="Optional"
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-white/40 mt-1">
                 Quality variants share same altGroup
               </p>
             </div>
@@ -515,7 +564,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-3 p-4 border-t border-gray-200 dark:border-gray-700">
+        <div className="flex justify-end gap-3 p-5 border-t border-white/10">
           <button onClick={onClose} className="btn-secondary">
             Cancel
           </button>
