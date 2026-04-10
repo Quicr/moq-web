@@ -124,6 +124,40 @@ export class VODLoader {
   }
 
   /**
+   * Preload video from File - reads and validates without full decode
+   * Use this for local files to avoid CORS issues
+   */
+  async preloadFile(file: File): Promise<{ duration: number; width: number; height: number }> {
+    log.info('Preloading VOD from file', { name: file.name, size: file.size });
+
+    // Read the file
+    await this.readFile(file);
+
+    // Validate it can be loaded by a video element
+    const metadata = await this.validateVideo();
+    log.info('VOD preloaded successfully', metadata);
+    return metadata;
+  }
+
+  /**
+   * Read video data from a File object
+   */
+  private async readFile(file: File): Promise<void> {
+    this.options.onProgress({ phase: 'fetching', progress: 0 });
+
+    // Determine MIME type from file
+    this.mimeType = file.type || 'video/mp4';
+    log.info('File type', { mimeType: this.mimeType });
+
+    // Read the file as ArrayBuffer
+    const buffer = await file.arrayBuffer();
+    this.videoData = new Uint8Array(buffer);
+
+    this.options.onProgress({ phase: 'fetching', progress: 50 });
+    log.info('File read', { bytes: this.videoData.length, mimeType: this.mimeType });
+  }
+
+  /**
    * Load video from URL (full decode)
    * If preload() was already called, uses cached video data
    */
@@ -135,6 +169,44 @@ export class VODLoader {
       // Fetch if not already preloaded
       if (!this.videoData) {
         await this.fetchVideo(url);
+      } else {
+        log.info('Using preloaded video data');
+        this.options.onProgress({ phase: 'fetching', progress: 50 });
+      }
+
+      this.options.onProgress({ phase: 'decoding', progress: 50 });
+
+      // Decode the video
+      await this.decodeVideo(this.videoData!);
+
+      this.loaded = true;
+      this.options.onProgress({ phase: 'complete', progress: 100 });
+      log.info('VOD loaded successfully', {
+        totalGroups: this.metadata?.totalGroups,
+        duration: this.metadata?.duration,
+        totalFrames: this.frames.size,
+      });
+
+    } catch (err) {
+      const error = err as Error;
+      log.error('Failed to load VOD', { error: error.message });
+      this.options.onProgress({ phase: 'error', progress: 0, error: error.message });
+      throw err;
+    }
+  }
+
+  /**
+   * Load video from File (full decode)
+   * If preloadFile() was already called, uses cached video data
+   */
+  async loadFile(file: File): Promise<void> {
+    log.info('Loading VOD from file', { name: file.name, size: file.size });
+    this.options.onProgress({ phase: 'fetching', progress: 0 });
+
+    try {
+      // Read if not already preloaded
+      if (!this.videoData) {
+        await this.readFile(file);
       } else {
         log.info('Using preloaded video data');
         this.options.onProgress({ phase: 'fetching', progress: 50 });
