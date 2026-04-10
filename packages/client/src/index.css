@@ -19,6 +19,26 @@
   html {
     scroll-behavior: smooth;
   }
+
+  /* Remove native select dropdown styling globally */
+  select {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(107,114,128,0.8)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+    background-position: right 8px center;
+    background-repeat: no-repeat;
+    background-size: 16px;
+    padding-right: 32px;
+  }
+
+  select::-ms-expand {
+    display: none;
+  }
+
+  .dark select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.5)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+  }
 }
 
 /* Custom scrollbar */
@@ -225,7 +245,7 @@
   }
 
   .dark .input {
-    background: rgba(255, 255, 255, 0.05);
+    background-color: rgba(255, 255, 255, 0.05);
   }
 
   .input:focus {
@@ -235,7 +255,7 @@
   }
 
   .dark .input:focus {
-    background: rgba(255, 255, 255, 0.08);
+    background-color: rgba(255, 255, 255, 0.08);
     box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
   }
 
@@ -248,14 +268,22 @@
     @apply text-gray-700 dark:text-white/70;
   }
 
-  /* Select dropdown */
+  /* Select dropdown - cross-browser styling */
   select.input {
-    @apply cursor-pointer appearance-none;
+    @apply cursor-pointer;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(107,114,128,0.8)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
     background-position: right 12px center;
     background-repeat: no-repeat;
     background-size: 16px;
     padding-right: 40px;
+  }
+
+  /* Remove native dropdown arrow in IE/Edge */
+  select.input::-ms-expand {
+    display: none;
   }
 
   .dark select.input {
