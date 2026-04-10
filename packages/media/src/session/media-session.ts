@@ -241,6 +241,13 @@ export class MediaSession {
   }
 
   /**
+   * Get the underlying MOQT session for advanced operations
+   */
+  getMOQTSession(): MOQTSession {
+    return this.session;
+  }
+
+  /**
    * Set up the MOQT session
    *
    * Sends CLIENT_SETUP and waits for SERVER_SETUP
