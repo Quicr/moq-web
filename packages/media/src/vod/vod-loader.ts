@@ -11,6 +11,7 @@
 import { Logger } from '@web-moq/core';
 import { LOCPackager } from '../loc/loc-container.js';
 import type { VODPublishOptions, VODMetadata } from '@web-moq/session';
+import { MP4Parser, type VideoTrackInfo } from './mp4-parser.js';
 
 const log = Logger.create('moqt:media:vod-loader');
 
@@ -28,11 +29,13 @@ interface StoredFrame {
  * VOD loading progress event
  */
 export interface VODLoadProgress {
-  phase: 'fetching' | 'decoding' | 'complete' | 'error';
+  phase: 'fetching' | 'parsing' | 'remuxing' | 'decoding' | 'complete' | 'error';
   progress: number; // 0-100
   framesDecoded?: number;
   totalFrames?: number;
   error?: string;
+  /** True if using fast remux path (H.264 source) */
+  isRemuxing?: boolean;
 }
 
 /**
@@ -339,9 +342,141 @@ export class VODLoader {
   }
 
   /**
-   * Decode video data into frames
+   * Process video data - tries remuxing first (fast), falls back to transcoding
    */
   private async decodeVideo(videoData: Uint8Array): Promise<void> {
+    this.options.onProgress({ phase: 'parsing', progress: 50 });
+
+    // Try to parse MP4 and remux if H.264
+    const parser = new MP4Parser(videoData);
+    const parseResult = parser.parse();
+
+    if (parseResult.canRemux && parseResult.videoTrack) {
+      log.info('Using fast remux path (H.264 source)', {
+        codec: parseResult.videoTrack.codec,
+        samples: parseResult.videoTrack.samples.length,
+      });
+      await this.remuxVideo(videoData, parseResult.videoTrack, parser);
+    } else {
+      log.info('Using transcode path', { reason: parseResult.remuxReason });
+      await this.transcodeVideo(videoData);
+    }
+  }
+
+  /**
+   * Fast remux path - extract H.264 NAL units directly from MP4 container
+   * No decode/encode needed, just repackage for MOQT
+   */
+  private async remuxVideo(_videoData: Uint8Array, track: VideoTrackInfo, parser: MP4Parser): Promise<void> {
+    const { samples, timescale, durationMs, width, height, avcConfig, nalLengthSize } = track;
+
+    log.info('Remuxing H.264 video', {
+      samples: samples.length,
+      duration: `${(durationMs / 1000).toFixed(1)}s`,
+      resolution: `${width}x${height}`,
+    });
+
+    this.options.onProgress({ phase: 'remuxing', progress: 50, isRemuxing: true });
+
+    // Group samples by GOP (keyframe to next keyframe)
+    // We'll create one MOQT group per GOP
+    const gops: Array<{ samples: typeof samples; startTime: number }> = [];
+    let currentGop: typeof samples = [];
+    let gopStartTime = 0;
+
+    for (const sample of samples) {
+      if (sample.isKeyframe && currentGop.length > 0) {
+        gops.push({ samples: currentGop, startTime: gopStartTime });
+        currentGop = [];
+        gopStartTime = (sample.dts / timescale) * 1000;
+      }
+      currentGop.push(sample);
+      if (currentGop.length === 1) {
+        gopStartTime = (sample.dts / timescale) * 1000;
+      }
+    }
+    if (currentGop.length > 0) {
+      gops.push({ samples: currentGop, startTime: gopStartTime });
+    }
+
+    log.info('Organized into GOPs', { gopCount: gops.length, totalSamples: samples.length });
+
+    // Calculate average GOP size for metadata
+    const avgGopSize = samples.length / gops.length;
+    this.originalTotalGroups = gops.length;
+
+    this.metadata = {
+      duration: this.options.loop ? Number.MAX_SAFE_INTEGER : durationMs,
+      totalGroups: this.options.loop ? Number.MAX_SAFE_INTEGER : gops.length,
+      framerate: samples.length / (durationMs / 1000), // Actual framerate from samples
+      gopDuration: durationMs / gops.length,
+      timescale: 1000,
+    };
+
+    // Get codec description (SPS/PPS) in Annex B format
+    const codecDescription = avcConfig ? parser.extractAvcConfigAsAnnexB(avcConfig) : undefined;
+
+    // Process each GOP
+    if (!this.packager) {
+      this.packager = new LOCPackager();
+    }
+
+    let processedSamples = 0;
+    for (let groupId = 0; groupId < gops.length; groupId++) {
+      const gop = gops[groupId];
+
+      for (let objectId = 0; objectId < gop.samples.length; objectId++) {
+        const sample = gop.samples[objectId];
+
+        // Extract NAL units and convert to Annex B format
+        const nalData = parser.extractSampleAsAnnexB(sample, nalLengthSize);
+
+        // Package with LOC container
+        const timestamp = (sample.dts / timescale) * 1000;
+        const duration = (sample.duration / timescale) * 1000;
+
+        const packedData = this.packager.packageVideo(nalData, {
+          isKeyframe: sample.isKeyframe,
+          captureTimestamp: timestamp,
+          codecDescription: sample.isKeyframe ? codecDescription : undefined,
+        });
+
+        // Store frame
+        const key = `${groupId}:${objectId}`;
+        this.frames.set(key, {
+          data: packedData,
+          isKeyframe: sample.isKeyframe,
+          timestamp: timestamp * 1000, // microseconds
+          duration: duration * 1000,
+        });
+
+        processedSamples++;
+
+        // Update progress (50-100%)
+        if (processedSamples % 100 === 0 || processedSamples === samples.length) {
+          const progress = 50 + Math.round((processedSamples / samples.length) * 50);
+          this.options.onProgress({
+            phase: 'remuxing',
+            progress,
+            framesDecoded: processedSamples,
+            totalFrames: samples.length,
+            isRemuxing: true,
+          });
+        }
+      }
+    }
+
+    log.info('Video remuxed', {
+      framesProcessed: processedSamples,
+      groups: gops.length,
+      avgGopSize: Math.round(avgGopSize),
+    });
+  }
+
+  /**
+   * Transcode path - decode and re-encode video (slow, but works for any format)
+   */
+  private async transcodeVideo(videoData: Uint8Array): Promise<void> {
     // Create a blob URL for the video
     const bufferCopy = new ArrayBuffer(videoData.byteLength);
     new Uint8Array(bufferCopy).set(videoData);
@@ -531,7 +666,7 @@ export class VODLoader {
         });
       }
 
-      log.info('Video decoded', { framesEncoded: encodedFrames.length, groups: totalGroups });
+      log.info('Video transcoded', { framesEncoded: encodedFrames.length, groups: totalGroups });
 
     } finally {
       URL.revokeObjectURL(blobUrl);
