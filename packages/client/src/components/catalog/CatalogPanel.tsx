@@ -91,8 +91,11 @@ export const CatalogPanel: React.FC = () => {
       for (const track of tracks) {
         if (track.type === 'video-vod') {
           const vodTrack = track as VODTrackConfig;
-          if (vodTrack.videoUrl && !vodLoaders.has(track.id)) {
-            console.log('[CatalogPanel] Loading VOD:', vodTrack.videoUrl);
+          const hasSource = vodTrack.videoFile || vodTrack.videoUrl;
+
+          if (hasSource && !vodLoaders.has(track.id)) {
+            const sourceName = vodTrack.videoFile ? vodTrack.videoFile.name : vodTrack.videoUrl;
+            console.log('[CatalogPanel] Loading VOD:', sourceName);
 
             const loader = new VODLoader({
               framerate: vodTrack.framerate,
@@ -108,7 +111,12 @@ export const CatalogPanel: React.FC = () => {
             vodLoaders.set(track.id, loader);
 
             try {
-              await loader.load(vodTrack.videoUrl);
+              // Use loadFile for uploaded files, load for URLs
+              if (vodTrack.videoFile) {
+                await loader.loadFile(vodTrack.videoFile);
+              } else {
+                await loader.load(vodTrack.videoUrl);
+              }
               console.log('[CatalogPanel] VOD loaded:', loader.getMetadata());
             } catch (err) {
               console.error('[CatalogPanel] Failed to load VOD:', err);
