@@ -89,7 +89,7 @@
     @apply glass-panel;
     box-shadow:
       0 8px 32px rgba(0, 0, 0, 0.3),
-      0 0 40px rgba(168, 85, 247, 0.1),
+      0 0 40px rgba(14, 165, 233, 0.12),
       inset 0 1px 0 rgba(255, 255, 255, 0.1);
   }
 
@@ -115,14 +115,14 @@
   /* Primary - Gradient with glow */
   .btn-primary {
     @apply btn text-white;
-    background: linear-gradient(135deg, #a855f7 0%, #6366f1 50%, #0ea5e9 100%);
+    background: linear-gradient(135deg, #0ea5e9 0%, #3b82f6 50%, #6366f1 100%);
     background-size: 200% 200%;
-    box-shadow: 0 4px 15px rgba(168, 85, 247, 0.4);
+    box-shadow: 0 4px 15px rgba(14, 165, 233, 0.35);
   }
 
   .btn-primary:hover:not(:disabled) {
     background-position: 100% 100%;
-    box-shadow: 0 6px 25px rgba(168, 85, 247, 0.5);
+    box-shadow: 0 6px 25px rgba(14, 165, 233, 0.45);
     transform: translateY(-1px);
   }
 
@@ -200,8 +200,8 @@
   .input:focus {
     @apply outline-none;
     background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(168, 85, 247, 0.5);
-    box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
+    border-color: rgba(14, 165, 233, 0.5);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
   }
 
   .input:disabled {
@@ -287,6 +287,48 @@
     color: #c084fc;
   }
 
+  .badge-gray {
+    @apply badge;
+    background: rgba(156, 163, 175, 0.15);
+    border-color: rgba(156, 163, 175, 0.2);
+    color: #9ca3af;
+  }
+
+  /* ========================================
+     COLLAPSIBLE SECTIONS
+     ======================================== */
+
+  .collapsible-header {
+    @apply w-full flex items-center justify-between px-5 py-3 cursor-pointer transition-colors;
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .collapsible-header:hover {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .collapsible-chevron {
+    @apply w-4 h-4 text-white/50 transition-transform duration-200;
+  }
+
+  .collapsible-chevron.open {
+    transform: rotate(180deg);
+  }
+
+  .collapsible-content {
+    @apply overflow-hidden transition-all duration-200;
+  }
+
+  .collapsible-content.closed {
+    max-height: 0;
+    opacity: 0;
+  }
+
+  .collapsible-content.open {
+    max-height: 2000px;
+    opacity: 1;
+  }
+
   /* ========================================
      STATS
      ======================================== */
@@ -322,8 +364,8 @@
 
   .tab-active {
     @apply text-white;
-    background: linear-gradient(135deg, rgba(168, 85, 247, 0.3) 0%, rgba(99, 102, 241, 0.3) 100%);
-    box-shadow: 0 2px 10px rgba(168, 85, 247, 0.2);
+    background: linear-gradient(135deg, rgba(14, 165, 233, 0.3) 0%, rgba(59, 130, 246, 0.25) 100%);
+    box-shadow: 0 2px 10px rgba(14, 165, 233, 0.2);
   }
 }
 
@@ -410,10 +452,10 @@
 
 @keyframes glowPulse {
   0%, 100% {
-    box-shadow: 0 0 20px rgba(168, 85, 247, 0.4);
+    box-shadow: 0 0 20px rgba(14, 165, 233, 0.35);
   }
   50% {
-    box-shadow: 0 0 30px rgba(168, 85, 247, 0.6);
+    box-shadow: 0 0 30px rgba(14, 165, 233, 0.5);
   }
 }
 
@@ -445,7 +487,7 @@
 /* Text gradient */
 .text-gradient {
   @apply bg-clip-text text-transparent;
-  background-image: linear-gradient(135deg, #a855f7 0%, #6366f1 50%, #0ea5e9 100%);
+  background-image: linear-gradient(135deg, #0ea5e9 0%, #3b82f6 50%, #6366f1 100%);
 }
 
 /* Border gradient */
@@ -459,7 +501,7 @@
   inset: 0;
   padding: 1px;
   border-radius: inherit;
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.5), rgba(34, 211, 238, 0.5));
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.5), rgba(59, 130, 246, 0.4));
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
@@ -478,10 +520,10 @@
 .app-background {
   @apply fixed inset-0 -z-10;
   background:
-    radial-gradient(at 40% 20%, rgba(120, 40, 200, 0.25) 0px, transparent 50%),
-    radial-gradient(at 80% 0%, rgba(0, 150, 255, 0.2) 0px, transparent 50%),
-    radial-gradient(at 0% 50%, rgba(255, 0, 128, 0.12) 0px, transparent 50%),
-    radial-gradient(at 80% 50%, rgba(0, 200, 200, 0.15) 0px, transparent 50%),
-    radial-gradient(at 0% 100%, rgba(100, 50, 255, 0.2) 0px, transparent 50%),
+    radial-gradient(at 40% 20%, rgba(14, 165, 233, 0.15) 0px, transparent 50%),
+    radial-gradient(at 80% 0%, rgba(59, 130, 246, 0.12) 0px, transparent 50%),
+    radial-gradient(at 0% 50%, rgba(6, 182, 212, 0.1) 0px, transparent 50%),
+    radial-gradient(at 80% 50%, rgba(0, 180, 200, 0.1) 0px, transparent 50%),
+    radial-gradient(at 0% 100%, rgba(99, 102, 241, 0.1) 0px, transparent 50%),
     #0a0a0f;
 }
