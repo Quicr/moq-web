@@ -69,7 +69,7 @@ export const DevSettingsPanel: React.FC = () => {
               <select
                 value={logLevel}
                 onChange={(e) => setLogLevel(Number(e.target.value) as LogLevel)}
-                className="w-full px-3 py-1.5 text-sm bg-white dark:bg-gray-800 border border-yellow-300 dark:border-yellow-600 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500"
+                className="input w-full py-1.5 text-sm border-yellow-300 dark:border-yellow-600 focus:ring-yellow-500"
               >
                 <option value={LogLevel.TRACE}>Trace (verbose)</option>
                 <option value={LogLevel.DEBUG}>Debug</option>
