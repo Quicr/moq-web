@@ -398,8 +398,6 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
                   track={track}
                   onEdit={() => handleEditTrack(track)}
                   onRemove={() => handleRemoveTrack(track.id)}
-                  onStartPublish={() => updateTrackStatus(track.id, 'publishing')}
-                  onStopPublish={() => updateTrackStatus(track.id, 'ready')}
                   onPreload={track.type === 'video-vod' ? () => handlePreloadVOD(track as VODTrackConfig) : undefined}
                 />
               ))}
