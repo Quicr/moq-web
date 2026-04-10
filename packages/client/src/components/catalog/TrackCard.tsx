@@ -18,6 +18,7 @@ interface TrackCardProps {
   onRemove: () => void;
   onStartPublish: () => void;
   onStopPublish: () => void;
+  onPreload?: () => void;
 }
 
 // Track type icons with glassmorphic colors
@@ -185,10 +186,13 @@ export const TrackCard: React.FC<TrackCardProps> = ({
   onRemove,
   onStartPublish,
   onStopPublish,
+  onPreload,
 }) => {
   const profileInfo = EXPERIENCE_PROFILE_INFO[track.experienceProfile];
   const isPublishing = track.status === 'publishing';
+  const isLoading = track.status === 'loading';
   const canPublish = track.status === 'ready' || track.status === 'idle';
+  const canPreload = track.type === 'video-vod' && track.status === 'idle' && onPreload;
 
   return (
     <div className="glass-panel-subtle p-4">
@@ -236,13 +240,25 @@ export const TrackCard: React.FC<TrackCardProps> = ({
       {/* Actions */}
       <div className="flex gap-2 mt-4">
         {!isPublishing ? (
-          <button
-            onClick={onStartPublish}
-            disabled={!canPublish}
-            className="btn-success btn-sm flex-1"
-          >
-            Start
-          </button>
+          <>
+            {canPreload && (
+              <button
+                onClick={onPreload}
+                disabled={isLoading}
+                className="btn-primary btn-sm"
+                title="Preload video to verify it can be decoded"
+              >
+                {isLoading ? 'Loading...' : 'Preload'}
+              </button>
+            )}
+            <button
+              onClick={onStartPublish}
+              disabled={!canPublish}
+              className="btn-success btn-sm flex-1"
+            >
+              Start
+            </button>
+          </>
         ) : (
           <button
             onClick={onStopPublish}
@@ -253,14 +269,14 @@ export const TrackCard: React.FC<TrackCardProps> = ({
         )}
         <button
           onClick={onEdit}
-          disabled={isPublishing}
+          disabled={isPublishing || isLoading}
           className="btn-secondary btn-sm"
         >
           Edit
         </button>
         <button
           onClick={onRemove}
-          disabled={isPublishing}
+          disabled={isPublishing || isLoading}
           className="btn-danger btn-sm"
         >
           Remove

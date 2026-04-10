@@ -9,7 +9,7 @@
  * Works fully offline - no connection required until publish.
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { TrackCard } from './TrackCard';
 import { AddTrackModal } from './AddTrackModal';
 import type {
@@ -23,6 +23,7 @@ import type {
 } from './types';
 import { DEFAULT_TRACK_CONFIGS } from './types';
 import { createCatalog, type FullCatalog } from '@web-moq/msf';
+import { VODLoader } from '@web-moq/media';
 
 interface CatalogBuilderPanelProps {
   namespace: string;
@@ -46,6 +47,9 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
   const [addingTrackType, setAddingTrackType] = useState<CatalogTrackType | null>(null);
   const [editingTrack, setEditingTrack] = useState<CatalogTrackConfig | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+
+  // Track VOD loaders for preloading
+  const vodLoadersRef = useRef<Map<string, VODLoader>>(new Map());
 
   // Generate unique ID for new tracks
   const generateId = () => `track-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -106,6 +110,73 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
     setTracks(prev => prev.map(t =>
       t.id === id ? { ...t, status, error } : t
     ));
+  };
+
+  // Update VOD track with progress
+  const updateVODProgress = (id: string, progress: { phase: string; progress: number; error?: string }) => {
+    setTracks(prev => prev.map(t => {
+      if (t.id !== id || t.type !== 'video-vod') return t;
+      const vodTrack = t as VODTrackConfig;
+      return {
+        ...vodTrack,
+        loadProgress: {
+          phase: progress.phase as 'fetching' | 'decoding' | 'complete' | 'error',
+          progress: progress.progress,
+        },
+        status: progress.phase === 'error' ? 'error' : progress.phase === 'complete' ? 'ready' : 'loading',
+        error: progress.error,
+      } as VODTrackConfig;
+    }));
+  };
+
+  // Preload VOD video - fetches and validates without full decode
+  const handlePreloadVOD = async (track: VODTrackConfig) => {
+    if (!track.videoUrl) {
+      updateTrackStatus(track.id, 'error', 'No video URL specified');
+      return;
+    }
+
+    updateTrackStatus(track.id, 'loading');
+    updateVODProgress(track.id, { phase: 'fetching', progress: 0 });
+
+    try {
+      // Create or get loader for this track
+      let loader = vodLoadersRef.current.get(track.id);
+      if (!loader) {
+        loader = new VODLoader({
+          framerate: track.framerate,
+          width: track.width,
+          height: track.height,
+          bitrate: track.bitrate,
+          loop: track.loopPlayback,
+          onProgress: (progress) => {
+            updateVODProgress(track.id, progress);
+          },
+        });
+        vodLoadersRef.current.set(track.id, loader);
+      }
+
+      console.log('[CatalogBuilder] Preloading VOD:', track.videoUrl);
+      const metadata = await loader.preload(track.videoUrl);
+      console.log('[CatalogBuilder] VOD preloaded:', metadata);
+
+      // Update track with actual video metadata
+      setTracks(prev => prev.map(t => {
+        if (t.id !== track.id) return t;
+        return {
+          ...t,
+          status: 'ready',
+          duration: metadata.duration,
+          width: metadata.width,
+          height: metadata.height,
+          loadProgress: { phase: 'complete', progress: 100 },
+        } as VODTrackConfig;
+      }));
+    } catch (err) {
+      const error = (err as Error).message;
+      console.error('[CatalogBuilder] Preload failed:', error);
+      updateVODProgress(track.id, { phase: 'error', progress: 0, error });
+    }
   };
 
   // Build MSF catalog from tracks
@@ -299,6 +370,7 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
                   onRemove={() => handleRemoveTrack(track.id)}
                   onStartPublish={() => updateTrackStatus(track.id, 'publishing')}
                   onStopPublish={() => updateTrackStatus(track.id, 'ready')}
+                  onPreload={track.type === 'video-vod' ? () => handlePreloadVOD(track as VODTrackConfig) : undefined}
                 />
               ))}
             </div>

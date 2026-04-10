@@ -104,60 +104,46 @@ export class VODLoader {
   /** Number of groups in the original video (for loop calculations) */
   private originalTotalGroups = 0;
 
+  private videoData: Uint8Array | null = null;
+  private mimeType: string = 'video/mp4';
+
   /**
-   * Load video from URL
+   * Preload video from URL - fetches and validates without full decode
+   * Call this early to catch errors before the user initiates publishing
+   */
+  async preload(url: string): Promise<{ duration: number; width: number; height: number }> {
+    log.info('Preloading VOD from URL', { url });
+
+    // Fetch the video
+    await this.fetchVideo(url);
+
+    // Validate it can be loaded by a video element
+    const metadata = await this.validateVideo();
+    log.info('VOD preloaded successfully', metadata);
+    return metadata;
+  }
+
+  /**
+   * Load video from URL (full decode)
+   * If preload() was already called, uses cached video data
    */
   async load(url: string): Promise<void> {
     log.info('Loading VOD from URL', { url });
     this.options.onProgress({ phase: 'fetching', progress: 0 });
 
     try {
-      // Fetch the video file
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch video: ${response.status} ${response.statusText}`);
+      // Fetch if not already preloaded
+      if (!this.videoData) {
+        await this.fetchVideo(url);
+      } else {
+        log.info('Using preloaded video data');
+        this.options.onProgress({ phase: 'fetching', progress: 50 });
       }
 
-      const contentLength = response.headers.get('content-length');
-      const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-
-      // Read the video data with progress tracking
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Failed to get response reader');
-      }
-
-      const chunks: Uint8Array[] = [];
-      let receivedBytes = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        chunks.push(value);
-        receivedBytes += value.length;
-
-        if (totalBytes > 0) {
-          this.options.onProgress({
-            phase: 'fetching',
-            progress: Math.round((receivedBytes / totalBytes) * 50), // 0-50% for fetching
-          });
-        }
-      }
-
-      // Combine chunks
-      const videoData = new Uint8Array(receivedBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        videoData.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      log.info('Video fetched', { bytes: receivedBytes });
       this.options.onProgress({ phase: 'decoding', progress: 50 });
 
       // Decode the video
-      await this.decodeVideo(videoData);
+      await this.decodeVideo(this.videoData!);
 
       this.loaded = true;
       this.options.onProgress({ phase: 'complete', progress: 100 });
@@ -176,14 +162,118 @@ export class VODLoader {
   }
 
   /**
+   * Fetch video data from URL
+   */
+  private async fetchVideo(url: string): Promise<void> {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch video: ${response.status} ${response.statusText}`);
+    }
+
+    // Get MIME type from response
+    const contentType = response.headers.get('content-type');
+    if (contentType) {
+      this.mimeType = contentType.split(';')[0].trim();
+      log.info('Video content type', { mimeType: this.mimeType });
+    }
+
+    const contentLength = response.headers.get('content-length');
+    const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+
+    // Read the video data with progress tracking
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Failed to get response reader');
+    }
+
+    const chunks: Uint8Array[] = [];
+    let receivedBytes = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      chunks.push(value);
+      receivedBytes += value.length;
+
+      if (totalBytes > 0) {
+        this.options.onProgress({
+          phase: 'fetching',
+          progress: Math.round((receivedBytes / totalBytes) * 50), // 0-50% for fetching
+        });
+      }
+    }
+
+    // Combine chunks
+    this.videoData = new Uint8Array(receivedBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      this.videoData.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    log.info('Video fetched', { bytes: receivedBytes, mimeType: this.mimeType });
+  }
+
+  /**
+   * Validate video can be loaded by HTMLVideoElement
+   */
+  private async validateVideo(): Promise<{ duration: number; width: number; height: number }> {
+    if (!this.videoData) {
+      throw new Error('No video data to validate');
+    }
+
+    const bufferCopy = new ArrayBuffer(this.videoData.byteLength);
+    new Uint8Array(bufferCopy).set(this.videoData);
+    const blob = new Blob([bufferCopy], { type: this.mimeType });
+    const blobUrl = URL.createObjectURL(blob);
+
+    try {
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.crossOrigin = 'anonymous';
+      video.preload = 'metadata';
+
+      const metadata = await new Promise<{ duration: number; width: number; height: number }>((resolve, reject) => {
+        video.onloadedmetadata = () => {
+          resolve({
+            duration: video.duration * 1000,
+            width: video.videoWidth,
+            height: video.videoHeight,
+          });
+        };
+        video.onerror = () => {
+          const mediaError = video.error;
+          let errorMsg = 'Failed to load video metadata';
+          if (mediaError) {
+            const errorCodes: Record<number, string> = {
+              1: 'MEDIA_ERR_ABORTED',
+              2: 'MEDIA_ERR_NETWORK',
+              3: 'MEDIA_ERR_DECODE (codec not supported?)',
+              4: 'MEDIA_ERR_SRC_NOT_SUPPORTED (format not supported)',
+            };
+            errorMsg = errorCodes[mediaError.code] || `Error code: ${mediaError.code}`;
+          }
+          reject(new Error(errorMsg));
+        };
+        video.src = blobUrl;
+      });
+
+      return metadata;
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+  }
+
+  /**
    * Decode video data into frames
    */
   private async decodeVideo(videoData: Uint8Array): Promise<void> {
     // Create a blob URL for the video
-    // Create a new ArrayBuffer copy to ensure type compatibility with Blob
     const bufferCopy = new ArrayBuffer(videoData.byteLength);
     new Uint8Array(bufferCopy).set(videoData);
-    const blob = new Blob([bufferCopy], { type: 'video/mp4' });
+    const blob = new Blob([bufferCopy], { type: this.mimeType });
     const blobUrl = URL.createObjectURL(blob);
 
     try {
@@ -191,10 +281,29 @@ export class VODLoader {
       const video = document.createElement('video');
       video.muted = true;
       video.playsInline = true;
+      video.crossOrigin = 'anonymous';
+      video.preload = 'auto';
 
       await new Promise<void>((resolve, reject) => {
         video.onloadedmetadata = () => resolve();
-        video.onerror = () => reject(new Error('Failed to load video metadata'));
+        video.onerror = () => {
+          const mediaError = video.error;
+          let errorMsg = 'Failed to load video metadata';
+          if (mediaError) {
+            const errorCodes: Record<number, string> = {
+              1: 'MEDIA_ERR_ABORTED - fetching aborted by user',
+              2: 'MEDIA_ERR_NETWORK - network error during download',
+              3: 'MEDIA_ERR_DECODE - error decoding video (codec not supported?)',
+              4: 'MEDIA_ERR_SRC_NOT_SUPPORTED - video format/codec not supported',
+            };
+            errorMsg = errorCodes[mediaError.code] || `Unknown error code: ${mediaError.code}`;
+            if (mediaError.message) {
+              errorMsg += ` - ${mediaError.message}`;
+            }
+          }
+          log.error('Video element error', { errorMsg, mediaError });
+          reject(new Error(errorMsg));
+        };
         video.src = blobUrl;
       });
 
@@ -417,7 +526,15 @@ export class VODLoader {
   clear(): void {
     this.frames.clear();
     this.metadata = null;
+    this.videoData = null;
     this.loaded = false;
     log.info('VOD loader cleared');
+  }
+
+  /**
+   * Check if video data has been fetched (preloaded)
+   */
+  get isPreloaded(): boolean {
+    return this.videoData !== null;
   }
 }
