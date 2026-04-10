@@ -32,7 +32,7 @@ export const StatusPanel: React.FC = () => {
     if (error) return { color: 'bg-red-400', glow: 'rgba(248, 113, 113, 0.6)', text: 'Error', textColor: 'text-red-400' };
     if (state === 'connected' && sessionState === 'ready') return { color: 'bg-emerald-400', glow: 'rgba(52, 211, 153, 0.6)', text: 'Connected', textColor: 'text-emerald-400' };
     if (state === 'connecting' || sessionState === 'setup') return { color: 'bg-amber-400', glow: 'rgba(251, 191, 36, 0.6)', text: 'Connecting...', textColor: 'text-amber-400', pulse: true };
-    return { color: 'bg-white/30', glow: 'transparent', text: 'Disconnected', textColor: 'text-white/50' };
+    return { color: 'bg-gray-400 dark:bg-white/30', glow: 'transparent', text: 'Disconnected', textColor: 'text-muted' };
   };
 
   const status = getStatusIndicator();
@@ -66,7 +66,7 @@ export const StatusPanel: React.FC = () => {
 
         {/* Connection info */}
         {state === 'connected' && (
-          <div className="text-xs text-white/40 truncate">
+          <div className="text-xs text-subtle truncate">
             {serverUrl}
           </div>
         )}
@@ -85,7 +85,7 @@ export const StatusPanel: React.FC = () => {
             <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            <span className="text-xs text-white/60">
+            <span className="text-xs text-tertiary">
               Session ready. Publish or subscribe to tracks.
             </span>
           </div>
@@ -94,10 +94,10 @@ export const StatusPanel: React.FC = () => {
         {/* Disconnected state */}
         {!error && state === 'disconnected' && (
           <div className="glass-panel-subtle p-3 flex items-center gap-2">
-            <svg className="w-4 h-4 text-white/30 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-4 h-4 text-hint flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            <span className="text-xs text-white/40">
+            <span className="text-xs text-subtle">
               Configure settings, then connect when ready.
             </span>
           </div>

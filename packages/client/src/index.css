@@ -564,6 +564,63 @@
    UTILITY CLASSES
    ======================================== */
 
+/* ========================================
+   SEMANTIC TEXT COLORS (theme-aware)
+   Use these instead of hardcoded colors
+   ======================================== */
+
+/* Primary text - highest contrast */
+.text-primary {
+  @apply text-gray-900 dark:text-white;
+}
+
+/* Secondary text - slightly muted */
+.text-secondary {
+  @apply text-gray-700 dark:text-white/90;
+}
+
+/* Tertiary text - muted */
+.text-tertiary {
+  @apply text-gray-600 dark:text-white/70;
+}
+
+/* Muted text - low emphasis */
+.text-muted {
+  @apply text-gray-500 dark:text-white/50;
+}
+
+/* Subtle text - very low emphasis */
+.text-subtle {
+  @apply text-gray-400 dark:text-white/40;
+}
+
+/* Hint text - minimal emphasis */
+.text-hint {
+  @apply text-gray-300 dark:text-white/30;
+}
+
+/* Divider/separator color */
+.text-divider {
+  @apply text-gray-200 dark:text-white/20;
+}
+
+/* Background-aware classes */
+.bg-subtle {
+  @apply bg-gray-100 dark:bg-white/5;
+}
+
+.bg-muted {
+  @apply bg-gray-50 dark:bg-white/[0.03];
+}
+
+.border-subtle {
+  @apply border-gray-200 dark:border-white/10;
+}
+
+.border-muted {
+  @apply border-gray-100 dark:border-white/5;
+}
+
 /* Text gradient */
 .text-gradient {
   @apply bg-clip-text text-transparent;

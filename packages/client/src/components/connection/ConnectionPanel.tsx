@@ -100,7 +100,7 @@ export const ConnectionPanel: React.FC = () => {
         </div>
 
         <div className="flex items-center justify-between">
-          <label htmlFor="localDev" className="text-sm text-white/70">
+          <label htmlFor="localDev" className="text-sm text-tertiary">
             Local Development
           </label>
           <Toggle
@@ -110,12 +110,12 @@ export const ConnectionPanel: React.FC = () => {
             disabled={isConnected || isConnecting}
           />
         </div>
-        <p className="text-xs text-white/40 -mt-2">
+        <p className="text-xs text-subtle -mt-2">
           Enable for self-signed certificates
         </p>
 
         <div className="flex items-center justify-between">
-          <label htmlFor="useWorkers" className="text-sm text-white/70">
+          <label htmlFor="useWorkers" className="text-sm text-tertiary">
             Web Workers
           </label>
           <Toggle
@@ -125,7 +125,7 @@ export const ConnectionPanel: React.FC = () => {
             disabled={isConnected || isConnecting}
           />
         </div>
-        <p className="text-xs text-white/40 -mt-2">
+        <p className="text-xs text-subtle -mt-2">
           Offload encoding/decoding to background threads
         </p>
 
