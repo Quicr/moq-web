@@ -12,6 +12,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useStore } from '../../store';
 import { createMSFSession, type MSFSession, type FullCatalog, type Track } from '@web-moq/msf';
 import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
+import { VideoRenderer } from '../subscribe/VideoRenderer';
 
 interface CatalogSubscriberPanelProps {
   namespace: string;
@@ -61,7 +62,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   namespace,
   onNamespaceChange,
 }) => {
-  const { session, sessionState, state, connect, serverUrl, startSubscription } = useStore();
+  const { session, sessionState, state, connect, serverUrl, startSubscription, onVideoFrame } = useStore();
 
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
@@ -75,6 +76,10 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const [activeSubtitleTrack, setActiveSubtitleTrack] = useState<string | null>(null);
   const [_timelineData, setTimelineData] = useState<TimelineData | null>(null);
   // Note: _subtitleCuesMap and _timelineData are set but read access will be added when player integration is complete
+
+  // Video frames for rendering
+  const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
+  const subscriptionToTrackRef = useRef<Map<number, string>>(new Map());
 
   // Helper to set subtitle cues for a track
   const setSubtitleCues = useCallback((trackName: string, cues: SubtitleCue[]) => {
@@ -92,8 +97,35 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       if (msfSessionRef.current) {
         msfSessionRef.current.close().catch(console.error);
       }
+      // Close any remaining video frames
+      videoFrames.forEach(frame => {
+        if (frame) {
+          try { frame.close(); } catch { /* already closed */ }
+        }
+      });
     };
   }, []);
+
+  // Handle incoming video frames
+  useEffect(() => {
+    const unsubscribe = onVideoFrame(({ subscriptionId, frame }) => {
+      const trackName = subscriptionToTrackRef.current.get(subscriptionId);
+      if (trackName) {
+        setVideoFrames(prev => {
+          const newMap = new Map(prev);
+          // Close previous frame to avoid memory leak
+          const oldFrame = newMap.get(trackName);
+          if (oldFrame) {
+            try { oldFrame.close(); } catch { /* already closed */ }
+          }
+          newMap.set(trackName, frame);
+          return newMap;
+        });
+      }
+    });
+
+    return unsubscribe;
+  }, [onVideoFrame]);
 
   /**
    * Connect & Subscribe flow - handles connection if needed
@@ -198,11 +230,15 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     try {
       const mediaType = getTrackType(track) === 'audio' ? 'audio' : 'video';
 
-      await startSubscription(
+      const subscriptionId = await startSubscription(
         trackNamespace.join('/'),
         trackName,
         mediaType
       );
+
+      // Map subscription ID to track name for video frame routing
+      subscriptionToTrackRef.current.set(subscriptionId, trackName);
+      console.log('[CatalogSubscriber] Mapped subscription', { subscriptionId, trackName });
 
       setSubscribedTracks(prev => new Set([...prev, trackName]));
       console.log('[CatalogSubscriber] Subscribed to track:', trackName);
@@ -555,6 +591,16 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                         <span className="badge-green">active</span>
                       )}
                     </div>
+
+                    {/* Video Player for subscribed video tracks */}
+                    {trackType === 'video' && isSubscribed && (
+                      <div className="mt-4">
+                        <VideoRenderer
+                          frame={videoFrames.get(track.name) ?? null}
+                          className="w-full rounded-lg overflow-hidden"
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })}
