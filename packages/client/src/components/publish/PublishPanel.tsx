@@ -435,7 +435,7 @@ export const PublishPanel: React.FC = () => {
             />
             {!localStream && (
               <div className="absolute inset-0 flex items-center justify-center">
-                <div className="text-center text-white/40">
+                <div className="text-center text-gray-400 dark:text-white/40">
                   <svg className="w-10 h-10 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                   </svg>
@@ -457,7 +457,7 @@ export const PublishPanel: React.FC = () => {
               </button>
             )}
             {localStream && (
-              <div className={`flex items-center gap-2 text-sm ${isSpeaking ? 'text-emerald-400' : 'text-white/50'}`}>
+              <div className={`flex items-center gap-2 text-sm ${isSpeaking ? 'text-emerald-400' : 'text-gray-500 dark:text-white/50'}`}>
                 <VADIndicator audioContext={audioContext} sourceNode={sourceNode} isSpeaking={isSpeaking} vadResult={vadResult} />
                 <VADDot isSpeaking={isSpeaking} />
                 <span>{isSpeaking ? 'Speaking' : 'Silent'}</span>
@@ -520,7 +520,7 @@ export const PublishPanel: React.FC = () => {
               />
               <div className="flex-1">
                 <span className="text-sm font-medium text-white">VOD Track</span>
-                <span className="text-xs text-white/50 ml-2">from URL</span>
+                <span className="text-xs text-gray-500 dark:text-white/50 ml-2">from URL</span>
               </div>
             </label>
           )}
@@ -535,7 +535,7 @@ export const PublishPanel: React.FC = () => {
                 placeholder="https://example.com/video.mp4"
                 className="input"
               />
-              <label className="flex items-center gap-2 text-sm text-white/70">
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-white/70">
                 <input
                   type="checkbox"
                   checked={newTrack.vodLoop ?? false}
@@ -637,7 +637,7 @@ export const PublishPanel: React.FC = () => {
           {/* Advanced Options Toggle */}
           <button
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-2 text-sm text-white/50 hover:text-white/70 transition-colors"
+            className="flex items-center gap-2 text-sm text-gray-500 dark:text-white/50 hover:text-gray-700 dark:text-white/70 transition-colors"
           >
             <svg className={`w-4 h-4 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -720,22 +720,22 @@ export const PublishPanel: React.FC = () => {
                       )}
                       {config.isVod && <span className="badge-blue text-xs py-0.5">VOD</span>}
                     </div>
-                    <div className="text-xs text-white/40 truncate">{config.namespace}</div>
+                    <div className="text-xs text-gray-400 dark:text-white/40 truncate">{config.namespace}</div>
                   </div>
 
                   {/* Specs badges */}
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {config.mediaType === 'video' && (
                       <>
-                        <span className="text-xs text-white/50">{config.resolution}</span>
-                        <span className="text-white/20">·</span>
-                        <span className="text-xs text-white/50">{config.framerate}fps</span>
-                        <span className="text-white/20">·</span>
-                        <span className="text-xs text-white/50">{((config.bitrate || 0) / 1000000).toFixed(0)}M</span>
+                        <span className="text-xs text-gray-500 dark:text-white/50">{config.resolution}</span>
+                        <span className="text-gray-200 dark:text-white/20">·</span>
+                        <span className="text-xs text-gray-500 dark:text-white/50">{config.framerate}fps</span>
+                        <span className="text-gray-200 dark:text-white/20">·</span>
+                        <span className="text-xs text-gray-500 dark:text-white/50">{((config.bitrate || 0) / 1000000).toFixed(0)}M</span>
                       </>
                     )}
                     {config.mediaType === 'audio' && (
-                      <span className="text-xs text-white/50">{((config.bitrate || 0) / 1000)}kbps</span>
+                      <span className="text-xs text-gray-500 dark:text-white/50">{((config.bitrate || 0) / 1000)}kbps</span>
                     )}
                   </div>
 
@@ -772,7 +772,7 @@ export const PublishPanel: React.FC = () => {
 
                 {/* VOD Progress (if applicable) */}
                 {config.vodProgress && config.vodProgress.phase !== 'complete' && (
-                  <div className="mt-2 flex items-center gap-2 text-xs text-white/50">
+                  <div className="mt-2 flex items-center gap-2 text-xs text-gray-500 dark:text-white/50">
                     <span className="capitalize">{config.vodProgress.phase}</span>
                     <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
                       <div
@@ -796,13 +796,13 @@ export const PublishPanel: React.FC = () => {
             {announceStatus === 'announcing' && (
               <>
                 <div className="animate-spin h-4 w-4 border-2 border-accent-cyan border-t-transparent rounded-full" />
-                <span className="text-sm text-white/70">Announcing namespace...</span>
+                <span className="text-sm text-gray-700 dark:text-white/70">Announcing namespace...</span>
               </>
             )}
             {announceStatus === 'waiting' && (
               <>
                 <div className="animate-pulse h-4 w-4 bg-amber-400 rounded-full" />
-                <span className="text-sm text-white/70">Waiting for subscribers...</span>
+                <span className="text-sm text-gray-700 dark:text-white/70">Waiting for subscribers...</span>
                 {trackConfigs.length > 0 && trackConfigs[0].namespace && (
                   <button onClick={() => cancelAnnounce(trackConfigs[0].namespace)} className="btn-ghost btn-sm ml-auto py-1 px-2 text-xs">
                     Cancel
@@ -844,10 +844,10 @@ export const PublishPanel: React.FC = () => {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                     </svg>
                   )}
-                  <span className="text-sm text-white/80">{track.trackName}</span>
+                  <span className="text-sm text-gray-800 dark:text-white/80">{track.trackName}</span>
                 </div>
                 {isDebugMode() && (
-                  <span className="text-xs text-white/40 font-mono">G:{track.stats.groupId} O:{track.stats.objectId}</span>
+                  <span className="text-xs text-gray-400 dark:text-white/40 font-mono">G:{track.stats.groupId} O:{track.stats.objectId}</span>
                 )}
               </div>
             ))}

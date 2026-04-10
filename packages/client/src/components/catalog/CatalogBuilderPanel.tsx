@@ -240,7 +240,7 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
               placeholder="conference/room-1/media"
               className="input"
             />
-            <p className="text-xs text-white/40 mt-2">
+            <p className="text-xs text-gray-400 dark:text-white/40 mt-2">
               Base namespace for publishing the catalog and tracks
             </p>
           </div>
@@ -270,7 +270,7 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
               className="btn-sm btn-secondary flex items-center gap-1.5"
               title={`Add ${label} Track`}
             >
-              <svg className="w-3.5 h-3.5 text-white/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-3.5 h-3.5 text-gray-500 dark:text-white/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
               {label}
@@ -282,12 +282,12 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
           {tracks.length === 0 ? (
             <div className="text-center py-12">
               <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
-                <svg className="w-8 h-8 text-white/20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg className="w-8 h-8 text-gray-200 dark:text-white/20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                 </svg>
               </div>
-              <p className="text-white/60 font-medium">No tracks configured</p>
-              <p className="text-white/40 text-sm mt-1">Add VOD, Live, Audio, or Subtitle tracks to build your catalog</p>
+              <p className="text-gray-600 dark:text-white/60 font-medium">No tracks configured</p>
+              <p className="text-gray-400 dark:text-white/40 text-sm mt-1">Add VOD, Live, Audio, or Subtitle tracks to build your catalog</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -325,7 +325,7 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
           </div>
           {showPreview && (
             <div className="glass-panel-body">
-              <pre className="text-xs text-white/70 p-4 rounded-xl overflow-auto max-h-64 bg-black/30 border border-white/5">
+              <pre className="text-xs text-gray-700 dark:text-white/70 p-4 rounded-xl overflow-auto max-h-64 bg-black/30 border border-white/5">
                 {JSON.stringify(previewCatalog, null, 2)}
               </pre>
             </div>

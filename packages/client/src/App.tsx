@@ -122,8 +122,8 @@ const App: React.FC = () => {
                     </svg>
                   </div>
                   <div>
-                    <p className="text-white/90 text-sm font-medium">Configure First, Connect When Ready</p>
-                    <p className="text-white/50 text-xs">
+                    <p className="text-secondary text-sm font-medium">Configure First, Connect When Ready</p>
+                    <p className="text-muted text-xs">
                       Set up your tracks and settings offline. Click "Connect & Go" when you're ready to publish or subscribe.
                     </p>
                   </div>
@@ -164,7 +164,7 @@ const App: React.FC = () => {
             />
             <div className="relative z-10 glass-panel-glow max-w-md w-full">
               <div className="flex items-center justify-between p-5 border-b border-white/10">
-                <h2 className="text-lg font-semibold text-white">Settings</h2>
+                <h2 className="text-lg font-semibold text-primary">Settings</h2>
                 <button
                   onClick={() => setShowSettings(false)}
                   className="btn-icon btn-ghost"
