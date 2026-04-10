@@ -219,3 +219,7 @@ export type {
 // VOD Loader
 export { VODLoader } from './vod/vod-loader.js';
 export type { VODLoadProgress, VODLoaderOptions } from './vod/vod-loader.js';
+
+// MP4 Parser (for advanced use - VODLoader uses this internally)
+export { MP4Parser } from './vod/mp4-parser.js';
+export type { VideoTrackInfo, SampleEntry, MP4ParseResult } from './vod/mp4-parser.js';
