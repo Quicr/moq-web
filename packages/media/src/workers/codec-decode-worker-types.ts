@@ -56,6 +56,18 @@ export interface CodecDecodeWorkerConfig {
   // Group-aware jitter buffer options (Phase 4)
   /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
   useGroupArbiter?: boolean;
+
+  /**
+   * Policy type for frame release strategy (replaces useGroupArbiter)
+   * - 'vod': Sequential playback, no skipping, wait for all frames
+   * - 'live': Deadline-based with jitter buffer (default when useGroupArbiter=true)
+   * - 'adaptive': Auto-detect based on arrival patterns
+   * When set, this takes precedence over useGroupArbiter.
+   */
+  policyType?: 'vod' | 'live' | 'adaptive';
+
+  /** Whether content is live (from catalog) - used with policyType='adaptive' to skip detection */
+  isLive?: boolean;
   /** Maximum acceptable end-to-end latency in ms (default: 500) */
   maxLatency?: number;
   /** Initial estimated GOP duration in ms (default: 1000) */

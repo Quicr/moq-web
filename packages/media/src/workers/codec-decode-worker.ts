@@ -15,6 +15,12 @@
 import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
 import { JitterBuffer } from '../pipeline/jitter-buffer.js';
 import { GroupArbiter } from '../pipeline/group-arbiter.js';
+import { PlayoutBuffer } from '../pipeline/playout-buffer.js';
+import {
+  createPlayoutBuffer,
+  createPlayoutBufferFromTrack,
+  type PolicyType,
+} from '../pipeline/playout-buffer-factory.js';
 import type {
   CodecDecodeWorkerRequest,
   CodecDecodeWorkerResponse,
@@ -62,12 +68,16 @@ interface DecodeChannel {
   videoDecoder: VideoDecoder | null;
   audioDecoder: AudioDecoder | null;
   unpackager: LOCUnpackager;
-  // Legacy jitter buffer (used when useGroupArbiter is false)
+  // Legacy jitter buffer (used when useGroupArbiter is false and no policyType)
   videoBuffer: JitterBuffer<VideoBufferData> | null;
   audioBuffer: JitterBuffer<AudioBufferData> | null;
-  // Group-aware arbiter (used when useGroupArbiter is true)
+  // Group-aware arbiter (LEGACY - used when useGroupArbiter is true and no policyType)
   videoArbiter: GroupArbiter<VideoBufferData> | null;
   audioArbiter: GroupArbiter<AudioBufferData> | null;
+  // New PlayoutBuffer architecture (used when policyType is set)
+  videoPlayoutBuffer: PlayoutBuffer<VideoBufferData> | null;
+  audioPlayoutBuffer: PlayoutBuffer<AudioBufferData> | null;
+  policyType: PolicyType | null;
   useGroupArbiter: boolean;
   videoSequence: number;
   audioSequence: number;
@@ -119,7 +129,12 @@ function respond(msg: CodecDecodeWorkerResponse, transfer?: Transferable[]): voi
  * Create a new decode channel
  */
 function createChannel(channelId: number, config: CodecDecodeWorkerConfig): DecodeChannel {
-  const useGroupArbiter = config.useGroupArbiter ?? false;
+  // Determine buffer strategy:
+  // 1. policyType takes precedence (new architecture)
+  // 2. Fall back to useGroupArbiter for backward compatibility
+  // 3. Default to legacy JitterBuffer
+  const policyType = config.policyType ?? null;
+  const useGroupArbiter = !policyType && (config.useGroupArbiter ?? false);
 
   const channel: DecodeChannel = {
     channelId,
@@ -130,6 +145,9 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     audioBuffer: null,
     videoArbiter: null,
     audioArbiter: null,
+    videoPlayoutBuffer: null,
+    audioPlayoutBuffer: null,
+    policyType,
     useGroupArbiter,
     videoSequence: 0,
     audioSequence: 0,
@@ -157,8 +175,10 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
   log(`Channel ${channelId} config`, {
     enableStats: channel.enableStats,
     jitterDelay,
+    policyType,
     useGroupArbiter,
     quicrInteropEnabled: channel.quicrInteropEnabled,
+    isLive: config.isLive,
   });
 
   // Create debug log relay callback for arbiter
@@ -170,8 +190,59 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
 
   // Initialize video if configured
   if (config.video) {
-    if (useGroupArbiter) {
-      // Use GroupArbiter for group-aware ordering
+    if (policyType) {
+      // NEW: Use PlayoutBuffer with appropriate policy
+      if (config.isLive !== undefined) {
+        // Catalog-driven: use isLive to select policy
+        channel.videoPlayoutBuffer = createPlayoutBufferFromTrack<VideoBufferData>({
+          isLive: config.isLive,
+          profileSettings: {
+            jitterBufferDelay: jitterDelay,
+            maxLatency: config.maxLatency,
+            estimatedGopDuration: config.estimatedGopDuration,
+            skipToLatestGroup: config.skipToLatestGroup,
+            skipGraceFrames: config.skipGraceFrames,
+            enableCatchUp: config.enableCatchUp,
+            catchUpThreshold: config.catchUpThreshold,
+            useLatencyDeadline: config.useLatencyDeadline,
+          },
+        });
+        log(`Channel ${channelId} using PlayoutBuffer (catalog-driven, isLive=${config.isLive})`, {
+          policyType: config.isLive ? 'live' : 'vod',
+        });
+      } else {
+        // Explicit policy type
+        channel.videoPlayoutBuffer = createPlayoutBuffer<VideoBufferData>(
+          policyType,
+          policyType === 'live' ? {
+            jitterDelay,
+            maxLatency: config.maxLatency ?? 500,
+            estimatedGopDuration: config.estimatedGopDuration ?? 1000,
+            catalogFramerate: config.catalogFramerate,
+            catalogTimescale: config.catalogTimescale,
+            skipToLatestGroup: config.skipToLatestGroup ?? false,
+            skipGraceFrames: config.skipGraceFrames ?? 3,
+            enableCatchUp: config.enableCatchUp ?? true,
+            catchUpThreshold: config.catchUpThreshold ?? 5,
+            useLatencyDeadline: config.useLatencyDeadline ?? true,
+            debug: !!config.arbiterDebug,
+          } : policyType === 'vod' ? {
+            minBufferFrames: 1,
+            waitForCompleteGop: true,
+            debug: !!config.arbiterDebug,
+          } : {
+            // adaptive defaults
+            debug: !!config.arbiterDebug,
+          }
+        );
+        log(`Channel ${channelId} using PlayoutBuffer (explicit policy)`, {
+          policyType,
+          skipToLatestGroup: config.skipToLatestGroup,
+          enableCatchUp: config.enableCatchUp,
+        });
+      }
+    } else if (useGroupArbiter) {
+      // LEGACY: Use GroupArbiter for group-aware ordering
       channel.videoArbiter = new GroupArbiter<VideoBufferData>({
         jitterDelay,
         maxLatency: config.maxLatency ?? 500,
@@ -188,7 +259,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         debug: true, // Force enabled for debugging
         debugLogCallback: arbiterDebugCallback,
       });
-      log(`Channel ${channelId} using GroupArbiter for video`, {
+      log(`Channel ${channelId} using GroupArbiter for video (LEGACY)`, {
         skipToLatestGroup: config.skipToLatestGroup,
         skipGraceFrames: config.skipGraceFrames,
         enableCatchUp: config.enableCatchUp,
@@ -208,8 +279,28 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
 
   // Initialize audio if configured
   if (config.audio) {
-    if (useGroupArbiter) {
-      // Use GroupArbiter for audio too
+    if (policyType) {
+      // NEW: Use PlayoutBuffer for audio
+      // Audio always uses a simpler policy - no keyframe requirements
+      channel.audioPlayoutBuffer = createPlayoutBuffer<AudioBufferData>(
+        policyType === 'vod' ? 'vod' : 'live', // Audio uses vod or live, not adaptive
+        policyType === 'live' || policyType === 'adaptive' ? {
+          jitterDelay,
+          maxLatency: config.maxLatency ?? 500,
+          estimatedGopDuration: 20, // Audio frames are typically ~20ms
+          skipToLatestGroup: config.skipToLatestGroup ?? false,
+          skipGraceFrames: config.skipGraceFrames ?? 3,
+          enableCatchUp: config.enableCatchUp ?? true,
+          catchUpThreshold: config.catchUpThreshold ?? 5,
+          useLatencyDeadline: config.useLatencyDeadline ?? true,
+        } : {
+          minBufferFrames: 1,
+          waitForCompleteGop: false, // Audio doesn't have GOPs
+        }
+      );
+      log(`Channel ${channelId} using PlayoutBuffer for audio`, { policyType });
+    } else if (useGroupArbiter) {
+      // LEGACY: Use GroupArbiter for audio
       channel.audioArbiter = new GroupArbiter<AudioBufferData>({
         jitterDelay,
         maxLatency: config.maxLatency ?? 500,
@@ -224,7 +315,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         debug: true, // Force enabled for debugging
         debugLogCallback: arbiterDebugCallback,
       });
-      log(`Channel ${channelId} using GroupArbiter for audio`);
+      log(`Channel ${channelId} using GroupArbiter for audio (LEGACY)`);
     } else {
       // Use legacy JitterBuffer
       channel.audioBuffer = new JitterBuffer<AudioBufferData>({
@@ -502,8 +593,25 @@ function pushData(
         arrivedAt,
       };
 
-      if (channel.videoArbiter) {
-        // Use GroupArbiter
+      if (channel.videoPlayoutBuffer) {
+        // NEW: Use PlayoutBuffer
+        channel.videoPlayoutBuffer.addFrame({
+          groupId,
+          objectId,
+          data: videoData,
+          isKeyframe,
+        });
+
+        log(`Pushed video to PlayoutBuffer (channel ${channel.channelId})`, {
+          groupId,
+          objectId,
+          isKeyframe,
+          activeGroup: channel.videoPlayoutBuffer.getActiveGroupId(),
+          groupCount: channel.videoPlayoutBuffer.getGroupCount(),
+          policyType: channel.policyType,
+        });
+      } else if (channel.videoArbiter) {
+        // LEGACY: Use GroupArbiter
         channel.videoArbiter.addFrame({
           groupId,
           objectId,
@@ -544,8 +652,18 @@ function pushData(
       const frame = channel.unpackager.unpackage(data, channel.quicrInteropEnabled);
       const audioData: AudioBufferData = { data: frame.payload };
 
-      if (channel.audioArbiter) {
-        // Use GroupArbiter
+      if (channel.audioPlayoutBuffer) {
+        // NEW: Use PlayoutBuffer for audio
+        channel.audioPlayoutBuffer.addFrame({
+          groupId,
+          objectId,
+          data: audioData,
+          isKeyframe: true, // Opus is always key
+        });
+
+        log(`Pushed audio to PlayoutBuffer (channel ${channel.channelId})`, { groupId, objectId });
+      } else if (channel.audioArbiter) {
+        // LEGACY: Use GroupArbiter
         channel.audioArbiter.addFrame({
           groupId,
           objectId,
@@ -725,8 +843,47 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
   let videoCount = 0;
   let audioCount = 0;
 
-  // Process video - GroupArbiter path
-  if (channel.videoArbiter && channel.videoDecoder) {
+  // Process video - PlayoutBuffer path (NEW)
+  if (channel.videoPlayoutBuffer && channel.videoDecoder) {
+    // Call tick() to update timing (for live policy deadline checks)
+    channel.videoPlayoutBuffer.tick();
+
+    // Capture the active group ID BEFORE calling getReadyFrames() because
+    // getReadyFrames() may switch to a new group after outputting all frames
+    // from the current group. All returned frames are from this group.
+    const frameGroupId = channel.videoPlayoutBuffer.getActiveGroupId();
+    const readyFrames = channel.videoPlayoutBuffer.getReadyFrames(5);
+
+    for (const frame of readyFrames) {
+      const sequence = channel.videoSequence++;
+      if (decodeVideoFrame(
+        channel,
+        frame.data,
+        frameGroupId,
+        frame.objectId,
+        frame.receivedAt, // Use receivedAt as timestamp proxy
+        sequence
+      )) {
+        videoCount++;
+      }
+    }
+
+    // Log PlayoutBuffer stats periodically
+    if (videoCount > 0 && channel.videoFramesDecoded % 30 === 0) {
+      const stats = channel.videoPlayoutBuffer.getCombinedStats();
+      log(`PlayoutBuffer stats (channel ${channel.channelId})`, {
+        activeGroup: channel.videoPlayoutBuffer.getActiveGroupId(),
+        groupCount: channel.videoPlayoutBuffer.getGroupCount(),
+        policyType: channel.policyType,
+        framesOutput: stats.framesOutput,
+        framesDropped: stats.framesDropped,
+        groupsCompleted: stats.groupsCompleted,
+        groupsSkipped: stats.groupsSkipped,
+      });
+    }
+  }
+  // Process video - GroupArbiter path (LEGACY)
+  else if (channel.videoArbiter && channel.videoDecoder) {
     // Capture the active group ID BEFORE calling getReadyFrames() because
     // getReadyFrames() may switch to a new group after outputting all frames
     // from the current group. All returned frames are from this group.
@@ -778,8 +935,47 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
     }
   }
 
-  // Process audio - GroupArbiter path
-  if (channel.audioArbiter && channel.audioDecoder) {
+  // Process audio - PlayoutBuffer path (NEW)
+  if (channel.audioPlayoutBuffer && channel.audioDecoder) {
+    // Call tick() to update timing
+    channel.audioPlayoutBuffer.tick();
+
+    const audioFrameGroupId = channel.audioPlayoutBuffer.getActiveGroupId();
+    const readyFrames = channel.audioPlayoutBuffer.getReadyFrames(5);
+
+    for (const frame of readyFrames) {
+      try {
+        const groupId = audioFrameGroupId;
+        channel.currentAudioMeta = {
+          groupId,
+          objectId: frame.objectId,
+          timestamp: frame.receivedAt * 1000,
+        };
+
+        if (!channel.lastAudioFrameInfo) {
+          channel.lastAudioFrameInfo = { groupId: 0, objectId: 0, dataSize: 0, sequence: 0 };
+        }
+        channel.lastAudioFrameInfo.groupId = groupId;
+        channel.lastAudioFrameInfo.objectId = frame.objectId;
+        channel.lastAudioFrameInfo.dataSize = frame.data.data.length;
+        channel.lastAudioFrameInfo.sequence = channel.audioSequence++;
+
+        const chunk = new EncodedAudioChunk({
+          type: 'key',
+          timestamp: frame.receivedAt * 1000,
+          data: frame.data.data,
+        });
+
+        channel.audioDecoder.decode(chunk);
+        channel.audioFramesDecoded++;
+        audioCount++;
+      } catch (err) {
+        log(`Error decoding audio (channel ${channel.channelId})`, err);
+      }
+    }
+  }
+  // Process audio - GroupArbiter path (LEGACY)
+  else if (channel.audioArbiter && channel.audioDecoder) {
     // Capture the active group ID BEFORE calling getReadyFrames()
     const audioFrameGroupId = channel.audioArbiter.getActiveGroupId();
     const readyFrames = channel.audioArbiter.getReadyFrames(5);
@@ -885,6 +1081,8 @@ function resetChannel(channel: DecodeChannel): void {
   channel.audioBuffer?.reset();
   channel.videoArbiter?.reset();
   channel.audioArbiter?.reset();
+  channel.videoPlayoutBuffer?.reset();
+  channel.audioPlayoutBuffer?.reset();
   channel.videoSequence = 0;
   channel.audioSequence = 0;
   channel.currentVideoMeta = null;
@@ -1068,7 +1266,9 @@ self.onmessage = (event: MessageEvent<CodecDecodeWorkerRequest>): void => {
         log(`Channel ${msg.channelId} not found for mark-group-complete`);
         return;
       }
-      // Signal the arbiters that the group is complete
+      // Signal the buffers/arbiters that the group is complete
+      channel.videoPlayoutBuffer?.markGroupComplete(msg.groupId);
+      channel.audioPlayoutBuffer?.markGroupComplete(msg.groupId);
       channel.videoArbiter?.markGroupComplete(msg.groupId);
       channel.audioArbiter?.markGroupComplete(msg.groupId);
       log(`Group ${msg.groupId} marked complete (channel ${msg.channelId})`);
