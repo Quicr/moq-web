@@ -104,7 +104,9 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private stats: VodPolicyStats;
   private waitStartTime: Map<string, number> = new Map(); // "groupId:objectId" -> wait start time
   // Track the next expected group for strict sequential ordering (VOD must be sequential)
-  private nextExpectedGroup = 0;
+  // Starts at -1 to indicate "not yet initialized" - will be set to first keyframe group received
+  private nextExpectedGroup = -1;
+  private initialized = false;
 
   constructor(config: Partial<VodReleasePolicyConfig> = {}) {
     super();
@@ -121,6 +123,14 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     if (this.waitStartTime.has(waitKey)) {
       this.waitStartTime.delete(waitKey);
       this.log('WAIT RESOLVED', { groupId: frame.groupId, objectId: frame.objectId });
+    }
+
+    // VOD: Initialize nextExpectedGroup from first keyframe received
+    // This handles cases where playback starts mid-stream (e.g., seek, DVR, late join)
+    if (!this.initialized && frame.isKeyframe && frame.objectId === 0) {
+      this.nextExpectedGroup = frame.groupId;
+      this.initialized = true;
+      this.log('INITIALIZED from first keyframe', { startingGroup: frame.groupId });
     }
 
     // VOD: Only activate the EXPECTED group (strict sequential order)
@@ -224,7 +234,8 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   reset(): void {
     this.stats = this.createInitialStats();
     this.waitStartTime.clear();
-    this.nextExpectedGroup = 0;
+    this.nextExpectedGroup = -1;
+    this.initialized = false;
   }
 
   // ============================================================
@@ -271,6 +282,14 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   }
 
   private tryActivateNextSequentialGroup(): boolean {
+    // Not yet initialized - wait for first keyframe
+    if (!this.initialized || this.nextExpectedGroup < 0) {
+      this.log('WAITING FOR FIRST KEYFRAME', {
+        availableGroups: Array.from(this.buffer.getGroupIds()),
+      });
+      return false;
+    }
+
     // VOD: Only activate the next sequential group, never skip or go backward
     const expectedGroup = this.buffer.getGroup(this.nextExpectedGroup);
 
