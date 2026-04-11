@@ -8,9 +8,10 @@
  * Supports offline configuration with "Connect & Go" workflow.
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useStore } from '../../store';
 import { createMSFSession, type MSFSession, type FullCatalog, type Track } from '@web-moq/msf';
+import { ABRController, type ABRTrack } from '@web-moq/media';
 import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
 import { VideoRenderer } from '../subscribe/VideoRenderer';
 
@@ -82,6 +83,11 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
   const subscriptionToTrackRef = useRef<Map<number, string>>(new Map());
 
+  // ABR state
+  const abrControllerRef = useRef<ABRController | null>(null);
+  const [abrEnabled, setAbrEnabled] = useState(true);
+  const [selectedQuality, setSelectedQuality] = useState<Map<number, string>>(new Map()); // altGroup -> trackName
+
   // Helper to set subtitle cues for a track
   const setSubtitleCues = useCallback((trackName: string, cues: SubtitleCue[]) => {
     setSubtitleCuesMap(prev => new Map(prev).set(trackName, cues));
@@ -91,6 +97,107 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const msfSessionRef = useRef<MSFSession | null>(null);
 
   const isConnected = state === 'connected' && sessionState === 'ready';
+
+  // Group tracks by altGroup for ABR quality switching
+  const tracksByAltGroup = useMemo(() => {
+    if (!receivedCatalog) return new Map<number, Track[]>();
+
+    const groups = new Map<number, Track[]>();
+    for (const track of receivedCatalog.tracks) {
+      if (track.altGroup !== undefined) {
+        if (!groups.has(track.altGroup)) {
+          groups.set(track.altGroup, []);
+        }
+        groups.get(track.altGroup)!.push(track);
+      }
+    }
+
+    // Sort each group by bitrate or resolution
+    for (const [, tracks] of groups) {
+      tracks.sort((a, b) => {
+        if (a.bitrate !== undefined && b.bitrate !== undefined) {
+          return a.bitrate - b.bitrate;
+        }
+        if (a.width !== undefined && b.width !== undefined) {
+          return a.width - b.width;
+        }
+        return 0;
+      });
+    }
+
+    return groups;
+  }, [receivedCatalog]);
+
+  // Initialize ABR controller when catalog is received
+  useEffect(() => {
+    if (!receivedCatalog || tracksByAltGroup.size === 0) {
+      abrControllerRef.current = null;
+      return;
+    }
+
+    const handleSwitch = async (fromTrack: ABRTrack, toTrack: ABRTrack) => {
+      console.log('[ABR] Switching from', fromTrack.name, 'to', toTrack.name);
+
+      // Find the Track objects
+      const from = receivedCatalog.tracks.find(t => t.name === fromTrack.name);
+      const to = receivedCatalog.tracks.find(t => t.name === toTrack.name);
+
+      if (!from || !to) return;
+
+      // Unsubscribe from current track (TODO: implement proper unsubscribe)
+      setSubscribedTracks(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(fromTrack.name);
+        return newSet;
+      });
+
+      // Subscribe to new track
+      await handleTrackSubscribe(to);
+
+      // Update selected quality
+      setSelectedQuality(prev => new Map(prev).set(fromTrack.altGroup, toTrack.name));
+    };
+
+    const abr = new ABRController({
+      onSwitch: handleSwitch,
+      debug: true,
+    });
+
+    // Register all tracks with altGroup
+    for (const [altGroup, tracks] of tracksByAltGroup) {
+      for (const track of tracks) {
+        abr.registerTrack({
+          name: track.name,
+          namespace: track.namespace ?? namespace.split('/'),
+          altGroup,
+          bitrate: track.bitrate,
+          width: track.width,
+          height: track.height,
+          codec: track.codec,
+        });
+      }
+    }
+
+    abrControllerRef.current = abr;
+
+    if (abrEnabled) {
+      abr.start();
+    }
+
+    return () => {
+      abr.stop();
+    };
+  }, [receivedCatalog, tracksByAltGroup, namespace, abrEnabled]);
+
+  // Handle manual quality selection
+  const handleQualityChange = useCallback(async (altGroup: number, trackName: string) => {
+    if (!abrControllerRef.current) return;
+
+    const success = await abrControllerRef.current.requestQuality(altGroup, trackName);
+    if (success) {
+      setSelectedQuality(prev => new Map(prev).set(altGroup, trackName));
+    }
+  }, []);
 
   // Clean up on unmount
   useEffect(() => {
@@ -611,6 +718,11 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                           {track.isLive ? 'LIVE' : 'VOD'}
                         </span>
                       )}
+                      {track.altGroup !== undefined && (
+                        <span className="badge-purple">
+                          ABR Group {track.altGroup}
+                        </span>
+                      )}
                       {track.targetLatency && (
                         <span className="badge-yellow">
                           {getExperienceProfile(track.targetLatency)}
@@ -623,6 +735,39 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                         <span className="badge-green">active</span>
                       )}
                     </div>
+
+                    {/* Quality Selector for ABR tracks */}
+                    {track.altGroup !== undefined && isSubscribed && tracksByAltGroup.get(track.altGroup)!.length > 1 && (
+                      <div className="mt-3 flex items-center gap-2">
+                        <span className="text-xs text-gray-500 dark:text-white/50">Quality:</span>
+                        <select
+                          value={selectedQuality.get(track.altGroup) ?? track.name}
+                          onChange={(e) => handleQualityChange(track.altGroup!, e.target.value)}
+                          className="px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                        >
+                          {tracksByAltGroup.get(track.altGroup)!.map((t) => (
+                            <option key={t.name} value={t.name}>
+                              {t.width && t.height ? `${t.height}p` : t.name}
+                              {t.bitrate ? ` (${formatBitrate(t.bitrate)})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="flex items-center gap-1 text-xs text-gray-500 dark:text-white/50">
+                          <input
+                            type="checkbox"
+                            checked={abrEnabled}
+                            onChange={(e) => {
+                              setAbrEnabled(e.target.checked);
+                              if (abrControllerRef.current) {
+                                e.target.checked ? abrControllerRef.current.start() : abrControllerRef.current.stop();
+                              }
+                            }}
+                            className="w-3 h-3"
+                          />
+                          Auto
+                        </label>
+                      </div>
+                    )}
 
                     {/* Video Player for subscribed video tracks */}
                     {trackType === 'video' && isSubscribed && (
