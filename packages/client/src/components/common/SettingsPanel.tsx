@@ -284,6 +284,8 @@ export const SettingsPanel: React.FC = () => {
     setVadVisualizationEnabled,
     useGroupArbiter,
     setUseGroupArbiter,
+    policyType,
+    setPolicyType,
     maxLatency,
     setMaxLatency,
     estimatedGopDuration,
@@ -702,10 +704,30 @@ export const SettingsPanel: React.FC = () => {
             <div className="p-4 rounded-xl bg-gradient-to-br from-sky-50 to-white dark:from-sky-900/20 dark:to-gray-900 border border-sky-100 dark:border-sky-900/30">
               <SectionHeader icon={Icons.profile} title="Experience Profile" description="Playback latency and buffer settings" colorScheme={sectionColors.profile} />
 
-              <div className="mb-4 p-3 bg-white/50 dark:bg-gray-900/30 rounded-lg border border-sky-200 dark:border-sky-800/50">
-                <SettingRow label="Enable GroupArbiter" description="Required for profile settings to take effect">
-                  <Toggle enabled={useGroupArbiter} onChange={() => setUseGroupArbiter(!useGroupArbiter)} color="bg-sky-500" />
+              <div className="mb-4 p-3 bg-white/50 dark:bg-gray-900/30 rounded-lg border border-sky-200 dark:border-sky-800/50 space-y-3">
+                <SettingRow label="Buffer Policy" description="Frame release strategy for playback">
+                  <select
+                    value={policyType}
+                    onChange={(e) => setPolicyType(e.target.value as 'none' | 'vod' | 'live' | 'adaptive')}
+                    className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm font-medium text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  >
+                    <option value="none">Legacy (GroupArbiter)</option>
+                    <option value="vod">VOD (Sequential)</option>
+                    <option value="live">Live (Deadline-based)</option>
+                    <option value="adaptive">Adaptive (Auto-detect)</option>
+                  </select>
                 </SettingRow>
+                {policyType === 'none' && (
+                  <SettingRow label="Enable GroupArbiter" description="Use group-aware jitter buffering">
+                    <Toggle enabled={useGroupArbiter} onChange={() => setUseGroupArbiter(!useGroupArbiter)} color="bg-sky-500" />
+                  </SettingRow>
+                )}
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                  {policyType === 'none' && 'Legacy mode: Uses JitterBuffer or GroupArbiter based on toggle above'}
+                  {policyType === 'vod' && 'VOD mode: Sequential playback, waits for all frames, no skipping (best for DVR/recorded content)'}
+                  {policyType === 'live' && 'Live mode: Deadline-based with jitter buffer, can skip frames to maintain low latency'}
+                  {policyType === 'adaptive' && 'Adaptive mode: Auto-detects content type from arrival patterns'}
+                </div>
               </div>
 
               <div className="mb-4 flex items-center justify-center gap-1 text-[10px] text-gray-500">

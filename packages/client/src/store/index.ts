@@ -349,6 +349,14 @@ interface SettingsSlice {
   experienceProfile: ExperienceProfileName;
   /** Use GroupArbiter for group-aware jitter buffering (handles parallel QUIC streams) */
   useGroupArbiter: boolean;
+  /**
+   * Policy type for frame release strategy (new PlayoutBuffer architecture)
+   * - 'none': Use legacy behavior (JitterBuffer or GroupArbiter based on useGroupArbiter)
+   * - 'vod': Sequential playback, no skipping (for DVR/recorded content)
+   * - 'live': Deadline-based with jitter buffer (for real-time streaming)
+   * - 'adaptive': Auto-detect based on arrival patterns
+   */
+  policyType: 'none' | 'vod' | 'live' | 'adaptive';
   /** Maximum acceptable latency before skipping to next keyframe (ms) */
   maxLatency: number;
   /** Initial estimated GOP duration (ms) */
@@ -397,6 +405,7 @@ interface SettingsSlice {
   setVadVisualizationEnabled: (value: boolean) => void;
   setAudioDeliveryMode: (mode: 'datagram' | 'stream') => void;
   setUseGroupArbiter: (value: boolean) => void;
+  setPolicyType: (value: 'none' | 'vod' | 'live' | 'adaptive') => void;
   setMaxLatency: (value: number) => void;
   setEstimatedGopDuration: (value: number) => void;
   setSkipToLatestGroup: (value: boolean) => void;
@@ -896,7 +905,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -908,6 +917,8 @@ export const useStore = create<AppStore>()(
           enableStats,
           jitterBufferDelay,
           useGroupArbiter,
+          // New PlayoutBuffer architecture - policyType takes precedence over useGroupArbiter
+          policyType: policyType !== 'none' ? policyType : undefined,
           maxLatency,
           estimatedGopDuration,
           skipToLatestGroup,
@@ -1126,7 +1137,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1142,6 +1153,8 @@ export const useStore = create<AppStore>()(
           enableStats,
           jitterBufferDelay,
           useGroupArbiter,
+          // New PlayoutBuffer architecture - policyType takes precedence over useGroupArbiter
+          policyType: policyType !== 'none' ? policyType : undefined,
           maxLatency,
           estimatedGopDuration,
           skipToLatestGroup,
@@ -1257,6 +1270,7 @@ export const useStore = create<AppStore>()(
       audioDeliveryMode: 'datagram', // Default to datagram for low latency
       experienceProfile: 'interactive', // Default to interactive profile
       useGroupArbiter: false, // Default to legacy JitterBuffer
+      policyType: 'none', // Default to legacy behavior (respects useGroupArbiter)
       maxLatency: 500, // Default 500ms max latency
       estimatedGopDuration: 1000, // Default 1s GOP
       skipToLatestGroup: false, // Default: complete current GOP before switching
@@ -1309,6 +1323,7 @@ export const useStore = create<AppStore>()(
       setVadVisualizationEnabled: (value) => set({ vadVisualizationEnabled: value }),
       setAudioDeliveryMode: (mode) => set({ audioDeliveryMode: mode }),
       setUseGroupArbiter: (value) => set({ useGroupArbiter: value }),
+      setPolicyType: (value) => set({ policyType: value }),
       setMaxLatency: (value) => set({ maxLatency: value }),
       setEstimatedGopDuration: (value) => set({ estimatedGopDuration: value }),
       setSkipToLatestGroup: (value) => set({ skipToLatestGroup: value }),
@@ -1388,6 +1403,7 @@ export const useStore = create<AppStore>()(
         audioDeliveryMode: state.audioDeliveryMode,
         experienceProfile: state.experienceProfile,
         useGroupArbiter: state.useGroupArbiter,
+        policyType: state.policyType,
         maxLatency: state.maxLatency,
         estimatedGopDuration: state.estimatedGopDuration,
         skipToLatestGroup: state.skipToLatestGroup,
