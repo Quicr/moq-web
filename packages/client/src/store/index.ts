@@ -351,12 +351,11 @@ interface SettingsSlice {
   useGroupArbiter: boolean;
   /**
    * Policy type for frame release strategy (new PlayoutBuffer architecture)
-   * - 'none': Use legacy behavior (JitterBuffer or GroupArbiter based on useGroupArbiter)
    * - 'vod': Sequential playback, no skipping (for DVR/recorded content)
    * - 'live': Deadline-based with jitter buffer (for real-time streaming)
-   * - 'adaptive': Auto-detect based on arrival patterns
+   * - 'adaptive': Auto-detect from catalog isLive or arrival patterns
    */
-  policyType: 'none' | 'vod' | 'live' | 'adaptive';
+  policyType: 'vod' | 'live' | 'adaptive';
   /** Maximum acceptable latency before skipping to next keyframe (ms) */
   maxLatency: number;
   /** Initial estimated GOP duration (ms) */
@@ -405,7 +404,7 @@ interface SettingsSlice {
   setVadVisualizationEnabled: (value: boolean) => void;
   setAudioDeliveryMode: (mode: 'datagram' | 'stream') => void;
   setUseGroupArbiter: (value: boolean) => void;
-  setPolicyType: (value: 'none' | 'vod' | 'live' | 'adaptive') => void;
+  setPolicyType: (value: 'vod' | 'live' | 'adaptive') => void;
   setMaxLatency: (value: number) => void;
   setEstimatedGopDuration: (value: number) => void;
   setSkipToLatestGroup: (value: boolean) => void;
@@ -917,8 +916,8 @@ export const useStore = create<AppStore>()(
           enableStats,
           jitterBufferDelay,
           useGroupArbiter,
-          // New PlayoutBuffer architecture - policyType takes precedence over useGroupArbiter
-          policyType: policyType !== 'none' ? policyType : undefined,
+          // New PlayoutBuffer architecture
+          policyType,
           maxLatency,
           estimatedGopDuration,
           skipToLatestGroup,
@@ -1153,8 +1152,8 @@ export const useStore = create<AppStore>()(
           enableStats,
           jitterBufferDelay,
           useGroupArbiter,
-          // New PlayoutBuffer architecture - policyType takes precedence over useGroupArbiter
-          policyType: policyType !== 'none' ? policyType : undefined,
+          // New PlayoutBuffer architecture
+          policyType,
           maxLatency,
           estimatedGopDuration,
           skipToLatestGroup,
@@ -1269,8 +1268,8 @@ export const useStore = create<AppStore>()(
       vadVisualizationEnabled: false, // Default viz off for performance
       audioDeliveryMode: 'datagram', // Default to datagram for low latency
       experienceProfile: 'interactive', // Default to interactive profile
-      useGroupArbiter: false, // Default to legacy JitterBuffer
-      policyType: 'none', // Default to legacy behavior (respects useGroupArbiter)
+      useGroupArbiter: false, // Legacy - kept for backward compatibility
+      policyType: 'adaptive', // Default to auto-detect from catalog or arrival patterns
       maxLatency: 500, // Default 500ms max latency
       estimatedGopDuration: 1000, // Default 1s GOP
       skipToLatestGroup: false, // Default: complete current GOP before switching
