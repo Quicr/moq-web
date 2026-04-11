@@ -429,6 +429,11 @@ function reconfigureVideoDecoder(channel: DecodeChannel, config: VideoDecoderWor
     return;
   }
 
+  if (channel.videoDecoder.state === 'closed') {
+    log(`Cannot reconfigure - video decoder is closed (channel ${channel.channelId})`);
+    return;
+  }
+
   channel.videoConfig = config;
 
   const decoderConfig: VideoDecoderConfig = {
@@ -691,6 +696,12 @@ function decodeVideoFrame(
     channel.lastVideoFrameInfo.isKeyframe = frameData.isKeyframe;
     channel.lastVideoFrameInfo.dataSize = frameData.data.length;
     channel.lastVideoFrameInfo.sequence = sequence;
+
+    // Check decoder state before decoding
+    if (channel.videoDecoder!.state === 'closed') {
+      log(`Cannot decode - video decoder is closed (channel ${channel.channelId})`);
+      return false;
+    }
 
     const chunk = new EncodedVideoChunk({
       type: frameData.isKeyframe ? 'key' : 'delta',
