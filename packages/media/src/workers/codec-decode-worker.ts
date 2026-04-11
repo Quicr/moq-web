@@ -455,15 +455,49 @@ function pushData(
   objectId: number,
   timestamp: number
 ): void {
+  log(`pushData called (channel ${channel.channelId})`, {
+    groupId,
+    objectId,
+    dataSize: data?.length ?? 0,
+    hasVideoArbiter: !!channel.videoArbiter,
+    hasVideoBuffer: !!channel.videoBuffer,
+    firstByte: data?.length > 0 ? `0x${data[0].toString(16)}` : 'empty',
+  });
   try {
     const mediaType = channel.unpackager.getMediaType(data);
+    log(`Media type determined (channel ${channel.channelId})`, {
+      mediaType: mediaType === MediaType.VIDEO ? 'VIDEO' : 'AUDIO',
+      groupId,
+      objectId,
+    });
 
     if (mediaType === MediaType.VIDEO) {
       const frame = channel.unpackager.unpackage(data, channel.quicrInteropEnabled);
       const isKeyframe = frame.header.isKeyframe;
 
+      log(`LOC unpacked video frame (channel ${channel.channelId})`, {
+        groupId,
+        objectId,
+        isKeyframe,
+        payloadSize: frame.payload.byteLength,
+        hasCodecDescription: !!frame.codecDescription,
+        captureTimestamp: frame.captureTimestamp,
+      });
+
       // If keyframe has codec description, reconfigure decoder
       if (isKeyframe && frame.codecDescription && channel.videoConfig) {
+        // Debug: log first bytes of codec description to verify format
+        const desc = frame.codecDescription;
+        const firstBytes = Array.from(desc.slice(0, Math.min(16, desc.length)))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join(' ');
+        log(`Codec description received (channel ${channel.channelId})`, {
+          size: desc.length,
+          firstBytes,
+          isAvcC: desc[0] === 1, // avcC starts with version=1
+          isAnnexB: desc[0] === 0 && desc[1] === 0, // Annex B starts with 00 00
+        });
+
         reconfigureVideoDecoder(channel, {
           ...channel.videoConfig,
           description: frame.codecDescription,
@@ -547,6 +581,13 @@ function pushData(
       }
     }
   } catch (err) {
+    log(`pushData error (channel ${channel.channelId})`, {
+      groupId,
+      objectId,
+      dataSize: data?.length ?? 0,
+      error: (err as Error).message,
+      stack: (err as Error).stack,
+    });
     respond({ type: 'error', channelId: channel.channelId, message: `Unpackaging failed: ${(err as Error).message}` });
   }
 }
