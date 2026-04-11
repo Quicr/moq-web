@@ -70,6 +70,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const [subscribedTracks, setSubscribedTracks] = useState<Set<string>>(new Set());
   const [loadingSubtitles, setLoadingSubtitles] = useState<Set<string>>(new Set());
   const [loadingTimeline, setLoadingTimeline] = useState<Set<string>>(new Set());
+  const [showCatalogJson, setShowCatalogJson] = useState(false);
 
   // Local state for subtitles and timeline (TODO: integrate with store)
   const [_subtitleCuesMap, setSubtitleCuesMap] = useState<Map<string, SubtitleCue[]>>(new Map());
@@ -476,21 +477,40 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
         {receivedCatalog ? (
           <div className="space-y-4">
             {/* Catalog Info */}
-            <div className="glass-panel-subtle p-4 flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                <svg className="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
+            <div className="glass-panel-subtle p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                    <svg className="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-gray-900 dark:text-white/90 font-medium text-sm">Catalog Received</p>
+                    <p className="text-gray-500 dark:text-white/50 text-xs">
+                      {receivedCatalog.tracks.length} track{receivedCatalog.tracks.length !== 1 ? 's' : ''} available
+                      {receivedCatalog.generatedAt && (
+                        <> &middot; {new Date(receivedCatalog.generatedAt).toLocaleString()}</>
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowCatalogJson(!showCatalogJson)}
+                  className="btn-sm btn-ghost text-xs"
+                >
+                  {showCatalogJson ? 'Hide' : 'Show'} JSON
+                </button>
               </div>
-              <div>
-                <p className="text-gray-900 dark:text-white/90 font-medium text-sm">Catalog Received</p>
-                <p className="text-gray-500 dark:text-white/50 text-xs">
-                  {receivedCatalog.tracks.length} tracks available
-                  {receivedCatalog.generatedAt && (
-                    <> &middot; {new Date(receivedCatalog.generatedAt).toLocaleString()}</>
-                  )}
-                </p>
-              </div>
+
+              {/* Collapsible JSON View */}
+              {showCatalogJson && (
+                <div className="mt-4">
+                  <pre className="text-xs text-gray-700 dark:text-white/70 p-3 rounded-lg overflow-auto max-h-48 bg-black/20 border border-white/5">
+                    {JSON.stringify(receivedCatalog, null, 2)}
+                  </pre>
+                </div>
+              )}
             </div>
 
             {/* Track List */}
