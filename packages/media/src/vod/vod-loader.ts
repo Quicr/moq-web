@@ -368,7 +368,7 @@ export class VODLoader {
    * No decode/encode needed, just repackage for MOQT
    */
   private async remuxVideo(_videoData: Uint8Array, track: VideoTrackInfo, parser: MP4Parser): Promise<void> {
-    const { samples, timescale, durationMs, width, height, avcConfig, nalLengthSize } = track;
+    const { samples, timescale, durationMs, width, height, avcConfig } = track;
 
     log.info('Remuxing H.264 video', {
       samples: samples.length,
