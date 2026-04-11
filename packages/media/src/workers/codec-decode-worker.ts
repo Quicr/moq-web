@@ -647,6 +647,13 @@ function decodeVideoFrame(
     ? (frameData.data[frameData.data[2] === 1 ? 3 : 4] & 0x1f)
     : (frameData.data[0] & 0x1f);
 
+  // Print payload info directly to avoid console truncation
+  console.log(`[CodecDecodeWorker] PAYLOAD FORMAT (ch=${channel.channelId} g${groupId}/o${objectId}):`,
+    `bytes=${payloadPreview}`,
+    `annexB=${hasAnnexBStartCode}`,
+    `nalType=${nalType}`,
+    `isKey=${frameData.isKeyframe}`);
+
   log(`Decoding frame (channel ${channel.channelId})`, {
     groupId,
     objectId,
@@ -655,9 +662,6 @@ function decodeVideoFrame(
     isKeyframe: frameData.isKeyframe,
     dataSize: frameData.data.length,
     outOfOrder: isOutOfOrder,
-    payloadPreview,
-    hasAnnexBStartCode,
-    nalType,
   });
 
   try {
