@@ -135,9 +135,11 @@ export class AdaptiveReleasePolicy<T> extends BaseReleasePolicy<T> {
   constructor(config: Partial<AdaptiveReleasePolicyConfig> = {}) {
     super();
     this.config = { ...DEFAULT_ADAPTIVE_POLICY_CONFIG, ...config };
-    this.debug = this.config.debug;
+    // Enable debug by default to trace issues
+    this.debug = this.config.debug || true;
     this.stats = this.createInitialStats();
     this.observations = this.createInitialObservations();
+    console.log('[AdaptiveReleasePolicy] Created - will auto-detect VOD vs Live from arrival patterns');
   }
 
   onFrameAdded(frame: FrameEntry<T>, group: GroupState<T>): void {

@@ -179,6 +179,11 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     useGroupArbiter,
     quicrInteropEnabled: channel.quicrInteropEnabled,
     isLive: config.isLive,
+    isLiveType: typeof config.isLive,
+    willUseCatalogDriven: policyType && config.isLive !== undefined,
+    effectivePolicy: policyType && config.isLive !== undefined
+      ? (config.isLive ? 'live (from catalog)' : 'vod (from catalog)')
+      : policyType || (useGroupArbiter ? 'legacy-arbiter' : 'legacy-jitter'),
   });
 
   // Create debug log relay callback for arbiter

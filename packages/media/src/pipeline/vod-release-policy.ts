@@ -107,8 +107,10 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   constructor(config: Partial<VodReleasePolicyConfig> = {}) {
     super();
     this.config = { ...DEFAULT_VOD_POLICY_CONFIG, ...config };
-    this.debug = this.config.debug;
+    // Enable debug by default for VOD to trace issues
+    this.debug = this.config.debug || true;
     this.stats = this.createInitialStats();
+    console.log('[VodReleasePolicy] Created with config:', this.config);
   }
 
   onFrameAdded(frame: FrameEntry<T>, group: GroupState<T>): void {
@@ -174,6 +176,12 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     if (result.length > 0) {
       this.stats.framesOutput += result.length;
       this.stats.currentGopId = activeGroupId;
+      this.log('OUTPUT FRAMES', {
+        count: result.length,
+        groupId: activeGroupId,
+        objectIds: result.map(f => f.objectId),
+        totalOutput: this.stats.framesOutput,
+      });
     }
 
     // Check if we should complete this group and move to next
