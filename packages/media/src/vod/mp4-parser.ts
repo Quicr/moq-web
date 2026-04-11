@@ -677,6 +677,14 @@ export class MP4Parser {
   }
 
   /**
+   * Extract a sample's raw data (length-prefixed NAL units, avc format)
+   * This is the format expected by WebCodecs when avcC description is provided
+   */
+  extractSampleRaw(sample: SampleEntry): Uint8Array {
+    return this.data.slice(sample.offset, sample.offset + sample.size);
+  }
+
+  /**
    * Extract a sample's NAL units from the file
    * Converts from length-prefixed to Annex B format
    */
