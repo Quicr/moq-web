@@ -428,8 +428,8 @@ export class VODLoader {
       for (let objectId = 0; objectId < gop.samples.length; objectId++) {
         const sample = gop.samples[objectId];
 
-        // Extract NAL units and convert to Annex B format
-        const nalData = parser.extractSampleAsAnnexB(sample, nalLengthSize);
+        // Extract raw NAL data (length-prefixed avc format) - WebCodecs expects this when avcC description is provided
+        const nalData = parser.extractSampleRaw(sample);
 
         // Package with LOC container
         const timestamp = (sample.dts / timescale) * 1000;
