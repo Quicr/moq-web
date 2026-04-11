@@ -376,6 +376,11 @@ export class PlayoutBuffer<T> {
     return this.groups.size;
   }
 
+  /** Get all group IDs currently in buffer */
+  getGroupIds(): number[] {
+    return Array.from(this.groups.keys()).sort((a, b) => a - b);
+  }
+
   /**
    * Find next group after the given groupId that has a keyframe
    * Handles gaps in groupId sequence (parallel QUIC streams)
