@@ -413,8 +413,8 @@ export class VODLoader {
       timescale: 1000,
     };
 
-    // Get codec description (SPS/PPS) in Annex B format
-    const codecDescription = avcConfig ? parser.extractAvcConfigAsAnnexB(avcConfig) : undefined;
+    // Pass raw avcC for WebCodecs decoder description (expects AVCDecoderConfigurationRecord, not Annex B)
+    const codecDescription = avcConfig;
 
     // Process each GOP
     if (!this.packager) {
