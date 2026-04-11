@@ -680,6 +680,14 @@ export class MediaSession {
       trackName,
       options,
       (data, groupId, objectId, timestamp) => {
+        log.info('MediaSession onObject callback invoked', {
+          namespace: namespace.join('/'),
+          trackName,
+          groupId,
+          objectId,
+          dataSize: data.length,
+          hasSecureContext: !!secureContext,
+        });
         if (secureContext) {
           // Decrypt before pushing to pipeline
           secureContext.decrypt(data, {

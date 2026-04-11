@@ -637,6 +637,16 @@ function decodeVideoFrame(
   }
   channel.lastDecodedSequence = sequence;
 
+  // Debug: log first bytes of payload to verify format
+  const payloadPreview = Array.from(frameData.data.slice(0, Math.min(20, frameData.data.length)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join(' ');
+  const hasAnnexBStartCode = frameData.data[0] === 0 && frameData.data[1] === 0 &&
+    (frameData.data[2] === 1 || (frameData.data[2] === 0 && frameData.data[3] === 1));
+  const nalType = hasAnnexBStartCode
+    ? (frameData.data[frameData.data[2] === 1 ? 3 : 4] & 0x1f)
+    : (frameData.data[0] & 0x1f);
+
   log(`Decoding frame (channel ${channel.channelId})`, {
     groupId,
     objectId,
@@ -645,6 +655,9 @@ function decodeVideoFrame(
     isKeyframe: frameData.isKeyframe,
     dataSize: frameData.data.length,
     outOfOrder: isOutOfOrder,
+    payloadPreview,
+    hasAnnexBStartCode,
+    nalType,
   });
 
   try {
