@@ -103,6 +103,8 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private config: VodReleasePolicyConfig;
   private stats: VodPolicyStats;
   private waitStartTime: Map<string, number> = new Map(); // "groupId:objectId" -> wait start time
+  // Track the next expected group for strict sequential ordering (VOD must be sequential)
+  private nextExpectedGroup = 0;
 
   constructor(config: Partial<VodReleasePolicyConfig> = {}) {
     super();
@@ -121,13 +123,17 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       this.log('WAIT RESOLVED', { groupId: frame.groupId, objectId: frame.objectId });
     }
 
-    // If this is a keyframe for a new group and we have no active group, activate it
-    if (frame.isKeyframe && frame.objectId === 0) {
+    // VOD: Only activate the EXPECTED group (strict sequential order)
+    // Don't just activate any keyframe that arrives - wait for the right one
+    if (frame.isKeyframe && frame.objectId === 0 && frame.groupId === this.nextExpectedGroup) {
       const activeGroupId = this.buffer.getActiveGroupId();
-      if (activeGroupId < 0) {
+      if (activeGroupId < 0 || activeGroupId < frame.groupId) {
         this.buffer.setActiveGroupId(frame.groupId);
         group.status = 'active';
-        this.log('ACTIVATED FIRST GROUP', { groupId: frame.groupId });
+        this.log('ACTIVATED EXPECTED GROUP', {
+          groupId: frame.groupId,
+          nextExpected: this.nextExpectedGroup
+        });
       }
     }
   }
@@ -147,14 +153,18 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
 
   getReadyFrames(maxFrames: number): FrameEntry<T>[] {
     const activeGroupId = this.buffer.getActiveGroupId();
+
+    // VOD: If no active group, try to activate the expected sequential group
     if (activeGroupId < 0) {
-      return [];
+      if (!this.tryActivateNextSequentialGroup()) {
+        return [];
+      }
     }
 
-    const group = this.buffer.getGroup(activeGroupId);
+    const group = this.buffer.getGroup(this.buffer.getActiveGroupId());
     if (!group || group.status !== 'active') {
-      // Try to find and activate a group with keyframe
-      if (!this.tryActivateNextGroup()) {
+      // Try to activate the expected sequential group
+      if (!this.tryActivateNextSequentialGroup()) {
         return [];
       }
       return this.getReadyFrames(maxFrames); // Retry with new active group
@@ -214,6 +224,7 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   reset(): void {
     this.stats = this.createInitialStats();
     this.waitStartTime.clear();
+    this.nextExpectedGroup = 0;
   }
 
   // ============================================================
@@ -254,18 +265,29 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
 
     this.log('GROUP COMPLETED', { groupId, reason });
 
-    // Promote to next group
-    this.promoteToNextGroup();
+    // VOD: Move to next SEQUENTIAL group (groupId + 1), not just any available group
+    this.nextExpectedGroup = groupId + 1;
+    this.tryActivateNextSequentialGroup();
   }
 
-  private tryActivateNextGroup(): boolean {
-    const nextGroup = this.buffer.findNextKeyframeGroup(-1); // Find any group with keyframe
-    if (nextGroup) {
-      this.buffer.setActiveGroupId(nextGroup.groupId);
-      nextGroup.status = 'active';
-      this.log('ACTIVATED GROUP', { groupId: nextGroup.groupId });
+  private tryActivateNextSequentialGroup(): boolean {
+    // VOD: Only activate the next sequential group, never skip or go backward
+    const expectedGroup = this.buffer.getGroup(this.nextExpectedGroup);
+
+    if (expectedGroup && expectedGroup.hasKeyframe) {
+      this.buffer.setActiveGroupId(this.nextExpectedGroup);
+      expectedGroup.status = 'active';
+      this.log('ACTIVATED NEXT SEQUENTIAL GROUP', {
+        groupId: this.nextExpectedGroup,
+      });
       return true;
     }
+
+    // Expected group not ready yet - wait for it
+    this.log('WAITING FOR SEQUENTIAL GROUP', {
+      expected: this.nextExpectedGroup,
+      availableGroups: Array.from(this.buffer.getGroupIds()),
+    });
     return false;
   }
 
