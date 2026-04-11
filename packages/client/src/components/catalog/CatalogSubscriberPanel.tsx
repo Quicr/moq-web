@@ -14,6 +14,7 @@ import { createMSFSession, type MSFSession, type FullCatalog, type Track } from 
 import { ABRController, type ABRTrack } from '@web-moq/media';
 import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
 import { VideoRenderer } from '../subscribe/VideoRenderer';
+import { VODVideoPlayer } from '../subscribe/VODVideoPlayer';
 
 interface CatalogSubscriberPanelProps {
   namespace: string;
@@ -82,6 +83,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   // Video frames for rendering
   const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
   const subscriptionToTrackRef = useRef<Map<number, string>>(new Map());
+  const trackToSubscriptionRef = useRef<Map<string, number>>(new Map()); // Reverse map for VOD controls
 
   // ABR state
   const abrControllerRef = useRef<ABRController | null>(null);
@@ -358,6 +360,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
       // Map subscription ID to track name for video frame routing
       subscriptionToTrackRef.current.set(subscriptionId, trackName);
+      trackToSubscriptionRef.current.set(trackName, subscriptionId);
       console.log('[CatalogSubscriber] Mapped subscription', { subscriptionId, trackName });
 
       setSubscribedTracks(prev => new Set([...prev, trackName]));
@@ -772,10 +775,22 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                     {/* Video Player for subscribed video tracks */}
                     {trackType === 'video' && isSubscribed && (
                       <div className="mt-4">
-                        <VideoRenderer
-                          frame={videoFrames.get(track.name) ?? null}
-                          className="w-full rounded-lg overflow-hidden"
-                        />
+                        {track.isLive === false ? (
+                          // VOD: Use player with controls
+                          <VODVideoPlayer
+                            frame={videoFrames.get(track.name) ?? null}
+                            subscriptionId={trackToSubscriptionRef.current.get(track.name) ?? 0}
+                            framerate={track.framerate}
+                            className="w-full rounded-lg overflow-hidden"
+                            showControls={true}
+                          />
+                        ) : (
+                          // Live: Use simple renderer
+                          <VideoRenderer
+                            frame={videoFrames.get(track.name) ?? null}
+                            className="w-full rounded-lg overflow-hidden"
+                          />
+                        )}
                       </div>
                     )}
                   </div>
