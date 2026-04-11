@@ -2442,14 +2442,15 @@ export class ObjectCodec {
       // Type | Track Alias | Group ID | [Subgroup ID] | [Publisher Priority]
 
       // Subgroup Header Type: 0b00X1XXXX (bit 4 always set)
-      // EXTENSIONS=0, SUBGROUP_ID_MODE=0b00, DEFAULT_PRIORITY=0 (include priority)
-      let headerType = 0x10; // Base with bit 4 set
+      // Use EXTENSIONS=1 to match relay behavior (0x11 or 0x19)
+      // SUBGROUP_ID_MODE=0b00, DEFAULT_PRIORITY=0 (include priority)
+      let headerType = 0x11; // Base with bit 4 set + EXTENSIONS bit
       if (endOfGroup) {
-        headerType |= 0x08; // END_OF_GROUP bit
+        headerType |= 0x08; // END_OF_GROUP bit (0x19)
       }
       // SUBGROUP_ID_MODE = 0b00: no subgroup ID field (implicit 0)
       // DEFAULT_PRIORITY = 0: include publisher priority field
-      hasExtensions = (headerType & 0x01) !== 0;
+      hasExtensions = (headerType & 0x01) !== 0; // true for 0x11/0x19
 
       writer.writeVarInt(headerType);
       writer.writeVarInt(header.trackAlias);
@@ -2617,7 +2618,7 @@ export class ObjectCodec {
    * @param payload - Object payload
    * @param status - Object status (default: NORMAL)
    * @param previousObjectId - Previous object ID for delta encoding (draft-16), -1 for first object
-   * @param hasExtensions - Whether objects have extensions field (from subgroup header type)
+   * @param hasExtensions - Whether to include extension length field (from subgroup header EXTENSIONS bit)
    * @returns Encoded bytes
    */
   static encodeStreamObject(
@@ -2638,9 +2639,10 @@ export class ObjectCodec {
       writer.writeVarInt(objectIdDelta);
 
       // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | Payload
-      // Extension length field is only present when hasExtensions bit is set in subgroup header
+      // Extension length field is ONLY present when EXTENSIONS bit is set in subgroup header type
+      // Types with Ext suffix (0x11, 0x19, etc.) have extensions; others (0x10, 0x18, etc.) don't
       if (hasExtensions) {
-        writer.writeVarInt(0); // No extensions for now
+        writer.writeVarInt(0); // Extension length = 0 (no actual extension data)
       }
 
       if (payload.length === 0) {
@@ -2709,7 +2711,8 @@ export class ObjectCodec {
 
     if (IS_DRAFT_16) {
       // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | [Payload]
-      // Extension length field is only present when hasExtensions bit is set in subgroup header
+      // Extension length field is ONLY present when EXTENSIONS bit is set in subgroup header type
+      // Types with Ext suffix (0x11, 0x19, etc.) have extensions; others (0x10, 0x18, etc.) don't
       if (hasExtensions) {
         const extensionLength = reader.readVarIntNumber();
         if (extensionLength > 0) {
@@ -2717,6 +2720,7 @@ export class ObjectCodec {
           reader.readBytes(extensionLength);
         }
       }
+
       const payloadLength = reader.readVarIntNumber();
       let status = ObjectStatus.NORMAL;
       if (payloadLength === 0 && reader.hasMore) {
