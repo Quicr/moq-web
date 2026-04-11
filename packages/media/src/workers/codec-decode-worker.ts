@@ -581,14 +581,16 @@ function pushData(
       }
     }
   } catch (err) {
+    const errorMsg = (err as Error).message;
+    // Log error directly to console (not as object) so it's visible
+    console.error(`[CodecDecodeWorker] PUSH ERROR (ch=${channel.channelId} g${groupId}/o${objectId}):`, errorMsg);
     log(`pushData error (channel ${channel.channelId})`, {
       groupId,
       objectId,
       dataSize: data?.length ?? 0,
-      error: (err as Error).message,
-      stack: (err as Error).stack,
+      error: errorMsg,
     });
-    respond({ type: 'error', channelId: channel.channelId, message: `Unpackaging failed: ${(err as Error).message}` });
+    respond({ type: 'error', channelId: channel.channelId, message: `Unpackaging failed: ${errorMsg}` });
   }
 }
 
