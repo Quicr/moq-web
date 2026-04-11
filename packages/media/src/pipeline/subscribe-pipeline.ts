@@ -560,6 +560,16 @@ export class SubscribePipeline {
     objectId: number,
     timestamp: number
   ): void {
+    log.info('Pipeline.push() called', {
+      channelId: this.channelId,
+      state: this._state,
+      groupId,
+      objectId,
+      dataSize: data.length,
+      useWorker: this.useWorker,
+      hasWorkerClient: !!this.decodeWorkerClient,
+    });
+
     if (this._state !== 'running') {
       log.warn('Pipeline not running, ignoring object');
       return;
