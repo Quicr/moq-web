@@ -240,11 +240,13 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
       console.log('[CatalogSubscriber] Subscribing with video config:', videoConfig);
 
+      // Pass isLive from catalog for auto policy selection (VOD vs Live)
       const subscriptionId = await startSubscription(
         trackNamespace.join('/'),
         trackName,
         mediaType,
-        videoConfig
+        videoConfig,
+        track.isLive
       );
 
       // Map subscription ID to track name for video frame routing
