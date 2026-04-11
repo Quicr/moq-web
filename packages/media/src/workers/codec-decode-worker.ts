@@ -484,25 +484,10 @@ function pushData(
         captureTimestamp: frame.captureTimestamp,
       });
 
-      // If keyframe has codec description, reconfigure decoder
-      if (isKeyframe && frame.codecDescription && channel.videoConfig) {
-        // Debug: log first bytes of codec description to verify format
-        const desc = frame.codecDescription;
-        const firstBytes = Array.from(desc.slice(0, Math.min(16, desc.length)))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join(' ');
-        log(`Codec description received (channel ${channel.channelId})`, {
-          size: desc.length,
-          firstBytes,
-          isAvcC: desc[0] === 1, // avcC starts with version=1
-          isAnnexB: desc[0] === 0 && desc[1] === 0, // Annex B starts with 00 00
-        });
-
-        reconfigureVideoDecoder(channel, {
-          ...channel.videoConfig,
-          description: frame.codecDescription,
-        });
-      }
+      // NOTE: Codec description is stored in VideoBufferData and used at decode time.
+      // Do NOT reconfigure decoder here - it must happen when the keyframe is actually
+      // decoded, not when it's received. Otherwise, the arbiter may still be outputting
+      // delta frames from the previous group after the reconfigure, causing errors.
 
       const arrivedAt = performance.now();
       const videoData: VideoBufferData = {
@@ -624,6 +609,28 @@ function decodeVideoFrame(
       objectId,
       droppedBeforeKeyframe: channel.droppedFramesBeforeKeyframe,
     });
+
+    // Reconfigure decoder if this keyframe has a codec description
+    // This MUST happen at decode time (not push time) because the arbiter may buffer
+    // the keyframe while still outputting delta frames from the previous group
+    if (frameData.codecDescription && channel.videoConfig) {
+      const desc = frameData.codecDescription;
+      const firstBytes = Array.from(desc.slice(0, Math.min(16, desc.length)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(' ');
+      log(`Reconfiguring decoder with codec description (channel ${channel.channelId})`, {
+        size: desc.length,
+        firstBytes,
+        isAvcC: desc[0] === 1,
+        groupId,
+        objectId,
+      });
+
+      reconfigureVideoDecoder(channel, {
+        ...channel.videoConfig,
+        description: frameData.codecDescription,
+      });
+    }
   }
 
   // Check for out-of-order decode
@@ -709,6 +716,10 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
 
   // Process video - GroupArbiter path
   if (channel.videoArbiter && channel.videoDecoder) {
+    // Capture the active group ID BEFORE calling getReadyFrames() because
+    // getReadyFrames() may switch to a new group after outputting all frames
+    // from the current group. All returned frames are from this group.
+    const frameGroupId = channel.videoArbiter.getActiveGroupId();
     const readyFrames = channel.videoArbiter.getReadyFrames(5);
 
     for (const frame of readyFrames) {
@@ -717,7 +728,7 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
       if (decodeVideoFrame(
         channel,
         frame.data,
-        channel.videoArbiter.getActiveGroupId(),
+        frameGroupId,
         frame.objectId,
         frame.receivedTick, // Use receivedTick as timestamp proxy
         sequence
@@ -758,11 +769,13 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
 
   // Process audio - GroupArbiter path
   if (channel.audioArbiter && channel.audioDecoder) {
+    // Capture the active group ID BEFORE calling getReadyFrames()
+    const audioFrameGroupId = channel.audioArbiter.getActiveGroupId();
     const readyFrames = channel.audioArbiter.getReadyFrames(5);
 
     for (const frame of readyFrames) {
       try {
-        const groupId = channel.audioArbiter.getActiveGroupId();
+        const groupId = audioFrameGroupId;
         channel.currentAudioMeta = {
           groupId,
           objectId: frame.objectId,
