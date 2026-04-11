@@ -614,6 +614,9 @@ export class MediaSession {
       enableStats: config.enableStats,
       // GroupArbiter options for parallel QUIC stream handling
       useGroupArbiter: config.useGroupArbiter,
+      // New PlayoutBuffer architecture options
+      policyType: config.policyType,
+      isLive: config.isLive,
       maxLatency: config.maxLatency,
       estimatedGopDuration: config.estimatedGopDuration,
       catalogFramerate: config.catalogFramerate,
@@ -628,6 +631,8 @@ export class MediaSession {
       hasAudioConfig: mediaType !== 'video',
       useDecodeWorker: !!this.workers?.decodeWorker,
       useGroupArbiter: config.useGroupArbiter,
+      policyType: config.policyType,
+      isLive: config.isLive,
     });
 
     // Handle video frames - O(1) lookup using reverse map
@@ -1147,6 +1152,8 @@ export class MediaSession {
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
       useGroupArbiter: config.useGroupArbiter,
+      policyType: config.policyType,
+      isLive: config.isLive,
       maxLatency: config.maxLatency,
       estimatedGopDuration: config.estimatedGopDuration,
     });
@@ -1385,6 +1392,9 @@ export class MediaSession {
       enableStats: config.enableStats,
       // GroupArbiter options for parallel QUIC stream handling
       useGroupArbiter: config.useGroupArbiter,
+      // New PlayoutBuffer architecture options
+      policyType: config.policyType,
+      isLive: config.isLive,
       maxLatency: config.maxLatency,
       estimatedGopDuration: config.estimatedGopDuration,
       catalogFramerate: config.catalogFramerate,
@@ -1399,6 +1409,8 @@ export class MediaSession {
       mediaType,
       useGroupArbiter: config.useGroupArbiter,
       quicrInteropEnabled: config.quicrInteropEnabled,
+      policyType: config.policyType,
+      isLive: config.isLive,
     });
 
     // Use the subscriptionId from the event (added in the session when creating the subscription)

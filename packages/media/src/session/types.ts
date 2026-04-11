@@ -113,6 +113,17 @@ export interface MediaConfig {
   // Group-aware jitter buffer options (for parallel QUIC stream handling)
   /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
   useGroupArbiter?: boolean;
+
+  /**
+   * Policy type for frame release strategy (new architecture, takes precedence over useGroupArbiter)
+   * - 'vod': Sequential playback, no skipping, wait for all frames (use for DVR/recorded content)
+   * - 'live': Deadline-based with jitter buffer (for real-time streaming)
+   * - 'adaptive': Auto-detect based on arrival patterns
+   */
+  policyType?: 'vod' | 'live' | 'adaptive';
+
+  /** Whether content is live (from catalog) - used with policyType to select behavior */
+  isLive?: boolean;
   /** Maximum acceptable end-to-end latency in ms before skipping to next keyframe (default: 500) */
   maxLatency?: number;
   /** Initial estimated GOP duration in ms (default: 1000) */
