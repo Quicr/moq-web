@@ -282,8 +282,6 @@ export const SettingsPanel: React.FC = () => {
     setVadProvider,
     vadVisualizationEnabled,
     setVadVisualizationEnabled,
-    useGroupArbiter,
-    setUseGroupArbiter,
     policyType,
     setPolicyType,
     maxLatency,
@@ -708,25 +706,18 @@ export const SettingsPanel: React.FC = () => {
                 <SettingRow label="Buffer Policy" description="Frame release strategy for playback">
                   <select
                     value={policyType}
-                    onChange={(e) => setPolicyType(e.target.value as 'none' | 'vod' | 'live' | 'adaptive')}
+                    onChange={(e) => setPolicyType(e.target.value as 'vod' | 'live' | 'adaptive')}
                     className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm font-medium text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
                   >
-                    <option value="none">Legacy (GroupArbiter)</option>
+                    <option value="adaptive">Auto (from catalog)</option>
                     <option value="vod">VOD (Sequential)</option>
                     <option value="live">Live (Deadline-based)</option>
-                    <option value="adaptive">Adaptive (Auto-detect)</option>
                   </select>
                 </SettingRow>
-                {policyType === 'none' && (
-                  <SettingRow label="Enable GroupArbiter" description="Use group-aware jitter buffering">
-                    <Toggle enabled={useGroupArbiter} onChange={() => setUseGroupArbiter(!useGroupArbiter)} color="bg-sky-500" />
-                  </SettingRow>
-                )}
                 <div className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                  {policyType === 'none' && 'Legacy mode: Uses JitterBuffer or GroupArbiter based on toggle above'}
-                  {policyType === 'vod' && 'VOD mode: Sequential playback, waits for all frames, no skipping (best for DVR/recorded content)'}
-                  {policyType === 'live' && 'Live mode: Deadline-based with jitter buffer, can skip frames to maintain low latency'}
-                  {policyType === 'adaptive' && 'Adaptive mode: Auto-detects content type from arrival patterns'}
+                  {policyType === 'adaptive' && 'Auto mode: Uses isLive from catalog, or detects from arrival patterns'}
+                  {policyType === 'vod' && 'VOD mode: Sequential playback, waits for all frames, no skipping (for DVR/recorded)'}
+                  {policyType === 'live' && 'Live mode: Deadline-based with jitter buffer, can skip frames for low latency'}
                 </div>
               </div>
 
