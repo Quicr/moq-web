@@ -239,9 +239,9 @@ export const CatalogPanel: React.FC = () => {
               max="60"
               value={catalogRepublishSec}
               onChange={(e) => setCatalogRepublishSec(Math.max(0, parseInt(e.target.value) || 0))}
-              className="input-field w-16 text-center text-sm"
+              className="w-16 px-2 py-1 text-center text-sm text-slate-100 bg-slate-800/60 border border-slate-600/50 rounded-md focus:outline-none focus:border-cyan-500/50"
             />
-            <span className="text-xs text-slate-500">sec (0 = off)</span>
+            <span className="text-xs text-slate-400">sec (0 = off)</span>
           </div>
 
           <CatalogBuilderPanel
