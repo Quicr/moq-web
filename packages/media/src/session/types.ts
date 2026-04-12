@@ -144,6 +144,8 @@ export interface MediaConfig {
   useLatencyDeadline?: boolean;
   /** Enable GroupArbiter debug logging (default: false) */
   arbiterDebug?: boolean;
+  /** Minimum frames to buffer before starting VOD playback (default: 30) */
+  minBufferFrames?: number;
 
   // Secure Objects (E2E encryption) options
   /** Enable Secure Objects encryption/decryption */
