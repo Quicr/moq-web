@@ -1054,6 +1054,75 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
   });
+
+  describe('FETCH object encoding (draft-15/16)', () => {
+    it('encodes first object with group, subgroup, and object ID', () => {
+      const state = ObjectCodec.createFetchEncoderState();
+      const payload = new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]);
+
+      const encoded = ObjectCodec.encodeFetchObject(
+        100, // groupId
+        0, // subgroupId
+        0, // objectId
+        payload,
+        state
+      );
+
+      // First object should have:
+      // flags = 0x08 (GROUP_ID) | 0x04 (OBJECT_ID) | 0x10 (PRIORITY) | 0x00 (subgroup mode 0)
+      // = 0x1C
+      const expectedFlags = 0x1C;
+      expect(encoded[0]).toBe(expectedFlags);
+
+      // Verify state was updated
+      expect(state.previousGroupId).toBe(100);
+      expect(state.previousSubgroupId).toBe(0);
+      expect(state.previousObjectId).toBe(0);
+    });
+
+    it('encodes subsequent object in same group without group ID', () => {
+      const state = ObjectCodec.createFetchEncoderState();
+      const payload = new Uint8Array([0x01, 0x02]);
+
+      // First object sets up state
+      ObjectCodec.encodeFetchObject(100, 0, 0, payload, state);
+
+      // Second object in same group
+      const encoded = ObjectCodec.encodeFetchObject(100, 0, 1, payload, state);
+
+      // Should NOT have GROUP_ID flag, but should have OBJECT_ID
+      // flags = 0x04 (OBJECT_ID) | 0x01 (subgroup mode 1 = same)
+      // = 0x05
+      const expectedFlags = 0x05;
+      expect(encoded[0]).toBe(expectedFlags);
+    });
+
+    it('encodes object in new group with group ID', () => {
+      const state = ObjectCodec.createFetchEncoderState();
+      const payload = new Uint8Array([0x01]);
+
+      // First object in group 100
+      ObjectCodec.encodeFetchObject(100, 0, 0, payload, state);
+
+      // First object in group 101
+      const encoded = ObjectCodec.encodeFetchObject(101, 0, 0, payload, state);
+
+      // Should have GROUP_ID flag for new group
+      const hasGroupFlag = (encoded[0] & 0x08) !== 0;
+      expect(hasGroupFlag).toBe(true);
+    });
+
+    it('includes payload in encoded output', () => {
+      const state = ObjectCodec.createFetchEncoderState();
+      const payload = new Uint8Array([0xCA, 0xFE, 0xBA, 0xBE]);
+
+      const encoded = ObjectCodec.encodeFetchObject(0, 0, 0, payload, state);
+
+      // Payload should be at the end
+      const lastFourBytes = encoded.slice(-4);
+      expect(Array.from(lastFourBytes)).toEqual([0xCA, 0xFE, 0xBA, 0xBE]);
+    });
+  });
 });
 
 describe('MessageCodecError', () => {

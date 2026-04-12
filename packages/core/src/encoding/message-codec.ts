@@ -2757,4 +2757,152 @@ export class ObjectCodec {
     const payload = reader.readBytes(payloadLength);
     return [objectId, payload, status, reader.offset - offset];
   }
+
+  /**
+   * FETCH Serialization Flags bits (draft-15/16)
+   */
+  private static readonly FETCH_FLAG_SUBGROUP_MODE_MASK = 0x03;
+  private static readonly FETCH_FLAG_OBJECT_ID_PRESENT = 0x04;
+  private static readonly FETCH_FLAG_GROUP_ID_PRESENT = 0x08;
+  private static readonly FETCH_FLAG_PRIORITY_PRESENT = 0x10;
+  private static readonly FETCH_FLAG_EXTENSIONS_PRESENT = 0x20;
+
+  /**
+   * State for FETCH object delta encoding
+   */
+  static createFetchEncoderState(): FetchEncoderState {
+    return {
+      previousGroupId: -1,
+      previousSubgroupId: -1,
+      previousObjectId: -1,
+      previousPriority: 128,
+    };
+  }
+
+  /**
+   * Encode an object for FETCH response stream (draft-15/16 serialization flags format)
+   *
+   * Draft-15/16 FETCH objects use serialization flags to indicate which fields are present:
+   * Flags | [Group ID] | [Subgroup ID] | [Object ID] | [Priority] | [ExtLen] | PayloadLen | Payload
+   *
+   * @param groupId - Group ID
+   * @param subgroupId - Subgroup ID (usually 0)
+   * @param objectId - Object ID
+   * @param payload - Object payload
+   * @param state - Encoder state for delta encoding
+   * @param priority - Publisher priority (default 128)
+   * @returns Encoded bytes
+   */
+  static encodeFetchObject(
+    groupId: number,
+    subgroupId: number,
+    objectId: number,
+    payload: Uint8Array,
+    state: FetchEncoderState,
+    priority = 128
+  ): Uint8Array {
+    const writer = new BufferWriter();
+
+    // Build flags byte
+    let flags = 0;
+
+    // Determine which fields need to be present
+    const isFirstObject = state.previousGroupId < 0;
+    const sameGroup = !isFirstObject && groupId === state.previousGroupId;
+    const samePriority = !isFirstObject && priority === state.previousPriority;
+
+    // Group ID present if first object or group changed
+    if (!sameGroup) {
+      flags |= ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT;
+    }
+
+    // Subgroup mode:
+    // 0 = zero (subgroupId == 0 and doesn't need to be sent)
+    // 1 = same as previous
+    // 2 = previous + 1
+    // 3 = present on wire
+    if (isFirstObject || !sameGroup) {
+      // First object in stream or new group - need to send subgroup
+      if (subgroupId === 0) {
+        // Mode 0: implicit zero
+        flags |= 0;
+      } else {
+        // Mode 3: present on wire
+        flags |= 0x03;
+      }
+    } else if (subgroupId === state.previousSubgroupId) {
+      // Mode 1: same as previous
+      flags |= 0x01;
+    } else if (subgroupId === state.previousSubgroupId + 1) {
+      // Mode 2: previous + 1
+      flags |= 0x02;
+    } else {
+      // Mode 3: present on wire
+      flags |= 0x03;
+    }
+
+    // Object ID: always present for clarity (could optimize with delta encoding)
+    flags |= ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT;
+
+    // Priority present if first object or priority changed
+    if (!samePriority) {
+      flags |= ObjectCodec.FETCH_FLAG_PRIORITY_PRESENT;
+    }
+
+    // No extensions for now
+    // flags |= ObjectCodec.FETCH_FLAG_EXTENSIONS_PRESENT;
+
+    // Write flags (varint in draft-16)
+    writer.writeVarInt(flags);
+
+    // Write fields based on flags
+    if (flags & ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT) {
+      writer.writeVarInt(groupId);
+    }
+
+    // Subgroup ID if mode 3
+    const subgroupMode = flags & ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_MASK;
+    if (subgroupMode === 3) {
+      writer.writeVarInt(subgroupId);
+    }
+
+    // Object ID
+    if (flags & ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT) {
+      writer.writeVarInt(objectId);
+    }
+
+    // Priority
+    if (flags & ObjectCodec.FETCH_FLAG_PRIORITY_PRESENT) {
+      writer.writeByte(priority);
+    }
+
+    // Extensions (not used, but write length 0 if flag set)
+    if (flags & ObjectCodec.FETCH_FLAG_EXTENSIONS_PRESENT) {
+      writer.writeVarInt(0);
+    }
+
+    // Payload length and payload
+    writer.writeVarInt(payload.length);
+    if (payload.length > 0) {
+      writer.writeBytes(payload);
+    }
+
+    // Update state for next object
+    state.previousGroupId = groupId;
+    state.previousSubgroupId = subgroupId;
+    state.previousObjectId = objectId;
+    state.previousPriority = priority;
+
+    return writer.toUint8Array();
+  }
+}
+
+/**
+ * State for FETCH object delta encoding
+ */
+export interface FetchEncoderState {
+  previousGroupId: number;
+  previousSubgroupId: number;
+  previousObjectId: number;
+  previousPriority: number;
 }
