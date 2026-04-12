@@ -119,32 +119,11 @@ export class CatalogSubscriber {
       this.subscribeOkCleanup = undefined;
     }
 
-    // If largestGroupId is available, FETCH from beginning of that group
-    // This ensures late subscribers get the catalog even if it was already published
-    if (event.largestGroupId !== undefined) {
-      try {
-        await this.session.fetch(
-          this.namespace,
-          CATALOG_TRACK_NAME,
-          {
-            startGroup: event.largestGroupId,
-            startObject: 0,
-            endGroup: event.largestGroupId,
-            endObject: event.largestObjectId ?? 0,
-          },
-          {},
-          (data, groupId, objectId) => {
-            this.handleObject(data, groupId, objectId, 0);
-          }
-        );
-      } catch (err) {
-        if (this.errorCallback) {
-          this.errorCallback(
-            err instanceof Error ? err : new Error(String(err))
-          );
-        }
-      }
-    }
+    // FETCH disabled: Akamai relay disconnects when receiving FETCH messages.
+    // Workaround: Publisher republishes catalog periodically so late subscribers
+    // receive it via normal SUBSCRIBE delivery.
+    // TODO: Re-enable when relay supports FETCH forwarding
+    console.log('[CatalogSubscriber] SUBSCRIBE_OK received, largestGroupId:', event.largestGroupId);
   }
 
   /**
