@@ -202,6 +202,8 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         channel.videoPlayoutBuffer = createPlayoutBufferFromTrack<VideoBufferData>({
           isLive: config.isLive,
           framerate: config.catalogFramerate, // For VOD pacing
+          minBufferFrames: config.minBufferFrames, // For VOD buffering
+          debug: !!config.arbiterDebug,
           profileSettings: {
             jitterBufferDelay: jitterDelay,
             maxLatency: config.maxLatency,
