@@ -218,15 +218,19 @@ export class ObjectRouter {
 
         // Process objects
         if (headerParsed && subgroupHeader) {
-          log.debug('Attempting object decode', {
-            bufferOffset,
-            bufferLength: buffer.length,
-            remaining: buffer.length - bufferOffset,
-            hasExtensions,
-            previousObjectId,
-            trackAlias: subgroupHeader.trackAlias.toString(),
-            groupId: subgroupHeader.groupId,
-          });
+          const remaining = buffer.length - bufferOffset;
+          if (remaining > 0) {
+            log.info('Attempting object decode', {
+              bufferOffset,
+              bufferLength: buffer.length,
+              remaining,
+              hasExtensions,
+              previousObjectId,
+              trackAlias: subgroupHeader.trackAlias.toString(),
+              groupId: subgroupHeader.groupId,
+              firstBytes: Array.from(buffer.subarray(bufferOffset, bufferOffset + Math.min(20, remaining))).map(b => b.toString(16).padStart(2, '0')).join(' '),
+            });
+          }
           while (bufferOffset < buffer.length) {
             try {
               const view = buffer.subarray(bufferOffset);
@@ -288,10 +292,11 @@ export class ObjectRouter {
               bufferOffset += bytesConsumed;
             } catch (decodeErr) {
               // Not enough data for complete object - wait for more chunks
-              log.trace('Object decode pending (need more data)', {
+              log.info('Object decode pending (need more data)', {
                 bufferOffset,
                 bufferLength: buffer.length,
                 remaining: buffer.length - bufferOffset,
+                groupId: subgroupHeader.groupId,
                 error: (decodeErr as Error).message,
               });
               break;
