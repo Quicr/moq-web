@@ -24,10 +24,17 @@ import type { FrameEntry, GroupState } from './playout-buffer.js';
  */
 export interface VodReleasePolicyConfig {
   /**
-   * Minimum frames to buffer before starting output (default: 1)
+   * Minimum frames to buffer before starting output (default: 30, ~1 GOP)
    * Set higher for smoother start (e.g., buffer first GOP)
    */
   minBufferFrames: number;
+
+  /**
+   * Rebuffer threshold - if buffer drops below this during playback,
+   * pause until minBufferFrames is reached again (default: 5)
+   * Set to 0 to disable rebuffering
+   */
+  rebufferThreshold: number;
 
   /**
    * Whether to wait for complete GOP before switching groups (default: true)
@@ -64,7 +71,8 @@ export interface VodReleasePolicyConfig {
  * Default VOD policy configuration
  */
 export const DEFAULT_VOD_POLICY_CONFIG: VodReleasePolicyConfig = {
-  minBufferFrames: 1,
+  minBufferFrames: 30, // ~1 GOP at 30fps, ~0.5s at 60fps
+  rebufferThreshold: 5, // Rebuffer if buffer drops below this
   waitForCompleteGop: true,
   maxWaitTimeMs: Infinity,
   targetFramerate: 30,
@@ -128,6 +136,10 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private lastFrameReleaseTime = 0;
   private frameDurationMs = 33.33; // Default 30fps = 33.33ms per frame
   private accumulatedTimeMs = 0; // Accumulated time for fractional frame tracking
+
+  // Rebuffering state - pause output when buffer runs low
+  private isRebuffering = false;
+  private playbackStarted = false;
 
   constructor(config: Partial<VodReleasePolicyConfig> = {}) {
     super();
@@ -208,14 +220,49 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       return this.getReadyFrames(maxFrames); // Retry with new active group
     }
 
+    // Count total buffered frames across all groups
+    const totalBufferedFrames = this.countTotalBufferedFrames();
+
     // Check minimum buffer requirement for initial playback
-    if (group.outputObjectId < 0 && group.frameCount < this.config.minBufferFrames) {
-      this.log('BUFFERING', {
-        groupId: activeGroupId,
-        frames: group.frameCount,
-        required: this.config.minBufferFrames,
-      });
-      return [];
+    if (!this.playbackStarted) {
+      if (totalBufferedFrames < this.config.minBufferFrames) {
+        this.log('INITIAL BUFFERING', {
+          groupId: activeGroupId,
+          bufferedFrames: totalBufferedFrames,
+          required: this.config.minBufferFrames,
+        });
+        return [];
+      }
+      this.playbackStarted = true;
+      this.log('PLAYBACK STARTED', { bufferedFrames: totalBufferedFrames });
+    }
+
+    // Rebuffering check - if buffer drops too low during playback, pause until recovered
+    if (this.config.rebufferThreshold > 0) {
+      if (this.isRebuffering) {
+        // Wait until buffer recovers to minBufferFrames
+        if (totalBufferedFrames < this.config.minBufferFrames) {
+          this.log('REBUFFERING', {
+            bufferedFrames: totalBufferedFrames,
+            required: this.config.minBufferFrames,
+          });
+          return [];
+        }
+        // Buffer recovered
+        this.isRebuffering = false;
+        this.log('REBUFFER COMPLETE', { bufferedFrames: totalBufferedFrames });
+        // Reset pacing to avoid frame burst after rebuffer
+        this.lastFrameReleaseTime = 0;
+        this.accumulatedTimeMs = 0;
+      } else if (totalBufferedFrames <= this.config.rebufferThreshold) {
+        // Buffer running low - start rebuffering
+        this.isRebuffering = true;
+        this.log('REBUFFER TRIGGERED', {
+          bufferedFrames: totalBufferedFrames,
+          threshold: this.config.rebufferThreshold,
+        });
+        return [];
+      }
     }
 
     // Frame pacing: only release frames at the target framerate
@@ -329,6 +376,8 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     this.initialized = false;
     this.lastFrameReleaseTime = 0;
     this.accumulatedTimeMs = 0;
+    this.isRebuffering = false;
+    this.playbackStarted = false;
   }
 
   /**
@@ -413,6 +462,20 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       availableGroups: Array.from(this.buffer.getGroupIds()),
     });
     return false;
+  }
+
+  /**
+   * Count total frames buffered across all groups
+   */
+  private countTotalBufferedFrames(): number {
+    let total = 0;
+    for (const groupId of this.buffer.getGroupIds()) {
+      const group = this.buffer.getGroup(groupId);
+      if (group) {
+        total += group.frames.size;
+      }
+    }
+    return total;
   }
 
   private createInitialStats(): VodPolicyStats {
