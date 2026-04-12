@@ -27,6 +27,7 @@ import {
   ObjectStatus,
   RequestParameter,
   SetupParameter,
+  ObjectExtension,
   BufferWriter,
   Logger,
   IS_DRAFT_16,
@@ -168,6 +169,7 @@ export class MOQTSession {
     objectCount: number;
     previousObjectId: number; // For delta encoding in draft-16
     hasExtensions: boolean; // Whether subgroup header has extensions bit set
+    maxCacheDuration?: number; // Max cache duration in ms (from first keyframe)
   }>();
   /** Announced namespaces (for announce flow) */
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
@@ -252,6 +254,23 @@ export class MOQTSession {
         bytes: data.byteLength,
       } as SubscribeStatsEvent);
     });
+
+    // Set up FETCH object callback to emit fetch-object events
+    this.objectRouter.setFetchObjectCallback((requestId, data, groupId, objectId) => {
+      log.info('FETCH object received', { requestId, groupId, objectId, dataSize: data.length });
+      this.emit('fetch-object', {
+        requestId,
+        data,
+        groupId,
+        objectId,
+      } as FetchObjectEvent);
+    });
+
+    // Set up FETCH end-of-group callback
+    this.objectRouter.setFetchEndOfGroupCallback((requestId, groupId) => {
+      log.info('FETCH end-of-group received', { requestId, groupId });
+    });
+
     log.debug('MOQTSession created', { isDraft16: IS_DRAFT_16, useWorker: this.useWorker });
   }
 
@@ -1989,11 +2008,13 @@ export class MOQTSession {
 
           try {
             // Send object using normal publish flow
+            // Include maxCacheDuration to tell relay how long to cache
             await this.sendObject(trackAlias, data, {
               groupId,
               objectId,
               type: 'video',
               isKeyframe: objectId === 0, // First object in group is keyframe
+              maxCacheDuration: options.maxCacheDuration ?? 60000, // Default 1 minute cache
             });
           } catch (err) {
             log.warn('Failed to send VOD object', { groupId, objectId, error: err });
@@ -2363,12 +2384,20 @@ export class MOQTSession {
         publisherPriority: priority ?? 128,
       }, true /* endOfGroup */);
 
+      // Build extensions map if maxCacheDuration is specified
+      let extensions: Map<number, number> | undefined;
+      if (metadata.maxCacheDuration !== undefined && metadata.maxCacheDuration > 0) {
+        extensions = new Map();
+        extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
+      }
+
       const objectData = ObjectCodec.encodeStreamObject(
         metadata.objectId,
         data,
         ObjectStatus.NORMAL,
         -1, // previousObjectId (first object)
-        hasExtensions
+        hasExtensions,
+        extensions
       );
 
       const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -2457,12 +2486,20 @@ export class MOQTSession {
           publisherPriority: priority,
         }, true /* endOfGroup */);
 
+        // Build extensions map if maxCacheDuration is specified
+        let extensions: Map<number, number> | undefined;
+        if (metadata.maxCacheDuration !== undefined && metadata.maxCacheDuration > 0) {
+          extensions = new Map();
+          extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
+        }
+
         const objectData = ObjectCodec.encodeStreamObject(
           metadata.objectId,
           data,
           ObjectStatus.NORMAL,
           -1, // previousObjectId (first object)
-          hasExtensions
+          hasExtensions,
+          extensions
         );
 
         const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -2478,6 +2515,7 @@ export class MOQTSession {
           objectCount: 1,
           previousObjectId: metadata.objectId, // For delta encoding
           hasExtensions,
+          maxCacheDuration: metadata.maxCacheDuration, // Store for P-frames
         });
 
         log.info('Started new GOP stream with keyframe', {
@@ -2516,12 +2554,20 @@ export class MOQTSession {
           return;
         }
 
+        // Build extensions map if maxCacheDuration was set on the keyframe
+        let extensions: Map<number, number> | undefined;
+        if (existing.maxCacheDuration !== undefined && existing.maxCacheDuration > 0) {
+          extensions = new Map();
+          extensions.set(ObjectExtension.MAX_CACHE_DURATION, existing.maxCacheDuration);
+        }
+
         const objectData = ObjectCodec.encodeStreamObject(
           metadata.objectId,
           data,
           ObjectStatus.NORMAL,
           existing.previousObjectId, // Delta encoding from previous object
-          existing.hasExtensions
+          existing.hasExtensions,
+          extensions
         );
 
         try {

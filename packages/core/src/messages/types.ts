@@ -279,6 +279,20 @@ export enum RequestParameter {
 }
 
 /**
+ * Object extension header keys (Draft-16)
+ *
+ * @remarks
+ * Extension headers are sent with objects to provide relay-visible metadata.
+ * They control caching, delivery timeouts, and other relay behaviors.
+ */
+export enum ObjectExtension {
+  /** Delivery timeout in milliseconds - how long to wait for delivery */
+  DELIVERY_TIMEOUT = 0x01,
+  /** Max cache duration in milliseconds - how long relay should cache the object */
+  MAX_CACHE_DURATION = 0x02,
+}
+
+/**
  * Group ordering preferences for subscriptions
  *
  * @remarks

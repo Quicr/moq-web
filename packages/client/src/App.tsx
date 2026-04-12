@@ -16,6 +16,7 @@ import { PublishPanel } from './components/publish/PublishPanel';
 import { SubscribePanel } from './components/subscribe/SubscribePanel';
 import { ChatPanel } from './components/chat/ChatPanel';
 import { CatalogPanel } from './components/catalog/CatalogPanel';
+import { FetchPanel } from './components/fetch/FetchPanel';
 import { SettingsPanel } from './components/common/SettingsPanel';
 import { StatusPanel } from './components/common/StatusPanel';
 import { DevSettingsPanel } from './components/common/DevSettingsPanel';
@@ -23,7 +24,7 @@ import { DecodeErrorToast } from './components/common/DecodeErrorToast';
 import { MessageLogPanel } from './components/common/MessageLogPanel';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = React.useState<'publish' | 'subscribe' | 'chat' | 'catalog'>('catalog');
+  const [activeTab, setActiveTab] = React.useState<'publish' | 'subscribe' | 'chat' | 'catalog' | 'fetch'>('catalog');
   const [showSettings, setShowSettings] = React.useState(false);
   const [showMessageLog, setShowMessageLog] = React.useState(false);
   const { state, session } = useStore();
@@ -55,6 +56,11 @@ const App: React.FC = () => {
     { id: 'catalog' as const, label: 'Catalog', icon: (
       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+      </svg>
+    )},
+    { id: 'fetch' as const, label: 'Fetch', icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
       </svg>
     )},
   ];
@@ -149,6 +155,9 @@ const App: React.FC = () => {
               </div>
               <div className={activeTab === 'catalog' ? '' : 'hidden'}>
                 <CatalogPanel />
+              </div>
+              <div className={activeTab === 'fetch' ? '' : 'hidden'}>
+                <FetchPanel />
               </div>
             </div>
           </div>
