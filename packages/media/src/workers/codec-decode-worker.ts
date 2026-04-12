@@ -233,7 +233,9 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
             useLatencyDeadline: config.useLatencyDeadline ?? true,
             debug: !!config.arbiterDebug,
           } : policyType === 'vod' ? {
-            minBufferFrames: 1,
+            // Buffer at least 1 GOP (~30 frames) before starting playback
+            // to give network time to stay ahead of playout
+            minBufferFrames: config.minBufferFrames ?? 30,
             waitForCompleteGop: true,
             debug: !!config.arbiterDebug,
           } : {

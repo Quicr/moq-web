@@ -90,6 +90,8 @@ export interface CodecDecodeWorkerConfig {
   arbiterDebug?: boolean;
   /** Enable QuicR-Mac interop mode for LOC unpackaging (default: false) */
   quicrInteropEnabled?: boolean;
+  /** Minimum frames to buffer before starting VOD playback (default: 30) */
+  minBufferFrames?: number;
 }
 
 /**
