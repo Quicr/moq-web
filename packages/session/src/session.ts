@@ -2152,6 +2152,20 @@ export class MOQTSession {
 
           await this.doWriteStream(streamInfo, objectData);
 
+          // Debug: show exact bytes for first few objects
+          if (objectId < 3) {
+            const bytesHex = Array.from(objectData.slice(0, Math.min(32, objectData.length)))
+              .map(b => b.toString(16).padStart(2, '0')).join(' ');
+            log.info('FETCH object encoded', {
+              requestId,
+              groupId,
+              objectId,
+              payloadSize: data.byteLength,
+              encodedSize: objectData.byteLength,
+              firstBytes: bytesHex,
+            });
+          }
+
           log.trace('Sent fetched object', {
             requestId,
             groupId,
