@@ -59,6 +59,12 @@ export interface TrackPolicyInfo {
 
   /** Target framerate for VOD pacing (from catalog) */
   framerate?: number;
+
+  /** Minimum frames to buffer before starting VOD playback */
+  minBufferFrames?: number;
+
+  /** Enable debug logging */
+  debug?: boolean;
 }
 
 /**
@@ -104,10 +110,12 @@ export function createPlayoutBufferFromTrack<T>(
   bufferConfig?: Partial<PlayoutBufferConfig>
 ): PlayoutBuffer<T> {
   if (!trackInfo.isLive) {
-    // VOD content - pass framerate for pacing
+    // VOD content - pass framerate for pacing and buffer config
     return createVodPlayoutBuffer(bufferConfig, {
       targetFramerate: trackInfo.framerate ?? 30,
       enablePacing: true,
+      minBufferFrames: trackInfo.minBufferFrames,
+      debug: trackInfo.debug,
     });
   }
 
