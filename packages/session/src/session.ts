@@ -2936,6 +2936,7 @@ export class MOQTSession {
           reasonPhrase: subscribeError.reasonPhrase,
           trackAlias: subscribeError.trackAlias,
         });
+        this.emitMessageReceived('SUBSCRIBE_ERROR', 0, `code=${subscribeError.errorCode} "${subscribeError.reasonPhrase}"`, { requestId: subscribeError.requestId, errorCode: subscribeError.errorCode, reasonPhrase: subscribeError.reasonPhrase });
 
         // Find and clean up the failed subscription
         const sub = this.subscriptionManager.findByRequestId(subscribeError.requestId);
