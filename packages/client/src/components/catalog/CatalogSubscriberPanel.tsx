@@ -63,7 +63,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   namespace,
   onNamespaceChange,
 }) => {
-  const { session, sessionState, state, connect, serverUrl, startSubscription, onVideoFrame } = useStore();
+  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame } = useStore();
 
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
@@ -348,17 +348,42 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
       console.log('[CatalogSubscriber] Subscribing with video config:', videoConfig);
 
-      // Pass isLive from catalog for auto policy selection (VOD vs Live)
-      // Pass framerate and gopDuration for VOD buffer calculation
-      const subscriptionId = await startSubscription(
-        trackNamespace.join('/'),
-        trackName,
-        mediaType,
-        videoConfig,
-        track.isLive,
-        track.framerate,
-        track.gopDuration
-      );
+      let subscriptionId: number;
+
+      // Use FETCH-based VOD subscription for non-live content
+      // This provides adaptive buffer management for smooth playback
+      if (track.isLive === false && mediaType === 'video') {
+        console.log('[CatalogSubscriber] Using FETCH-based VOD subscription', {
+          framerate: track.framerate,
+          gopDuration: track.gopDuration,
+          totalGroups: track.totalGroups,
+        });
+
+        subscriptionId = await startVodSubscription(
+          trackNamespace.join('/'),
+          trackName,
+          mediaType,
+          videoConfig,
+          {
+            framerate: track.framerate,
+            gopDuration: track.gopDuration,
+            totalGroups: track.totalGroups,
+          }
+        );
+      } else {
+        // Use regular SUBSCRIBE for live content or audio
+        // Pass isLive from catalog for auto policy selection (VOD vs Live)
+        // Pass framerate and gopDuration for VOD buffer calculation
+        subscriptionId = await startSubscription(
+          trackNamespace.join('/'),
+          trackName,
+          mediaType,
+          videoConfig,
+          track.isLive,
+          track.framerate,
+          track.gopDuration
+        );
+      }
 
       // Map subscription ID to track name for video frame routing
       subscriptionToTrackRef.current.set(subscriptionId, trackName);
@@ -370,7 +395,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     } catch (err) {
       console.error('[CatalogSubscriber] Failed to subscribe to track:', err);
     }
-  }, [receivedCatalog, namespace, startSubscription]);
+  }, [receivedCatalog, namespace, startSubscription, startVodSubscription]);
 
   // Subscribe to a subtitle track
   const handleSubtitleSubscribe = useCallback(async (track: Track) => {
