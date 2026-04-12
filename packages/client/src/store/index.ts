@@ -909,12 +909,13 @@ export const useStore = create<AppStore>()(
           throw new Error('No session');
         }
 
-        // Calculate minBufferFrames from catalog info: buffer 2 GOPs worth of frames
-        // Formula: framerate * (gopDuration / 1000) * 2, minimum 30 frames
+        // Calculate minBufferFrames from catalog info: buffer 6 GOPs worth of frames
+        // For 4K VOD content, keyframes can be 500KB-1MB+ and take several seconds to download
+        // Formula: framerate * (gopDuration / 1000) * 6, minimum 60 frames
         let minBufferFrames: number | undefined;
         if (catalogFramerate && catalogGopDuration) {
           const framesPerGop = catalogFramerate * (catalogGopDuration / 1000);
-          minBufferFrames = Math.max(30, Math.round(framesPerGop * 2));
+          minBufferFrames = Math.max(60, Math.round(framesPerGop * 6));
           log.info('Calculated minBufferFrames from catalog', { catalogFramerate, catalogGopDuration, framesPerGop, minBufferFrames });
         }
 
