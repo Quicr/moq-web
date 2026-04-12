@@ -50,6 +50,8 @@ export interface CatalogSubscribeOptions {
 export interface CatalogPublishOptions {
   /** Group numbering strategy */
   groupNumbering?: GroupNumberingStrategy;
+  /** Republish interval in ms (0 = disabled). Republishes catalog periodically with new groupId */
+  republishIntervalMs?: number;
 }
 
 /**
@@ -219,6 +221,8 @@ export class CatalogPublisher {
   private trackAlias: bigint | null = null;
   private groupNumbering: EpochGroupNumbering | SequentialGroupNumbering;
   private currentCatalog: FullCatalog | null = null;
+  private republishIntervalMs: number;
+  private republishTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     session: MOQTSession,
@@ -230,6 +234,7 @@ export class CatalogPublisher {
     this.groupNumbering = createGroupNumbering(
       options.groupNumbering ?? 'epoch'
     );
+    this.republishIntervalMs = options.republishIntervalMs ?? 0;
   }
 
   /**
@@ -251,6 +256,12 @@ export class CatalogPublisher {
    * Stop publishing the catalog track
    */
   async stop(): Promise<void> {
+    // Stop periodic republishing
+    if (this.republishTimer) {
+      clearInterval(this.republishTimer);
+      this.republishTimer = null;
+    }
+
     if (this.trackAlias === null) {
       return;
     }
@@ -263,6 +274,7 @@ export class CatalogPublisher {
    * Publish a full catalog
    *
    * This starts a new group and sends the catalog as object 0.
+   * If republishIntervalMs is set, starts periodic republishing.
    */
   async publishFull(catalog: FullCatalog): Promise<void> {
     if (this.trackAlias === null) {
@@ -279,6 +291,35 @@ export class CatalogPublisher {
     });
 
     this.currentCatalog = catalog;
+
+    // Start periodic republishing if configured and not already running
+    if (this.republishIntervalMs > 0 && !this.republishTimer) {
+      this.republishTimer = setInterval(() => {
+        this.republishCatalog();
+      }, this.republishIntervalMs);
+    }
+  }
+
+  /**
+   * Republish the current catalog with a new group ID (timestamp-based)
+   */
+  private async republishCatalog(): Promise<void> {
+    if (this.trackAlias === null || this.currentCatalog === null) {
+      return;
+    }
+
+    try {
+      const [groupId, objectId] = this.groupNumbering.nextFull();
+      const data = serializeCatalogToBytes(this.currentCatalog);
+
+      await this.session.sendObject(this.trackAlias, data, {
+        groupId,
+        objectId,
+        isKeyframe: true,
+      });
+    } catch {
+      // Ignore errors during periodic republish - session may be closing
+    }
   }
 
   /**
