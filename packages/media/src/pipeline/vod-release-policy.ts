@@ -348,7 +348,11 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private checkGroupCompletion(group: GroupState<T>): void {
     // Group is complete when:
     // 1. Buffer is empty AND
-    // 2. Either END_OF_GROUP received OR next group with keyframe exists
+    // 2. Either END_OF_GROUP received OR (waitForCompleteGop=false and next group ready)
+    //
+    // IMPORTANT: Do NOT assume "next keyframe arrived = current group complete"
+    // With parallel QUIC streams, objects from different groups arrive out of order.
+    // Group N+2's keyframe can arrive before Group N's remaining frames.
 
     if (group.frames.size > 0) {
       return; // Still have frames to output
@@ -358,19 +362,17 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       return; // Haven't started outputting
     }
 
-    const nextGroup = this.buffer.findNextKeyframeGroup(group.groupId);
-
     if (group.endOfGroupReceived) {
+      // Explicit end signal - safe to complete
       this.completeAndPromote(group.groupId, 'end_of_group');
-    } else if (nextGroup && !this.config.waitForCompleteGop) {
-      // Next group ready and we don't need to wait for complete GOP
-      this.completeAndPromote(group.groupId, 'next_group_ready');
-    } else if (nextGroup && nextGroup.hasKeyframe) {
-      // Next group has keyframe - current GOP is done
-      // (In VOD, receiving keyframe of next group implies current is complete)
-      this.completeAndPromote(group.groupId, 'next_keyframe');
+    } else if (!this.config.waitForCompleteGop) {
+      // Not waiting for complete GOP - check if next group is ready
+      const nextGroup = this.buffer.findNextKeyframeGroup(group.groupId);
+      if (nextGroup) {
+        this.completeAndPromote(group.groupId, 'next_group_ready');
+      }
     }
-    // Otherwise, wait for more frames or END_OF_GROUP
+    // Otherwise, wait for END_OF_GROUP signal (required for VOD with parallel streams)
   }
 
   private completeAndPromote(groupId: number, reason: string): void {
