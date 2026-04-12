@@ -63,6 +63,8 @@ import type {
   ReceivedObjectEvent,
   PublishStatsEvent,
   SubscribeStatsEvent,
+  SubscribeOkEvent,
+  MessageLogEvent,
   SubscriptionInfo,
   PublicationInfo,
   AnnouncedNamespaceInfo,
@@ -704,6 +706,7 @@ export class MOQTSession {
 
     await this.doSendControl(setupBytes);
     log.info('Sent CLIENT_SETUP');
+    this.emitMessageSent('CLIENT_SETUP', setupBytes.length, IS_DRAFT_16 ? 'draft-16' : 'draft-14', { isDraft16: IS_DRAFT_16 });
 
     // Wait for SERVER_SETUP
     await this.waitForServerSetup();
@@ -822,6 +825,7 @@ export class MOQTSession {
       namespace: namespace.join('/'),
       trackName,
     });
+    this.emitMessageSent('SUBSCRIBE', subscribeBytes.length, `${namespace.join('/')}/${trackName}`, { requestId, trackAlias: trackAlias.toString() });
 
     log.info('Subscription started', { subscriptionId });
     return subscriptionId;
@@ -955,6 +959,7 @@ export class MOQTSession {
       trackName,
       range,
     });
+    this.emitMessageSent('FETCH', fetchBytes.length, `${namespace.join('/')}/${trackName} [${range.startGroup}-${range.endGroup}]`, { requestId, range });
 
     // Store object callback if provided
     if (onObject) {
@@ -1357,6 +1362,7 @@ export class MOQTSession {
       namespace: namespace.join('/'),
       trackName,
     });
+    this.emitMessageSent('PUBLISH', publishBytes.length, `${namespace.join('/')}/${trackName}`, { requestId, trackAlias: trackAlias.toString() });
 
     // Wait for PUBLISH_OK
     const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
@@ -2684,6 +2690,7 @@ export class MOQTSession {
   on(event: 'error', handler: (err: Error) => void): () => void;
   on(event: 'publish-stats', handler: (stats: PublishStatsEvent) => void): () => void;
   on(event: 'subscribe-stats', handler: (stats: SubscribeStatsEvent) => void): () => void;
+  on(event: 'subscribe-ok', handler: (event: SubscribeOkEvent) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
@@ -2692,6 +2699,9 @@ export class MOQTSession {
   on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
   on(event: 'fetch-error', handler: (event: FetchErrorEvent) => void): () => void;
   on(event: 'incoming-fetch', handler: (event: IncomingFetchEvent) => void): () => void;
+  // Message logging events
+  on(event: 'message-sent', handler: (event: MessageLogEvent) => void): () => void;
+  on(event: 'message-received', handler: (event: MessageLogEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -2724,6 +2734,7 @@ export class MOQTSession {
           log.debug('Received SERVER_SETUP', {
             version: serverSetup.selectedVersion,
           });
+          this.emitMessageReceived('SERVER_SETUP', 0, `version=${serverSetup.selectedVersion}`, { version: serverSetup.selectedVersion });
           this.setState('ready');
           resolve();
         }
@@ -2837,6 +2848,7 @@ export class MOQTSession {
           trackAlias: publishOk.trackAlias,
           forward: publishOk.forward,
         });
+        this.emitMessageReceived('PUBLISH_OK', 0, `trackAlias=${publishOk.trackAlias} forward=${publishOk.forward}`, { requestId: publishOk.requestId, trackAlias: publishOk.trackAlias, forward: publishOk.forward });
 
         this.publicationManager.resolvePublishOk(publishOk.requestId, {
           forward: publishOk.forward ?? 0,
@@ -2877,11 +2889,25 @@ export class MOQTSession {
           largestGroupId: subscribeOk.largestGroupId,
           largestObjectId: subscribeOk.largestObjectId,
         });
+        this.emitMessageReceived('SUBSCRIBE_OK', 0, `trackAlias=${trackAliasNum}${subscribeOk.largestGroupId !== undefined ? ` largestGroup=${subscribeOk.largestGroupId}` : ''}`, { requestId: subscribeOk.requestId, trackAlias: trackAliasNum.toString(), largestGroupId: subscribeOk.largestGroupId });
 
         // Find subscription by request ID and update track alias
         const sub = this.subscriptionManager.findByRequestId(subscribeOk.requestId);
         if (sub) {
           this.subscriptionManager.updateTrackAlias(sub.subscriptionId, BigInt(subscribeOk.trackAlias));
+
+          // Emit subscribe-ok event for listeners (e.g., catalog subscriber)
+          const contentExists = typeof subscribeOk.contentExists === 'boolean'
+            ? subscribeOk.contentExists
+            : subscribeOk.contentExists === 1; // ObjectExistence.EXISTS
+          this.emit('subscribe-ok', {
+            subscriptionId: sub.subscriptionId,
+            requestId: subscribeOk.requestId,
+            trackAlias: trackAliasNum,
+            contentExists,
+            largestGroupId: subscribeOk.largestGroupId,
+            largestObjectId: subscribeOk.largestObjectId,
+          } as SubscribeOkEvent);
         } else {
           log.warn('SUBSCRIBE_OK received but no matching subscription found', {
             requestId: subscribeOk.requestId,
@@ -3095,6 +3121,7 @@ export class MOQTSession {
           largestGroupId: fetchOk.largestGroupId,
           largestObjectId: fetchOk.largestObjectId,
         });
+        this.emitMessageReceived('FETCH_OK', 0, `largestGroup=${fetchOk.largestGroupId}${fetchOk.endOfTrack ? ' (EOT)' : ''}`, { requestId: fetchOk.requestId, largestGroupId: fetchOk.largestGroupId });
 
         const fetchInfo = this.activeFetches.get(fetchOk.requestId);
         if (fetchInfo) {
@@ -3184,6 +3211,32 @@ export class MOQTSession {
   private handleError(err: Error): void {
     this.setState('error');
     this.emit('error', err);
+  }
+
+  /**
+   * Emit a message-sent event for the message log panel
+   */
+  private emitMessageSent(messageType: string, bytes: number, summary: string, details?: Record<string, unknown>): void {
+    this.emit('message-sent', {
+      messageType,
+      timestamp: Date.now(),
+      bytes,
+      summary,
+      details,
+    } as MessageLogEvent);
+  }
+
+  /**
+   * Emit a message-received event for the message log panel
+   */
+  private emitMessageReceived(messageType: string, bytes: number, summary: string, details?: Record<string, unknown>): void {
+    this.emit('message-received', {
+      messageType,
+      timestamp: Date.now(),
+      bytes,
+      summary,
+      details,
+    } as MessageLogEvent);
   }
 
   /**

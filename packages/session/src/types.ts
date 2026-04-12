@@ -25,13 +25,16 @@ export type SessionEventType =
   | 'error'
   | 'publish-stats'
   | 'subscribe-stats'
+  | 'subscribe-ok'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
   | 'incoming-publish'
   | 'fetch-object'
   | 'fetch-complete'
   | 'fetch-error'
-  | 'incoming-fetch';
+  | 'incoming-fetch'
+  | 'message-sent'
+  | 'message-received';
 
 /**
  * Options for subscribing to a track
@@ -135,6 +138,40 @@ export interface SubscribeStatsEvent {
   groupId: number;
   objectId: number;
   bytes: number;
+}
+
+/**
+ * Subscribe OK event data - emitted when SUBSCRIBE_OK is received
+ */
+export interface SubscribeOkEvent {
+  /** Subscription ID */
+  subscriptionId: number;
+  /** Request ID from the subscribe */
+  requestId: number;
+  /** Track alias assigned by relay */
+  trackAlias: bigint;
+  /** Whether content exists for this track */
+  contentExists: boolean;
+  /** Largest group ID available (if content exists) */
+  largestGroupId?: number;
+  /** Largest object ID in largest group (if content exists) */
+  largestObjectId?: number;
+}
+
+/**
+ * Message log event - emitted when control messages are sent or received
+ */
+export interface MessageLogEvent {
+  /** Message type name (e.g., 'SUBSCRIBE', 'PUBLISH_OK') */
+  messageType: string;
+  /** Timestamp when message was processed */
+  timestamp: number;
+  /** Message size in bytes */
+  bytes: number;
+  /** Summary of message content for display */
+  summary: string;
+  /** Additional details (optional) */
+  details?: Record<string, unknown>;
 }
 
 /**
