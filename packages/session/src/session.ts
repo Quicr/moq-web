@@ -959,7 +959,7 @@ export class MOQTSession {
       trackName,
       range,
     });
-    this.emitMessageSent('FETCH', fetchBytes.length, `${namespace.join('/')}/${trackName} [${range.startGroup}-${range.endGroup}]`, { requestId, range });
+    this.emitMessageSent('FETCH', fetchBytes.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId, range });
 
     // Store object callback if provided
     if (onObject) {
@@ -2842,13 +2842,20 @@ export class MOQTSession {
           requestId: number;
           trackAlias?: number;
           forward: number;
+          startLocation?: { groupId: number; objectId: number };
+          endGroup?: number;
         };
         log.info('Received PUBLISH_OK in handler', {
           requestId: publishOk.requestId,
           trackAlias: publishOk.trackAlias,
           forward: publishOk.forward,
+          startLocation: publishOk.startLocation,
+          endGroup: publishOk.endGroup,
         });
-        this.emitMessageReceived('PUBLISH_OK', 0, `trackAlias=${publishOk.trackAlias} forward=${publishOk.forward}`, { requestId: publishOk.requestId, trackAlias: publishOk.trackAlias, forward: publishOk.forward });
+        const locationStr = publishOk.startLocation
+          ? ` loc=(${publishOk.startLocation.groupId},${publishOk.startLocation.objectId})`
+          : '';
+        this.emitMessageReceived('PUBLISH_OK', 0, `trackAlias=${publishOk.trackAlias} forward=${publishOk.forward}${locationStr}`, { requestId: publishOk.requestId, trackAlias: publishOk.trackAlias, forward: publishOk.forward, startLocation: publishOk.startLocation });
 
         this.publicationManager.resolvePublishOk(publishOk.requestId, {
           forward: publishOk.forward ?? 0,
