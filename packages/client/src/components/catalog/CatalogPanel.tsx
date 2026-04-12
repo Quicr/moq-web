@@ -232,16 +232,16 @@ export const CatalogPanel: React.FC = () => {
 
           {/* Catalog Republish Interval */}
           <div className="glass-panel p-3 flex items-center gap-4">
-            <label className="text-sm text-slate-300 whitespace-nowrap">Catalog Republish:</label>
+            <label className="text-sm text-primary whitespace-nowrap">Catalog Republish:</label>
             <input
               type="number"
               min="0"
               max="60"
               value={catalogRepublishSec}
               onChange={(e) => setCatalogRepublishSec(Math.max(0, parseInt(e.target.value) || 0))}
-              className="w-16 px-2 py-1 text-center text-sm text-slate-100 bg-slate-800/60 border border-slate-600/50 rounded-md focus:outline-none focus:border-cyan-500/50"
+              className="input w-20 py-1 text-center"
             />
-            <span className="text-xs text-slate-400">sec (0 = off)</span>
+            <span className="text-xs text-muted">sec (0 = off)</span>
           </div>
 
           <CatalogBuilderPanel
