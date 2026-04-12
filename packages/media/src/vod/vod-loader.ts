@@ -39,6 +39,31 @@ export interface VODLoadProgress {
 }
 
 /**
+ * Extended metadata returned from preload for catalog building
+ * Includes VOD-specific fields needed for player controls
+ */
+export interface VODPreloadMetadata {
+  /** Duration in milliseconds */
+  duration: number;
+  /** Video width in pixels */
+  width: number;
+  /** Video height in pixels */
+  height: number;
+  /** Actual framerate extracted from video (frames per second) */
+  framerate: number;
+  /** Estimated total number of groups (GOPs) */
+  totalGroups: number;
+  /** Estimated GOP duration in milliseconds */
+  gopDuration: number;
+  /** Timescale (units per second, typically 1000 for ms) */
+  timescale: number;
+  /** Track duration in timescale units (for MSF catalog) */
+  trackDuration: number;
+  /** Codec string extracted from video (e.g., 'avc1.64001f') */
+  codec?: string;
+}
+
+/**
  * VOD Loader options
  */
 export interface VODLoaderOptions {
@@ -113,33 +138,43 @@ export class VODLoader {
   /**
    * Preload video from URL - fetches and validates without full decode
    * Call this early to catch errors before the user initiates publishing
+   * Returns extended metadata for catalog building (including VOD-specific fields)
    */
-  async preload(url: string): Promise<{ duration: number; width: number; height: number }> {
+  async preload(url: string): Promise<VODPreloadMetadata> {
     log.info('Preloading VOD from URL', { url });
 
     // Fetch the video
     await this.fetchVideo(url);
 
     // Validate it can be loaded by a video element
-    const metadata = await this.validateVideo();
-    log.info('VOD preloaded successfully', metadata);
-    return metadata;
+    const basicMetadata = await this.validateVideo();
+
+    // Try to extract actual framerate and codec from MP4 container
+    const parsedInfo = this.parseVideoMetadata();
+    log.info('VOD preloaded successfully', { ...basicMetadata, ...parsedInfo });
+
+    return this.extendMetadata(basicMetadata, parsedInfo);
   }
 
   /**
    * Preload video from File - reads and validates without full decode
    * Use this for local files to avoid CORS issues
+   * Returns extended metadata for catalog building (including VOD-specific fields)
    */
-  async preloadFile(file: File): Promise<{ duration: number; width: number; height: number }> {
+  async preloadFile(file: File): Promise<VODPreloadMetadata> {
     log.info('Preloading VOD from file', { name: file.name, size: file.size });
 
     // Read the file
     await this.readFile(file);
 
     // Validate it can be loaded by a video element
-    const metadata = await this.validateVideo();
-    log.info('VOD preloaded successfully', metadata);
-    return metadata;
+    const basicMetadata = await this.validateVideo();
+
+    // Try to extract actual framerate and codec from MP4 container
+    const parsedInfo = this.parseVideoMetadata();
+    log.info('VOD preloaded successfully', { ...basicMetadata, ...parsedInfo });
+
+    return this.extendMetadata(basicMetadata, parsedInfo);
   }
 
   /**
@@ -339,6 +374,74 @@ export class VODLoader {
     } finally {
       URL.revokeObjectURL(blobUrl);
     }
+  }
+
+  /**
+   * Try to parse video container to extract actual framerate and codec
+   * Returns null values if parsing fails (e.g., non-MP4 format)
+   */
+  private parseVideoMetadata(): { framerate?: number; codec?: string; sampleCount?: number } {
+    if (!this.videoData) {
+      return {};
+    }
+
+    try {
+      const parser = new MP4Parser(this.videoData);
+      const result = parser.parse();
+
+      if (result.videoTrack) {
+        const track = result.videoTrack;
+        // Calculate actual framerate from sample count and duration
+        const framerate = track.samples.length / (track.durationMs / 1000);
+        log.info('Extracted video metadata from MP4', {
+          codec: track.codec,
+          framerate: framerate.toFixed(2),
+          sampleCount: track.samples.length,
+          durationMs: track.durationMs,
+        });
+        return {
+          framerate: Math.round(framerate * 100) / 100, // Round to 2 decimal places
+          codec: track.codec,
+          sampleCount: track.samples.length,
+        };
+      }
+    } catch (err) {
+      log.warn('Could not parse video container for metadata', { error: (err as Error).message });
+    }
+
+    return {};
+  }
+
+  /**
+   * Extend basic metadata with VOD-specific fields for catalog building
+   * Uses actual framerate from parsed video if available, otherwise falls back to configured
+   */
+  private extendMetadata(
+    basic: { duration: number; width: number; height: number },
+    parsed: { framerate?: number; codec?: string; sampleCount?: number } = {}
+  ): VODPreloadMetadata {
+    // Use actual framerate from video if available, otherwise use configured
+    const framerate = parsed.framerate ?? this.options.framerate;
+    const framesPerGroup = this.options.framesPerGroup;
+
+    // Calculate GOP duration from frames per group and framerate
+    const gopDurationMs = (framesPerGroup / framerate) * 1000;
+
+    // Estimate total number of groups
+    const totalGroups = Math.ceil(basic.duration / gopDurationMs);
+
+    // Use milliseconds as timescale (standard for media)
+    const timescale = 1000;
+
+    return {
+      ...basic,
+      framerate,
+      totalGroups,
+      gopDuration: gopDurationMs,
+      timescale,
+      trackDuration: Math.round(basic.duration), // Already in ms, round to integer
+      codec: parsed.codec,
+    };
   }
 
   /**

@@ -109,6 +109,23 @@ export interface ReleasePolicy<T> {
    * Called when the buffer is reset.
    */
   reset(): void;
+
+  /**
+   * Pause frame release (optional - for VOD)
+   *
+   * When paused, getReadyFrames() should return empty array.
+   */
+  pause?(): void;
+
+  /**
+   * Resume frame release (optional - for VOD)
+   */
+  resume?(): void;
+
+  /**
+   * Check if frame release is paused (optional)
+   */
+  isPaused?(): boolean;
 }
 
 /**
@@ -123,6 +140,7 @@ export abstract class BaseReleasePolicy<T> implements ReleasePolicy<T> {
   protected buffer!: PlayoutBuffer<T>;
   protected debug = false;
   protected debugLogCallback?: (message: string, data?: Record<string, unknown>) => void;
+  protected paused = false;
 
   /**
    * Configure debug logging
@@ -150,6 +168,29 @@ export abstract class BaseReleasePolicy<T> implements ReleasePolicy<T> {
 
   initialize(buffer: PlayoutBuffer<T>): void {
     this.buffer = buffer;
+  }
+
+  /**
+   * Pause frame release
+   */
+  pause(): void {
+    this.paused = true;
+    this.log('PAUSED');
+  }
+
+  /**
+   * Resume frame release
+   */
+  resume(): void {
+    this.paused = false;
+    this.log('RESUMED');
+  }
+
+  /**
+   * Check if paused
+   */
+  isPaused(): boolean {
+    return this.paused;
   }
 
   abstract onFrameAdded(frame: FrameEntry<T>, group: GroupState<T>): void;

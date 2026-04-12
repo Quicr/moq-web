@@ -110,6 +110,8 @@ export type CodecDecodeWorkerRequest =
   | { type: 'reconfigure-audio'; channelId: number; config: AudioDecoderWorkerConfig }
   | { type: 'reset'; channelId: number }
   | { type: 'mark-group-complete'; channelId: number; groupId: number }
+  | { type: 'pause'; channelId: number }
+  | { type: 'resume'; channelId: number }
   | { type: 'destroy'; channelId: number }
   | { type: 'close' };
 

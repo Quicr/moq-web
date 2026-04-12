@@ -23,7 +23,7 @@ import type {
 } from './types';
 import { DEFAULT_TRACK_CONFIGS } from './types';
 import { createCatalog, type FullCatalog } from '@web-moq/msf';
-import { VODLoader } from '@web-moq/media';
+import { VODLoader, type VODPreloadMetadata } from '@web-moq/media';
 
 interface CatalogBuilderPanelProps {
   namespace: string;
@@ -80,6 +80,15 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
     setTracks(prev => [...prev, newTrack]);
     setShowAddModal(false);
     setAddingTrackType(null);
+
+    // Auto-preload VOD tracks when they have a source
+    if (type === 'video-vod') {
+      const vodTrack = newTrack as VODTrackConfig;
+      if (vodTrack.videoFile || vodTrack.videoUrl) {
+        // Schedule preload after state update
+        setTimeout(() => handlePreloadVOD(vodTrack), 0);
+      }
+    }
   }, [addingTrackType, tracks.length]);
 
   // Handle track update
@@ -179,7 +188,7 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
         vodLoadersRef.current.set(track.id, loader);
       }
 
-      let metadata: { duration: number; width: number; height: number };
+      let metadata: VODPreloadMetadata;
 
       if (useFile) {
         console.log('[CatalogBuilder] Preloading VOD from file:', track.videoFile!.name);
@@ -190,15 +199,20 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
       }
       console.log('[CatalogBuilder] VOD preloaded:', metadata);
 
-      // Update track with actual video metadata
+      // Update track with actual video metadata including VOD-specific fields
       setTracks(prev => prev.map(t => {
         if (t.id !== track.id) return t;
+        const vodTrack = t as VODTrackConfig;
         return {
-          ...t,
+          ...vodTrack,
           status: 'ready',
           duration: metadata.duration,
           width: metadata.width,
           height: metadata.height,
+          framerate: metadata.framerate, // Actual framerate from video
+          codec: metadata.codec ?? vodTrack.codec, // Actual codec if extracted
+          totalGroups: metadata.totalGroups,
+          gopDuration: metadata.gopDuration,
           loadProgress: { phase: 'complete', progress: 100 },
         } as VODTrackConfig;
       }));
@@ -226,6 +240,11 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
             bitrate: t.bitrate,
             isLive: false,
             targetLatency: getTargetLatency(t.experienceProfile),
+            // VOD metadata for player controls
+            trackDuration: t.duration, // Duration in ms (timescale=1000)
+            timescale: 1000,
+            totalGroups: t.totalGroups,
+            gopDuration: t.gopDuration,
           });
           break;
         }

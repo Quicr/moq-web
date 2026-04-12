@@ -16,3 +16,5 @@ export {
   parseVTTTimestamp,
   type SubtitleCue,
 } from './SubtitleOverlay';
+
+export { MoqMediaPlayer, type MoqMediaPlayerProps } from './MoqMediaPlayer';

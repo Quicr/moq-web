@@ -1006,16 +1006,32 @@ export class MediaSession {
 
   /**
    * Pause a subscription
+   * Stops frame output and sends forward=0 to relay (for live content)
    */
   async pauseSubscription(subscriptionId: number): Promise<void> {
+    // Pause the decode pipeline to stop frame output immediately
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (subscription?.pipeline) {
+      subscription.pipeline.pause();
+    }
+
+    // Send SUBSCRIBE_UPDATE with forward=0 (stops data from relay for live)
     await this.session.pauseSubscription(subscriptionId);
   }
 
   /**
    * Resume a subscription
+   * Resumes frame output and sends forward=1 to relay (for live content)
    */
   async resumeSubscription(subscriptionId: number): Promise<void> {
+    // Send SUBSCRIBE_UPDATE with forward=1 first (resumes data from relay)
     await this.session.resumeSubscription(subscriptionId);
+
+    // Resume the decode pipeline to allow frame output
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (subscription?.pipeline) {
+      subscription.pipeline.resume();
+    }
   }
 
   /**

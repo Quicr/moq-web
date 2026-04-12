@@ -42,6 +42,20 @@ export interface VodReleasePolicyConfig {
    */
   maxWaitTimeMs: number;
 
+  /**
+   * Target framerate for pacing (frames per second)
+   * Frames are released at this rate regardless of arrival speed
+   * Default: 30
+   */
+  targetFramerate: number;
+
+  /**
+   * Enable frame pacing (default: true for VOD)
+   * When true, frames are released at targetFramerate pace
+   * When false, frames are released as soon as available
+   */
+  enablePacing: boolean;
+
   /** Enable debug logging */
   debug: boolean;
 }
@@ -53,6 +67,8 @@ export const DEFAULT_VOD_POLICY_CONFIG: VodReleasePolicyConfig = {
   minBufferFrames: 1,
   waitForCompleteGop: true,
   maxWaitTimeMs: Infinity,
+  targetFramerate: 30,
+  enablePacing: true,
   debug: false,
 };
 
@@ -108,13 +124,19 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private nextExpectedGroup = -1;
   private initialized = false;
 
+  // Frame pacing state
+  private lastFrameReleaseTime = 0;
+  private frameDurationMs = 33.33; // Default 30fps = 33.33ms per frame
+
   constructor(config: Partial<VodReleasePolicyConfig> = {}) {
     super();
     this.config = { ...DEFAULT_VOD_POLICY_CONFIG, ...config };
     // Enable debug by default for VOD to trace issues
     this.debug = this.config.debug || true;
     this.stats = this.createInitialStats();
-    console.log('[VodReleasePolicy] Created with config:', this.config);
+    // Calculate frame duration from framerate
+    this.frameDurationMs = 1000 / this.config.targetFramerate;
+    console.log('[VodReleasePolicy] Created with config:', this.config, 'frameDurationMs:', this.frameDurationMs);
   }
 
   onFrameAdded(frame: FrameEntry<T>, group: GroupState<T>): void {
@@ -162,6 +184,11 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   }
 
   getReadyFrames(maxFrames: number): FrameEntry<T>[] {
+    // Check if paused - return no frames while paused
+    if (this.paused) {
+      return [];
+    }
+
     const activeGroupId = this.buffer.getActiveGroupId();
 
     // VOD: If no active group, try to activate the expected sequential group
@@ -190,7 +217,49 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       return [];
     }
 
-    // Output sequential frames
+    // Frame pacing: only release frames at the target framerate
+    if (this.config.enablePacing) {
+      const now = performance.now();
+      const timeSinceLastFrame = now - this.lastFrameReleaseTime;
+
+      // First frame - no pacing needed
+      if (this.lastFrameReleaseTime === 0) {
+        this.lastFrameReleaseTime = now;
+      } else if (timeSinceLastFrame < this.frameDurationMs) {
+        // Not enough time has passed - don't release any frames
+        return [];
+      }
+
+      // Calculate how many frames we can release based on elapsed time
+      const framesToRelease = Math.min(
+        maxFrames,
+        Math.floor(timeSinceLastFrame / this.frameDurationMs) || 1
+      );
+
+      // Output sequential frames (paced)
+      const result = this.outputSequentialFrames(group, framesToRelease);
+
+      if (result.length > 0) {
+        // Update last release time - advance by actual frames released
+        this.lastFrameReleaseTime = now;
+        this.stats.framesOutput += result.length;
+        this.stats.currentGopId = this.buffer.getActiveGroupId();
+        this.log('OUTPUT FRAMES (paced)', {
+          count: result.length,
+          groupId: this.buffer.getActiveGroupId(),
+          objectIds: result.map(f => f.objectId),
+          totalOutput: this.stats.framesOutput,
+          timeSinceLastMs: timeSinceLastFrame.toFixed(1),
+        });
+      }
+
+      // Check if we should complete this group and move to next
+      this.checkGroupCompletion(group);
+
+      return result;
+    }
+
+    // Non-paced output (original behavior)
     const result = this.outputSequentialFrames(group, maxFrames);
 
     if (result.length > 0) {
@@ -236,6 +305,7 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     this.waitStartTime.clear();
     this.nextExpectedGroup = -1;
     this.initialized = false;
+    this.lastFrameReleaseTime = 0;
   }
 
   // ============================================================

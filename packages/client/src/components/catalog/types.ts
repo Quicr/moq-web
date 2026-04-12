@@ -52,6 +52,10 @@ export interface VODTrackConfig extends BaseTrackConfig {
   framerate: number;
   bitrate: number;
   duration: number; // milliseconds
+  /** Total number of groups/GOPs */
+  totalGroups?: number;
+  /** GOP duration in milliseconds */
+  gopDuration?: number;
   enableDvr: boolean;
   loopPlayback: boolean;
   loadProgress?: VODLoadProgress;

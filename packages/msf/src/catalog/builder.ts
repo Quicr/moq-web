@@ -81,6 +81,11 @@ export class CatalogBuilder {
       initData: input.initData,
       temporalId: input.temporalId,
       spatialId: input.spatialId,
+      // VOD metadata
+      trackDuration: input.trackDuration,
+      timescale: input.timescale,
+      totalGroups: input.totalGroups,
+      gopDuration: input.gopDuration,
     };
     // Remove undefined values
     this.tracks.push(this.removeUndefined(track));

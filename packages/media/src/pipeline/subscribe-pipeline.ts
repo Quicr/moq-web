@@ -1000,6 +1000,34 @@ export class SubscribePipeline {
   }
 
   /**
+   * Pause frame output
+   * Frames continue to buffer but are not released for decoding
+   */
+  pause(): void {
+    log.info('Pausing pipeline', { channelId: this.channelId });
+
+    // Worker mode: send message to worker (playout buffer is in worker)
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.pause();
+    }
+    // Main thread mode: TODO - would need to add pause to GroupArbiter
+    // For now, pause only works with decode worker
+  }
+
+  /**
+   * Resume frame output
+   */
+  resume(): void {
+    log.info('Resuming pipeline', { channelId: this.channelId });
+
+    // Worker mode: send message to worker (playout buffer is in worker)
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.resume();
+    }
+    // Main thread mode: TODO - would need to add resume to GroupArbiter
+  }
+
+  /**
    * Emit jitter sample (called periodically when stats enabled)
    */
   private emitJitterSample(): void {
