@@ -124,9 +124,10 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private nextExpectedGroup = -1;
   private initialized = false;
 
-  // Frame pacing state
+  // Frame pacing state - uses accumulated time for smooth pacing
   private lastFrameReleaseTime = 0;
   private frameDurationMs = 33.33; // Default 30fps = 33.33ms per frame
+  private accumulatedTimeMs = 0; // Accumulated time for fractional frame tracking
 
   constructor(config: Partial<VodReleasePolicyConfig> = {}) {
     super();
@@ -218,30 +219,42 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     }
 
     // Frame pacing: only release frames at the target framerate
+    // Uses accumulated time to handle fractional frame timing correctly
+    // (e.g., 60fps = 16.67ms/frame with 16ms poll interval)
     if (this.config.enablePacing) {
       const now = performance.now();
-      const timeSinceLastFrame = now - this.lastFrameReleaseTime;
 
-      // First frame - no pacing needed
+      // First frame - initialize timing
       if (this.lastFrameReleaseTime === 0) {
         this.lastFrameReleaseTime = now;
-      } else if (timeSinceLastFrame < this.frameDurationMs) {
-        // Not enough time has passed - don't release any frames
+        this.accumulatedTimeMs = this.frameDurationMs; // Allow first frame immediately
+      }
+
+      // Accumulate elapsed time since last poll
+      const elapsedMs = now - this.lastFrameReleaseTime;
+      this.accumulatedTimeMs += elapsedMs;
+      this.lastFrameReleaseTime = now;
+
+      // Calculate how many whole frames we can release
+      const framesToRelease = Math.floor(this.accumulatedTimeMs / this.frameDurationMs);
+
+      if (framesToRelease === 0) {
+        // Not enough accumulated time for a frame yet
         return [];
       }
 
-      // Calculate how many frames we can release based on elapsed time
-      const framesToRelease = Math.min(
-        maxFrames,
-        Math.floor(timeSinceLastFrame / this.frameDurationMs) || 1
-      );
+      // Consume time for frames we'll release (keep fractional remainder)
+      const timeToConsume = framesToRelease * this.frameDurationMs;
+
+      // Limit actual release to available frames and maxFrames
+      const actualFramesToRelease = Math.min(maxFrames, framesToRelease);
 
       // Output sequential frames (paced)
-      const result = this.outputSequentialFrames(group, framesToRelease);
+      const result = this.outputSequentialFrames(group, actualFramesToRelease);
 
       if (result.length > 0) {
-        // Update last release time - advance by actual frames released
-        this.lastFrameReleaseTime = now;
+        // Only consume time for frames actually released
+        this.accumulatedTimeMs -= result.length * this.frameDurationMs;
         this.stats.framesOutput += result.length;
         this.stats.currentGopId = this.buffer.getActiveGroupId();
         this.log('OUTPUT FRAMES (paced)', {
@@ -249,8 +262,17 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
           groupId: this.buffer.getActiveGroupId(),
           objectIds: result.map(f => f.objectId),
           totalOutput: this.stats.framesOutput,
-          timeSinceLastMs: timeSinceLastFrame.toFixed(1),
+          elapsedMs: elapsedMs.toFixed(1),
+          accumulatedMs: this.accumulatedTimeMs.toFixed(1),
+          frameDurationMs: this.frameDurationMs.toFixed(2),
         });
+      } else {
+        // No frames available - don't consume time (wait for data)
+        this.accumulatedTimeMs -= timeToConsume;
+        // Cap accumulated time to prevent runaway buildup when starved
+        if (this.accumulatedTimeMs < 0) {
+          this.accumulatedTimeMs = 0;
+        }
       }
 
       // Check if we should complete this group and move to next
@@ -306,6 +328,17 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     this.nextExpectedGroup = -1;
     this.initialized = false;
     this.lastFrameReleaseTime = 0;
+    this.accumulatedTimeMs = 0;
+  }
+
+  /**
+   * Resume from pause - reset timing state to avoid accumulated time issues
+   */
+  override resume(): void {
+    super.resume();
+    // Reset pacing state so we don't have stale timing from before pause
+    this.lastFrameReleaseTime = 0;
+    this.accumulatedTimeMs = 0;
   }
 
   // ============================================================
