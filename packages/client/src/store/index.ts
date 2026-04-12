@@ -194,7 +194,7 @@ interface ConnectionSlice {
     videoEnabled?: boolean;
     audioEnabled?: boolean;
   } | null;
-  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number) => Promise<number>;
+  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => Promise<number>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
@@ -903,10 +903,19 @@ export const useStore = create<AppStore>()(
         log.info('Namespace announcement cancelled', { namespace });
       },
 
-      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number) => {
+      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => {
         const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
+        }
+
+        // Calculate minBufferFrames from catalog info: buffer 2 GOPs worth of frames
+        // Formula: framerate * (gopDuration / 1000) * 2, minimum 30 frames
+        let minBufferFrames: number | undefined;
+        if (catalogFramerate && catalogGopDuration) {
+          const framesPerGop = catalogFramerate * (catalogGopDuration / 1000);
+          minBufferFrames = Math.max(30, Math.round(framesPerGop * 2));
+          log.info('Calculated minBufferFrames from catalog', { catalogFramerate, catalogGopDuration, framesPerGop, minBufferFrames });
         }
 
         const config: MediaConfig = {
@@ -920,8 +929,9 @@ export const useStore = create<AppStore>()(
           policyType,
           isLive,
           catalogFramerate, // For VOD frame pacing
+          minBufferFrames, // Derived from catalog framerate and GOP duration
           maxLatency,
-          estimatedGopDuration,
+          estimatedGopDuration: catalogGopDuration ?? estimatedGopDuration,
           skipToLatestGroup,
           skipGraceFrames,
           enableCatchUp,

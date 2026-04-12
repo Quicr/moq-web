@@ -623,6 +623,7 @@ export class MediaSession {
       catalogTimescale: config.catalogTimescale,
       // QuicR-Mac interop mode
       quicrInteropEnabled: config.quicrInteropEnabled,
+      minBufferFrames: config.minBufferFrames,
     });
 
     log.info('Created subscribe pipeline', {
@@ -1417,6 +1418,7 @@ export class MediaSession {
       catalogTimescale: config.catalogTimescale,
       // QuicR-Mac interop mode
       quicrInteropEnabled: config.quicrInteropEnabled,
+      minBufferFrames: config.minBufferFrames,
     });
 
     log.info('Created decode pipeline for discovered track', {

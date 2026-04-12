@@ -115,6 +115,8 @@ export interface SubscribePipelineConfig {
   useLatencyDeadline?: boolean;
   /** Enable GroupArbiter debug logging (default: false) */
   arbiterDebug?: boolean;
+  /** Minimum frames to buffer before starting VOD playback (default: 30) */
+  minBufferFrames?: number;
 
   /** Enable QuicR-Mac interop mode for LOC unpackaging (default: false) */
   quicrInteropEnabled?: boolean;
@@ -443,6 +445,7 @@ export class SubscribePipeline {
       arbiterDebug: this.config.arbiterDebug,
       // QuicR interop mode for LOC unpackaging
       quicrInteropEnabled: this.config.quicrInteropEnabled,
+      minBufferFrames: this.config.minBufferFrames,
     });
 
     log.info('Decode worker channel initialized', { channelId: this.channelId });
