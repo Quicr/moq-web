@@ -240,11 +240,11 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
             bitrate: t.bitrate,
             isLive: false,
             targetLatency: getTargetLatency(t.experienceProfile),
-            // VOD metadata for player controls
-            trackDuration: t.duration, // Duration in ms (timescale=1000)
+            // VOD metadata for player controls (must be integers per MSF schema)
+            trackDuration: t.duration ? Math.round(t.duration) : undefined,
             timescale: 1000,
             totalGroups: t.totalGroups,
-            gopDuration: t.gopDuration,
+            gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
           });
           break;
         }
