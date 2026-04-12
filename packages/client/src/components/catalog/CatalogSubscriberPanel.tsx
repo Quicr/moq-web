@@ -13,8 +13,7 @@ import { useStore } from '../../store';
 import { createMSFSession, type MSFSession, type FullCatalog, type Track } from '@web-moq/msf';
 import { ABRController, type ABRTrack } from '@web-moq/media';
 import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
-import { VideoRenderer } from '../subscribe/VideoRenderer';
-import { VODVideoPlayer } from '../subscribe/VODVideoPlayer';
+import { MoqMediaPlayer } from '../player/MoqMediaPlayer';
 
 interface CatalogSubscriberPanelProps {
   namespace: string;
@@ -350,12 +349,14 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       console.log('[CatalogSubscriber] Subscribing with video config:', videoConfig);
 
       // Pass isLive from catalog for auto policy selection (VOD vs Live)
+      // Pass framerate for VOD frame pacing
       const subscriptionId = await startSubscription(
         trackNamespace.join('/'),
         trackName,
         mediaType,
         videoConfig,
-        track.isLive
+        track.isLive,
+        track.framerate
       );
 
       // Map subscription ID to track name for video frame routing
@@ -775,22 +776,17 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                     {/* Video Player for subscribed video tracks */}
                     {trackType === 'video' && isSubscribed && (
                       <div className="mt-4">
-                        {track.isLive === false ? (
-                          // VOD: Use player with controls
-                          <VODVideoPlayer
-                            frame={videoFrames.get(track.name) ?? null}
-                            subscriptionId={trackToSubscriptionRef.current.get(track.name) ?? 0}
-                            framerate={track.framerate}
-                            className="w-full rounded-lg overflow-hidden"
-                            showControls={true}
-                          />
-                        ) : (
-                          // Live: Use simple renderer
-                          <VideoRenderer
-                            frame={videoFrames.get(track.name) ?? null}
-                            className="w-full rounded-lg overflow-hidden"
-                          />
-                        )}
+                        <MoqMediaPlayer
+                          frame={videoFrames.get(track.name) ?? null}
+                          subscriptionId={trackToSubscriptionRef.current.get(track.name) ?? 0}
+                          isLive={track.isLive ?? true}
+                          duration={track.trackDuration}
+                          framerate={track.framerate}
+                          totalGroups={track.totalGroups}
+                          gopDuration={track.gopDuration}
+                          className="w-full rounded-lg overflow-hidden"
+                          showControls={true}
+                        />
                       </div>
                     )}
                   </div>

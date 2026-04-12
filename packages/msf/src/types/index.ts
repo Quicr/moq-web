@@ -65,6 +65,15 @@ export interface VideoTrackInput {
   initData?: string;
   temporalId?: number;
   spatialId?: number;
+  // VOD metadata (for isLive=false tracks)
+  /** Track duration in milliseconds */
+  trackDuration?: number;
+  /** Timescale (units per second, default 1000 for ms) */
+  timescale?: number;
+  /** Total number of groups/GOPs */
+  totalGroups?: number;
+  /** GOP duration in milliseconds */
+  gopDuration?: number;
 }
 
 /**

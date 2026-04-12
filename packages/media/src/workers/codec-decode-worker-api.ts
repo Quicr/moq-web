@@ -246,6 +246,21 @@ export class CodecDecodeWorkerClient {
   }
 
   /**
+   * Pause frame output on this channel
+   * The playout buffer stops releasing frames while paused
+   */
+  pause(): void {
+    this.post({ type: 'pause', channelId: this.channelId });
+  }
+
+  /**
+   * Resume frame output on this channel
+   */
+  resume(): void {
+    this.post({ type: 'resume', channelId: this.channelId });
+  }
+
+  /**
    * Destroy this channel and clean up resources
    * Call this when unsubscribing
    */

@@ -201,6 +201,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         // Catalog-driven: use isLive to select policy
         channel.videoPlayoutBuffer = createPlayoutBufferFromTrack<VideoBufferData>({
           isLive: config.isLive,
+          framerate: config.catalogFramerate, // For VOD pacing
           profileSettings: {
             jitterBufferDelay: jitterDelay,
             maxLatency: config.maxLatency,
@@ -212,7 +213,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
             useLatencyDeadline: config.useLatencyDeadline,
           },
         });
-        log(`Channel ${channelId} using PlayoutBuffer (catalog-driven, isLive=${config.isLive})`, {
+        log(`Channel ${channelId} using PlayoutBuffer (catalog-driven, isLive=${config.isLive}, framerate=${config.catalogFramerate})`, {
           policyType: config.isLive ? 'live' : 'vod',
         });
       } else {
@@ -1277,6 +1278,32 @@ self.onmessage = (event: MessageEvent<CodecDecodeWorkerRequest>): void => {
       channel.videoArbiter?.markGroupComplete(msg.groupId);
       channel.audioArbiter?.markGroupComplete(msg.groupId);
       log(`Group ${msg.groupId} marked complete (channel ${msg.channelId})`);
+      break;
+    }
+
+    case 'pause': {
+      const channel = channels.get(msg.channelId);
+      if (!channel) {
+        log(`Channel ${msg.channelId} not found for pause`);
+        return;
+      }
+      // Pause frame release in playout buffers
+      channel.videoPlayoutBuffer?.getPolicy()?.pause?.();
+      channel.audioPlayoutBuffer?.getPolicy()?.pause?.();
+      log(`Channel ${msg.channelId} paused`);
+      break;
+    }
+
+    case 'resume': {
+      const channel = channels.get(msg.channelId);
+      if (!channel) {
+        log(`Channel ${msg.channelId} not found for resume`);
+        return;
+      }
+      // Resume frame release in playout buffers
+      channel.videoPlayoutBuffer?.getPolicy()?.resume?.();
+      channel.audioPlayoutBuffer?.getPolicy()?.resume?.();
+      log(`Channel ${msg.channelId} resumed`);
       break;
     }
 

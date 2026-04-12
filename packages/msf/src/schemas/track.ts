@@ -85,6 +85,10 @@ export const CommonTrackFieldsSchema = z.object({
   timescale: z.number().int().positive().optional(),
   /** Track duration in timescale units (for VOD) */
   trackDuration: z.number().int().nonnegative().optional(),
+  /** Total number of groups/GOPs (for VOD) */
+  totalGroups: z.number().int().nonnegative().optional(),
+  /** GOP duration in milliseconds (for VOD pacing) */
+  gopDuration: z.number().positive().optional(),
   /** Media timeline template for fixed-duration content */
   timelineTemplate: MediaTimelineTemplateSchema.optional(),
   /** Event type for eventtimeline tracks (defines data structure) */

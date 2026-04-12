@@ -56,6 +56,9 @@ export interface TrackPolicyInfo {
 
   /** Custom profile settings (overrides defaults) */
   profileSettings?: Partial<ExperienceProfileSettings>;
+
+  /** Target framerate for VOD pacing (from catalog) */
+  framerate?: number;
 }
 
 /**
@@ -101,8 +104,11 @@ export function createPlayoutBufferFromTrack<T>(
   bufferConfig?: Partial<PlayoutBufferConfig>
 ): PlayoutBuffer<T> {
   if (!trackInfo.isLive) {
-    // VOD content
-    return createVodPlayoutBuffer(bufferConfig);
+    // VOD content - pass framerate for pacing
+    return createVodPlayoutBuffer(bufferConfig, {
+      targetFramerate: trackInfo.framerate ?? 30,
+      enablePacing: true,
+    });
   }
 
   // Live content - use experience profile
