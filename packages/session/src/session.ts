@@ -2082,6 +2082,9 @@ export class MOQTSession {
 
   /**
    * Send fetched objects on a FETCH stream
+   *
+   * Draft-15/16 FETCH response format uses serialization flags for each object,
+   * which is different from SUBSCRIBE delivery (subgroup headers).
    */
   private async sendFetchedObjects(
     fetchMessage: FetchMessage,
@@ -2110,6 +2113,9 @@ export class MOQTSession {
       headerWriter.writeVarInt(requestId);
       await this.doWriteStream(streamInfo, headerWriter.toUint8Array());
 
+      // Create encoder state for delta encoding across objects
+      const fetchState = ObjectCodec.createFetchEncoderState();
+
       // Send objects in requested range
       for (let groupId = startGroup; groupId <= endGroup; groupId++) {
         const objStart = groupId === startGroup ? startObject : 0;
@@ -2133,16 +2139,15 @@ export class MOQTSession {
           }
 
           const isKeyframe = vodOptions.isKeyframe?.(groupId, objectId) ?? objectId === 0;
-          const isLastInGroup = objectId === objEnd;
-          const isLastObject = groupId === endGroup && isLastInGroup;
 
-          // Encode and send object
-          const objectData = ObjectCodec.encodeStreamObject(
+          // Encode using draft-15/16 FETCH object format (serialization flags)
+          const objectData = ObjectCodec.encodeFetchObject(
+            groupId,
+            0, // subgroupId
             objectId,
             data,
-            isLastObject ? ObjectStatus.END_OF_GROUP : ObjectStatus.NORMAL,
-            objectId > 0 ? objectId - 1 : -1,
-            false
+            fetchState,
+            128 // priority
           );
 
           await this.doWriteStream(streamInfo, objectData);
@@ -2153,6 +2158,7 @@ export class MOQTSession {
             objectId,
             isKeyframe,
             bytes: data.byteLength,
+            encodedBytes: objectData.byteLength,
           });
         }
       }

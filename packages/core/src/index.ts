@@ -184,6 +184,7 @@ export {
 
 // Message codec
 export { MessageCodec, MessageCodecError, ObjectCodec } from './encoding/message-codec.js';
+export type { FetchEncoderState } from './encoding/message-codec.js';
 
 // State machines
 export {
