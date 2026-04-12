@@ -20,6 +20,8 @@ import {
   type WorkerConfig,
   EXPERIENCE_PROFILES,
   detectCurrentProfile,
+  createVodFetchController,
+  type VodFetchController,
 } from '@web-moq/media';
 import { TransportState, LogLevel } from '../types';
 import { isDebugMode } from '../components/common/DevSettingsPanel';
@@ -62,6 +64,10 @@ const log = {
   warn: (msg: string, data?: unknown) => console.warn(`[moqt:client:store] ${msg}`, data),
   error: (msg: string, data?: unknown) => console.error(`[moqt:client:store] ${msg}`, data),
 };
+
+// Module-level storage for VOD fetch controllers (keyed by subscriptionId)
+// These manage adaptive buffer-aware fetching for VOD content
+const vodFetchControllers = new Map<number, VodFetchController>();
 
 interface TransportConfig {
   serverCertificateHashes?: ArrayBuffer[];
@@ -195,6 +201,8 @@ interface ConnectionSlice {
     audioEnabled?: boolean;
   } | null;
   startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => Promise<number>;
+  /** Start VOD subscription using FETCH with adaptive buffer management */
+  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }) => Promise<number>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
@@ -969,6 +977,191 @@ export const useStore = create<AppStore>()(
           active: true,
           stats: { groupId: 0, objectId: 0, bytesTransferred: 0 },
         });
+
+        return subscriptionId;
+      },
+
+      // VOD subscription using FETCH with adaptive buffer management
+      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }) => {
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
+        if (!session) {
+          throw new Error('No session');
+        }
+
+        log.info('Starting VOD subscription with FETCH', {
+          namespace,
+          trackName,
+          mediaType,
+          trackInfo,
+        });
+
+        // Create VodFetchController for adaptive buffer management
+        const controller = createVodFetchController(trackInfo, {
+          initialBufferSec: 3,  // 3 second initial buffer for 4K content
+          minBufferSec: 2,      // Maintain 2 second buffer during playback
+          fetchBatchSec: 2,     // Fetch 2 seconds worth of groups per request
+        });
+
+        // Track groups received per fetch request for controller notification
+        const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
+
+        // Calculate minBufferFrames from track info
+        const framerate = trackInfo.framerate ?? 30;
+        const gopDurationMs = trackInfo.gopDuration ?? 2000;
+        const framesPerGop = Math.round(framerate * (gopDurationMs / 1000));
+        const minBufferFrames = Math.max(60, framesPerGop * 6);
+
+        log.info('VOD buffer config', {
+          framerate,
+          gopDurationMs,
+          framesPerGop,
+          minBufferFrames,
+          totalGroups: trackInfo.totalGroups,
+        });
+
+        // Create VOD pipeline (FETCH-only, no SUBSCRIBE message sent to server)
+        const config: MediaConfig = {
+          videoBitrate,
+          audioBitrate,
+          videoResolution,
+          enableStats,
+          jitterBufferDelay,
+          policyType: 'vod',
+          isLive: false,
+          catalogFramerate: framerate,
+          minBufferFrames,
+          estimatedGopDuration: gopDurationMs,
+          arbiterDebug,
+          secureObjectsEnabled,
+          secureObjectsCipherSuite,
+          secureObjectsBaseKey,
+          videoDecoderConfig: videoConfig ? {
+            codec: videoConfig.codec,
+            codedWidth: videoConfig.width,
+            codedHeight: videoConfig.height,
+          } : undefined,
+        };
+
+        // Create decode pipeline without subscribing - we'll use FETCH instead
+        const { subscriptionId, pushData, markGroupComplete } = await session.createVodPipeline(
+          namespace.split('/'),
+          trackName,
+          config,
+          mediaType
+        );
+
+        // Handle fetch requests from controller
+        controller.on('fetch-request', async ({ startGroup, endGroup, requestId }: { startGroup: number; endGroup: number; requestId: number }) => {
+          log.info('VOD fetch request', { requestId, startGroup, endGroup });
+
+          // Initialize tracking for this fetch
+          fetchGroupCounts.set(requestId, {
+            groupsReceived: new Set(),
+            framesReceived: 0,
+            bytesReceived: 0,
+          });
+
+          try {
+            // Get the MOQT session to issue fetch
+            const moqtSession = session.getMOQTSession();
+            const fetchStartTime = performance.now();
+
+            await moqtSession.fetch(
+              namespace.split('/'),
+              trackName,
+              {
+                startGroup,
+                startObject: 0,
+                endGroup,
+                endObject: 0, // 0 = entire group
+              },
+              {},
+              (data: Uint8Array, groupId: number, objectId: number) => {
+                // Track stats for adaptive fetch-ahead
+                const stats = fetchGroupCounts.get(requestId);
+                if (stats) {
+                  stats.bytesReceived += data.length;
+                  stats.framesReceived++;
+
+                  // Notify controller about group completion (when objectId wraps or new group)
+                  if (!stats.groupsReceived.has(groupId)) {
+                    stats.groupsReceived.add(groupId);
+                    // Estimate frames per group (will be refined as we receive data)
+                    controller.onGroupReceived(groupId, framesPerGop);
+                  }
+
+                  // Report bytes for download speed tracking
+                  controller.onFetchData(requestId, data.length);
+                }
+
+                // Push data to decode pipeline (created above)
+                const timestamp = performance.now() * 1000; // microseconds
+                pushData(data, groupId, objectId, timestamp);
+
+                log.info('VOD fetch received object', {
+                  requestId,
+                  groupId,
+                  objectId,
+                  size: data.length,
+                });
+              }
+            );
+
+            // Mark all groups in this fetch as complete
+            for (let g = startGroup; g <= endGroup; g++) {
+              markGroupComplete(g);
+            }
+
+            const fetchDuration = performance.now() - fetchStartTime;
+            log.info('VOD fetch completed', {
+              requestId,
+              durationMs: Math.round(fetchDuration),
+              groupsReceived: fetchGroupCounts.get(requestId)?.groupsReceived.size ?? 0,
+            });
+
+            controller.onFetchComplete(requestId);
+            fetchGroupCounts.delete(requestId);
+          } catch (err) {
+            log.error('VOD fetch error', { requestId, error: (err as Error).message });
+            fetchGroupCounts.delete(requestId);
+          }
+        });
+
+        // Handle ready-to-play event
+        controller.on('ready-to-play', ({ bufferedGroups, bufferedFrames }: { bufferedGroups: number; bufferedFrames: number }) => {
+          log.info('VOD ready to play', { bufferedGroups, bufferedFrames });
+        });
+
+        // Handle rebuffering events
+        controller.on('rebuffering', ({ currentGroup }: { currentGroup: number }) => {
+          log.warn('VOD rebuffering', { currentGroup });
+        });
+
+        controller.on('rebuffer-ended', ({ bufferedFrames }: { bufferedFrames: number }) => {
+          log.info('VOD rebuffer ended', { bufferedFrames });
+        });
+
+        // Handle adaptive speed updates
+        controller.on('speed-update', ({ avgMsPerGop, adaptiveFetchAhead }: { avgMsPerGop: number; adaptiveFetchAhead: number }) => {
+          log.info('VOD adaptive update', { avgMsPerGop: Math.round(avgMsPerGop), adaptiveFetchAhead });
+        });
+
+        // Start the fetch controller (begins initial buffering)
+        controller.start();
+
+        // Add to subscribed tracks
+        get().addSubscribedTrack({
+          id: `sub-${subscriptionId}`,
+          type: mediaType,
+          namespace: namespace.split('/'),
+          trackName,
+          active: true,
+          stats: { groupId: 0, objectId: 0, bytesTransferred: 0 },
+        });
+
+        // Store controller reference for later access (e.g., seeking)
+        // Use a module-level Map since we can't add it to Zustand state easily
+        vodFetchControllers.set(subscriptionId, controller);
 
         return subscriptionId;
       },

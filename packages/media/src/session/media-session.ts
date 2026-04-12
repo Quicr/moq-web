@@ -728,6 +728,179 @@ export class MediaSession {
     return subscriptionId;
   }
 
+  /**
+   * Create a VOD playback pipeline without subscribing
+   *
+   * This sets up the decode pipeline for VOD content that will be fetched
+   * using FETCH requests rather than SUBSCRIBE. Use this with VodFetchController
+   * for adaptive buffer-aware VOD playback.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param config - Media configuration
+   * @param mediaType - Media type ('video' or 'audio')
+   * @returns Object with subscriptionId and pushData function
+   *
+   * @example
+   * ```typescript
+   * const { subscriptionId, pushData, markGroupComplete } = await session.createVodPipeline(
+   *   ['vod', 'video'],
+   *   'video',
+   *   config,
+   *   'video'
+   * );
+   *
+   * // Use with VodFetchController
+   * controller.on('fetch-request', async ({ startGroup, endGroup }) => {
+   *   await session.getMOQTSession().fetch(namespace, trackName, {
+   *     startGroup, startObject: 0, endGroup, endObject: 0
+   *   }, {}, (data, groupId, objectId) => {
+   *     pushData(data, groupId, objectId, Date.now() * 1000);
+   *   });
+   * });
+   * ```
+   */
+  async createVodPipeline(
+    namespace: string[],
+    trackName: string,
+    config: MediaConfig,
+    mediaType?: 'video' | 'audio'
+  ): Promise<{
+    subscriptionId: number;
+    pushData: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+    markGroupComplete: (groupId: number) => void;
+  }> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const resolution = getResolutionConfig(config.videoResolution);
+
+    // Use explicit video decoder config if provided (e.g., from catalog track info)
+    const videoDecoderConfig = config.videoDecoderConfig && (config.videoDecoderConfig.codec || config.videoDecoderConfig.codedWidth) ? {
+      codec: config.videoDecoderConfig.codec ?? resolution.codec,
+      codedWidth: config.videoDecoderConfig.codedWidth ?? resolution.width,
+      codedHeight: config.videoDecoderConfig.codedHeight ?? resolution.height,
+    } : {
+      codec: resolution.codec,
+      codedWidth: resolution.width,
+      codedHeight: resolution.height,
+    };
+
+    log.info('Creating VOD pipeline (FETCH-only)', {
+      namespace: namespace.join('/'),
+      trackName,
+      codec: videoDecoderConfig.codec,
+      width: videoDecoderConfig.codedWidth,
+      height: videoDecoderConfig.codedHeight,
+    });
+
+    // Create subscribe pipeline for decoding
+    const pipeline = new SubscribePipeline({
+      mediaType,
+      video: mediaType !== 'audio' ? videoDecoderConfig : undefined,
+      audio: mediaType !== 'video' ? {
+        sampleRate: 48000,
+        numberOfChannels: 2,
+      } : undefined,
+      jitterBufferDelay: config.jitterBufferDelay ?? 100,
+      decodeWorker: this.workers?.decodeWorker,
+      enableStats: config.enableStats,
+      // VOD-specific settings
+      policyType: 'vod',
+      isLive: false,
+      maxLatency: config.maxLatency,
+      estimatedGopDuration: config.estimatedGopDuration,
+      catalogFramerate: config.catalogFramerate,
+      catalogTimescale: config.catalogTimescale,
+      minBufferFrames: config.minBufferFrames,
+    });
+
+    // Generate a unique subscription ID for this VOD pipeline
+    const subscriptionId = Date.now() + Math.floor(Math.random() * 1000);
+
+    // Set up reverse mapping for event emission
+    this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
+
+    // Handle video frames
+    pipeline.on('video-frame', (frame: VideoFrame) => {
+      const subId = this.pipelineToSubscriptionId.get(pipeline);
+      if (subId !== undefined) {
+        this.emit('video-frame', { subscriptionId: subId, frame });
+      }
+    });
+
+    // Handle audio data
+    pipeline.on('audio-data', (audioData: AudioData) => {
+      const subId = this.pipelineToSubscriptionId.get(pipeline);
+      if (subId !== undefined) {
+        this.emit('audio-data', { subscriptionId: subId, audioData });
+      }
+    });
+
+    // Handle jitter samples
+    pipeline.on('jitter-sample', (sample: JitterSample) => {
+      const subId = this.pipelineToSubscriptionId.get(pipeline);
+      if (subId !== undefined) {
+        this.emit('jitter-sample', { subscriptionId: subId, sample });
+      }
+    });
+
+    // Handle latency stats
+    pipeline.on('latency-stats', (stats: LatencyStatsSample) => {
+      const subId = this.pipelineToSubscriptionId.get(pipeline);
+      if (subId !== undefined) {
+        this.emit('latency-stats', { subscriptionId: subId, stats });
+      }
+    });
+
+    // Handle errors
+    pipeline.on('error', (err: Error) => {
+      log.error('VOD pipeline error', err);
+      this.emit('error', err);
+    });
+
+    // Start pipeline (ready to receive data)
+    await pipeline.start();
+
+    // Create secure context if encryption is enabled
+    const secureContext = await this.createSecureContext(config, { namespace, trackName });
+
+    // Store subscription (without actual MOQT subscription)
+    this.subscriptions.set(subscriptionId, {
+      subscriptionId,
+      namespace,
+      trackName,
+      pipeline,
+      mediaType,
+      secureContext,
+    });
+
+    log.info('VOD pipeline created', { subscriptionId, namespace, trackName });
+
+    // Return functions to push data and mark groups complete
+    return {
+      subscriptionId,
+      pushData: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => {
+        if (secureContext) {
+          secureContext.decrypt(data, {
+            groupId: BigInt(groupId),
+            objectId,
+          }).then(({ plaintext }) => {
+            pipeline.push(plaintext, groupId, objectId, timestamp);
+          }).catch((err) => {
+            log.error('VOD decryption failed', { groupId, objectId, error: (err as Error).message });
+          });
+        } else {
+          pipeline.push(data, groupId, objectId, timestamp);
+        }
+      },
+      markGroupComplete: (groupId: number) => {
+        pipeline.markGroupComplete(groupId);
+      },
+    };
+  }
+
   // ============================================================================
   // Announce Flow (PUBLISH_NAMESPACE based publishing)
   // ============================================================================

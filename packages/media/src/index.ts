@@ -263,6 +263,10 @@ export type {
 export { VODLoader } from './vod/vod-loader.js';
 export type { VODLoadProgress, VODLoaderOptions, VODPreloadMetadata } from './vod/vod-loader.js';
 
+// VOD Fetch Controller - Adaptive buffer-aware fetching for smooth VOD playback
+export { VodFetchController, createVodFetchController } from './vod/vod-fetch-controller.js';
+export type { VodFetchConfig, VodFetchEvents } from './vod/vod-fetch-controller.js';
+
 // MP4 Parser (for advanced use - VODLoader uses this internally)
 export { MP4Parser } from './vod/mp4-parser.js';
 export type { VideoTrackInfo, SampleEntry, MP4ParseResult } from './vod/mp4-parser.js';
