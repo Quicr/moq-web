@@ -26,6 +26,7 @@ export const CatalogPanel: React.FC = () => {
   const [publishedCatalog, setPublishedCatalog] = useState<FullCatalog | null>(null);
   const [publishStatus, setPublishStatus] = useState<'idle' | 'connecting' | 'publishing' | 'published' | 'error'>('idle');
   const [publishError, setPublishError] = useState<string | null>(null);
+  const [catalogRepublishSec, setCatalogRepublishSec] = useState(1); // 0 = disabled, >0 = interval in seconds
 
   // Track VOD loaders for each VOD track
   const [vodLoaders] = useState<Map<string, VODLoader>>(new Map());
@@ -95,7 +96,11 @@ export const CatalogPanel: React.FC = () => {
       if (!msfSessionRef.current) {
         // Get underlying MOQTSession from MediaSession
         const moqtSession = currentSession.getMOQTSession();
-        msfSessionRef.current = createMSFSession(moqtSession, namespaceParts);
+        msfSessionRef.current = createMSFSession(moqtSession, namespaceParts, {
+          catalogPublishOptions: {
+            republishIntervalMs: catalogRepublishSec > 0 ? catalogRepublishSec * 1000 : 0,
+          },
+        });
       }
       const msfSession = msfSessionRef.current;
 
@@ -154,7 +159,7 @@ export const CatalogPanel: React.FC = () => {
       setPublishError((err as Error).message);
       setPublishStatus('error');
     }
-  }, [session, sessionState, serverUrl, connect, namespace, vodLoaders]);
+  }, [session, sessionState, serverUrl, connect, namespace, vodLoaders, catalogRepublishSec]);
 
   /**
    * Get button text based on connection and publish state
@@ -224,6 +229,22 @@ export const CatalogPanel: React.FC = () => {
               </div>
             </div>
           )}
+
+          {/* Catalog Republish Interval */}
+          <div className="glass-panel-subtle p-4">
+            <div className="flex items-center gap-4">
+              <label className="text-sm text-secondary whitespace-nowrap">Catalog Republish:</label>
+              <input
+                type="number"
+                min="0"
+                max="60"
+                value={catalogRepublishSec}
+                onChange={(e) => setCatalogRepublishSec(Math.max(0, parseInt(e.target.value) || 0))}
+                className="input-field w-20 text-center"
+              />
+              <span className="text-xs text-muted">sec (0 = disabled)</span>
+            </div>
+          </div>
 
           <CatalogBuilderPanel
             namespace={namespace}
