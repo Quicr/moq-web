@@ -65,6 +65,7 @@ export class CatalogSubscriber {
   private currentCatalog: FullCatalog | null = null;
   private callback: CatalogCallback;
   private errorCallback?: (error: Error) => void;
+  private subscribeOkCleanup?: () => void;
 
   constructor(
     session: MOQTSession,
@@ -79,11 +80,21 @@ export class CatalogSubscriber {
 
   /**
    * Start subscribing to the catalog
+   *
+   * Uses SUBSCRIBE to establish the subscription, then FETCHes from
+   * largestGroupId to retrieve the current catalog (for late subscribers).
    */
   async subscribe(): Promise<void> {
     if (this.subscriptionId !== null) {
       throw new CatalogTrackError('Already subscribed');
     }
+
+    // Set up listener for SUBSCRIBE_OK to get largestGroupId and FETCH
+    this.subscribeOkCleanup = this.session.on('subscribe-ok', (event) => {
+      if (event.subscriptionId === this.subscriptionId) {
+        this.handleSubscribeOk(event);
+      }
+    });
 
     this.subscriptionId = await this.session.subscribe(
       this.namespace,
@@ -94,9 +105,56 @@ export class CatalogSubscriber {
   }
 
   /**
+   * Handle SUBSCRIBE_OK - FETCH from largestGroupId to get current catalog
+   */
+  private async handleSubscribeOk(event: {
+    largestGroupId?: number;
+    largestObjectId?: number;
+  }): Promise<void> {
+    // Clean up listener - we only need it once
+    if (this.subscribeOkCleanup) {
+      this.subscribeOkCleanup();
+      this.subscribeOkCleanup = undefined;
+    }
+
+    // If largestGroupId is available, FETCH from beginning of that group
+    // This ensures late subscribers get the catalog even if it was already published
+    if (event.largestGroupId !== undefined) {
+      try {
+        await this.session.fetch(
+          this.namespace,
+          CATALOG_TRACK_NAME,
+          {
+            startGroup: event.largestGroupId,
+            startObject: 0,
+            endGroup: event.largestGroupId,
+            endObject: event.largestObjectId ?? 0,
+          },
+          {},
+          (data, groupId, objectId) => {
+            this.handleObject(data, groupId, objectId, 0);
+          }
+        );
+      } catch (err) {
+        if (this.errorCallback) {
+          this.errorCallback(
+            err instanceof Error ? err : new Error(String(err))
+          );
+        }
+      }
+    }
+  }
+
+  /**
    * Stop subscribing to the catalog
    */
   async unsubscribe(): Promise<void> {
+    // Clean up subscribe-ok listener if still active
+    if (this.subscribeOkCleanup) {
+      this.subscribeOkCleanup();
+      this.subscribeOkCleanup = undefined;
+    }
+
     if (this.subscriptionId === null) {
       return;
     }

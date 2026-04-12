@@ -69,6 +69,8 @@ export type {
   PublicationInfo,
   PublishStatsEvent,
   SubscribeStatsEvent,
+  SubscribeOkEvent,
+  MessageLogEvent,
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,

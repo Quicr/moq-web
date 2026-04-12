@@ -20,13 +20,20 @@ import { SettingsPanel } from './components/common/SettingsPanel';
 import { StatusPanel } from './components/common/StatusPanel';
 import { DevSettingsPanel } from './components/common/DevSettingsPanel';
 import { DecodeErrorToast } from './components/common/DecodeErrorToast';
+import { MessageLogPanel } from './components/common/MessageLogPanel';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = React.useState<'publish' | 'subscribe' | 'chat' | 'catalog'>('catalog');
   const [showSettings, setShowSettings] = React.useState(false);
-  const { state } = useStore();
+  const [showMessageLog, setShowMessageLog] = React.useState(false);
+  const { state, session } = useStore();
 
   const isConnected = state === 'connected';
+
+  // Get the MOQT session for message logging
+  const moqtSession = React.useMemo(() => {
+    return session?.getMOQTSession?.();
+  }, [session]);
 
   const tabs = [
     { id: 'publish' as const, label: 'Publish', icon: (
@@ -179,6 +186,13 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Message Log Panel */}
+      <MessageLogPanel
+        isOpen={showMessageLog}
+        onToggle={() => setShowMessageLog(!showMessageLog)}
+        session={moqtSession}
+      />
     </div>
   );
 };
