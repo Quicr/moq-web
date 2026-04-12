@@ -74,6 +74,8 @@ export interface ObjectMetadata {
   isKeyframe?: boolean;
   /** Object type hint (for logging) */
   type?: string;
+  /** Max cache duration in milliseconds - tells relay how long to cache this object */
+  maxCacheDuration?: number;
 }
 
 /**
@@ -424,6 +426,8 @@ export interface VODPublishOptions extends PublishOptions {
   isKeyframe?: (groupId: number, objectId: number) => boolean;
   /** Number of objects per group (if uniform) */
   objectsPerGroup?: number;
+  /** Max cache duration in milliseconds - tells relay how long to cache content (default: 60000ms = 1 minute) */
+  maxCacheDuration?: number;
 }
 
 /**

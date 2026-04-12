@@ -2626,7 +2626,8 @@ export class ObjectCodec {
     payload: Uint8Array,
     status: ObjectStatus = ObjectStatus.NORMAL,
     previousObjectId = -1,
-    hasExtensions = false
+    hasExtensions = false,
+    extensions?: Map<number, number | Uint8Array>
   ): Uint8Array {
     const writer = new BufferWriter();
 
@@ -2642,7 +2643,28 @@ export class ObjectCodec {
       // Extension length field is ONLY present when EXTENSIONS bit is set in subgroup header type
       // Types with Ext suffix (0x11, 0x19, etc.) have extensions; others (0x10, 0x18, etc.) don't
       if (hasExtensions) {
-        writer.writeVarInt(0); // Extension length = 0 (no actual extension data)
+        if (extensions && extensions.size > 0) {
+          // Encode extensions into a temporary buffer to get total length
+          const extWriter = new BufferWriter();
+          for (const [key, value] of extensions) {
+            extWriter.writeVarInt(key);
+            if (typeof value === 'number') {
+              // Varint value - write length then varint-encoded value
+              const encodedValue = VarInt.encode(value);
+              extWriter.writeVarInt(encodedValue.length);
+              extWriter.writeBytes(encodedValue);
+            } else {
+              // Raw bytes value
+              extWriter.writeVarInt(value.length);
+              extWriter.writeBytes(value);
+            }
+          }
+          const extBytes = extWriter.toUint8Array();
+          writer.writeVarInt(extBytes.length);
+          writer.writeBytes(extBytes);
+        } else {
+          writer.writeVarInt(0); // Extension length = 0 (no actual extension data)
+        }
       }
 
       if (payload.length === 0) {
@@ -2657,7 +2679,26 @@ export class ObjectCodec {
       writer.writeVarInt(objectId);
       // Draft-14 LAPS format: Object ID | Extension Length | Payload Length | Payload
       // Write extension length (0 = no extensions) for type 0x11 compatibility
-      writer.writeVarInt(0);
+      if (extensions && extensions.size > 0) {
+        // Encode extensions
+        const extWriter = new BufferWriter();
+        for (const [key, value] of extensions) {
+          extWriter.writeVarInt(key);
+          if (typeof value === 'number') {
+            const encodedValue = VarInt.encode(value);
+            extWriter.writeVarInt(encodedValue.length);
+            extWriter.writeBytes(encodedValue);
+          } else {
+            extWriter.writeVarInt(value.length);
+            extWriter.writeBytes(value);
+          }
+        }
+        const extBytes = extWriter.toUint8Array();
+        writer.writeVarInt(extBytes.length);
+        writer.writeBytes(extBytes);
+      } else {
+        writer.writeVarInt(0);
+      }
       if (payload.length === 0) {
         writer.writeVarInt(0);
         writer.writeVarInt(status);
@@ -2895,6 +2936,104 @@ export class ObjectCodec {
 
     return writer.toUint8Array();
   }
+
+  /**
+   * Create initial state for FETCH object decoding
+   */
+  static createFetchDecoderState(): FetchDecoderState {
+    return {
+      previousGroupId: -1,
+      previousSubgroupId: 0,
+      previousObjectId: -1,
+      previousPriority: 128,
+    };
+  }
+
+  /**
+   * Decode a FETCH object from stream (draft-15/16 serialization flags format)
+   *
+   * @param buffer - Buffer containing encoded FETCH object
+   * @param state - Decoder state for delta decoding
+   * @returns Decoded object result with groupId, subgroupId, objectId, priority, payload, and bytesConsumed
+   */
+  static decodeFetchObject(
+    buffer: Uint8Array,
+    state: FetchDecoderState
+  ): FetchObjectResult {
+    const reader = new BufferReader(buffer);
+
+    // Read flags (varint)
+    const flags = reader.readVarIntNumber();
+
+    // Decode group ID
+    let groupId: number;
+    if (flags & ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT) {
+      groupId = reader.readVarIntNumber();
+    } else {
+      groupId = state.previousGroupId;
+    }
+
+    // Decode subgroup ID based on mode
+    let subgroupId: number;
+    const subgroupMode = flags & ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_MASK;
+    switch (subgroupMode) {
+      case 0: // Zero
+        subgroupId = 0;
+        break;
+      case 1: // Same as previous
+        subgroupId = state.previousSubgroupId;
+        break;
+      case 2: // Previous + 1
+        subgroupId = state.previousSubgroupId + 1;
+        break;
+      case 3: // Present on wire
+        subgroupId = reader.readVarIntNumber();
+        break;
+      default:
+        subgroupId = 0;
+    }
+
+    // Decode object ID
+    let objectId: number;
+    if (flags & ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT) {
+      objectId = reader.readVarIntNumber();
+    } else {
+      objectId = state.previousObjectId + 1;
+    }
+
+    // Decode priority
+    let priority: number;
+    if (flags & ObjectCodec.FETCH_FLAG_PRIORITY_PRESENT) {
+      priority = reader.readByte();
+    } else {
+      priority = state.previousPriority;
+    }
+
+    // Skip extensions if present
+    if (flags & ObjectCodec.FETCH_FLAG_EXTENSIONS_PRESENT) {
+      const extLen = reader.readVarIntNumber();
+      reader.skip(extLen);
+    }
+
+    // Read payload length and payload
+    const payloadLength = reader.readVarIntNumber();
+    const payload = reader.readBytes(payloadLength);
+
+    // Update state for next object
+    state.previousGroupId = groupId;
+    state.previousSubgroupId = subgroupId;
+    state.previousObjectId = objectId;
+    state.previousPriority = priority;
+
+    return {
+      groupId,
+      subgroupId,
+      objectId,
+      priority,
+      payload,
+      bytesConsumed: reader.offset,
+    };
+  }
 }
 
 /**
@@ -2905,4 +3044,26 @@ export interface FetchEncoderState {
   previousSubgroupId: number;
   previousObjectId: number;
   previousPriority: number;
+}
+
+/**
+ * State for FETCH object delta decoding
+ */
+export interface FetchDecoderState {
+  previousGroupId: number;
+  previousSubgroupId: number;
+  previousObjectId: number;
+  previousPriority: number;
+}
+
+/**
+ * Result of decoding a FETCH object
+ */
+export interface FetchObjectResult {
+  groupId: number;
+  subgroupId: number;
+  objectId: number;
+  priority: number;
+  payload: Uint8Array;
+  bytesConsumed: number;
 }

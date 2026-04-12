@@ -203,6 +203,14 @@ interface ConnectionSlice {
   startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => Promise<number>;
   /** Start VOD subscription using FETCH with adaptive buffer management */
   startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }) => Promise<number>;
+  /** Standalone FETCH for previously published content (no media pipeline) */
+  fetchTrack: (
+    namespace: string,
+    trackName: string,
+    startGroup: number,
+    endGroup: number,
+    onData: (data: Uint8Array, groupId: number, objectId: number) => void
+  ) => Promise<{ requestId: number; cancel: () => Promise<void> }>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
@@ -1164,6 +1172,51 @@ export const useStore = create<AppStore>()(
         vodFetchControllers.set(subscriptionId, controller);
 
         return subscriptionId;
+      },
+
+      // Standalone FETCH for testing/debugging - no media pipeline
+      fetchTrack: async (
+        namespace: string,
+        trackName: string,
+        startGroup: number,
+        endGroup: number,
+        onData: (data: Uint8Array, groupId: number, objectId: number) => void
+      ) => {
+        const { session } = get();
+        if (!session) {
+          throw new Error('No session');
+        }
+
+        log.info('Starting standalone FETCH', {
+          namespace,
+          trackName,
+          startGroup,
+          endGroup,
+        });
+
+        const moqtSession = session.getMOQTSession();
+        const requestId = await moqtSession.fetch(
+          namespace.split('/'),
+          trackName,
+          {
+            startGroup,
+            startObject: 0,
+            endGroup,
+            endObject: 0, // 0 = entire group
+          },
+          {},
+          onData
+        );
+
+        log.info('FETCH request started', { requestId, namespace, trackName });
+
+        return {
+          requestId,
+          cancel: async () => {
+            log.info('Cancelling FETCH', { requestId });
+            await moqtSession.cancelFetch(requestId);
+          },
+        };
       },
 
       stopSubscription: async (subscriptionId: number) => {

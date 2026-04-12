@@ -8,7 +8,8 @@
  * appropriate subscriptions.
  */
 
-import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16 } from '@web-moq/core';
+import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16, DataStreamType, BufferReader } from '@web-moq/core';
+import type { FetchDecoderState } from '@web-moq/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 
 const log = Logger.create('moqt:session:object-router');
@@ -25,9 +26,30 @@ export type ObjectCallback = (
 ) => void;
 
 /**
+ * Callback for received FETCH objects
+ */
+export type FetchObjectCallback = (
+  requestId: number,
+  data: Uint8Array,
+  groupId: number,
+  objectId: number
+) => void;
+
+/**
+ * Callback for FETCH stream end-of-group
+ */
+export type FetchEndOfGroupCallback = (
+  requestId: number,
+  groupId: number
+) => void;
+
+/**
  * Routes objects to subscriptions
  */
 export class ObjectRouter {
+  private onFetchObject?: FetchObjectCallback;
+  private onFetchEndOfGroup?: FetchEndOfGroupCallback;
+
   constructor(
     private subscriptionManager: SubscriptionManager,
     private onObject?: ObjectCallback
@@ -38,6 +60,20 @@ export class ObjectRouter {
    */
   setCallback(callback: ObjectCallback): void {
     this.onObject = callback;
+  }
+
+  /**
+   * Set the FETCH object callback
+   */
+  setFetchObjectCallback(callback: FetchObjectCallback): void {
+    this.onFetchObject = callback;
+  }
+
+  /**
+   * Set the FETCH end-of-group callback
+   */
+  setFetchEndOfGroupCallback(callback: FetchEndOfGroupCallback): void {
+    this.onFetchEndOfGroup = callback;
   }
 
   /**
@@ -145,11 +181,22 @@ export class ObjectRouter {
         // Parse header if not yet done
         if (!headerParsed && viewLength > 0) {
           if (IS_DRAFT_16) {
-            // Draft-16: Stream starts with Type (0x10-0x3D range)
+            // Draft-16: Stream starts with Type (0x10-0x3D range for subgroups, 0x05 for FETCH)
+            const firstByte = bufferView[0];
+            const streamType = firstByte & 0x3f;
+
             log.info('Incoming stream first bytes (draft-16)', {
+              streamType: `0x${streamType.toString(16)}`,
               viewLength,
               preview: Array.from(bufferView.slice(0, Math.min(20, viewLength))).map(b => b.toString(16).padStart(2, '0')).join(' '),
             });
+
+            // Check if it's a FETCH stream (0x05)
+            if (streamType === DataStreamType.FETCH_HEADER) {
+              log.info('Detected FETCH stream (draft-16)', { streamType: `0x${streamType.toString(16)}` });
+              await this.handleFetchStream(reader, bufferView, done);
+              return; // FETCH stream handling is complete
+            }
 
             try {
               [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = ObjectCodec.decodeSubgroupHeader(bufferView);
@@ -190,6 +237,13 @@ export class ObjectRouter {
             });
 
             if (!isSubgroupHeader) {
+              // Check if it's a FETCH stream (0x05)
+              if (streamType === DataStreamType.FETCH_HEADER) {
+                log.info('Detected FETCH stream', { streamType: `0x${streamType.toString(16)}` });
+                await this.handleFetchStream(reader, bufferView, done);
+                return; // FETCH stream handling is complete
+              }
+
               log.warn('Stream type not recognized as subgroup header', { streamType: `0x${streamType.toString(16)}` });
               if (done) {
                 await this.handleLegacyStreamData(bufferView);
@@ -432,6 +486,128 @@ export class ObjectRouter {
     // Call global callback
     if (this.onObject) {
       this.onObject(subscription, data, groupId, objectId, timestamp);
+    }
+  }
+
+  /**
+   * Handle incoming FETCH stream (stream type 0x05)
+   *
+   * FETCH streams use serialization flags format for objects:
+   * FETCH_HEADER (0x05) | RequestID | [Object1] | [Object2] | ...
+   */
+  private async handleFetchStream(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    initialBuffer: Uint8Array,
+    initialDone: boolean
+  ): Promise<void> {
+    let buffer = initialBuffer;
+    let bufferOffset = 0;
+    let done = initialDone;
+
+    // Parse FETCH_HEADER: stream type (already consumed) + request ID
+    const headerReader = new BufferReader(buffer);
+    headerReader.skip(1); // Skip stream type byte (0x05)
+
+    let requestId: number;
+    try {
+      requestId = headerReader.readVarIntNumber();
+      bufferOffset = headerReader.offset;
+    } catch {
+      log.error('Failed to decode FETCH request ID');
+      return;
+    }
+
+    log.info('Handling FETCH stream', { requestId, initialBufferSize: buffer.length });
+
+    // Create decoder state for delta decoding
+    const decoderState: FetchDecoderState = ObjectCodec.createFetchDecoderState();
+    let objectCount = 0;
+    let totalBytesReceived = buffer.length;
+
+    // Process stream
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      // Read more data if needed
+      if (!done && bufferOffset >= buffer.length - 10) {
+        const { value, done: readDone } = await reader.read();
+        done = readDone;
+
+        if (value) {
+          totalBytesReceived += value.length;
+          const remaining = buffer.length - bufferOffset;
+          const newBuffer = new Uint8Array(remaining + value.length);
+          if (remaining > 0) {
+            newBuffer.set(buffer.subarray(bufferOffset));
+          }
+          newBuffer.set(value, remaining);
+          buffer = newBuffer;
+          bufferOffset = 0;
+        }
+      }
+
+      // Check if we have data to process
+      if (bufferOffset >= buffer.length) {
+        if (done) {
+          log.info('FETCH stream complete', { requestId, objectCount, totalBytesReceived });
+          // Notify end of last group if we received any objects
+          if (objectCount > 0 && this.onFetchEndOfGroup && decoderState.previousGroupId >= 0) {
+            this.onFetchEndOfGroup(requestId, decoderState.previousGroupId);
+          }
+          break;
+        }
+        continue;
+      }
+
+      // Try to decode a FETCH object
+      const remaining = buffer.subarray(bufferOffset);
+      if (remaining.length === 0) {
+        if (done) break;
+        continue;
+      }
+
+      try {
+        const result = ObjectCodec.decodeFetchObject(remaining, decoderState);
+        objectCount++;
+        bufferOffset += result.bytesConsumed;
+
+        log.info('Decoded FETCH object', {
+          requestId,
+          groupId: result.groupId,
+          objectId: result.objectId,
+          payloadSize: result.payload.length,
+          objectCount,
+        });
+
+        // Call the FETCH object callback
+        if (this.onFetchObject) {
+          this.onFetchObject(requestId, result.payload, result.groupId, result.objectId);
+        }
+      } catch (err) {
+        // May need more data
+        if (done) {
+          log.warn('Failed to decode FETCH object at end of stream', {
+            requestId,
+            error: (err as Error).message,
+            remainingBytes: remaining.length,
+          });
+          break;
+        }
+        // Read more data and retry
+        const { value, done: readDone } = await reader.read();
+        done = readDone;
+
+        if (value) {
+          totalBytesReceived += value.length;
+          const remainingLen = buffer.length - bufferOffset;
+          const newBuffer = new Uint8Array(remainingLen + value.length);
+          if (remainingLen > 0) {
+            newBuffer.set(buffer.subarray(bufferOffset));
+          }
+          newBuffer.set(value, remainingLen);
+          buffer = newBuffer;
+          bufferOffset = 0;
+        }
+      }
     }
   }
 }
