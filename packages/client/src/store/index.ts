@@ -65,6 +65,7 @@ const log = {
 
 interface TransportConfig {
   serverCertificateHashes?: ArrayBuffer[];
+  connectionTimeout?: number;
 }
 
 // Transport factory - can be set at runtime when moqt-transport is loaded
@@ -327,6 +328,8 @@ interface SettingsSlice {
   useWorkers: boolean;
   /** Use announce flow (PUBLISH_NAMESPACE) instead of direct PUBLISH */
   useAnnounceFlow: boolean;
+  /** Connection timeout in milliseconds (default: 300000 = 5 minutes) */
+  connectionTimeout: number;
   /** Enable jitter/network stats collection and display */
   enableStats: boolean;
   /** Jitter buffer delay in milliseconds */
@@ -378,6 +381,7 @@ interface SettingsSlice {
   setLocalDevelopment: (value: boolean) => void;
   setUseWorkers: (value: boolean) => void;
   setUseAnnounceFlow: (value: boolean) => void;
+  setConnectionTimeout: (value: number) => void;
   setEnableStats: (value: boolean) => void;
   setJitterBufferDelay: (value: number) => void;
   setVarIntType: (type: VarIntType) => void;
@@ -462,6 +466,7 @@ export const useStore = create<AppStore>()(
             session = new MediaSession({
               workers: getWorkers(),
               serverCertificateHashes,
+              connectionTimeout: get().connectionTimeout,
             });
 
             // Connect via the transport worker
@@ -471,7 +476,10 @@ export const useStore = create<AppStore>()(
             // Main thread mode: Transport runs on main thread
             log.info('Using main thread mode');
 
-            transport = createTransport({ serverCertificateHashes });
+            transport = createTransport({
+              serverCertificateHashes,
+              connectionTimeout: get().connectionTimeout,
+            });
 
             transport.on('state-change', (newState: unknown) => {
               set({ state: newState as TransportState });
@@ -1202,6 +1210,7 @@ export const useStore = create<AppStore>()(
       localDevelopment: true,
       useWorkers: true, // Default to using workers for better performance
       useAnnounceFlow: false, // Default to direct PUBLISH flow
+      connectionTimeout: 300000, // Default 5 minutes (was 10 seconds)
       enableStats: false, // Default to off for performance
       jitterBufferDelay: 100, // Default 100ms jitter buffer
       varIntType: VarIntType.QUIC, // Default to QUIC varints for compatibility
@@ -1247,6 +1256,7 @@ export const useStore = create<AppStore>()(
       setLocalDevelopment: (value) => set({ localDevelopment: value }),
       setUseWorkers: (value) => set({ useWorkers: value }),
       setUseAnnounceFlow: (value) => set({ useAnnounceFlow: value }),
+      setConnectionTimeout: (value) => set({ connectionTimeout: value }),
       setEnableStats: (value) => set({ enableStats: value }),
       setJitterBufferDelay: (value) => set({ jitterBufferDelay: value }),
       setVarIntType: (type) => {

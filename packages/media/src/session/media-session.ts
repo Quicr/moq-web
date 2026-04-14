@@ -49,6 +49,10 @@ export interface MediaSessionOptions {
    * Server certificate hashes for self-signed certs (worker mode only).
    */
   serverCertificateHashes?: ArrayBuffer[];
+  /**
+   * Connection timeout in milliseconds (default: 300000 = 5 minutes).
+   */
+  connectionTimeout?: number;
 }
 
 const log = Logger.create('moqt:media:session');
@@ -188,6 +192,7 @@ export class MediaSession {
         this.session = new MOQTSession({
           worker: opts.workers.transportWorker,
           serverCertificateHashes: opts.serverCertificateHashes,
+          connectionTimeout: opts.connectionTimeout,
         });
       } else {
         throw new Error('MediaSession requires either a MOQTransport or workers.transportWorker');
