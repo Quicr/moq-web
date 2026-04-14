@@ -86,10 +86,12 @@ export const PublishPanel: React.FC = () => {
   const refreshDevices = async () => {
     try {
       const allDevices = await navigator.mediaDevices.enumerateDevices();
+      console.log('All devices:', allDevices);
       setDevices(allDevices);
 
       const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
       const audioDevices = allDevices.filter(d => d.kind === 'audioinput');
+      console.log('Video devices:', videoDevices);
 
       if (videoDevices.length > 0 && !selectedVideoDevice) {
         setSelectedVideoDevice(videoDevices[0].deviceId);
