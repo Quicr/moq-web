@@ -501,8 +501,12 @@ export const useStore = create<AppStore>()(
           set({ transport, state: 'connected' });
           log.info('MediaSession created', { useWorkers });
 
-          session.on('state-change', (state) => {
-            set({ sessionState: state });
+          session.on('state-change', (sessionState) => {
+            set({ sessionState });
+            // When session state changes to 'error', update transport state to trigger UI transition
+            if (sessionState === 'error') {
+              set({ state: 'disconnected' });
+            }
           });
 
           session.on('error', (err) => {
