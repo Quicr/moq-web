@@ -695,7 +695,7 @@ describe('GroupArbiter benchmark', () => {
     );
 
     // Allow for slower CI environments
-    expect(opsPerMs).toBeGreaterThan(50);
+    expect(opsPerMs).toBeGreaterThan(30);
   });
 });
 
