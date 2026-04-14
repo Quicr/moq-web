@@ -83,26 +83,27 @@ export const PublishPanel: React.FC = () => {
   } = useVAD({ stream: localStream });
 
   // Get available devices
-  useEffect(() => {
-    const getDevices = async () => {
-      try {
-        const allDevices = await navigator.mediaDevices.enumerateDevices();
-        setDevices(allDevices);
+  const refreshDevices = async () => {
+    try {
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      setDevices(allDevices);
 
-        const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
-        const audioDevices = allDevices.filter(d => d.kind === 'audioinput');
+      const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
+      const audioDevices = allDevices.filter(d => d.kind === 'audioinput');
 
-        if (videoDevices.length > 0 && !selectedVideoDevice) {
-          setSelectedVideoDevice(videoDevices[0].deviceId);
-        }
-        if (audioDevices.length > 0 && !selectedAudioDevice) {
-          setSelectedAudioDevice(audioDevices[0].deviceId);
-        }
-      } catch (err) {
-        console.error('Failed to enumerate devices:', err);
+      if (videoDevices.length > 0 && !selectedVideoDevice) {
+        setSelectedVideoDevice(videoDevices[0].deviceId);
       }
-    };
-    getDevices();
+      if (audioDevices.length > 0 && !selectedAudioDevice) {
+        setSelectedAudioDevice(audioDevices[0].deviceId);
+      }
+    } catch (err) {
+      console.error('Failed to enumerate devices:', err);
+    }
+  };
+
+  useEffect(() => {
+    refreshDevices();
   }, []);
 
   // Update video preview
@@ -312,7 +313,16 @@ export const PublishPanel: React.FC = () => {
 
       {/* Device Selection */}
       <div className="panel">
-        <div className="panel-header">Device Selection</div>
+        <div className="panel-header flex items-center justify-between">
+          <span>Device Selection</span>
+          <button
+            onClick={refreshDevices}
+            className="btn-secondary btn-sm"
+            title="Refresh device list"
+          >
+            Refresh
+          </button>
+        </div>
         <div className="panel-body space-y-4">
           <div>
             <label className="label">Camera</label>
