@@ -96,7 +96,7 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     transport = new WebTransport(config.url, options);
 
     // Handle connection timeout
-    const timeout = config.connectionTimeout ?? 10000;
+    const timeout = config.connectionTimeout ?? 300000;
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });

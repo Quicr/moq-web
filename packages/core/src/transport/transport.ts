@@ -86,7 +86,7 @@ export interface TransportConfig {
   congestionControl?: boolean;
   /** Server certificate hashes for self-signed certs */
   serverCertificateHashes?: ArrayBuffer[];
-  /** Connection timeout in ms (default: 10000) */
+  /** Connection timeout in ms (default: 300000 = 5 minutes) */
   connectionTimeout?: number;
 }
 
@@ -142,7 +142,7 @@ export class MOQTransport {
       maxDatagramSize: config.maxDatagramSize ?? 1200,
       congestionControl: config.congestionControl ?? true,
       serverCertificateHashes: config.serverCertificateHashes ?? [],
-      connectionTimeout: config.connectionTimeout ?? 10000,
+      connectionTimeout: config.connectionTimeout ?? 300000,
     };
 
     log.debug('MOQTransport created', this.config);
