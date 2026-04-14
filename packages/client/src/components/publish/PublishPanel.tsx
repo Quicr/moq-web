@@ -9,6 +9,7 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
+import { getResolutionConfig } from '@web-moq/media';
 import { useStore } from '../../store';
 import { isDebugMode } from '../common/DevSettingsPanel';
 import { useVAD } from '../../hooks/useVAD';
@@ -43,6 +44,7 @@ export const PublishPanel: React.FC = () => {
     startPublishing: storeStartPublishing,
     stopPublishing: storeStopPublishing,
     keyframeInterval,
+    videoResolution,
     setKeyframeInterval,
     useAnnounceFlow,
     announceStatus,
@@ -80,50 +82,84 @@ export const PublishPanel: React.FC = () => {
     result: vadResult,
   } = useVAD({ stream: localStream });
 
-  // Get available devices
-  useEffect(() => {
-    const getDevices = async () => {
+  // Get available devices - must request permissions first to see all devices (including virtual cameras like OBS)
+  const refreshDevices = async () => {
+    try {
+      // Request temporary media access to get full device enumeration
+      // Without this, virtual cameras like OBS may not appear in the list
+      let tempStream: MediaStream | null = null;
       try {
-        const allDevices = await navigator.mediaDevices.enumerateDevices();
-        setDevices(allDevices);
-
-        const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
-        const audioDevices = allDevices.filter(d => d.kind === 'audioinput');
-
-        if (videoDevices.length > 0 && !selectedVideoDevice) {
-          setSelectedVideoDevice(videoDevices[0].deviceId);
-        }
-        if (audioDevices.length > 0 && !selectedAudioDevice) {
-          setSelectedAudioDevice(audioDevices[0].deviceId);
-        }
-      } catch (err) {
-        console.error('Failed to enumerate devices:', err);
+        tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      } catch (permErr) {
+        console.warn('Could not get media permissions for device enumeration:', permErr);
       }
-    };
-    getDevices();
+
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      console.log('All devices:', allDevices);
+      setDevices(allDevices);
+
+      // Stop the temporary stream - we only needed it to unlock device enumeration
+      if (tempStream) {
+        tempStream.getTracks().forEach(track => track.stop());
+      }
+
+      const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
+      const audioDevices = allDevices.filter(d => d.kind === 'audioinput');
+      console.log('Video devices:', videoDevices);
+
+      if (videoDevices.length > 0 && !selectedVideoDevice) {
+        setSelectedVideoDevice(videoDevices[0].deviceId);
+      }
+      if (audioDevices.length > 0 && !selectedAudioDevice) {
+        setSelectedAudioDevice(audioDevices[0].deviceId);
+      }
+    } catch (err) {
+      console.error('Failed to enumerate devices:', err);
+    }
+  };
+
+  useEffect(() => {
+    refreshDevices();
   }, []);
 
   // Update video preview
   useEffect(() => {
-    if (videoRef.current && localStream) {
+    if (videoRef.current) {
       videoRef.current.srcObject = localStream;
     }
   }, [localStream]);
 
-  const startCapture = async () => {
+  const createCaptureStream = async (videoDeviceId?: string, audioDeviceId?: string) => {
+    const { width, height } = getResolutionConfig(videoResolution);
+
+    return navigator.mediaDevices.getUserMedia({
+      video: videoDeviceId
+        ? { deviceId: { exact: videoDeviceId }, width, height }
+        : { width, height },
+      audio: audioDeviceId
+        ? { deviceId: { exact: audioDeviceId } }
+        : true,
+    });
+  };
+
+  const replaceLocalStream = (stream: MediaStream) => {
+    if (localStream && localStream !== stream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    setLocalStream(stream);
+  };
+
+  const captureSelectedDevices = async (videoDeviceId = selectedVideoDevice, audioDeviceId = selectedAudioDevice) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: selectedVideoDevice
-          ? { deviceId: selectedVideoDevice, width: 1920, height: 1080 }
-          : { width: 1920, height: 1080 },
-        audio: selectedAudioDevice
-          ? { deviceId: selectedAudioDevice }
-          : true,
-      });
-      setLocalStream(stream);
+      const stream = await createCaptureStream(videoDeviceId, audioDeviceId);
+      replaceLocalStream(stream);
     } catch (err) {
       console.error('Failed to capture media:', err);
     }
+  };
+
+  const startCapture = async () => {
+    await captureSelectedDevices();
   };
 
   const stopCapture = () => {
@@ -132,6 +168,12 @@ export const PublishPanel: React.FC = () => {
       setLocalStream(null);
     }
   };
+
+  useEffect(() => {
+    if (!localStream) return;
+
+    void captureSelectedDevices(selectedVideoDevice, selectedAudioDevice);
+  }, [selectedVideoDevice, selectedAudioDevice]);
 
   const addTrackConfig = () => {
     if (!newTrack.namespace || !newTrack.trackName) return;
@@ -287,7 +329,16 @@ export const PublishPanel: React.FC = () => {
 
       {/* Device Selection */}
       <div className="panel">
-        <div className="panel-header">Device Selection</div>
+        <div className="panel-header flex items-center justify-between">
+          <span>Device Selection</span>
+          <button
+            onClick={refreshDevices}
+            className="btn-secondary btn-sm"
+            title="Refresh device list"
+          >
+            Refresh
+          </button>
+        </div>
         <div className="panel-body space-y-4">
           <div>
             <label className="label">Camera</label>
