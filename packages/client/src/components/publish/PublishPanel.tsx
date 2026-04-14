@@ -82,12 +82,26 @@ export const PublishPanel: React.FC = () => {
     result: vadResult,
   } = useVAD({ stream: localStream });
 
-  // Get available devices
+  // Get available devices - must request permissions first to see all devices (including virtual cameras like OBS)
   const refreshDevices = async () => {
     try {
+      // Request temporary media access to get full device enumeration
+      // Without this, virtual cameras like OBS may not appear in the list
+      let tempStream: MediaStream | null = null;
+      try {
+        tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      } catch (permErr) {
+        console.warn('Could not get media permissions for device enumeration:', permErr);
+      }
+
       const allDevices = await navigator.mediaDevices.enumerateDevices();
       console.log('All devices:', allDevices);
       setDevices(allDevices);
+
+      // Stop the temporary stream - we only needed it to unlock device enumeration
+      if (tempStream) {
+        tempStream.getTracks().forEach(track => track.stop());
+      }
 
       const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
       const audioDevices = allDevices.filter(d => d.kind === 'audioinput');
