@@ -529,6 +529,20 @@ export const SettingsPanel: React.FC = () => {
               </SettingRow>
             </div>
 
+            <div className="p-4 rounded-xl bg-gradient-to-br from-cyan-50 to-white dark:from-cyan-900/20 dark:to-gray-900 border border-cyan-100 dark:border-cyan-900/30">
+              <SectionHeader icon={Icons.network} title="Connection" description="Server connection settings" colorScheme={sectionColors.network} />
+              <SettingRow label="Connection Timeout" description="Time to wait for connection before giving up">
+                <select value={connectionTimeout} onChange={(e) => setConnectionTimeout(Number(e.target.value))} className="input w-32 text-sm">
+                  <option value={10000}>10 seconds</option>
+                  <option value={30000}>30 seconds</option>
+                  <option value={60000}>1 minute</option>
+                  <option value={120000}>2 minutes</option>
+                  <option value={300000}>5 minutes</option>
+                  <option value={600000}>10 minutes</option>
+                </select>
+              </SettingRow>
+            </div>
+
             <div className="p-4 rounded-xl bg-gradient-to-br from-slate-50 to-white dark:from-slate-800/30 dark:to-gray-900 border border-slate-200 dark:border-slate-700/50">
               <SectionHeader icon={Icons.developer} title="Developer" description="Debugging and logging options" colorScheme={sectionColors.developer} />
               <SettingRow label="Log Level" description="Control console output verbosity">
@@ -642,16 +656,6 @@ export const SettingsPanel: React.FC = () => {
             <div className="p-4 rounded-xl bg-gradient-to-br from-cyan-50 to-white dark:from-cyan-900/20 dark:to-gray-900 border border-cyan-100 dark:border-cyan-900/30">
               <SectionHeader icon={Icons.network} title="Network" description="Transport and protocol settings" colorScheme={sectionColors.network} />
               <div className="space-y-1">
-                <SettingRow label="Connection Timeout" description="Time to wait for connection before giving up">
-                  <select value={connectionTimeout} onChange={(e) => setConnectionTimeout(Number(e.target.value))} className="input w-32 text-sm">
-                    <option value={10000}>10 seconds</option>
-                    <option value={30000}>30 seconds</option>
-                    <option value={60000}>1 minute</option>
-                    <option value={120000}>2 minutes</option>
-                    <option value={300000}>5 minutes</option>
-                    <option value={600000}>10 minutes</option>
-                  </select>
-                </SettingRow>
                 <SettingRow label="Use Announce Flow" description="Use PUBLISH_NAMESPACE instead of PUBLISH">
                   <Toggle enabled={useAnnounceFlow} onChange={() => setUseAnnounceFlow(!useAnnounceFlow)} color="bg-cyan-500" />
                 </SettingRow>
