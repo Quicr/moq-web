@@ -27,7 +27,7 @@ export interface TransportWorkerConfig {
   url: string;
   /** Server certificate hashes for self-signed certs */
   serverCertificateHashes?: ArrayBuffer[];
-  /** Connection timeout in ms (default: 10000) */
+  /** Connection timeout in ms (default: 300000 = 5 minutes) */
   connectionTimeout?: number;
   /** Maximum datagram size in bytes (default: 1200) */
   maxDatagramSize?: number;
