@@ -10,12 +10,11 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { getResolutionConfig } from '@web-moq/media';
+import { getResolutionConfig, VODLoader, type VODLoadProgress } from '@web-moq/media';
 import { useStore } from '../../store';
 import { isDebugMode } from '../common/DevSettingsPanel';
 import { useVAD } from '../../hooks/useVAD';
 import { VADIndicator, VADDot } from '../common/VADIndicator';
-import { VODLoader, type VODLoadProgress } from '@web-moq/media';
 
 type MediaType = 'video' | 'audio';
 type Resolution = '4k' | '1080p' | '720p' | '480p';
@@ -187,7 +186,11 @@ export const PublishPanel: React.FC = () => {
 
     return navigator.mediaDevices.getUserMedia({
       video: videoDeviceId
-        ? { deviceId: { exact: videoDeviceId }, width, height }
+        ? {
+            deviceId: { exact: videoDeviceId },
+            width,
+            height,
+          }
         : { width, height },
       audio: audioDeviceId
         ? { deviceId: { exact: audioDeviceId } }
@@ -459,37 +462,48 @@ export const PublishPanel: React.FC = () => {
             )}
           </div>
 
-          {/* Compact device selection - 3 columns */}
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="label text-xs">Camera</label>
-              <select value={selectedVideoDevice} onChange={(e) => setSelectedVideoDevice(e.target.value)} className="input py-2 text-sm" disabled={hasPublishingTracks}>
-                {videoDevices.map(device => (
-                  <option key={device.deviceId} value={device.deviceId}>
-                    {device.label || `Camera ${device.deviceId.slice(0, 6)}`}
-                  </option>
-                ))}
-              </select>
+          {/* Compact device selection - 3 columns + refresh */}
+          <div className="flex items-end gap-3">
+            <div className="grid grid-cols-3 gap-3 flex-1">
+              <div>
+                <label className="label text-xs">Camera</label>
+                <select value={selectedVideoDevice} onChange={(e) => setSelectedVideoDevice(e.target.value)} className="input py-2 text-sm" disabled={hasPublishingTracks}>
+                  {videoDevices.map(device => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label || `Camera ${device.deviceId.slice(0, 6)}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label text-xs">Microphone</label>
+                <select value={selectedAudioDevice} onChange={(e) => setSelectedAudioDevice(e.target.value)} className="input py-2 text-sm" disabled={hasPublishingTracks}>
+                  {audioDevices.map(device => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label || `Mic ${device.deviceId.slice(0, 6)}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label text-xs">Keyframe</label>
+                <select value={keyframeInterval} onChange={(e) => setKeyframeInterval(Number(e.target.value))} className="input py-2 text-sm" disabled={hasPublishingTracks}>
+                  <option value={0.5}>0.5s</option>
+                  <option value={1}>1s</option>
+                  <option value={2}>2s</option>
+                  <option value={5}>5s</option>
+                </select>
+              </div>
             </div>
-            <div>
-              <label className="label text-xs">Microphone</label>
-              <select value={selectedAudioDevice} onChange={(e) => setSelectedAudioDevice(e.target.value)} className="input py-2 text-sm" disabled={hasPublishingTracks}>
-                {audioDevices.map(device => (
-                  <option key={device.deviceId} value={device.deviceId}>
-                    {device.label || `Mic ${device.deviceId.slice(0, 6)}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="label text-xs">Keyframe</label>
-              <select value={keyframeInterval} onChange={(e) => setKeyframeInterval(Number(e.target.value))} className="input py-2 text-sm" disabled={hasPublishingTracks}>
-                <option value={0.5}>0.5s</option>
-                <option value={1}>1s</option>
-                <option value={2}>2s</option>
-                <option value={5}>5s</option>
-              </select>
-            </div>
+            <button
+              onClick={refreshDevices}
+              className="btn-secondary btn-sm py-2"
+              title="Refresh device list"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
           </div>
         </div>
       </CollapsibleSection>
