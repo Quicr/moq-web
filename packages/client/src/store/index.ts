@@ -221,6 +221,8 @@ interface ConnectionSlice {
   onVideoFrame: (handler: (data: { subscriptionId: number; frame: VideoFrame }) => void) => () => void;
   // Audio data handler registration
   onAudioData: (handler: (data: { subscriptionId: number; audioData: AudioData }) => void) => () => void;
+  // Subscribe stats handler registration (groupId, objectId, bytes per object received)
+  onSubscribeStats: (handler: (data: { subscriptionId: number; groupId: number; objectId: number; bytes: number }) => void) => () => void;
   // Jitter sample handler registration (only active when enableStats is true)
   onJitterSample: (handler: (data: { subscriptionId: number; sample: { interArrivalTimes: number[]; avgJitter: number; maxJitter: number } }) => void) => () => void;
   // Latency stats handler registration (only active when enableStats is true)
@@ -1287,6 +1289,14 @@ export const useStore = create<AppStore>()(
           console.log('[Store] Registering audio-data handler on session');
         }
         return session.on('audio-data', handler);
+      },
+
+      onSubscribeStats: (handler) => {
+        const { session } = get();
+        if (!session) {
+          return () => {};
+        }
+        return session.on('subscribe-stats', handler);
       },
 
       onJitterSample: (handler) => {

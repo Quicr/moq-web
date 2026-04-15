@@ -63,7 +63,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   namespace,
   onNamespaceChange,
 }) => {
-  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame } = useStore();
+  const { session, sessionState, state, connect, serverUrl, startSubscription, onVideoFrame, onSubscribeStats } = useStore();
 
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
@@ -78,6 +78,9 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const [activeSubtitleTrack, setActiveSubtitleTrack] = useState<string | null>(null);
   const [_timelineData, setTimelineData] = useState<TimelineData | null>(null);
   // Note: _subtitleCuesMap and _timelineData are set but read access will be added when player integration is complete
+
+  // Track starting (first delivered) group/object per subscription
+  const [startingDelivery, setStartingDelivery] = useState<Map<string, { groupId: number; objectId: number }>>(new Map());
 
   // Video frames for rendering
   const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
@@ -215,6 +218,23 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     };
   }, []);
 
+  // Track starting group/object for each subscription (first delivered object)
+  useEffect(() => {
+    const unsubscribe = onSubscribeStats(({ subscriptionId, groupId, objectId }) => {
+      const trackName = subscriptionToTrackRef.current.get(subscriptionId);
+      if (trackName && !startingDelivery.has(trackName)) {
+        setStartingDelivery(prev => {
+          if (prev.has(trackName)) return prev; // Already captured
+          const newMap = new Map(prev);
+          newMap.set(trackName, { groupId, objectId });
+          return newMap;
+        });
+      }
+    });
+
+    return unsubscribe;
+  }, [onSubscribeStats, startingDelivery]);
+
   // Handle incoming video frames
   useEffect(() => {
     const unsubscribe = onVideoFrame(({ subscriptionId, frame }) => {
@@ -327,6 +347,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     setSubscribeStatus('idle');
     setReceivedCatalog(null);
     setSubscribedTracks(new Set());
+    setStartingDelivery(new Map());
   }, []);
 
   // Subscribe to a specific track
@@ -348,42 +369,20 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
       console.log('[CatalogSubscriber] Subscribing with video config:', videoConfig);
 
-      let subscriptionId: number;
-
-      // Use FETCH-based VOD subscription for non-live content
-      // This provides adaptive buffer management for smooth playback
-      if (track.isLive === false && mediaType === 'video') {
-        console.log('[CatalogSubscriber] Using FETCH-based VOD subscription', {
-          framerate: track.framerate,
-          gopDuration: track.gopDuration,
-          totalGroups: track.totalGroups,
-        });
-
-        subscriptionId = await startVodSubscription(
-          trackNamespace.join('/'),
-          trackName,
-          mediaType,
-          videoConfig,
-          {
-            framerate: track.framerate,
-            gopDuration: track.gopDuration,
-            totalGroups: track.totalGroups,
-          }
-        );
-      } else {
-        // Use regular SUBSCRIBE for live content or audio
-        // Pass isLive from catalog for auto policy selection (VOD vs Live)
-        // Pass framerate and gopDuration for VOD buffer calculation
-        subscriptionId = await startSubscription(
-          trackNamespace.join('/'),
-          trackName,
-          mediaType,
-          videoConfig,
-          track.isLive,
-          track.framerate,
-          track.gopDuration
-        );
-      }
+      // Always use SUBSCRIBE for catalog-discovered tracks
+      // Jitter buffer profile is selected based on content type:
+      //   - VOD (isLive=false): larger buffers, sequential ordering, no frame skipping
+      //   - Live (isLive=true): deadline-based release, catch-up on stale groups
+      // For explicit FETCH, use the standalone Fetch panel instead
+      const subscriptionId = await startSubscription(
+        trackNamespace.join('/'),
+        trackName,
+        mediaType,
+        videoConfig,
+        track.isLive,
+        track.framerate,
+        track.gopDuration
+      );
 
       // Map subscription ID to track name for video frame routing
       subscriptionToTrackRef.current.set(subscriptionId, trackName);
@@ -395,7 +394,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     } catch (err) {
       console.error('[CatalogSubscriber] Failed to subscribe to track:', err);
     }
-  }, [receivedCatalog, namespace, startSubscription, startVodSubscription]);
+  }, [receivedCatalog, namespace, startSubscription]);
 
   // Subscribe to a subtitle track
   const handleSubtitleSubscribe = useCallback(async (track: Track) => {
@@ -565,7 +564,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       <div className="glass-panel-body space-y-4">
         {/* Namespace Input */}
         <div>
-          <label className="label">Catalog Namespace</label>
+          <label className="label">Catalog Track Name</label>
           <div className="flex gap-2">
             <input
               type="text"
@@ -593,7 +592,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
             )}
           </div>
           <p className="text-xs text-gray-400 dark:text-white/40 mt-2">
-            Subscribe to receive the catalog and auto-discover tracks
+            Subscribe to the catalog track and auto-discover available tracks
           </p>
         </div>
 
@@ -764,6 +763,11 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                       {trackType === 'subtitle' && activeSubtitleTrack === track.name && (
                         <span className="badge-green">active</span>
                       )}
+                      {isSubscribed && startingDelivery.has(track.name) && (
+                        <span className="badge" title="First delivered group and object ID">
+                          start: g{startingDelivery.get(track.name)!.groupId}/o{startingDelivery.get(track.name)!.objectId}
+                        </span>
+                      )}
                     </div>
 
                     {/* Quality Selector for ABR tracks */}
@@ -828,7 +832,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
               </svg>
             </div>
             <p className="text-gray-600 dark:text-white/60 font-medium">No catalog subscribed</p>
-            <p className="text-gray-400 dark:text-white/40 text-sm mt-1">Enter a namespace and subscribe to view catalog</p>
+            <p className="text-gray-400 dark:text-white/40 text-sm mt-1">Enter a catalog track name and subscribe to view catalog</p>
           </div>
         ) : (subscribeStatus === 'connecting' || subscribeStatus === 'subscribing') ? (
           <div className="text-center py-12">
