@@ -427,6 +427,8 @@ export class SubscribePipeline {
       catchUpThreshold: this.config.catchUpThreshold,
       useLatencyDeadline: this.config.useLatencyDeadline,
       arbiterDebug: this.config.arbiterDebug,
+      // QuicR interop mode for LOC unpackaging
+      quicrInteropEnabled: this.config.quicrInteropEnabled,
     });
 
     log.info('Decode worker channel initialized', { channelId: this.channelId });
