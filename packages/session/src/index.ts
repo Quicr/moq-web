@@ -90,6 +90,8 @@ export type {
   VODPublishOptions,
   VODTrackInfo,
   IncomingFetchEvent,
+  // Forward state types
+  ForwardStateChangeEvent,
 } from './types.js';
 
 // Worker API

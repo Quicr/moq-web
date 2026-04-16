@@ -84,6 +84,7 @@ import type {
   VODPublishOptions,
   VODTrackInfo,
   IncomingFetchEvent,
+  ForwardStateChangeEvent,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -269,6 +270,11 @@ export class MOQTSession {
     // Set up FETCH end-of-group callback
     this.objectRouter.setFetchEndOfGroupCallback((requestId, groupId) => {
       log.info('FETCH end-of-group received', { requestId, groupId });
+    });
+
+    // Set up forward state change listener to emit events for MediaSession
+    this.publicationManager.onForwardStateChange((trackAlias, forward) => {
+      this.emit('forward-state-change', { trackAlias, forward });
     });
 
     log.debug('MOQTSession created', { isDraft16: IS_DRAFT_16, useWorker: this.useWorker });
@@ -1338,7 +1344,7 @@ export class MOQTSession {
       parameters.set(RequestParameter.DELIVERY_TIMEOUT, writer.toUint8Array());
     }
 
-    // Create publication
+    // Create publication (forward state will be set after PUBLISH_OK)
     const publication: InternalPublication = {
       trackAlias,
       namespace,
@@ -1348,6 +1354,7 @@ export class MOQTSession {
       audioDeliveryMode,
       requestId,
       cleanupHandlers: [],
+      forward: 0, // Will be updated after PUBLISH_OK
     };
     this.publicationManager.add(publication);
 
@@ -1629,7 +1636,7 @@ export class MOQTSession {
     // Send SUBSCRIBE_OK
     await this.sendSubscribeOk(message.requestId, trackAlias, announceInfo.options.groupOrder ?? GroupOrder.ASCENDING);
 
-    // Create a publication entry for this track
+    // Create a publication entry for this track (forward=1 since subscriber is connected)
     const publication: InternalPublication = {
       trackAlias,
       namespace,
@@ -1639,6 +1646,7 @@ export class MOQTSession {
       audioDeliveryMode: announceInfo.options.audioDeliveryMode ?? 'datagram',
       requestId: message.requestId,
       cleanupHandlers: [],
+      forward: 1, // Subscriber is connected, can send immediately
     };
     this.publicationManager.add(publication);
 
@@ -1935,7 +1943,7 @@ export class MOQTSession {
       forward: publishOkResult.forward,
     });
 
-    // Create publication entry
+    // Create publication entry with initial forward state
     const publication: InternalPublication = {
       trackAlias,
       namespace,
@@ -1945,14 +1953,16 @@ export class MOQTSession {
       audioDeliveryMode: options.audioDeliveryMode ?? 'datagram',
       requestId,
       cleanupHandlers: [],
+      forward: publishOkResult.forward,
     };
     this.publicationManager.add(publication);
 
-    // If relay tells us to forward (subscribers waiting), start streaming VOD content
-    if (publishOkResult.forward === 1) {
-      log.info('VOD track has subscribers, starting auto-stream', { trackAlias: trackAlias.toString() });
-      this.startVODAutoStream(trackAlias, options);
-    }
+    // Always start VOD auto-stream - it will wait for forward=1 if needed
+    log.info('Starting VOD auto-stream', {
+      trackAlias: trackAlias.toString(),
+      initialForward: publishOkResult.forward,
+    });
+    this.startVODAutoStream(trackAlias, options);
 
     log.info('VOD publishing started', { trackAlias: trackAlias.toString() });
     return trackAlias;
@@ -1960,14 +1970,16 @@ export class MOQTSession {
 
   /**
    * Auto-stream VOD content to subscribers at realtime pace
+   * Handles forward state: waits for forward=1, pauses on forward=0, resumes on forward=1
    */
   private async startVODAutoStream(trackAlias: bigint, options: VODPublishOptions): Promise<void> {
     const { metadata, getObject, objectsPerGroup = 30 } = options;
     const frameDuration = 1000 / (metadata.framerate ?? 30); // ms per frame
     const totalGroups = Math.min(metadata.totalGroups, Number.MAX_SAFE_INTEGER);
+    const aliasStr = trackAlias.toString();
 
-    log.info('Starting VOD auto-stream', {
-      trackAlias: trackAlias.toString(),
+    log.info('VOD auto-stream initialized', {
+      trackAlias: aliasStr,
       totalGroups,
       framerate: metadata.framerate,
       frameDuration,
@@ -1975,68 +1987,133 @@ export class MOQTSession {
 
     const publication = this.publicationManager.get(trackAlias);
     if (!publication) {
-      log.warn('No publication found for VOD auto-stream', { trackAlias: trackAlias.toString() });
+      log.warn('No publication found for VOD auto-stream', { trackAlias: aliasStr });
       return;
     }
 
+    // VOD position tracking for pause/resume
+    let currentGroupId = 0;
+    let currentObjectId = 0;
+
+    // Forward state change handling
+    let forwardResolve: (() => void) | null = null;
+
+    const waitForForward = (): Promise<void> => {
+      return new Promise((resolve) => {
+        // Check current state
+        if (this.publicationManager.getForward(trackAlias) === 1) {
+          resolve();
+          return;
+        }
+        // Wait for forward=1
+        forwardResolve = resolve;
+      });
+    };
+
+    // Listen for forward state changes
+    const cleanupListener = this.publicationManager.onForwardStateChange((alias, forward) => {
+      if (alias.toString() === aliasStr) {
+        log.info('VOD auto-stream forward state changed', { trackAlias: aliasStr, forward });
+        if (forward === 1 && forwardResolve) {
+          forwardResolve();
+          forwardResolve = null;
+        }
+      }
+    });
+
     // Stream VOD content in realtime
     const streamLoop = async () => {
-      let groupId = 0;
-
-      // Wait for subscriber to set up decode pipeline
-      // This gives time for incoming-publish event to be processed
-      await new Promise(resolve => setTimeout(resolve, 500));
-      log.info('VOD auto-stream starting after subscriber setup delay');
-
-      while (true) {
-        // Check if publication still exists
-        if (!this.publicationManager.get(trackAlias)) {
-          log.info('VOD publication ended, stopping auto-stream');
-          break;
+      try {
+        // Wait for initial forward=1 if needed
+        if (this.publicationManager.getForward(trackAlias) !== 1) {
+          log.info('VOD auto-stream waiting for forward=1', { trackAlias: aliasStr });
+          await waitForForward();
+          log.info('VOD auto-stream received forward=1, starting', { trackAlias: aliasStr });
         }
 
-        // Loop group ID for looping content
-        const effectiveGroupId = groupId % (totalGroups || 1);
+        // Wait for subscriber to set up decode pipeline
+        await new Promise(resolve => setTimeout(resolve, 500));
+        log.info('VOD auto-stream starting after subscriber setup delay', { trackAlias: aliasStr });
 
-        // Stream all objects in this group
-        for (let objectId = 0; objectId < objectsPerGroup; objectId++) {
-          const data = await getObject(effectiveGroupId, objectId);
-          if (!data) {
-            // No more objects in this group
+        while (true) {
+          // Check if publication still exists
+          if (!this.publicationManager.get(trackAlias)) {
+            log.info('VOD publication ended, stopping auto-stream', { trackAlias: aliasStr });
             break;
           }
 
-          try {
-            // Send object using normal publish flow
-            // Include maxCacheDuration to tell relay how long to cache
-            await this.sendObject(trackAlias, data, {
-              groupId,
-              objectId,
-              type: 'video',
-              isKeyframe: objectId === 0, // First object in group is keyframe
-              maxCacheDuration: options.maxCacheDuration ?? 60000, // Default 1 minute cache
+          // Check forward state - pause if forward=0
+          if (this.publicationManager.getForward(trackAlias) !== 1) {
+            log.info('VOD auto-stream paused (forward=0)', {
+              trackAlias: aliasStr,
+              pausedAt: { groupId: currentGroupId, objectId: currentObjectId },
             });
-          } catch (err) {
-            log.warn('Failed to send VOD object', { groupId, objectId, error: err });
+            await waitForForward();
+            log.info('VOD auto-stream resumed (forward=1)', {
+              trackAlias: aliasStr,
+              resumeAt: { groupId: currentGroupId, objectId: currentObjectId },
+            });
           }
 
-          // Wait for frame duration to maintain realtime playback
-          await new Promise(resolve => setTimeout(resolve, frameDuration));
-        }
+          // Loop group ID for looping content
+          const effectiveGroupId = currentGroupId % (totalGroups || 1);
 
-        groupId++;
+          // Stream all objects in this group (starting from currentObjectId for resume)
+          for (let objectId = currentObjectId; objectId < objectsPerGroup; objectId++) {
+            // Check forward state before each object
+            if (this.publicationManager.getForward(trackAlias) !== 1) {
+              currentObjectId = objectId;
+              break; // Will pause in outer loop
+            }
 
-        // For non-looping content, stop at end
-        if (groupId >= totalGroups && totalGroups !== Number.MAX_SAFE_INTEGER) {
-          log.info('VOD auto-stream completed', { totalGroups: groupId });
-          break;
+            const data = await getObject(effectiveGroupId, objectId);
+            if (!data) {
+              // No more objects in this group
+              break;
+            }
+
+            try {
+              // Send object using normal publish flow
+              await this.sendObject(trackAlias, data, {
+                groupId: currentGroupId,
+                objectId,
+                type: 'video',
+                isKeyframe: objectId === 0,
+                maxCacheDuration: options.maxCacheDuration ?? 60000,
+              });
+            } catch (err) {
+              log.warn('Failed to send VOD object', {
+                trackAlias: aliasStr,
+                groupId: currentGroupId,
+                objectId,
+                error: err,
+              });
+            }
+
+            // Wait for frame duration to maintain realtime playback
+            await new Promise(resolve => setTimeout(resolve, frameDuration));
+          }
+
+          // Reset objectId for next group
+          currentObjectId = 0;
+          currentGroupId++;
+
+          // For non-looping content, stop at end
+          if (currentGroupId >= totalGroups && totalGroups !== Number.MAX_SAFE_INTEGER) {
+            log.info('VOD auto-stream completed', { trackAlias: aliasStr, totalGroups: currentGroupId });
+            break;
+          }
         }
+      } finally {
+        // Clean up listener
+        cleanupListener();
       }
     };
 
     // Start streaming in background
     streamLoop().catch(err => {
-      log.error('VOD auto-stream error', { error: err });
+      log.error('VOD auto-stream error', { trackAlias: aliasStr, error: err });
+      cleanupListener();
     });
   }
 
@@ -2768,6 +2845,8 @@ export class MOQTSession {
   // Message logging events
   on(event: 'message-sent', handler: (event: MessageLogEvent) => void): () => void;
   on(event: 'message-received', handler: (event: MessageLogEvent) => void): () => void;
+  // Forward state events
+  on(event: 'forward-state-change', handler: (event: ForwardStateChangeEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -3030,13 +3109,18 @@ export class MOQTSession {
           startLocation: subscribeUpdate.startLocation,
         });
 
-        // When forward=1, resolve all pending forward promises
+        // Handle forward state change for all publications
         if (subscribeUpdate.forward === 1) {
           log.info('Forward enabled by relay, resolving all pending publishers', {
             subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
             pendingCount: this.publicationManager.pendingForwardCount,
           });
           this.publicationManager.resolveAllForward();
+        } else if (subscribeUpdate.forward === 0) {
+          log.info('Forward disabled by relay, pausing all publications', {
+            subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
+          });
+          this.publicationManager.setAllForward(0);
         }
         break;
       }

@@ -23,6 +23,7 @@ import {
   type FetchCompleteEvent,
   type FetchErrorEvent,
   type VODPublishOptions,
+  type ForwardStateChangeEvent,
 } from '@web-moq/session';
 import {
   SecureObjectsContext,
@@ -1536,6 +1537,22 @@ export class MediaSession {
       this.emit('fetch-error', event);
     });
     this.sessionCleanup.push(fetchErrorCleanup);
+
+    // Handle forward state changes for live/interactive publish pipelines
+    const forwardStateCleanup = this.session.on('forward-state-change', (event: ForwardStateChangeEvent) => {
+      const key = event.trackAlias.toString();
+      const publication = this.publications.get(key);
+      if (publication) {
+        if (event.forward === 0) {
+          log.info('Forward=0, pausing publish pipeline', { trackAlias: key });
+          publication.pipeline.pause();
+        } else if (event.forward === 1) {
+          log.info('Forward=1, resuming publish pipeline', { trackAlias: key });
+          publication.pipeline.resume();
+        }
+      }
+    });
+    this.sessionCleanup.push(forwardStateCleanup);
   }
 
   /**
