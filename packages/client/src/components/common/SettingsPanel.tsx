@@ -308,6 +308,10 @@ export const SettingsPanel: React.FC = () => {
     setSecureObjectsCipherSuite,
     secureObjectsBaseKey,
     setSecureObjectsBaseKey,
+    quicrInteropEnabled,
+    setQuicrInteropEnabled,
+    quicrParticipantId,
+    setQuicrParticipantId,
   } = useStore();
 
   // Check if current settings differ from the selected profile
@@ -541,6 +545,28 @@ export const SettingsPanel: React.FC = () => {
                   <option value={600000}>10 minutes</option>
                 </select>
               </SettingRow>
+            </div>
+
+            <div className="p-4 rounded-xl bg-gradient-to-br from-teal-50 to-white dark:from-teal-900/20 dark:to-gray-900 border border-teal-100 dark:border-teal-900/30">
+              <SectionHeader icon={Icons.network} title="QuicR Interop" description="Interoperability with quicr-mac native client" colorScheme={sectionColors.network} />
+              <div className="space-y-1">
+                <SettingRow label="Enable QuicR Mode" description="Use fixed-size LOC extensions for quicr-mac compatibility" tooltip="When enabled, LOC packets use fixed-size immutable extensions instead of VarInt encoding. Required for interop with quicr-mac native client.">
+                  <Toggle enabled={quicrInteropEnabled} onChange={() => setQuicrInteropEnabled(!quicrInteropEnabled)} color="bg-teal-500" />
+                </SettingRow>
+                {quicrInteropEnabled && (
+                  <SettingRow label="Participant ID" description="32-bit identifier for this participant">
+                    <input
+                      type="number"
+                      min="0"
+                      max="4294967295"
+                      value={quicrParticipantId}
+                      onChange={(e) => setQuicrParticipantId(Math.min(4294967295, Math.max(0, Number(e.target.value) || 0)))}
+                      className="input w-32 text-sm font-mono"
+                      placeholder="0"
+                    />
+                  </SettingRow>
+                )}
+              </div>
             </div>
 
             <div className="p-4 rounded-xl bg-gradient-to-br from-slate-50 to-white dark:from-slate-800/30 dark:to-gray-900 border border-slate-200 dark:border-slate-700/50">

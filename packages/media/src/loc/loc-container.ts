@@ -49,7 +49,7 @@ export enum MediaType {
 }
 
 /**
- * LOC extension types
+ * LOC extension types (standard)
  */
 export enum LOCExtensionType {
   /** Capture timestamp extension */
@@ -60,6 +60,46 @@ export enum LOCExtensionType {
   AUDIO_LEVEL = 0x03,
   /** Codec-specific data */
   CODEC_DATA = 0x10,
+}
+
+/**
+ * QuicR extension types (fixed-size immutable extensions for quicr-mac interop)
+ * @see docs/quicr-interop-report.md
+ */
+export enum QuicRExtensionType {
+  /** Capture timestamp - 6 bytes, microseconds epoch */
+  CAPTURE_TIMESTAMP = 0x02,
+  /** Sequence number - 4 bytes */
+  SEQUENCE_NUMBER = 0x04,
+  /** Audio energy level - 6 bytes */
+  ENERGY_LEVEL = 0x06,
+  /** Participant ID - 8 bytes */
+  PARTICIPANT_ID = 0x08,
+  /** Voice activity detection - 12 bytes */
+  VAD = 0x0c,
+}
+
+/**
+ * Fixed sizes for QuicR extension types (in bytes)
+ */
+export const QUICR_EXTENSION_SIZES = {
+  [QuicRExtensionType.CAPTURE_TIMESTAMP]: 6,
+  [QuicRExtensionType.SEQUENCE_NUMBER]: 4,
+  [QuicRExtensionType.ENERGY_LEVEL]: 6,
+  [QuicRExtensionType.PARTICIPANT_ID]: 8,
+  [QuicRExtensionType.VAD]: 12,
+} as const;
+
+/**
+ * VAD extension data structure (12 bytes) for QuicR interop
+ */
+export interface VADData {
+  /** Voice activity detected flag */
+  voiceActivity: boolean;
+  /** Speech probability (0-255) */
+  speechProbability: number;
+  /** Energy level in dB (-128 to +127, stored as unsigned 0-255) */
+  energyLevel: number;
 }
 
 /**
@@ -92,6 +132,10 @@ export interface LOCVideoOptions {
   codecDescription?: Uint8Array;
   /** Optional pre-allocated output buffer for zero-copy packaging */
   outputBuffer?: Uint8Array;
+  /** Enable QuicR-Mac interop mode (fixed-size immutable extensions) */
+  quicrInterop?: boolean;
+  /** VAD data for QuicR interop mode */
+  vadData?: VADData;
 }
 
 /**
@@ -106,6 +150,12 @@ export interface LOCAudioOptions {
   voiceActivity?: boolean;
   /** Optional pre-allocated output buffer for zero-copy packaging */
   outputBuffer?: Uint8Array;
+  /** Enable QuicR-Mac interop mode (fixed-size immutable extensions) */
+  quicrInterop?: boolean;
+  /** VAD data for QuicR interop mode */
+  vadData?: VADData;
+  /** Participant ID for QuicR interop mode (32-bit) */
+  participantId?: number;
 }
 
 /**
@@ -148,6 +198,10 @@ export interface LOCFrame {
   audioLevel?: { level: number; voiceActivity: boolean };
   /** Codec description (if present) */
   codecDescription?: Uint8Array;
+  /** VAD data (if present, QuicR interop) */
+  vadData?: VADData;
+  /** Participant ID (if present, QuicR interop) */
+  participantId?: number;
 }
 
 // ============================================================================
@@ -249,6 +303,142 @@ function varintBigIntEncodedLength(value: bigint): number {
 }
 
 // ============================================================================
+// QuicR Interop Wire Format Helpers (Fixed-Size Extensions)
+// ============================================================================
+
+/**
+ * Write a 6-byte timestamp (microseconds, big-endian) for QuicR interop
+ */
+function writeQuicRTimestamp6(buffer: Uint8Array, offset: number, timestampMs: number): number {
+  const micros = BigInt(Math.floor(timestampMs * 1000));
+  // Write 6 bytes big-endian (48 bits)
+  buffer[offset] = Number((micros >> 40n) & 0xffn);
+  buffer[offset + 1] = Number((micros >> 32n) & 0xffn);
+  buffer[offset + 2] = Number((micros >> 24n) & 0xffn);
+  buffer[offset + 3] = Number((micros >> 16n) & 0xffn);
+  buffer[offset + 4] = Number((micros >> 8n) & 0xffn);
+  buffer[offset + 5] = Number(micros & 0xffn);
+  return 6;
+}
+
+/**
+ * Read a 6-byte timestamp (microseconds, big-endian) -> milliseconds for QuicR interop
+ */
+function readQuicRTimestamp6(buffer: Uint8Array, offset: number): number {
+  const micros =
+    (BigInt(buffer[offset]) << 40n) |
+    (BigInt(buffer[offset + 1]) << 32n) |
+    (BigInt(buffer[offset + 2]) << 24n) |
+    (BigInt(buffer[offset + 3]) << 16n) |
+    (BigInt(buffer[offset + 4]) << 8n) |
+    BigInt(buffer[offset + 5]);
+  return Number(micros) / 1000;
+}
+
+/**
+ * Write a 4-byte sequence number (big-endian) for QuicR interop
+ */
+function writeQuicRSequence4(buffer: Uint8Array, offset: number, seq: number): number {
+  buffer[offset] = (seq >> 24) & 0xff;
+  buffer[offset + 1] = (seq >> 16) & 0xff;
+  buffer[offset + 2] = (seq >> 8) & 0xff;
+  buffer[offset + 3] = seq & 0xff;
+  return 4;
+}
+
+/**
+ * Read a 4-byte sequence number (big-endian) for QuicR interop
+ */
+function readQuicRSequence4(buffer: Uint8Array, offset: number): number {
+  return (
+    (buffer[offset] << 24) |
+    (buffer[offset + 1] << 16) |
+    (buffer[offset + 2] << 8) |
+    buffer[offset + 3]
+  ) >>> 0;
+}
+
+/**
+ * Write a 12-byte VAD extension for QuicR interop
+ * Format: [voiceActivity(1)] [speechProbability(1)] [energyLevel(1)] [reserved(9)]
+ */
+function writeQuicRVAD12(buffer: Uint8Array, offset: number, vad: VADData): number {
+  buffer[offset] = vad.voiceActivity ? 1 : 0;
+  buffer[offset + 1] = vad.speechProbability & 0xff;
+  // energyLevel is signed (-128 to +127), store as unsigned (0-255)
+  buffer[offset + 2] = (vad.energyLevel + 128) & 0xff;
+  // Reserved bytes (9 bytes, zero-filled)
+  for (let i = 3; i < 12; i++) {
+    buffer[offset + i] = 0;
+  }
+  return 12;
+}
+
+/**
+ * Read a 12-byte VAD extension for QuicR interop
+ */
+function readQuicRVAD12(buffer: Uint8Array, offset: number): VADData {
+  return {
+    voiceActivity: buffer[offset] !== 0,
+    speechProbability: buffer[offset + 1],
+    energyLevel: buffer[offset + 2] - 128,
+  };
+}
+
+/**
+ * Write a 6-byte energy level extension for QuicR interop
+ * Format: [flags(1)] [level(1)] [reserved(4)]
+ */
+function writeQuicREnergyLevel6(buffer: Uint8Array, offset: number, level: number, voiceActivity: boolean): number {
+  buffer[offset] = voiceActivity ? 0x80 : 0x00;
+  buffer[offset + 1] = level & 0x7f;
+  // Reserved (4 bytes)
+  buffer[offset + 2] = 0;
+  buffer[offset + 3] = 0;
+  buffer[offset + 4] = 0;
+  buffer[offset + 5] = 0;
+  return 6;
+}
+
+/**
+ * Read a 6-byte energy level extension for QuicR interop
+ */
+function readQuicREnergyLevel6(buffer: Uint8Array, offset: number): { level: number; voiceActivity: boolean } {
+  return {
+    voiceActivity: (buffer[offset] & 0x80) !== 0,
+    level: buffer[offset + 1] & 0x7f,
+  };
+}
+
+/**
+ * Write an 8-byte participant ID (big-endian) for QuicR interop
+ */
+function writeQuicRParticipantId8(buffer: Uint8Array, offset: number, id: number): number {
+  // Write as 64-bit big-endian (upper 32 bits are 0 for 32-bit IDs)
+  buffer[offset] = 0;
+  buffer[offset + 1] = 0;
+  buffer[offset + 2] = 0;
+  buffer[offset + 3] = 0;
+  buffer[offset + 4] = (id >> 24) & 0xff;
+  buffer[offset + 5] = (id >> 16) & 0xff;
+  buffer[offset + 6] = (id >> 8) & 0xff;
+  buffer[offset + 7] = id & 0xff;
+  return 8;
+}
+
+/**
+ * Read an 8-byte participant ID (returns lower 32 bits) for QuicR interop
+ */
+function readQuicRParticipantId8(buffer: Uint8Array, offset: number): number {
+  return (
+    (buffer[offset + 4] << 24) |
+    (buffer[offset + 5] << 16) |
+    (buffer[offset + 6] << 8) |
+    buffer[offset + 7]
+  ) >>> 0;
+}
+
+// ============================================================================
 // LOC Packager - High Performance Implementation
 // ============================================================================
 
@@ -283,15 +473,26 @@ export class LOCPackager {
   private audioSequence = 0;
   /** Reusable internal buffer for when no outputBuffer provided */
   private internalBuffer: Uint8Array;
+  /** Participant ID for QuicR interop mode */
+  private participantId: number;
 
   /**
    * Create a new LOCPackager
    *
    * @param initialBufferSize - Initial size for internal buffer (default: 256KB)
+   * @param participantId - Participant ID for QuicR interop mode (default: 0)
    */
-  constructor(initialBufferSize = 262144) {
+  constructor(initialBufferSize = 262144, participantId = 0) {
     this.internalBuffer = new Uint8Array(initialBufferSize);
-    log.debug('LOCPackager created', { bufferSize: initialBufferSize });
+    this.participantId = participantId;
+    log.debug('LOCPackager created', { bufferSize: initialBufferSize, participantId });
+  }
+
+  /**
+   * Set participant ID for QuicR interop mode
+   */
+  setParticipantId(id: number): void {
+    this.participantId = id;
   }
 
   /**
@@ -302,6 +503,11 @@ export class LOCPackager {
    * @returns Exact size in bytes needed for the LOC packet
    */
   calculateVideoPacketSize(payload: Uint8Array, options: LOCVideoOptions): number {
+    // QuicR interop mode uses fixed-size extensions
+    if (options.quicrInterop) {
+      return this.calculateQuicRVideoPacketSize(payload, options);
+    }
+
     let size = 1; // Header byte
     size += varintEncodedLength(this.videoSequence);
 
@@ -330,6 +536,37 @@ export class LOCPackager {
   }
 
   /**
+   * Calculate QuicR video packet size (fixed-size extensions)
+   */
+  private calculateQuicRVideoPacketSize(payload: Uint8Array, options: LOCVideoOptions): number {
+    let size = 1; // Header byte (no sequence in header for QuicR)
+
+    // CaptureTimestamp (0x02): type(1) + length(1) + data(6)
+    if (options.captureTimestamp !== undefined) {
+      size += 1 + 1 + 6;
+    }
+
+    // SequenceNumber (0x04): type(1) + length(1) + data(4) - always present
+    size += 1 + 1 + 4;
+
+    // VAD (0x0C): type(1) + length(1) + data(12)
+    if (options.vadData) {
+      size += 1 + 1 + 12;
+    }
+
+    // Codec description: type(1) + length_varint + data (only on keyframes)
+    if (options.codecDescription && options.isKeyframe) {
+      size += 1 + varintEncodedLength(options.codecDescription.byteLength) + options.codecDescription.byteLength;
+    }
+
+    // Payload length + payload
+    size += varintEncodedLength(payload.byteLength);
+    size += payload.byteLength;
+
+    return size;
+  }
+
+  /**
    * Calculate the exact packet size for an audio frame
    *
    * @param payload - Encoded audio data
@@ -337,6 +574,11 @@ export class LOCPackager {
    * @returns Exact size in bytes needed for the LOC packet
    */
   calculateAudioPacketSize(payload: Uint8Array, options: LOCAudioOptions = {}): number {
+    // QuicR interop mode uses fixed-size extensions
+    if (options.quicrInterop) {
+      return this.calculateQuicRAudioPacketSize(payload, options);
+    }
+
     let size = 1; // Header byte
     size += varintEncodedLength(this.audioSequence);
 
@@ -360,6 +602,40 @@ export class LOCPackager {
   }
 
   /**
+   * Calculate QuicR audio packet size (fixed-size extensions)
+   */
+  private calculateQuicRAudioPacketSize(payload: Uint8Array, options: LOCAudioOptions): number {
+    let size = 1; // Header byte (no sequence in header for QuicR)
+
+    // CaptureTimestamp (0x02): type(1) + length(1) + data(6)
+    if (options.captureTimestamp !== undefined) {
+      size += 1 + 1 + 6;
+    }
+
+    // SequenceNumber (0x04): type(1) + length(1) + data(4) - always present
+    size += 1 + 1 + 4;
+
+    // VAD (0x0C): type(1) + length(1) + data(12)
+    if (options.vadData) {
+      size += 1 + 1 + 12;
+    }
+
+    // EnergyLevel (0x06): type(1) + length(1) + data(6)
+    if (options.audioLevel !== undefined) {
+      size += 1 + 1 + 6;
+    }
+
+    // ParticipantID (0x08): type(1) + length(1) + data(8) - always present for audio
+    size += 1 + 1 + 8;
+
+    // Payload length + payload
+    size += varintEncodedLength(payload.byteLength);
+    size += payload.byteLength;
+
+    return size;
+  }
+
+  /**
    * Package a video frame directly into a buffer
    *
    * @param buffer - Target buffer (must be large enough)
@@ -368,6 +644,11 @@ export class LOCPackager {
    * @returns Number of bytes written
    */
   packageVideoInto(buffer: Uint8Array, payload: Uint8Array, options: LOCVideoOptions): number {
+    // QuicR interop mode uses fixed-size extensions
+    if (options.quicrInterop) {
+      return this.packageQuicRVideoInto(buffer, payload, options);
+    }
+
     let offset = 0;
 
     // Count extensions for header byte
@@ -434,6 +715,69 @@ export class LOCPackager {
   }
 
   /**
+   * Package a video frame in QuicR interop format (fixed-size extensions)
+   */
+  private packageQuicRVideoInto(buffer: Uint8Array, payload: Uint8Array, options: LOCVideoOptions): number {
+    let offset = 0;
+
+    // Count extensions
+    let extensionCount = 0;
+    if (options.captureTimestamp !== undefined) extensionCount++;
+    extensionCount++; // SequenceNumber always present
+    if (options.vadData) extensionCount++;
+    if (options.codecDescription && options.isKeyframe) extensionCount++;
+
+    // Header byte: MKKK EEEE (M=0 for video, K=keyframe, EEEE=extension count)
+    // No sequence number in header for QuicR mode
+    const headerByte = (options.isKeyframe ? 0x40 : 0) | (extensionCount & 0x0f);
+    buffer[offset++] = headerByte;
+
+    // Extension: CaptureTimestamp (0x02, 6 bytes)
+    if (options.captureTimestamp !== undefined) {
+      buffer[offset++] = QuicRExtensionType.CAPTURE_TIMESTAMP;
+      buffer[offset++] = 6; // Fixed length
+      offset += writeQuicRTimestamp6(buffer, offset, options.captureTimestamp);
+    }
+
+    // Extension: SequenceNumber (0x04, 4 bytes) - always present
+    buffer[offset++] = QuicRExtensionType.SEQUENCE_NUMBER;
+    buffer[offset++] = 4; // Fixed length
+    offset += writeQuicRSequence4(buffer, offset, this.videoSequence++);
+
+    // Extension: VAD (0x0C, 12 bytes)
+    if (options.vadData) {
+      buffer[offset++] = QuicRExtensionType.VAD;
+      buffer[offset++] = 12; // Fixed length
+      offset += writeQuicRVAD12(buffer, offset, options.vadData);
+    }
+
+    // Extension: Codec description (variable length, only on keyframes)
+    if (options.codecDescription && options.isKeyframe) {
+      buffer[offset++] = LOCExtensionType.CODEC_DATA;
+      offset += writeVarintAt(buffer, offset, options.codecDescription.byteLength);
+      buffer.set(options.codecDescription, offset);
+      offset += options.codecDescription.byteLength;
+    }
+
+    // Payload length
+    offset += writeVarintAt(buffer, offset, payload.byteLength);
+
+    // Payload
+    buffer.set(payload, offset);
+    offset += payload.byteLength;
+
+    log.trace('Packed QuicR video', {
+      isKeyframe: options.isKeyframe,
+      sequence: this.videoSequence - 1,
+      extensions: extensionCount,
+      payloadSize: payload.byteLength,
+      totalSize: offset,
+    });
+
+    return offset;
+  }
+
+  /**
    * Package an audio frame directly into a buffer
    *
    * @param buffer - Target buffer (must be large enough)
@@ -442,6 +786,11 @@ export class LOCPackager {
    * @returns Number of bytes written
    */
   packageAudioInto(buffer: Uint8Array, payload: Uint8Array, options: LOCAudioOptions = {}): number {
+    // QuicR interop mode uses fixed-size extensions
+    if (options.quicrInterop) {
+      return this.packageQuicRAudioInto(buffer, payload, options);
+    }
+
     let offset = 0;
 
     // Count extensions
@@ -482,6 +831,72 @@ export class LOCPackager {
     offset += payload.byteLength;
 
     log.trace('Packed LOC audio', {
+      sequence: this.audioSequence - 1,
+      extensions: extensionCount,
+      payloadSize: payload.byteLength,
+      totalSize: offset,
+    });
+
+    return offset;
+  }
+
+  /**
+   * Package an audio frame in QuicR interop format (fixed-size extensions)
+   */
+  private packageQuicRAudioInto(buffer: Uint8Array, payload: Uint8Array, options: LOCAudioOptions): number {
+    let offset = 0;
+
+    // Count extensions
+    let extensionCount = 0;
+    if (options.captureTimestamp !== undefined) extensionCount++;
+    extensionCount++; // SequenceNumber always present
+    if (options.vadData) extensionCount++;
+    if (options.audioLevel !== undefined) extensionCount++;
+    extensionCount++; // ParticipantID always present for audio
+
+    // Header byte: MKKK EEEE (M=1 for audio, K=1 opus always keyframe)
+    const headerByte = 0x80 | 0x40 | (extensionCount & 0x0f);
+    buffer[offset++] = headerByte;
+
+    // Extension: CaptureTimestamp (0x02, 6 bytes)
+    if (options.captureTimestamp !== undefined) {
+      buffer[offset++] = QuicRExtensionType.CAPTURE_TIMESTAMP;
+      buffer[offset++] = 6;
+      offset += writeQuicRTimestamp6(buffer, offset, options.captureTimestamp);
+    }
+
+    // Extension: SequenceNumber (0x04, 4 bytes) - always present
+    buffer[offset++] = QuicRExtensionType.SEQUENCE_NUMBER;
+    buffer[offset++] = 4;
+    offset += writeQuicRSequence4(buffer, offset, this.audioSequence++);
+
+    // Extension: VAD (0x0C, 12 bytes)
+    if (options.vadData) {
+      buffer[offset++] = QuicRExtensionType.VAD;
+      buffer[offset++] = 12;
+      offset += writeQuicRVAD12(buffer, offset, options.vadData);
+    }
+
+    // Extension: EnergyLevel (0x06, 6 bytes)
+    if (options.audioLevel !== undefined) {
+      buffer[offset++] = QuicRExtensionType.ENERGY_LEVEL;
+      buffer[offset++] = 6;
+      offset += writeQuicREnergyLevel6(buffer, offset, options.audioLevel, options.voiceActivity ?? false);
+    }
+
+    // Extension: ParticipantID (0x08, 8 bytes) - always present for audio
+    buffer[offset++] = QuicRExtensionType.PARTICIPANT_ID;
+    buffer[offset++] = 8;
+    offset += writeQuicRParticipantId8(buffer, offset, options.participantId ?? this.participantId);
+
+    // Payload length
+    offset += writeVarintAt(buffer, offset, payload.byteLength);
+
+    // Payload
+    buffer.set(payload, offset);
+    offset += payload.byteLength;
+
+    log.trace('Packed QuicR audio', {
       sequence: this.audioSequence - 1,
       extensions: extensionCount,
       payloadSize: payload.byteLength,
@@ -615,14 +1030,16 @@ export class LOCUnpackager {
    * Unpackage a LOC packet
    *
    * @param packet - LOC-formatted packet
+   * @param quicrInterop - Whether to parse in QuicR interop mode (no sequence in header)
    * @returns Unpacked frame with header, extensions, and payload
    *
    * @remarks
-   * This method handles two LOC format variants:
+   * This method handles multiple LOC format variants:
    * 1. Standard LOC with payload length field
    * 2. LOC without payload length (for datagram delivery)
+   * 3. QuicR interop mode with fixed-size extensions
    */
-  unpackage(packet: Uint8Array): LOCFrame {
+  unpackage(packet: Uint8Array, quicrInterop = false): LOCFrame {
     const reader = new BufferReader(packet);
 
     // Header byte
@@ -631,8 +1048,11 @@ export class LOCUnpackager {
     const isKeyframe = (headerByte & 0x40) !== 0;
     const extensionCount = headerByte & 0x0f;
 
-    // Sequence number
-    const sequenceNumber = reader.readVarIntNumber();
+    // Sequence number (only in standard mode, not QuicR interop)
+    let sequenceNumber = 0;
+    if (!quicrInterop) {
+      sequenceNumber = reader.readVarIntNumber();
+    }
 
     // Parse extensions
     const extensions: LOCExtension[] = [];
@@ -640,43 +1060,77 @@ export class LOCUnpackager {
     let frameMarking: VideoFrameMarking | undefined;
     let audioLevel: { level: number; voiceActivity: boolean } | undefined;
     let codecDescription: Uint8Array | undefined;
+    let vadData: VADData | undefined;
+    let participantId: number | undefined;
 
     for (let i = 0; i < extensionCount; i++) {
-      const type = reader.readByte() as LOCExtensionType;
-      const length = reader.readVarIntNumber();
+      const type = reader.readByte();
+      // In QuicR mode, length is always a single byte; in standard mode it's VarInt
+      const length = quicrInterop ? reader.readByte() : reader.readVarIntNumber();
       const data = reader.readBytes(length);
 
       extensions.push({ type, data });
 
-      // Parse known extensions
-      switch (type) {
-        case LOCExtensionType.CAPTURE_TIMESTAMP: {
-          const extReader = new BufferReader(data);
-          captureTimestamp = Number(extReader.readVarInt()) / 1000;
-          break;
+      // Parse known extensions based on mode
+      // Note: QuicR and standard LOC share some extension type values (e.g., 0x02)
+      // so we need to check the mode to parse correctly
+      if (quicrInterop) {
+        // QuicR interop mode - fixed-size extensions
+        switch (type) {
+          case QuicRExtensionType.CAPTURE_TIMESTAMP:
+            // QuicR uses fixed 6-byte timestamp
+            captureTimestamp = readQuicRTimestamp6(data, 0);
+            break;
+          case QuicRExtensionType.SEQUENCE_NUMBER:
+            sequenceNumber = readQuicRSequence4(data, 0);
+            break;
+          case QuicRExtensionType.VAD:
+            vadData = readQuicRVAD12(data, 0);
+            break;
+          case QuicRExtensionType.ENERGY_LEVEL: {
+            const parsed = readQuicREnergyLevel6(data, 0);
+            audioLevel = { level: parsed.level, voiceActivity: parsed.voiceActivity };
+            break;
+          }
+          case QuicRExtensionType.PARTICIPANT_ID:
+            participantId = readQuicRParticipantId8(data, 0);
+            break;
+          case LOCExtensionType.CODEC_DATA:
+            // Codec data uses same type in both modes
+            codecDescription = data;
+            break;
         }
-        case LOCExtensionType.VIDEO_FRAME_MARKING: {
-          const byte = data[0];
-          frameMarking = {
-            temporalId: (byte >> 5) & 0x07,
-            spatialId: (byte >> 3) & 0x03,
-            baseLayer: (byte & 0x04) !== 0,
-            discardable: (byte & 0x02) !== 0,
-            endOfFrame: (byte & 0x01) !== 0,
-          };
-          break;
+      } else {
+        // Standard LOC mode - variable-length extensions
+        switch (type) {
+          case LOCExtensionType.CAPTURE_TIMESTAMP: {
+            const extReader = new BufferReader(data);
+            captureTimestamp = Number(extReader.readVarInt()) / 1000;
+            break;
+          }
+          case LOCExtensionType.VIDEO_FRAME_MARKING: {
+            const byte = data[0];
+            frameMarking = {
+              temporalId: (byte >> 5) & 0x07,
+              spatialId: (byte >> 3) & 0x03,
+              baseLayer: (byte & 0x04) !== 0,
+              discardable: (byte & 0x02) !== 0,
+              endOfFrame: (byte & 0x01) !== 0,
+            };
+            break;
+          }
+          case LOCExtensionType.AUDIO_LEVEL: {
+            const byte = data[0];
+            audioLevel = {
+              voiceActivity: (byte & 0x80) !== 0,
+              level: byte & 0x7f,
+            };
+            break;
+          }
+          case LOCExtensionType.CODEC_DATA:
+            codecDescription = data;
+            break;
         }
-        case LOCExtensionType.AUDIO_LEVEL: {
-          const byte = data[0];
-          audioLevel = {
-            voiceActivity: (byte & 0x80) !== 0,
-            level: byte & 0x7f,
-          };
-          break;
-        }
-        case LOCExtensionType.CODEC_DATA:
-          codecDescription = data;
-          break;
       }
     }
 
@@ -727,6 +1181,8 @@ export class LOCUnpackager {
       frameMarking,
       audioLevel,
       codecDescription,
+      vadData,
+      participantId,
     };
   }
 

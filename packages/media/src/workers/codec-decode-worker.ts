@@ -87,6 +87,8 @@ interface DecodeChannel {
   audioFramesDecoded: number;
   lastVideoFrameInfo: { groupId: number; objectId: number; isKeyframe: boolean; dataSize: number; sequence: number } | null;
   lastAudioFrameInfo: { groupId: number; objectId: number; dataSize: number; sequence: number } | null;
+  /** QuicR-Mac interop mode for LOC unpackaging */
+  quicrInteropEnabled: boolean;
 }
 
 // Map of channel ID to decode context
@@ -147,6 +149,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     audioFramesDecoded: 0,
     lastVideoFrameInfo: null,
     lastAudioFrameInfo: null,
+    quicrInteropEnabled: config.quicrInteropEnabled ?? false,
   };
 
   const jitterDelay = config.jitterBufferDelay ?? 100;
@@ -155,6 +158,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     enableStats: channel.enableStats,
     jitterDelay,
     useGroupArbiter,
+    quicrInteropEnabled: channel.quicrInteropEnabled,
   });
 
   // Create debug log relay callback for arbiter
@@ -443,7 +447,7 @@ function pushData(
     const mediaType = channel.unpackager.getMediaType(data);
 
     if (mediaType === MediaType.VIDEO) {
-      const frame = channel.unpackager.unpackage(data);
+      const frame = channel.unpackager.unpackage(data, channel.quicrInteropEnabled);
       const isKeyframe = frame.header.isKeyframe;
 
       // If keyframe has codec description, reconfigure decoder
@@ -501,7 +505,7 @@ function pushData(
         });
       }
     } else if (mediaType === MediaType.AUDIO) {
-      const frame = channel.unpackager.unpackage(data);
+      const frame = channel.unpackager.unpackage(data, channel.quicrInteropEnabled);
       const audioData: AudioBufferData = { data: frame.payload };
 
       if (channel.audioArbiter) {

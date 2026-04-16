@@ -54,6 +54,10 @@ export interface CodecEncodeWorkerConfig {
   audio?: AudioEncoderWorkerConfig;
   /** Enable debug logging */
   debug?: boolean;
+  /** Enable QuicR-Mac interop mode (fixed-size LOC extensions) */
+  quicrInteropEnabled?: boolean;
+  /** Participant ID for QuicR interop (32-bit) */
+  quicrParticipantId?: number;
 }
 
 /**
