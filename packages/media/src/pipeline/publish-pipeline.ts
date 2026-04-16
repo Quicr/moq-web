@@ -91,7 +91,9 @@ export type PipelineEvent =
   | 'audio-object'
   | 'error'
   | 'started'
-  | 'stopped';
+  | 'stopped'
+  | 'paused'
+  | 'resumed';
 
 /**
  * Publish Pipeline
@@ -159,6 +161,8 @@ export class PublishPipeline {
   private handlers = new Map<PipelineEvent, Set<(data: unknown) => void>>();
   /** Pipeline state */
   private _state: 'idle' | 'running' | 'stopped' = 'idle';
+  /** Whether the pipeline is paused (forward=0) */
+  private _paused = false;
   /** Video track processor */
   private videoProcessor?: MediaStreamTrackProcessor<VideoFrame>;
   /** Audio track processor */
@@ -240,7 +244,10 @@ export class PublishPipeline {
         size: obj.data.byteLength,
       });
 
-      this.emit('video-object', obj);
+      // Skip emitting if paused (forward=0)
+      if (!this._paused) {
+        this.emit('video-object', obj);
+      }
     });
 
     this.encodeWorkerClient.on('audio-encoded', ({ result }) => {
@@ -254,7 +261,10 @@ export class PublishPipeline {
         priority: Priority.HIGH,
       };
 
-      this.emit('audio-object', obj);
+      // Skip emitting if paused (forward=0)
+      if (!this._paused) {
+        this.emit('audio-object', obj);
+      }
     });
 
     this.encodeWorkerClient.on('error', ({ message }) => {
@@ -481,7 +491,10 @@ export class PublishPipeline {
       size: obj.data.byteLength,
     });
 
-    this.emit('video-object', obj);
+    // Skip emitting if paused (forward=0)
+    if (!this._paused) {
+      this.emit('video-object', obj);
+    }
   }
 
   /**
@@ -738,7 +751,10 @@ export class PublishPipeline {
       size: obj.data.byteLength,
     });
 
-    this.emit('audio-object', obj);
+    // Skip emitting if paused (forward=0)
+    if (!this._paused) {
+      this.emit('audio-object', obj);
+    }
   }
 
   /**
@@ -771,6 +787,40 @@ export class PublishPipeline {
       log.debug('Forcing keyframe');
       // The next encode call will be forced to keyframe
       // This is handled by tracking in the encoder
+    }
+  }
+
+  /**
+   * Check if pipeline is paused
+   */
+  get isPaused(): boolean {
+    return this._paused;
+  }
+
+  /**
+   * Pause the pipeline (no subscribers - forward=0)
+   *
+   * When paused, the pipeline drops encoded objects without emitting events.
+   * The capture and encoding continue so resumption is seamless.
+   */
+  pause(): void {
+    if (!this._paused) {
+      this._paused = true;
+      log.info('Publish pipeline paused (forward=0)');
+      this.emit('paused', undefined);
+    }
+  }
+
+  /**
+   * Resume the pipeline (subscribers exist - forward=1)
+   *
+   * Resumes emitting encoded objects.
+   */
+  resume(): void {
+    if (this._paused) {
+      this._paused = false;
+      log.info('Publish pipeline resumed (forward=1)');
+      this.emit('resumed', undefined);
     }
   }
 
@@ -836,7 +886,7 @@ export class PublishPipeline {
    */
   on(event: 'video-object' | 'audio-object', handler: (obj: PublishedObject) => void): () => void;
   on(event: 'error', handler: (error: Error) => void): () => void;
-  on(event: 'started' | 'stopped', handler: () => void): () => void;
+  on(event: 'started' | 'stopped' | 'paused' | 'resumed', handler: () => void): () => void;
   on(
     event: PipelineEvent,
     handler: ((obj: PublishedObject) => void) | ((error: Error) => void) | (() => void)

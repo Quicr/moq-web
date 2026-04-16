@@ -34,7 +34,8 @@ export type SessionEventType =
   | 'fetch-error'
   | 'incoming-fetch'
   | 'message-sent'
-  | 'message-received';
+  | 'message-received'
+  | 'forward-state-change';
 
 /**
  * Options for subscribing to a track
@@ -462,4 +463,26 @@ export interface IncomingFetchEvent {
   priority: number;
   /** Group order preference */
   groupOrder: GroupOrder;
+}
+
+// ============================================================================
+// Forward State Types
+// ============================================================================
+
+/**
+ * Event fired when forward state changes for a publication
+ *
+ * Forward state indicates whether subscribers exist:
+ * - forward=0: No subscribers, should pause sending
+ * - forward=1: Subscribers exist, can send objects
+ *
+ * This is used for both live/interactive and VOD flows:
+ * - Live: Pause/resume capture devices
+ * - VOD: Pause/resume auto-streaming with position tracking
+ */
+export interface ForwardStateChangeEvent {
+  /** Track alias */
+  trackAlias: bigint;
+  /** New forward state (0 = paused/no subscribers, 1 = active/can send) */
+  forward: number;
 }
