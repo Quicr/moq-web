@@ -367,6 +367,9 @@ export class MediaSession {
         bitrate: config.audioBitrate,
       } : undefined,
       encodeWorker: this.workers?.encodeWorker,
+      // QuicR-Mac interop settings
+      quicrInteropEnabled: config.quicrInteropEnabled,
+      quicrParticipantId: config.quicrParticipantId,
     });
 
     // Build publish options
@@ -542,6 +545,8 @@ export class MediaSession {
       estimatedGopDuration: config.estimatedGopDuration,
       catalogFramerate: config.catalogFramerate,
       catalogTimescale: config.catalogTimescale,
+      // QuicR-Mac interop mode
+      quicrInteropEnabled: config.quicrInteropEnabled,
     });
 
     log.info('Created subscribe pipeline', {
@@ -796,6 +801,9 @@ export class MediaSession {
         bitrate: config.audioBitrate,
       } : undefined,
       encodeWorker: this.workers?.encodeWorker,
+      // QuicR-Mac interop settings
+      quicrInteropEnabled: config.quicrInteropEnabled,
+      quicrParticipantId: config.quicrParticipantId,
     });
 
     // Create secure context if encryption is enabled
@@ -1060,6 +1068,8 @@ export class MediaSession {
       estimatedGopDuration: config.estimatedGopDuration,
       catalogFramerate: config.catalogFramerate,
       catalogTimescale: config.catalogTimescale,
+      // QuicR-Mac interop mode
+      quicrInteropEnabled: config.quicrInteropEnabled,
     });
 
     log.info('Created decode pipeline for discovered track', {
@@ -1067,6 +1077,7 @@ export class MediaSession {
       trackName: event.trackName,
       mediaType,
       useGroupArbiter: config.useGroupArbiter,
+      quicrInteropEnabled: config.quicrInteropEnabled,
     });
 
     // Use the subscriptionId from the event (added in the session when creating the subscription)

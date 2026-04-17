@@ -87,6 +87,8 @@ interface DecodeChannel {
   audioFramesDecoded: number;
   lastVideoFrameInfo: { groupId: number; objectId: number; isKeyframe: boolean; dataSize: number; sequence: number } | null;
   lastAudioFrameInfo: { groupId: number; objectId: number; dataSize: number; sequence: number } | null;
+  /** QuicR-Mac interop mode for LOC unpackaging */
+  quicrInteropEnabled: boolean;
 }
 
 // Map of channel ID to decode context
@@ -147,6 +149,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     audioFramesDecoded: 0,
     lastVideoFrameInfo: null,
     lastAudioFrameInfo: null,
+    quicrInteropEnabled: config.quicrInteropEnabled ?? false,
   };
 
   const jitterDelay = config.jitterBufferDelay ?? 100;
@@ -155,6 +158,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     enableStats: channel.enableStats,
     jitterDelay,
     useGroupArbiter,
+    quicrInteropEnabled: channel.quicrInteropEnabled,
   });
 
   // Create debug log relay callback for arbiter
@@ -305,13 +309,18 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
       // Reset keyframe state to force waiting for new keyframe after error
       channel.hasReceivedKeyframe = false;
 
-      // Reset the decoder to recover from error state
-      // This puts it back to "configured" state, ready to decode from next keyframe
-      if (channel.videoDecoder && channel.videoDecoder.state !== 'closed') {
+      // Recover the decoder - WebCodecs errors often close the decoder entirely
+      if (channel.videoConfig) {
         try {
-          channel.videoDecoder.reset();
-          // Reconfigure after reset
-          if (channel.videoConfig) {
+          const decoderState = channel.videoDecoder?.state;
+
+          if (decoderState === 'closed') {
+            // Decoder is closed - must recreate it entirely
+            console.log(`[CodecDecodeWorker] Decoder closed, recreating (channel ${channel.channelId})`);
+            initVideoDecoder(channel, channel.videoConfig);
+          } else if (decoderState === 'configured') {
+            // Decoder still usable, just reset it
+            channel.videoDecoder!.reset();
             const decoderConfig: VideoDecoderConfig = {
               codec: channel.videoConfig.codec,
               codedWidth: channel.videoConfig.codedWidth,
@@ -320,11 +329,18 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
             if (channel.videoConfig.description) {
               decoderConfig.description = channel.videoConfig.description;
             }
-            channel.videoDecoder.configure(decoderConfig);
+            channel.videoDecoder!.configure(decoderConfig);
             console.log(`[CodecDecodeWorker] Decoder reset and reconfigured (channel ${channel.channelId})`);
           }
         } catch (resetErr) {
-          console.error(`[CodecDecodeWorker] Failed to reset decoder (channel ${channel.channelId}):`, resetErr);
+          console.error(`[CodecDecodeWorker] Failed to recover decoder (channel ${channel.channelId}):`, resetErr);
+          // Last resort: recreate decoder
+          try {
+            initVideoDecoder(channel, channel.videoConfig);
+            console.log(`[CodecDecodeWorker] Decoder recreated after recovery failure (channel ${channel.channelId})`);
+          } catch (recreateErr) {
+            console.error(`[CodecDecodeWorker] Failed to recreate decoder (channel ${channel.channelId}):`, recreateErr);
+          }
         }
       }
 
@@ -443,7 +459,7 @@ function pushData(
     const mediaType = channel.unpackager.getMediaType(data);
 
     if (mediaType === MediaType.VIDEO) {
-      const frame = channel.unpackager.unpackage(data);
+      const frame = channel.unpackager.unpackage(data, channel.quicrInteropEnabled);
       const isKeyframe = frame.header.isKeyframe;
 
       // If keyframe has codec description, reconfigure decoder
@@ -501,7 +517,7 @@ function pushData(
         });
       }
     } else if (mediaType === MediaType.AUDIO) {
-      const frame = channel.unpackager.unpackage(data);
+      const frame = channel.unpackager.unpackage(data, channel.quicrInteropEnabled);
       const audioData: AudioBufferData = { data: frame.payload };
 
       if (channel.audioArbiter) {
@@ -815,6 +831,19 @@ function resetChannel(channel: DecodeChannel): void {
 }
 
 /**
+ * Safely close a decoder (handles already-closed state)
+ */
+function safeCloseDecoder(decoder: VideoDecoder | AudioDecoder | null): void {
+  if (decoder && decoder.state !== 'closed') {
+    try {
+      decoder.close();
+    } catch {
+      // Ignore errors from closing - decoder may already be closed
+    }
+  }
+}
+
+/**
  * Destroy a channel
  */
 function destroyChannel(channelId: number): void {
@@ -827,9 +856,9 @@ function destroyChannel(channelId: number): void {
   // Reset first to clean up pending frames
   resetChannel(channel);
 
-  // Close decoders
-  channel.videoDecoder?.close();
-  channel.audioDecoder?.close();
+  // Close decoders (safely handles already-closed state)
+  safeCloseDecoder(channel.videoDecoder);
+  safeCloseDecoder(channel.audioDecoder);
 
   // Remove from map
   channels.delete(channelId);
@@ -846,8 +875,8 @@ function closeWorker(): void {
   for (const channelId of channels.keys()) {
     const channel = channels.get(channelId)!;
     resetChannel(channel);
-    channel.videoDecoder?.close();
-    channel.audioDecoder?.close();
+    safeCloseDecoder(channel.videoDecoder);
+    safeCloseDecoder(channel.audioDecoder);
   }
   channels.clear();
 

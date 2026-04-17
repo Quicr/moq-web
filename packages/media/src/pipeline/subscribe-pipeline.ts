@@ -105,6 +105,9 @@ export interface SubscribePipelineConfig {
   /** Enable GroupArbiter debug logging (default: false) */
   arbiterDebug?: boolean;
 
+  /** Enable QuicR-Mac interop mode for LOC unpackaging (default: false) */
+  quicrInteropEnabled?: boolean;
+
   /**
    * Optional decode worker for offloading decoding to a web worker.
    * When provided, all LOC unpackaging, jitter buffering, and WebCodecs
@@ -424,6 +427,8 @@ export class SubscribePipeline {
       catchUpThreshold: this.config.catchUpThreshold,
       useLatencyDeadline: this.config.useLatencyDeadline,
       arbiterDebug: this.config.arbiterDebug,
+      // QuicR interop mode for LOC unpackaging
+      quicrInteropEnabled: this.config.quicrInteropEnabled,
     });
 
     log.info('Decode worker channel initialized', { channelId: this.channelId });
@@ -633,7 +638,7 @@ export class SubscribePipeline {
       return;
     }
 
-    const frame = this.unpackager.unpackage(data);
+    const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false);
     const isKeyframe = frame.header.isKeyframe;
 
     log.trace('Unpacked video frame', {
@@ -643,6 +648,7 @@ export class SubscribePipeline {
       payloadSize: frame.payload.byteLength,
       hasCodecDescription: !!frame.codecDescription,
       mediaType: frame.header.mediaType,
+      quicrInterop: this.config.quicrInteropEnabled,
     });
 
     // Handle codec description from keyframe
@@ -706,7 +712,7 @@ export class SubscribePipeline {
       return;
     }
 
-    const frame = this.unpackager.unpackage(data);
+    const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false);
 
     log.trace('Unpacked audio frame', {
       groupId,
@@ -714,6 +720,7 @@ export class SubscribePipeline {
       payloadSize: frame.payload.byteLength,
       mediaType: frame.header.mediaType,
       hasAudioLevel: !!frame.audioLevel,
+      quicrInterop: this.config.quicrInteropEnabled,
     });
 
     if (this.audioArbiter) {
