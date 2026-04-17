@@ -896,8 +896,8 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                       )}
                     </div>
 
-                    {/* FETCH Playback Panel for VOD video tracks (isLive === false or undefined with totalGroups) */}
-                    {trackType === 'video' && (track.isLive === false || (track.isLive === undefined && track.totalGroups)) && !isSubscribed && (
+                    {/* FETCH Playback Panel for VOD video tracks (isLive === false) */}
+                    {trackType === 'video' && track.isLive === false && (
                       <div className="mt-3">
                         <button
                           onClick={() => toggleFetchPanel(track.name)}
