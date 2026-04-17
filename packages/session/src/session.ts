@@ -1395,21 +1395,7 @@ export class MOQTSession {
     log.info('Received PUBLISH_OK', {
       requestId,
       forward: publishOkResult.forward,
-      relayTrackAlias: publishOkResult.trackAlias,
-      ourTrackAlias: trackAlias.toString(),
     });
-
-    // If relay assigned a different track alias, use that instead
-    let effectiveTrackAlias = trackAlias;
-    if (publishOkResult.trackAlias !== undefined && BigInt(publishOkResult.trackAlias) !== trackAlias) {
-      effectiveTrackAlias = BigInt(publishOkResult.trackAlias);
-      log.info('Using relay-assigned track alias', {
-        original: trackAlias.toString(),
-        relayAssigned: effectiveTrackAlias.toString(),
-      });
-      // Update the publication with the relay-assigned alias
-      this.publicationManager.updateTrackAlias(trackAlias, effectiveTrackAlias);
-    }
 
     // If forward=0, wait for SUBSCRIBE_UPDATE
     if (publishOkResult.forward === 0) {
@@ -1420,8 +1406,8 @@ export class MOQTSession {
       log.info('Forward=1, subscriber already exists - starting immediately');
     }
 
-    log.info('Publishing started', { trackAlias: effectiveTrackAlias.toString() });
-    return effectiveTrackAlias;
+    log.info('Publishing started', { trackAlias: trackAlias.toString() });
+    return trackAlias;
   }
 
   // ============================================================================
@@ -1955,23 +1941,11 @@ export class MOQTSession {
     log.info('Received PUBLISH_OK for VOD track', {
       requestId,
       forward: publishOkResult.forward,
-      relayTrackAlias: publishOkResult.trackAlias,
-      ourTrackAlias: trackAlias.toString(),
     });
 
-    // If relay assigned a different track alias, use that instead
-    let effectiveTrackAlias = trackAlias;
-    if (publishOkResult.trackAlias !== undefined && BigInt(publishOkResult.trackAlias) !== trackAlias) {
-      effectiveTrackAlias = BigInt(publishOkResult.trackAlias);
-      log.info('Using relay-assigned track alias for VOD', {
-        original: trackAlias.toString(),
-        relayAssigned: effectiveTrackAlias.toString(),
-      });
-    }
-
-    // Create publication entry with initial forward state (using effective alias)
+    // Create publication entry with initial forward state
     const publication: InternalPublication = {
-      trackAlias: effectiveTrackAlias,
+      trackAlias,
       namespace,
       trackName,
       priority: options.priority ?? 128,
@@ -1985,13 +1959,13 @@ export class MOQTSession {
 
     // Always start VOD auto-stream - it will wait for forward=1 if needed
     log.info('Starting VOD auto-stream', {
-      trackAlias: effectiveTrackAlias.toString(),
+      trackAlias: trackAlias.toString(),
       initialForward: publishOkResult.forward,
     });
-    this.startVODAutoStream(effectiveTrackAlias, options);
+    this.startVODAutoStream(trackAlias, options);
 
-    log.info('VOD publishing started', { trackAlias: effectiveTrackAlias.toString() });
-    return effectiveTrackAlias;
+    log.info('VOD publishing started', { trackAlias: trackAlias.toString() });
+    return trackAlias;
   }
 
   /**
