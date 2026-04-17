@@ -40,6 +40,8 @@ interface TrackConfig {
   vodLoop?: boolean;
   vodLoader?: VODLoader;
   vodProgress?: VODLoadProgress;
+  vodPlaybackUrl?: string;
+  vodIsPlaying?: boolean;
 }
 
 // Collapsible Section Component
@@ -99,9 +101,11 @@ export const PublishPanel: React.FC = () => {
     vodPublishEnabled,
     session,
     addPublishedTrack,
+    onIncomingFetch,
   } = useStore();
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const vodVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedVideoDevice, setSelectedVideoDevice] = useState('');
   const [selectedAudioDevice, setSelectedAudioDevice] = useState('');
@@ -230,6 +234,39 @@ export const PublishPanel: React.FC = () => {
 
     void captureSelectedDevices(selectedVideoDevice, selectedAudioDevice);
   }, [selectedVideoDevice, selectedAudioDevice]);
+
+  // Listen for incoming FETCH requests to start local VOD playback
+  useEffect(() => {
+    if (!session) return;
+
+    const unsubscribe = onIncomingFetch((event) => {
+      console.log('[PublishPanel] Incoming FETCH for VOD track', event);
+
+      // Find matching VOD track config that's publishing
+      const matchingConfig = trackConfigs.find(config =>
+        config.isVod &&
+        config.isPublishing &&
+        config.namespace === event.namespace.join('/') &&
+        config.trackName === event.trackName
+      );
+
+      if (matchingConfig && matchingConfig.vodLoader && !matchingConfig.vodIsPlaying) {
+        console.log('[PublishPanel] Starting local playback for VOD track', matchingConfig.trackName);
+
+        // Create playback URL from VOD loader
+        const playbackUrl = matchingConfig.vodLoader.createPlaybackUrl();
+        if (playbackUrl) {
+          setTrackConfigs(prev => prev.map(t =>
+            t.id === matchingConfig.id
+              ? { ...t, vodPlaybackUrl: playbackUrl, vodIsPlaying: true }
+              : t
+          ));
+        }
+      }
+    });
+
+    return unsubscribe;
+  }, [session, trackConfigs, onIncomingFetch]);
 
   const addTrackConfig = () => {
     if (!newTrack.namespace || !newTrack.trackName) return;
@@ -789,6 +826,32 @@ export const PublishPanel: React.FC = () => {
                       />
                     </div>
                     <span>{config.vodProgress.progress}%</span>
+                  </div>
+                )}
+
+                {/* VOD Local Playback (when subscriber connects) */}
+                {config.vodPlaybackUrl && config.vodIsPlaying && (
+                  <div className="mt-3">
+                    <div className="flex items-center gap-2 text-xs text-emerald-400 mb-2">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span>Local playback (subscriber connected)</span>
+                    </div>
+                    <div className="video-container" style={{ paddingBottom: '56.25%' }}>
+                      <video
+                        ref={(el) => {
+                          if (el) vodVideoRefs.current.set(config.id, el);
+                        }}
+                        src={config.vodPlaybackUrl}
+                        autoPlay
+                        muted
+                        loop={config.vodLoop}
+                        playsInline
+                        className="absolute inset-0 w-full h-full object-cover rounded-lg"
+                      />
+                    </div>
                   </div>
                 )}
               </div>

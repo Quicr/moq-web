@@ -15,6 +15,19 @@ import { ABRController, type ABRTrack } from '@web-moq/media';
 import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
 import { MoqMediaPlayer } from '../player/MoqMediaPlayer';
 
+// FETCH playback state per track
+interface FetchPlaybackState {
+  isActive: boolean;
+  isFetching: boolean;
+  bufferSeconds: number;
+  priority: number;
+  currentGroup: number;
+  totalGroups: number;
+  bufferedGroups: number;
+  subscriptionId?: number;
+  error?: string;
+}
+
 interface CatalogSubscriberPanelProps {
   namespace: string;
   onNamespaceChange: (namespace: string) => void;
@@ -63,7 +76,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   namespace,
   onNamespaceChange,
 }) => {
-  const { session, sessionState, state, connect, serverUrl, startSubscription, onVideoFrame, onSubscribeStats } = useStore();
+  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame, onSubscribeStats } = useStore();
 
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
@@ -81,6 +94,10 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
   // Track starting (first delivered) group/object per subscription
   const [startingDelivery, setStartingDelivery] = useState<Map<string, { groupId: number; objectId: number }>>(new Map());
+
+  // FETCH playback state for VOD tracks
+  const [fetchPlaybackState, setFetchPlaybackState] = useState<Map<string, FetchPlaybackState>>(new Map());
+  const [showFetchPanel, setShowFetchPanel] = useState<Map<string, boolean>>(new Map());
 
   // Video frames for rendering
   const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
@@ -143,8 +160,8 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       console.log('[ABR] Switching from', fromTrack.name, 'to', toTrack.name);
 
       // Find the Track objects
-      const from = receivedCatalog.tracks.find(t => t.name === fromTrack.name);
-      const to = receivedCatalog.tracks.find(t => t.name === toTrack.name);
+      const from = receivedCatalog.tracks.find((t: Track) => t.name === fromTrack.name);
+      const to = receivedCatalog.tracks.find((t: Track) => t.name === toTrack.name);
 
       if (!from || !to) return;
 
@@ -314,7 +331,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
       // Subscribe to catalog with callbacks
       await msfSession.subscribeCatalog(
-        (catalog, isIndependent) => {
+        (catalog: FullCatalog, isIndependent: boolean) => {
           console.log('[CatalogSubscriber] Received catalog:', {
             tracks: catalog.tracks.length,
             isIndependent,
@@ -322,7 +339,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
           });
           setReceivedCatalog(catalog);
         },
-        (error) => {
+        (error: Error) => {
           console.error('[CatalogSubscriber] Catalog error:', error);
           setSubscribeError(error.message);
           setSubscribeStatus('error');
@@ -458,6 +475,115 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       });
     }
   }, [receivedCatalog, namespace, setSubtitleCues, setActiveSubtitleTrack, activeSubtitleTrack]);
+
+  // Start FETCH playback for VOD track with user-specified buffer duration
+  const handleFetchPlayback = useCallback(async (track: Track, bufferSeconds: number, priority: number) => {
+    if (!receivedCatalog) return;
+
+    const trackNamespace = track.namespace ?? namespace.split('/');
+    const trackName = track.name;
+
+    // Initialize fetch state
+    setFetchPlaybackState(prev => {
+      const newMap = new Map(prev);
+      newMap.set(trackName, {
+        isActive: true,
+        isFetching: true,
+        bufferSeconds,
+        priority,
+        currentGroup: 0,
+        totalGroups: track.totalGroups ?? 0,
+        bufferedGroups: 0,
+      });
+      return newMap;
+    });
+
+    try {
+      const videoConfig = (track.codec || track.width) ? {
+        codec: track.codec,
+        width: track.width,
+        height: track.height,
+      } : undefined;
+
+      // Calculate groups to buffer based on GOP duration
+      const gopDurationSec = (track.gopDuration ?? 2000) / 1000;
+      const groupsToBuffer = Math.ceil(bufferSeconds / gopDurationSec);
+
+      console.log('[CatalogSubscriber] Starting FETCH playback', {
+        trackName,
+        bufferSeconds,
+        gopDurationSec,
+        groupsToBuffer,
+        priority,
+        totalGroups: track.totalGroups,
+      });
+
+      // Create VOD pipeline with FETCH and adaptive buffer config
+      // Use user-specified buffer seconds for initial buffer, with sensible defaults for min buffer
+      const subscriptionId = await startVodSubscription(
+        trackNamespace.join('/'),
+        trackName,
+        'video',
+        videoConfig,
+        {
+          framerate: track.framerate,
+          gopDuration: track.gopDuration,
+          totalGroups: track.totalGroups,
+        },
+        {
+          initialBufferSec: bufferSeconds,
+          minBufferSec: Math.max(1, bufferSeconds / 2),
+          fetchBatchSec: Math.max(1, bufferSeconds / 3),
+        }
+      );
+
+      // Map subscription ID for video frame routing
+      subscriptionToTrackRef.current.set(subscriptionId, trackName);
+      trackToSubscriptionRef.current.set(trackName, subscriptionId);
+
+      // Update state to show we're buffering
+      setFetchPlaybackState(prev => {
+        const newMap = new Map(prev);
+        const state = newMap.get(trackName);
+        if (state) {
+          newMap.set(trackName, {
+            ...state,
+            subscriptionId,
+            isFetching: false,
+          });
+        }
+        return newMap;
+      });
+
+      setSubscribedTracks(prev => new Set([...prev, trackName]));
+      console.log('[CatalogSubscriber] FETCH playback started:', trackName);
+    } catch (err) {
+      console.error('[CatalogSubscriber] FETCH playback failed:', err);
+      setFetchPlaybackState(prev => {
+        const newMap = new Map(prev);
+        newMap.set(trackName, {
+          isActive: false,
+          isFetching: false,
+          bufferSeconds,
+          priority,
+          currentGroup: 0,
+          totalGroups: 0,
+          bufferedGroups: 0,
+          error: (err as Error).message,
+        });
+        return newMap;
+      });
+    }
+  }, [receivedCatalog, namespace, startVodSubscription]);
+
+  // Toggle FETCH panel visibility
+  const toggleFetchPanel = useCallback((trackName: string) => {
+    setShowFetchPanel(prev => {
+      const newMap = new Map(prev);
+      newMap.set(trackName, !newMap.get(trackName));
+      return newMap;
+    });
+  }, []);
 
   // Subscribe to a timeline track
   const handleTimelineSubscribe = useCallback(async (track: Track) => {
@@ -653,7 +779,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
             {/* Track List */}
             <div className="space-y-2">
-              {receivedCatalog.tracks.map((track, index) => {
+              {receivedCatalog.tracks.map((track: Track, index: number) => {
                 const trackType = getTrackType(track);
                 const isSubscribed = subscribedTracks.has(track.name);
 
@@ -769,6 +895,86 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                         </span>
                       )}
                     </div>
+
+                    {/* FETCH Playback Panel for VOD video tracks */}
+                    {trackType === 'video' && track.isLive === false && !isSubscribed && (
+                      <div className="mt-3">
+                        <button
+                          onClick={() => toggleFetchPanel(track.name)}
+                          className="btn-sm btn-ghost text-xs flex items-center gap-1"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                          {showFetchPanel.get(track.name) ? 'Hide' : 'Show'} FETCH Playback
+                        </button>
+
+                        {showFetchPanel.get(track.name) && (
+                          <div className="mt-2 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                            <p className="text-xs text-blue-300 mb-2">
+                              FETCH retrieves cached content with buffering for smooth playback
+                            </p>
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-400 dark:text-white/50 w-24">Buffer (sec):</label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="30"
+                                  defaultValue={3}
+                                  id={`fetch-buffer-${track.name}`}
+                                  className="input text-xs w-20 px-2 py-1"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-400 dark:text-white/50 w-24">Priority:</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="255"
+                                  defaultValue={128}
+                                  id={`fetch-priority-${track.name}`}
+                                  className="input text-xs w-20 px-2 py-1"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2 mt-3">
+                                <button
+                                  onClick={() => {
+                                    const bufferInput = document.getElementById(`fetch-buffer-${track.name}`) as HTMLInputElement;
+                                    const priorityInput = document.getElementById(`fetch-priority-${track.name}`) as HTMLInputElement;
+                                    const bufferSec = parseFloat(bufferInput?.value ?? '3');
+                                    const priority = parseInt(priorityInput?.value ?? '128', 10);
+                                    handleFetchPlayback(track, bufferSec, priority);
+                                  }}
+                                  disabled={fetchPlaybackState.get(track.name)?.isFetching}
+                                  className="btn-sm btn-primary"
+                                >
+                                  {fetchPlaybackState.get(track.name)?.isFetching ? 'Starting...' : 'Start FETCH Playback'}
+                                </button>
+                              </div>
+                              {fetchPlaybackState.get(track.name)?.error && (
+                                <p className="text-xs text-red-400 mt-2">
+                                  {fetchPlaybackState.get(track.name)?.error}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* FETCH Playback Status for active FETCH */}
+                    {fetchPlaybackState.get(track.name)?.isActive && (
+                      <div className="mt-3 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-emerald-300">FETCH Playback Active</span>
+                          <span className="text-gray-400 dark:text-white/50">
+                            Buffer: {fetchPlaybackState.get(track.name)?.bufferSeconds}s |
+                            Priority: {fetchPlaybackState.get(track.name)?.priority}
+                          </span>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Quality Selector for ABR tracks */}
                     {track.altGroup !== undefined && isSubscribed && tracksByAltGroup.get(track.altGroup)!.length > 1 && (
