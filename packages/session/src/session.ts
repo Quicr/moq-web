@@ -2074,12 +2074,12 @@ export class MOQTSession {
 
             try {
               // Send object using normal publish flow
+              // Note: Omitting maxCacheDuration to avoid extension encoding issues with relay
               await this.sendObject(trackAlias, data, {
                 groupId: currentGroupId,
                 objectId,
                 type: 'video',
                 isKeyframe: objectId === 0,
-                maxCacheDuration: options.maxCacheDuration ?? 60000,
               });
             } catch (err) {
               log.warn('Failed to send VOD object', {
