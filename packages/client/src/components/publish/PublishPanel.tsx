@@ -101,7 +101,6 @@ export const PublishPanel: React.FC = () => {
     vodPublishEnabled,
     session,
     addPublishedTrack,
-    onIncomingFetch,
   } = useStore();
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -235,38 +234,23 @@ export const PublishPanel: React.FC = () => {
     void captureSelectedDevices(selectedVideoDevice, selectedAudioDevice);
   }, [selectedVideoDevice, selectedAudioDevice]);
 
-  // Listen for incoming FETCH requests to start local VOD playback
+  // Start local VOD playback when VOD track starts publishing
+  // This runs when a VOD track transitions to publishing state with a loader ready
   useEffect(() => {
-    if (!session) return;
-
-    const unsubscribe = onIncomingFetch((event) => {
-      console.log('[PublishPanel] Incoming FETCH for VOD track', event);
-
-      // Find matching VOD track config that's publishing
-      const matchingConfig = trackConfigs.find(config =>
-        config.isVod &&
-        config.isPublishing &&
-        config.namespace === event.namespace.join('/') &&
-        config.trackName === event.trackName
-      );
-
-      if (matchingConfig && matchingConfig.vodLoader && !matchingConfig.vodIsPlaying) {
-        console.log('[PublishPanel] Starting local playback for VOD track', matchingConfig.trackName);
-
-        // Create playback URL from VOD loader
-        const playbackUrl = matchingConfig.vodLoader.createPlaybackUrl();
+    trackConfigs.forEach(config => {
+      if (config.isVod && config.isPublishing && config.vodLoader && !config.vodIsPlaying) {
+        console.log('[PublishPanel] Starting local playback for VOD track', config.trackName);
+        const playbackUrl = config.vodLoader.createPlaybackUrl();
         if (playbackUrl) {
           setTrackConfigs(prev => prev.map(t =>
-            t.id === matchingConfig.id
+            t.id === config.id
               ? { ...t, vodPlaybackUrl: playbackUrl, vodIsPlaying: true }
               : t
           ));
         }
       }
     });
-
-    return unsubscribe;
-  }, [session, trackConfigs, onIncomingFetch]);
+  }, [trackConfigs]);
 
   const addTrackConfig = () => {
     if (!newTrack.namespace || !newTrack.trackName) return;
