@@ -782,6 +782,16 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
               {receivedCatalog.tracks.map((track: Track, index: number) => {
                 const trackType = getTrackType(track);
                 const isSubscribed = subscribedTracks.has(track.name);
+                const isVodVideo = trackType === 'video' && track.isLive === false;
+
+                // Debug log
+                console.log('[CatalogSubscriber] Track render', {
+                  name: track.name,
+                  trackType,
+                  isLive: track.isLive,
+                  isLiveType: typeof track.isLive,
+                  isVodVideo,
+                });
 
                 return (
                   <div
