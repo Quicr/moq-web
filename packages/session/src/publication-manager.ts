@@ -113,31 +113,6 @@ export class PublicationManager {
   }
 
   /**
-   * Update track alias for a publication (when relay assigns a different alias in PUBLISH_OK)
-   */
-  updateTrackAlias(oldAlias: bigint, newAlias: bigint): boolean {
-    const oldKey = oldAlias.toString();
-    const newKey = newAlias.toString();
-    const pub = this.publications.get(oldKey);
-    if (!pub) {
-      log.warn('Cannot update track alias: publication not found', { oldAlias: oldKey });
-      return false;
-    }
-
-    // Remove from old key
-    this.publications.delete(oldKey);
-
-    // Update the publication's track alias
-    pub.trackAlias = newAlias;
-
-    // Add under new key
-    this.publications.set(newKey, pub);
-
-    log.info('Updated publication track alias', { oldAlias: oldKey, newAlias: newKey });
-    return true;
-  }
-
-  /**
    * Get all publications
    */
   getAll(): InternalPublication[] {
