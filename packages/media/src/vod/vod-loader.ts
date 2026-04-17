@@ -792,11 +792,14 @@ export class VODLoader {
 
   /**
    * Get frame by group and object ID
+   * Returns a copy of the data to prevent ArrayBuffer detachment issues
+   * when the same frame is accessed multiple times (e.g., SUBSCRIBE + FETCH)
    */
   getFrame(groupId: number, objectId: number): Uint8Array | null {
     const key = `${groupId}:${objectId}`;
     const frame = this.frames.get(key);
-    return frame?.data ?? null;
+    if (!frame?.data) return null;
+    return frame.data.slice();
   }
 
   /**
