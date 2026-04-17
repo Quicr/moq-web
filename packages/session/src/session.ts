@@ -2248,9 +2248,7 @@ export class MOQTSession {
             128 // priority
           );
 
-          await this.doWriteStream(streamInfo, objectData);
-
-          // Debug: show exact bytes for first few objects
+          // Debug: show exact bytes for first few objects (before write transfers buffer)
           if (objectId < 3) {
             const bytesHex = Array.from(objectData.slice(0, Math.min(32, objectData.length)))
               .map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -2263,6 +2261,8 @@ export class MOQTSession {
               firstBytes: bytesHex,
             });
           }
+
+          await this.doWriteStream(streamInfo, objectData);
 
           log.trace('Sent fetched object', {
             requestId,
