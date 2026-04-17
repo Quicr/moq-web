@@ -99,10 +99,14 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const [fetchPlaybackState, setFetchPlaybackState] = useState<Map<string, FetchPlaybackState>>(new Map());
   const [showFetchPanel, setShowFetchPanel] = useState<Map<string, boolean>>(new Map());
 
-  // Video frames for rendering
+  // Video frames for rendering (SUBSCRIBE)
   const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
+  // Video frames for FETCH playback (separate from SUBSCRIBE)
+  const [fetchVideoFrames, setFetchVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
   const subscriptionToTrackRef = useRef<Map<number, string>>(new Map());
   const trackToSubscriptionRef = useRef<Map<string, number>>(new Map()); // Reverse map for VOD controls
+  // Track which subscriptions are FETCH vs SUBSCRIBE
+  const fetchSubscriptionIds = useRef<Set<number>>(new Set());
 
   // ABR state
   const abrControllerRef = useRef<ABRController | null>(null);
@@ -252,12 +256,16 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     return unsubscribe;
   }, [onSubscribeStats, startingDelivery]);
 
-  // Handle incoming video frames
+  // Handle incoming video frames - route to correct map based on FETCH vs SUBSCRIBE
   useEffect(() => {
     const unsubscribe = onVideoFrame(({ subscriptionId, frame }) => {
       const trackName = subscriptionToTrackRef.current.get(subscriptionId);
       if (trackName) {
-        setVideoFrames(prev => {
+        // Route to FETCH or SUBSCRIBE video frames map
+        const isFetch = fetchSubscriptionIds.current.has(subscriptionId);
+        const setFrames = isFetch ? setFetchVideoFrames : setVideoFrames;
+
+        setFrames(prev => {
           const newMap = new Map(prev);
           // Close previous frame to avoid memory leak
           const oldFrame = newMap.get(trackName);
@@ -537,9 +545,9 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
         }
       );
 
-      // Map subscription ID for video frame routing
+      // Map subscription ID for video frame routing - mark as FETCH
       subscriptionToTrackRef.current.set(subscriptionId, trackName);
-      trackToSubscriptionRef.current.set(trackName, subscriptionId);
+      fetchSubscriptionIds.current.add(subscriptionId); // Mark as FETCH subscription
 
       // Update state to show we're buffering
       setFetchPlaybackState(prev => {
@@ -1019,9 +1027,10 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                       </div>
                     )}
 
-                    {/* Video Player for subscribed video tracks */}
-                    {trackType === 'video' && isSubscribed && (
+                    {/* Video Player for subscribed video tracks (SUBSCRIBE) */}
+                    {trackType === 'video' && isSubscribed && videoFrames.get(track.name) && (
                       <div className="mt-4">
+                        <p className="text-xs text-gray-400 mb-1">SUBSCRIBE Playback:</p>
                         <MoqMediaPlayer
                           frame={videoFrames.get(track.name) ?? null}
                           subscriptionId={trackToSubscriptionRef.current.get(track.name) ?? 0}
@@ -1031,6 +1040,24 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                           totalGroups={track.totalGroups}
                           gopDuration={track.gopDuration}
                           className="w-full rounded-lg overflow-hidden"
+                          showControls={true}
+                        />
+                      </div>
+                    )}
+
+                    {/* Video Player for FETCH playback (separate from SUBSCRIBE) */}
+                    {trackType === 'video' && fetchPlaybackState.get(track.name)?.isActive && (
+                      <div className="mt-4">
+                        <p className="text-xs text-emerald-400 mb-1">FETCH Playback (buffered):</p>
+                        <MoqMediaPlayer
+                          frame={fetchVideoFrames.get(track.name) ?? null}
+                          subscriptionId={fetchPlaybackState.get(track.name)?.subscriptionId ?? 0}
+                          isLive={false}
+                          duration={track.trackDuration}
+                          framerate={track.framerate}
+                          totalGroups={track.totalGroups}
+                          gopDuration={track.gopDuration}
+                          className="w-full rounded-lg overflow-hidden border border-emerald-500/30"
                           showControls={true}
                         />
                       </div>
