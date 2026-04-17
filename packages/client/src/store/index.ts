@@ -202,7 +202,7 @@ interface ConnectionSlice {
   } | null;
   startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => Promise<number>;
   /** Start VOD subscription using FETCH with adaptive buffer management */
-  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }) => Promise<number>;
+  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }) => Promise<number>;
   /** Standalone FETCH for previously published content (no media pipeline) */
   fetchTrack: (
     namespace: string,
@@ -227,6 +227,8 @@ interface ConnectionSlice {
   onJitterSample: (handler: (data: { subscriptionId: number; sample: { interArrivalTimes: number[]; avgJitter: number; maxJitter: number } }) => void) => () => void;
   // Latency stats handler registration (only active when enableStats is true)
   onLatencyStats: (handler: (data: { subscriptionId: number; stats: { processingDelay: number; bufferDepth: number; bufferDelay: number } }) => void) => () => void;
+  // Incoming FETCH event handler (for VOD publisher local playback)
+  onIncomingFetch: (handler: (data: { namespace: string[]; trackName: string; startGroup: number; endGroup: number }) => void) => () => void;
 }
 
 // ============================================================================
@@ -992,25 +994,29 @@ export const useStore = create<AppStore>()(
       },
 
       // VOD subscription using FETCH with adaptive buffer management
-      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }) => {
+      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }) => {
         const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
         if (!session) {
           throw new Error('No session');
         }
+
+        // Use provided buffer config or defaults for adaptive buffering
+        const effectiveBufferConfig = {
+          initialBufferSec: bufferConfig?.initialBufferSec ?? 3,
+          minBufferSec: bufferConfig?.minBufferSec ?? 2,
+          fetchBatchSec: bufferConfig?.fetchBatchSec ?? 2,
+        };
 
         log.info('Starting VOD subscription with FETCH', {
           namespace,
           trackName,
           mediaType,
           trackInfo,
+          bufferConfig: effectiveBufferConfig,
         });
 
         // Create VodFetchController for adaptive buffer management
-        const controller = createVodFetchController(trackInfo, {
-          initialBufferSec: 3,  // 3 second initial buffer for 4K content
-          minBufferSec: 2,      // Maintain 2 second buffer during playback
-          fetchBatchSec: 2,     // Fetch 2 seconds worth of groups per request
-        });
+        const controller = createVodFetchController(trackInfo, effectiveBufferConfig);
 
         // Track groups received per fetch request for controller notification
         const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
@@ -1313,6 +1319,21 @@ export const useStore = create<AppStore>()(
           return () => {};
         }
         return session.on('latency-stats', handler);
+      },
+
+      onIncomingFetch: (handler) => {
+        const { session } = get();
+        if (!session) {
+          return () => {};
+        }
+        return session.on('incoming-fetch', (event) => {
+          handler({
+            namespace: event.namespace,
+            trackName: event.trackName,
+            startGroup: event.range.startGroup,
+            endGroup: event.range.endGroup,
+          });
+        });
       },
 
       // ========================================

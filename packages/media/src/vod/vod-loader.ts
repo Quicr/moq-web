@@ -862,4 +862,24 @@ export class VODLoader {
   get isPreloaded(): boolean {
     return this.videoData !== null;
   }
+
+  /**
+   * Create a blob URL for local video playback
+   * Useful for playing the video locally when a subscriber connects
+   */
+  createPlaybackUrl(): string | null {
+    if (!this.videoData) {
+      log.warn('Cannot create playback URL - no video data loaded');
+      return null;
+    }
+    const blob = new Blob([new Uint8Array(this.videoData)], { type: this.mimeType });
+    return URL.createObjectURL(blob);
+  }
+
+  /**
+   * Get video duration in milliseconds
+   */
+  getDuration(): number {
+    return this.metadata?.duration ?? 0;
+  }
 }

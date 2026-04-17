@@ -18,6 +18,7 @@ import {
   type IncomingSubscriber,
   type IncomingSubscribeEvent,
   type IncomingPublishEvent,
+  type IncomingFetchEvent,
   type SubscribeNamespaceOptions,
   type NamespaceSubscriptionInfo,
   type FetchCompleteEvent,
@@ -1457,6 +1458,7 @@ export class MediaSession {
   on(event: 'subscribe-stats', handler: (stats: { subscriptionId: number; groupId: number; objectId: number; bytes: number }) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
+  on(event: 'incoming-fetch', handler: (event: IncomingFetchEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
   // DVR/FETCH events
   on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
@@ -1528,6 +1530,11 @@ export class MediaSession {
     this.sessionCleanup.push(incomingPublishCleanup);
 
     // Forward FETCH/DVR events
+    const incomingFetchCleanup = this.session.on('incoming-fetch', (event) => {
+      this.emit('incoming-fetch', event);
+    });
+    this.sessionCleanup.push(incomingFetchCleanup);
+
     const fetchCompleteCleanup = this.session.on('fetch-complete', (event: FetchCompleteEvent) => {
       this.emit('fetch-complete', event);
     });

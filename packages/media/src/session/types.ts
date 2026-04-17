@@ -28,6 +28,7 @@ export type MediaSessionEventType =
   | 'subscribe-stats'
   | 'incoming-subscribe'
   | 'incoming-publish'
+  | 'incoming-fetch'
   | 'namespace-acknowledged'
   // DVR/FETCH events
   | 'fetch-object'
