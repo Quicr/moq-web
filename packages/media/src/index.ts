@@ -74,6 +74,8 @@ export {
   LOCUnpackager,
   MediaType,
   LOCExtensionType,
+  QuicRExtensionType,
+  QUICR_EXTENSION_SIZES,
   createSimpleLOCPacket,
 } from './loc/loc-container.js';
 export type {
@@ -83,6 +85,7 @@ export type {
   LOCExtension,
   LOCFrame,
   VideoFrameMarking,
+  VADData,
 } from './loc/loc-container.js';
 
 // Jitter buffer

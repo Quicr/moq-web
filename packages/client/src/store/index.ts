@@ -370,6 +370,10 @@ interface SettingsSlice {
   secureObjectsCipherSuite: string;
   /** Track base key for encryption (hex string, 32-64 hex chars = 16-32 bytes) */
   secureObjectsBaseKey: string;
+  /** Enable QuicR-Mac interop mode (fixed-size LOC extensions) */
+  quicrInteropEnabled: boolean;
+  /** Participant ID for QuicR interop (32-bit) */
+  quicrParticipantId: number;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -401,6 +405,8 @@ interface SettingsSlice {
   setSecureObjectsEnabled: (value: boolean) => void;
   setSecureObjectsCipherSuite: (value: string) => void;
   setSecureObjectsBaseKey: (value: string) => void;
+  setQuicrInteropEnabled: (value: boolean) => void;
+  setQuicrParticipantId: (value: number) => void;
   /** Apply an experience profile (sets all related settings) */
   applyExperienceProfile: (profile: ExperienceProfileName) => void;
   /** Update detected profile based on current settings */
@@ -558,7 +564,7 @@ export const useStore = create<AppStore>()(
               trackAlias: event.trackAlias.toString(),
             });
 
-            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
+            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
 
             if (pendingAnnounceStream && pendingAnnounceConfig) {
               try {
@@ -588,6 +594,9 @@ export const useStore = create<AppStore>()(
                   secureObjectsEnabled,
                   secureObjectsCipherSuite,
                   secureObjectsBaseKey,
+                  // QuicR-Mac interop settings
+                  quicrInteropEnabled,
+                  quicrParticipantId,
                 };
 
                 await session.startAnnouncePublish(
@@ -736,7 +745,7 @@ export const useStore = create<AppStore>()(
         const hasVideoTracks = localStream.getVideoTracks().length > 0;
         const hasAudioTracks = localStream.getAudioTracks().length > 0;
 
-        const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
+        const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
         const config: MediaConfig = {
           videoBitrate,
           audioBitrate,
@@ -753,6 +762,9 @@ export const useStore = create<AppStore>()(
           secureObjectsEnabled,
           secureObjectsCipherSuite,
           secureObjectsBaseKey,
+          // QuicR-Mac interop settings
+          quicrInteropEnabled,
+          quicrParticipantId,
         };
 
         // Use announce flow if enabled
@@ -880,7 +892,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -904,6 +916,8 @@ export const useStore = create<AppStore>()(
           secureObjectsEnabled,
           secureObjectsCipherSuite,
           secureObjectsBaseKey,
+          // QuicR-Mac interop settings
+          quicrInteropEnabled,
         };
 
         const subscriptionId = await session.subscribe(
@@ -1095,7 +1109,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1123,6 +1137,8 @@ export const useStore = create<AppStore>()(
           secureObjectsEnabled,
           secureObjectsCipherSuite,
           secureObjectsBaseKey,
+          // QuicR-Mac interop settings
+          quicrInteropEnabled,
         };
 
         const subscriptionId = await session.subscribeNamespace(namespacePrefix, config);
@@ -1235,6 +1251,8 @@ export const useStore = create<AppStore>()(
       secureObjectsEnabled: false, // Default: encryption off
       secureObjectsCipherSuite: '0x0004', // Default: AES_128_GCM_SHA256_128
       secureObjectsBaseKey: '', // Default: empty (user must provide)
+      quicrInteropEnabled: false, // Default: standard LOC packaging
+      quicrParticipantId: 0, // Default: 0 (should be set by user)
 
       setTheme: (theme) => {
         set({ theme });
@@ -1284,6 +1302,8 @@ export const useStore = create<AppStore>()(
       setSecureObjectsEnabled: (value) => set({ secureObjectsEnabled: value }),
       setSecureObjectsCipherSuite: (value) => set({ secureObjectsCipherSuite: value }),
       setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
+      setQuicrInteropEnabled: (value) => set({ quicrInteropEnabled: value }),
+      setQuicrParticipantId: (value) => set({ quicrParticipantId: value }),
 
       applyExperienceProfile: (profileName) => {
         if (profileName === 'custom') {
@@ -1360,6 +1380,8 @@ export const useStore = create<AppStore>()(
         secureObjectsEnabled: state.secureObjectsEnabled,
         secureObjectsCipherSuite: state.secureObjectsCipherSuite,
         secureObjectsBaseKey: state.secureObjectsBaseKey,
+        quicrInteropEnabled: state.quicrInteropEnabled,
+        quicrParticipantId: state.quicrParticipantId,
       }),
     }
   )

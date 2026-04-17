@@ -48,6 +48,10 @@ interface EncodeChannel {
   videoFrameCount: number;
   /** Keyframe interval in frames (0 = no auto keyframes) */
   keyframeIntervalFrames: number;
+  /** Enable QuicR-Mac interop mode */
+  quicrInteropEnabled: boolean;
+  /** Participant ID for QuicR interop */
+  quicrParticipantId: number;
 }
 
 // Map of channel ID to encode context
@@ -82,11 +86,14 @@ function createChannel(channelId: number, config: CodecEncodeWorkerConfig): Enco
   const keyframeIntervalSeconds = config.video?.keyframeInterval ?? 2;
   const keyframeIntervalFrames = Math.round(keyframeIntervalSeconds * framerate);
 
+  // Create packager with participant ID for QuicR interop
+  const packager = new LOCPackager(262144, config.quicrParticipantId ?? 0);
+
   const channel: EncodeChannel = {
     channelId,
     videoEncoder: null,
     audioEncoder: null,
-    packager: new LOCPackager(),
+    packager,
     videoGroupId: getInitialGroupId(),
     videoObjectId: 0,
     audioGroupId: getInitialGroupId(),
@@ -94,9 +101,11 @@ function createChannel(channelId: number, config: CodecEncodeWorkerConfig): Enco
     forceNextKeyframe: false,
     videoFrameCount: 0,
     keyframeIntervalFrames,
+    quicrInteropEnabled: config.quicrInteropEnabled ?? false,
+    quicrParticipantId: config.quicrParticipantId ?? 0,
   };
 
-  log(`Channel ${channelId} created with keyframeIntervalFrames=${keyframeIntervalFrames}`);
+  log(`Channel ${channelId} created with keyframeIntervalFrames=${keyframeIntervalFrames}, quicrInterop=${channel.quicrInteropEnabled}`);
 
   if (config.video) {
     initVideoEncoder(channel, config.video);
@@ -200,6 +209,7 @@ function handleEncodedVideoChunk(
     isKeyframe,
     captureTimestamp: performance.now(),
     codecDescription,
+    quicrInterop: channel.quicrInteropEnabled,
   };
   const videoPacketSize = channel.packager.calculateVideoPacketSize(data, videoOptions);
   const videoBuffer = new Uint8Array(videoPacketSize);
@@ -240,6 +250,8 @@ function handleEncodedAudioChunk(channel: EncodeChannel, chunk: EncodedAudioChun
   // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
   const audioOptions = {
     captureTimestamp: performance.now(),
+    quicrInterop: channel.quicrInteropEnabled,
+    participantId: channel.quicrParticipantId,
   };
   const audioPacketSize = channel.packager.calculateAudioPacketSize(data, audioOptions);
   const audioBuffer = new Uint8Array(audioPacketSize);

@@ -76,6 +76,8 @@ export interface CodecDecodeWorkerConfig {
   useLatencyDeadline?: boolean;
   /** Enable GroupArbiter debug logging (default: false) */
   arbiterDebug?: boolean;
+  /** Enable QuicR-Mac interop mode for LOC unpackaging (default: false) */
+  quicrInteropEnabled?: boolean;
 }
 
 /**

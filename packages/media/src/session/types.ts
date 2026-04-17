@@ -137,6 +137,12 @@ export interface MediaConfig {
   secureObjectsCipherSuite?: string;
   /** Track base key for encryption (hex string, 32-64 hex chars = 16-32 bytes) */
   secureObjectsBaseKey?: string;
+
+  // QuicR-Mac interop options
+  /** Enable QuicR-Mac interop mode (fixed-size LOC extensions) */
+  quicrInteropEnabled?: boolean;
+  /** Participant ID for QuicR interop (32-bit) */
+  quicrParticipantId?: number;
 }
 
 /**

@@ -11,8 +11,10 @@ import {
   LOCUnpackager,
   MediaType,
   LOCExtensionType,
+  QuicRExtensionType,
   createSimpleLOCPacket,
   type VideoFrameMarking,
+  type VADData,
 } from './loc-container';
 
 describe('LOCPackager', () => {
@@ -530,5 +532,357 @@ describe('AudioLevel RFC 6464 format', () => {
       const frame = unpackager.unpackage(packet);
       expect(frame.audioLevel!.level).toBe(level);
     }
+  });
+});
+
+describe('QuicR Interop Mode', () => {
+  let packager: LOCPackager;
+  let unpackager: LOCUnpackager;
+
+  beforeEach(() => {
+    packager = new LOCPackager(262144, 12345); // with participant ID
+    unpackager = new LOCUnpackager();
+  });
+
+  describe('Video packaging', () => {
+    it('packages and unpackages a video keyframe in QuicR interop mode', () => {
+      const payload = new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x67, 0x42]);
+      const packet = packager.packageVideo(payload, {
+        isKeyframe: true,
+        quicrInterop: true,
+        captureTimestamp: 1000.5,
+      });
+
+      // Unpackage in QuicR mode
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.header.mediaType).toBe(MediaType.VIDEO);
+      expect(frame.header.isKeyframe).toBe(true);
+      expect(frame.header.sequenceNumber).toBe(0);
+      expect(frame.payload).toEqual(payload);
+      // Timestamp should be within ~1ms of original
+      expect(Math.abs(frame.captureTimestamp! - 1000.5)).toBeLessThan(1);
+    });
+
+    it('packages video delta frame in QuicR interop mode', () => {
+      const payload = new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x41]);
+      // First frame (keyframe)
+      packager.packageVideo(new Uint8Array([1]), { isKeyframe: true, quicrInterop: true });
+      // Second frame (delta)
+      const packet = packager.packageVideo(payload, { isKeyframe: false, quicrInterop: true });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.header.mediaType).toBe(MediaType.VIDEO);
+      expect(frame.header.isKeyframe).toBe(false);
+      expect(frame.header.sequenceNumber).toBe(1);
+      expect(frame.payload).toEqual(payload);
+    });
+
+    it('includes VAD data in QuicR video packet', () => {
+      const payload = new Uint8Array([0x01]);
+      const vadData = {
+        voiceActivity: true,
+        speechProbability: 200,
+        energyLevel: -50,
+      };
+      const packet = packager.packageVideo(payload, {
+        isKeyframe: true,
+        quicrInterop: true,
+        vadData,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.vadData).toBeDefined();
+      expect(frame.vadData!.voiceActivity).toBe(true);
+      expect(frame.vadData!.speechProbability).toBe(200);
+      expect(frame.vadData!.energyLevel).toBe(-50);
+    });
+
+    it('includes codec description in QuicR video keyframe', () => {
+      const payload = new Uint8Array([0x01]);
+      const codecDescription = new Uint8Array([0x01, 0x42, 0x00, 0x1f]);
+      const packet = packager.packageVideo(payload, {
+        isKeyframe: true,
+        quicrInterop: true,
+        codecDescription,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.codecDescription).toBeDefined();
+      expect(frame.codecDescription).toEqual(codecDescription);
+    });
+
+    it('uses fixed-size extensions in QuicR mode', () => {
+      const payload = new Uint8Array([0x01]);
+      const packet = packager.packageVideo(payload, {
+        isKeyframe: true,
+        quicrInterop: true,
+        captureTimestamp: 12345.678,
+      });
+
+      // Check fixed sizes in packet:
+      // Header(1) + CaptureTimestamp(type:1 + len:1 + data:6) + SequenceNumber(type:1 + len:1 + data:4) + payloadLen + payload
+      // Extension count in header should be 2
+      const extensionCount = packet[0] & 0x0f;
+      expect(extensionCount).toBe(2);
+
+      // Verify capture timestamp extension (type 0x02, length 6)
+      expect(packet[1]).toBe(0x02); // QuicR CAPTURE_TIMESTAMP type
+      expect(packet[2]).toBe(6);    // Fixed 6-byte length
+
+      // Verify sequence number extension (type 0x04, length 4)
+      expect(packet[9]).toBe(0x04); // QuicR SEQUENCE_NUMBER type
+      expect(packet[10]).toBe(4);   // Fixed 4-byte length
+    });
+  });
+
+  describe('Audio packaging', () => {
+    it('packages and unpackages an audio frame in QuicR interop mode', () => {
+      const payload = new Uint8Array([0x4f, 0x70, 0x75, 0x73]); // "Opus"
+      const packet = packager.packageAudio(payload, {
+        quicrInterop: true,
+        captureTimestamp: 2000.25,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.header.mediaType).toBe(MediaType.AUDIO);
+      expect(frame.header.isKeyframe).toBe(true); // Opus always keyframe
+      expect(frame.header.sequenceNumber).toBe(0);
+      expect(frame.payload).toEqual(payload);
+      expect(Math.abs(frame.captureTimestamp! - 2000.25)).toBeLessThan(1);
+    });
+
+    it('includes participant ID in QuicR audio packet', () => {
+      const payload = new Uint8Array([0x01]);
+      const packet = packager.packageAudio(payload, {
+        quicrInterop: true,
+        participantId: 98765,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.participantId).toBe(98765);
+    });
+
+    it('uses packager default participant ID when not specified', () => {
+      const payload = new Uint8Array([0x01]);
+      const packet = packager.packageAudio(payload, {
+        quicrInterop: true,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.participantId).toBe(12345); // Default from packager constructor
+    });
+
+    it('includes energy level in QuicR audio packet', () => {
+      const payload = new Uint8Array([0x01]);
+      const packet = packager.packageAudio(payload, {
+        quicrInterop: true,
+        audioLevel: 75,
+        voiceActivity: true,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.audioLevel).toBeDefined();
+      expect(frame.audioLevel!.level).toBe(75);
+      expect(frame.audioLevel!.voiceActivity).toBe(true);
+    });
+
+    it('includes VAD data in QuicR audio packet', () => {
+      const payload = new Uint8Array([0x01]);
+      const vadData = {
+        voiceActivity: false,
+        speechProbability: 50,
+        energyLevel: 100,
+      };
+      const packet = packager.packageAudio(payload, {
+        quicrInterop: true,
+        vadData,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.vadData).toBeDefined();
+      expect(frame.vadData!.voiceActivity).toBe(false);
+      expect(frame.vadData!.speechProbability).toBe(50);
+      expect(frame.vadData!.energyLevel).toBe(100);
+    });
+
+    it('uses fixed-size extensions in QuicR audio mode', () => {
+      const payload = new Uint8Array([0x01]);
+      const packet = packager.packageAudio(payload, {
+        quicrInterop: true,
+        captureTimestamp: 5000.0,
+        audioLevel: 60,
+      });
+
+      // Extension count should be 5 (timestamp, sequence, energy, participant)
+      const extensionCount = packet[0] & 0x0f;
+      expect(extensionCount).toBe(4);
+
+      // Verify extensions are present with fixed sizes
+      let offset = 1;
+
+      // CaptureTimestamp (0x02, 6 bytes)
+      expect(packet[offset]).toBe(0x02);
+      expect(packet[offset + 1]).toBe(6);
+      offset += 8;
+
+      // SequenceNumber (0x04, 4 bytes)
+      expect(packet[offset]).toBe(0x04);
+      expect(packet[offset + 1]).toBe(4);
+      offset += 6;
+
+      // EnergyLevel (0x06, 6 bytes)
+      expect(packet[offset]).toBe(0x06);
+      expect(packet[offset + 1]).toBe(6);
+      offset += 8;
+
+      // ParticipantID (0x08, 8 bytes)
+      expect(packet[offset]).toBe(0x08);
+      expect(packet[offset + 1]).toBe(8);
+    });
+  });
+
+  describe('Roundtrip tests', () => {
+    it('roundtrips video with all QuicR extensions', () => {
+      const payload = new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f]);
+      const codecDescription = new Uint8Array([0x01, 0x42, 0x00, 0x1f, 0xff, 0xe1]);
+      const vadData = {
+        voiceActivity: true,
+        speechProbability: 180,
+        energyLevel: -10,
+      };
+
+      const packet = packager.packageVideo(payload, {
+        isKeyframe: true,
+        quicrInterop: true,
+        captureTimestamp: 3000.123,
+        codecDescription,
+        vadData,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.header.mediaType).toBe(MediaType.VIDEO);
+      expect(frame.header.isKeyframe).toBe(true);
+      expect(frame.header.sequenceNumber).toBe(0);
+      expect(frame.payload).toEqual(payload);
+      expect(Math.abs(frame.captureTimestamp! - 3000.123)).toBeLessThan(1);
+      expect(frame.codecDescription).toEqual(codecDescription);
+      expect(frame.vadData).toEqual(vadData);
+    });
+
+    it('roundtrips audio with all QuicR extensions', () => {
+      const payload = new Uint8Array(100).fill(0x42);
+      const vadData = {
+        voiceActivity: false,
+        speechProbability: 25,
+        energyLevel: -80,
+      };
+
+      const packet = packager.packageAudio(payload, {
+        quicrInterop: true,
+        captureTimestamp: 4000.5,
+        audioLevel: 100,
+        voiceActivity: false,
+        vadData,
+        participantId: 55555,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.header.mediaType).toBe(MediaType.AUDIO);
+      expect(frame.payload).toEqual(payload);
+      expect(Math.abs(frame.captureTimestamp! - 4000.5)).toBeLessThan(1);
+      expect(frame.audioLevel!.level).toBe(100);
+      expect(frame.audioLevel!.voiceActivity).toBe(false);
+      expect(frame.vadData).toEqual(vadData);
+      expect(frame.participantId).toBe(55555);
+    });
+
+    it('maintains sequence numbers across multiple frames', () => {
+      const payload = new Uint8Array([0x01]);
+
+      // Package multiple video frames
+      const videoPacket1 = packager.packageVideo(payload, { isKeyframe: true, quicrInterop: true });
+      const videoPacket2 = packager.packageVideo(payload, { isKeyframe: false, quicrInterop: true });
+      const videoPacket3 = packager.packageVideo(payload, { isKeyframe: false, quicrInterop: true });
+
+      // Package multiple audio frames
+      const audioPacket1 = packager.packageAudio(payload, { quicrInterop: true });
+      const audioPacket2 = packager.packageAudio(payload, { quicrInterop: true });
+
+      // Verify video sequences
+      expect(unpackager.unpackage(videoPacket1, true).header.sequenceNumber).toBe(0);
+      expect(unpackager.unpackage(videoPacket2, true).header.sequenceNumber).toBe(1);
+      expect(unpackager.unpackage(videoPacket3, true).header.sequenceNumber).toBe(2);
+
+      // Verify audio sequences (independent from video)
+      expect(unpackager.unpackage(audioPacket1, true).header.sequenceNumber).toBe(0);
+      expect(unpackager.unpackage(audioPacket2, true).header.sequenceNumber).toBe(1);
+    });
+
+    it('handles large payloads in QuicR mode', () => {
+      // 100KB payload
+      const payload = new Uint8Array(100 * 1024);
+      for (let i = 0; i < payload.length; i++) {
+        payload[i] = i % 256;
+      }
+
+      const packet = packager.packageVideo(payload, {
+        isKeyframe: true,
+        quicrInterop: true,
+        captureTimestamp: 12345.678,
+      });
+
+      const frame = unpackager.unpackage(packet, true);
+
+      expect(frame.payload).toEqual(payload);
+    });
+  });
+
+  describe('calculatePacketSize', () => {
+    it('calculates correct QuicR video packet size', () => {
+      const payload = new Uint8Array(100);
+      const options = {
+        isKeyframe: true,
+        quicrInterop: true,
+        captureTimestamp: 1000.0,
+      };
+
+      const calculatedSize = packager.calculateVideoPacketSize(payload, options);
+      const packet = packager.packageVideo(payload, options);
+
+      // Reset to get same sequence number
+      packager.reset();
+      const packet2 = packager.packageVideo(payload, options);
+
+      expect(packet2.length).toBe(calculatedSize);
+    });
+
+    it('calculates correct QuicR audio packet size', () => {
+      const payload = new Uint8Array(50);
+      const options = {
+        quicrInterop: true,
+        captureTimestamp: 2000.0,
+        audioLevel: 64,
+      };
+
+      const calculatedSize = packager.calculateAudioPacketSize(payload, options);
+      const packet = packager.packageAudio(payload, options);
+
+      // Reset to get same sequence number
+      packager.reset();
+      const packet2 = packager.packageAudio(payload, options);
+
+      expect(packet2.length).toBe(calculatedSize);
+    });
   });
 });

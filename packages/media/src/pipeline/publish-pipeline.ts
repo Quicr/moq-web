@@ -57,6 +57,10 @@ export interface PublishPipelineConfig {
    * The worker should be created from '@web-moq/media/codec-encode-worker'.
    */
   encodeWorker?: Worker;
+  /** Enable QuicR-Mac interop mode (fixed-size LOC extensions) */
+  quicrInteropEnabled?: boolean;
+  /** Participant ID for QuicR interop (32-bit) */
+  quicrParticipantId?: number;
 }
 
 /**
@@ -180,6 +184,11 @@ export class PublishPipeline {
     this.useWorker = !!config.encodeWorker;
     this.channelId = PublishPipeline.nextChannelId++;
 
+    // Set participant ID for QuicR interop mode
+    if (config.quicrParticipantId !== undefined) {
+      this.packager.setParticipantId(config.quicrParticipantId);
+    }
+
     if (this.useWorker && config.encodeWorker) {
       // Pass channelId for multiplexed worker support
       this.encodeWorkerClient = new CodecEncodeWorkerClient(config.encodeWorker, this.channelId);
@@ -302,6 +311,9 @@ export class PublishPipeline {
           numberOfChannels: this.config.audio.numberOfChannels ?? 2,
           bitrate: this.config.audio.bitrate ?? 128000,
         } : undefined,
+        // QuicR-Mac interop settings
+        quicrInteropEnabled: this.config.quicrInteropEnabled,
+        quicrParticipantId: this.config.quicrParticipantId,
       });
       log.info('Encode worker initialized');
     }
@@ -445,6 +457,7 @@ export class PublishPipeline {
       isKeyframe: frame.isKeyframe,
       captureTimestamp: performance.now(),
       codecDescription: frame.codecDescription,
+      quicrInterop: this.config.quicrInteropEnabled,
     };
     const packetSize = this.packager.calculateVideoPacketSize(frame.data, options);
     const buffer = new Uint8Array(packetSize);
@@ -701,6 +714,8 @@ export class PublishPipeline {
     // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
     const options = {
       captureTimestamp: performance.now(),
+      quicrInterop: this.config.quicrInteropEnabled,
+      participantId: this.config.quicrParticipantId,
     };
     const packetSize = this.packager.calculateAudioPacketSize(frame.data, options);
     const buffer = new Uint8Array(packetSize);
