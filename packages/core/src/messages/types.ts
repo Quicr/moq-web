@@ -293,6 +293,23 @@ export enum ObjectExtension {
 }
 
 /**
+ * Fetch Type (Draft-15+)
+ *
+ * @remarks
+ * Determines how the fetch range is specified.
+ */
+export enum FetchType {
+  /** Standalone fetch with full track name and absolute range */
+  STANDALONE = 0x01,
+  /** Joining fetch - inherits track from existing subscription */
+  JOINING = 0x02,
+  /** Absolute standalone with explicit range */
+  ABSOLUTE_STANDALONE = 0x03,
+  /** Absolute joining fetch */
+  ABSOLUTE_JOINING = 0x04,
+}
+
+/**
  * Group ordering preferences for subscriptions
  *
  * @remarks
