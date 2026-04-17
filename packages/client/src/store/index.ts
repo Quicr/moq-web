@@ -202,7 +202,7 @@ interface ConnectionSlice {
   } | null;
   startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => Promise<number>;
   /** Start VOD subscription using FETCH with adaptive buffer management */
-  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }) => Promise<number>;
+  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number) => Promise<number>;
   /** Standalone FETCH for previously published content (no media pipeline) */
   fetchTrack: (
     namespace: string,
@@ -994,7 +994,7 @@ export const useStore = create<AppStore>()(
       },
 
       // VOD subscription using FETCH with adaptive buffer management
-      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }) => {
+      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0) => {
         const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
         if (!session) {
           throw new Error('No session');
@@ -1162,8 +1162,8 @@ export const useStore = create<AppStore>()(
           log.info('VOD adaptive update', { avgMsPerGop: Math.round(avgMsPerGop), adaptiveFetchAhead });
         });
 
-        // Start the fetch controller (begins initial buffering)
-        controller.start();
+        // Start the fetch controller (begins initial buffering from startGroup)
+        controller.start(startGroup);
 
         // Add to subscribed tracks
         get().addSubscribedTrack({

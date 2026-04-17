@@ -186,12 +186,20 @@ export class VodFetchController {
   /**
    * Start the fetch controller
    * Begins initial buffering phase
+   * @param startGroup - Optional starting group (default: 0)
    */
-  start(): void {
+  start(startGroup: number = 0): void {
     if (this.state !== 'idle') {
       log.warn('Controller already started', { state: this.state });
       return;
     }
+
+    // Set starting position
+    this.playbackGroup = startGroup;
+    this.fetchedUpToGroup = startGroup - 1;
+    this.bufferedUpToGroup = startGroup - 1;
+
+    log.info('Starting fetch controller', { startGroup, totalGroups: this.config.totalGroups });
 
     this.setState('initial-buffering');
     this.fetchInitialBuffer();

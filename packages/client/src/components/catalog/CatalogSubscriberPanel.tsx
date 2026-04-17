@@ -484,8 +484,8 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     }
   }, [receivedCatalog, namespace, setSubtitleCues, setActiveSubtitleTrack, activeSubtitleTrack]);
 
-  // Start FETCH playback for VOD track with user-specified buffer duration
-  const handleFetchPlayback = useCallback(async (track: Track, bufferSeconds: number, priority: number) => {
+  // Start FETCH playback for VOD track with user-specified buffer duration and start group
+  const handleFetchPlayback = useCallback(async (track: Track, bufferSeconds: number, priority: number, startGroup: number = 0) => {
     if (!receivedCatalog) return;
 
     const trackNamespace = track.namespace ?? namespace.split('/');
@@ -499,7 +499,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
         isFetching: true,
         bufferSeconds,
         priority,
-        currentGroup: 0,
+        currentGroup: startGroup,
         totalGroups: track.totalGroups ?? 0,
         bufferedGroups: 0,
       });
@@ -528,6 +528,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
       // Create VOD pipeline with FETCH and adaptive buffer config
       // Use user-specified buffer seconds for initial buffer, with sensible defaults for min buffer
+      const startGroupValue = fetchPlaybackState.get(trackName)?.currentGroup ?? 0;
       const subscriptionId = await startVodSubscription(
         trackNamespace.join('/'),
         trackName,
@@ -542,7 +543,8 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
           initialBufferSec: bufferSeconds,
           minBufferSec: Math.max(1, bufferSeconds / 2),
           fetchBatchSec: Math.max(1, bufferSeconds / 3),
-        }
+        },
+        startGroupValue
       );
 
       // Map subscription ID for video frame routing - mark as FETCH
@@ -955,14 +957,28 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                                   className="input text-xs w-20 px-2 py-1"
                                 />
                               </div>
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-400 dark:text-white/50 w-24">Start Group:</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={track.totalGroups ? track.totalGroups - 1 : 9999}
+                                  defaultValue={0}
+                                  id={`fetch-startgroup-${track.name}`}
+                                  className="input text-xs w-20 px-2 py-1"
+                                />
+                                <span className="text-xs text-gray-500">/ {(track.totalGroups ?? 1) - 1}</span>
+                              </div>
                               <div className="flex items-center gap-2 mt-3">
                                 <button
                                   onClick={() => {
                                     const bufferInput = document.getElementById(`fetch-buffer-${track.name}`) as HTMLInputElement;
                                     const priorityInput = document.getElementById(`fetch-priority-${track.name}`) as HTMLInputElement;
+                                    const startGroupInput = document.getElementById(`fetch-startgroup-${track.name}`) as HTMLInputElement;
                                     const bufferSec = parseFloat(bufferInput?.value ?? '3');
                                     const priority = parseInt(priorityInput?.value ?? '128', 10);
-                                    handleFetchPlayback(track, bufferSec, priority);
+                                    const startGroup = parseInt(startGroupInput?.value ?? '0', 10);
+                                    handleFetchPlayback(track, bufferSec, priority, startGroup);
                                   }}
                                   disabled={fetchPlaybackState.get(track.name)?.isFetching}
                                   className="btn-sm btn-primary"
