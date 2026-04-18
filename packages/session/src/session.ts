@@ -826,6 +826,13 @@ export class MOQTSession {
     };
     this.subscriptionManager.add(subscription);
 
+    // Determine filter type - use ABSOLUTE_START for VOD, LATEST_GROUP for live
+    const filterType = options?.filterType === 'absolute'
+      ? FilterType.ABSOLUTE_START
+      : FilterType.LATEST_GROUP;
+    const startGroup = options?.startGroup ?? 0;
+    const startObject = options?.startObject ?? 0;
+
     // Send SUBSCRIBE message
     const subscribeMessage: SubscribeMessage = {
       type: MessageType.SUBSCRIBE,
@@ -834,7 +841,9 @@ export class MOQTSession {
       fullTrackName: { namespace, trackName },
       subscriberPriority: options?.priority ?? 128,
       groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
-      filterType: FilterType.LATEST_GROUP,
+      filterType,
+      startGroup: filterType === FilterType.ABSOLUTE_START ? startGroup : undefined,
+      startObject: filterType === FilterType.ABSOLUTE_START ? startObject : undefined,
       parameters: new Map(),
     };
 
