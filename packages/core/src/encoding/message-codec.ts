@@ -2238,6 +2238,8 @@ export class MessageCodec {
     writer.writeByte(message.endOfTrack ? 1 : 0);
     writer.writeVarInt(message.largestGroupId);
     writer.writeVarInt(message.largestObjectId);
+    // Draft-16: Parameters at end (empty for now)
+    writer.writeVarInt(0); // Number of parameters
   }
 
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
