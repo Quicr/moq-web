@@ -682,11 +682,20 @@ export class MediaSession {
     // Create secure context if encryption is enabled
     const secureContext = await this.createSecureContext(config, { namespace, trackName });
 
+    // Merge filterType from config and options (options take precedence)
+    // Default to 'absolute' for VOD, 'latest' for live
+    const effectiveFilterType = options?.filterType ?? config.filterType ?? (config.policyType === 'vod' ? 'absolute' : 'latest');
+    const mergedOptions = {
+      ...options,
+      filterType: effectiveFilterType,
+      startGroup: options?.startGroup ?? config.startGroup ?? 0,
+    };
+
     // Subscribe via session with object callback and end-of-group handler
     const subscriptionId = await this.session.subscribe(
       namespace,
       trackName,
-      options,
+      mergedOptions,
       (data, groupId, objectId, timestamp) => {
         log.info('MediaSession onObject callback invoked', {
           namespace: namespace.join('/'),

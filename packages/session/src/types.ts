@@ -45,6 +45,12 @@ export interface SubscribeOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
+  /** Filter type: 'latest' for live (default), 'absolute' for VOD to start from beginning */
+  filterType?: 'latest' | 'absolute';
+  /** Start group ID when filterType is 'absolute' (default: 0) */
+  startGroup?: number;
+  /** Start object ID when filterType is 'absolute' (default: 0) */
+  startObject?: number;
 }
 
 /**

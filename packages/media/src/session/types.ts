@@ -125,6 +125,10 @@ export interface MediaConfig {
 
   /** Whether content is live (from catalog) - used with policyType to select behavior */
   isLive?: boolean;
+  /** Filter type for subscription: 'latest' (default) or 'absolute' (start from beginning for VOD) */
+  filterType?: 'latest' | 'absolute';
+  /** Start group for absolute filter type (default: 0) */
+  startGroup?: number;
   /** Maximum acceptable end-to-end latency in ms before skipping to next keyframe (default: 500) */
   maxLatency?: number;
   /** Initial estimated GOP duration in ms (default: 1000) */
@@ -179,6 +183,12 @@ export interface MediaSubscribeOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
+  /** Filter type: 'latest' for live (default), 'absolute' for VOD to start from beginning */
+  filterType?: 'latest' | 'absolute';
+  /** Start group ID when filterType is 'absolute' (default: 0) */
+  startGroup?: number;
+  /** Start object ID when filterType is 'absolute' (default: 0) */
+  startObject?: number;
 }
 
 /**
