@@ -647,10 +647,12 @@ describe('MessageCodec', () => {
         expect(decoded.type).toBe(MessageType.FETCH_OK);
         const decodedOk = decoded as FetchOkMessage;
         expect(decodedOk.requestId).toBe(1);
-        expect(decodedOk.groupOrder).toBe(GroupOrder.DESCENDING);
-        expect(decodedOk.endOfTrack).toBe(true);
-        expect(decodedOk.largestGroupId).toBe(50);
-        expect(decodedOk.largestObjectId).toBe(25);
+        // Draft-16 FETCH_OK only has requestId + parameters, other fields get defaults
+        // These fields are no longer on the wire in draft-16
+        expect(decodedOk.groupOrder).toBe(GroupOrder.ASCENDING); // default
+        expect(decodedOk.endOfTrack).toBe(false); // default
+        expect(decodedOk.largestGroupId).toBe(0); // default
+        expect(decodedOk.largestObjectId).toBe(0); // default
       });
 
       it('roundtrips FETCH_ERROR message', () => {
@@ -1069,10 +1071,10 @@ describe('ObjectCodec', () => {
         state
       );
 
-      // First object should have (draft-16 MSB-first bit layout):
-      // flags = 0x10 (GROUP_ID) | 0x20 (OBJECT_ID) | 0x08 (PRIORITY) | 0x00 (subgroup mode 0 in bits 7-6)
-      // = 0x38 (56 decimal, fits in 1-byte varint)
-      const expectedFlags = 0x38;
+      // First object should have (moqx/moxygen bit layout):
+      // flags = 0x08 (GROUP_ID) | 0x04 (OBJECT_ID) | 0x10 (PRIORITY) | 0x00 (subgroup mode 0 in bits 0-1)
+      // = 0x1C (28 decimal, fits in 1-byte varint)
+      const expectedFlags = 0x1C;
       expect(encoded[0]).toBe(expectedFlags);
 
       // Verify state was updated
@@ -1092,11 +1094,9 @@ describe('ObjectCodec', () => {
       const encoded = ObjectCodec.encodeFetchObject(100, 0, 1, payload, state);
 
       // Should NOT have GROUP_ID flag, but should have OBJECT_ID
-      // Draft-16 flag layout: |SS|O|G|P|E|Res| (MSB first)
-      // flags = (1 << 6) (subgroup mode 1 = same) | 0x20 (OBJECT_ID)
-      // = 0x40 | 0x20 = 0x60
-      // Since 0x60 > 63, it's encoded as a 2-byte varint
-      const expectedFlags = 0x60;
+      // moqx bit layout: subgroup mode 1 in bits 0-1 | 0x04 (OBJECT_ID)
+      // = 0x01 | 0x04 = 0x05
+      const expectedFlags = 0x05;
       const reader = new BufferReader(encoded);
       const actualFlags = reader.readVarIntNumber();
       expect(actualFlags).toBe(expectedFlags);
@@ -1113,11 +1113,10 @@ describe('ObjectCodec', () => {
       const encoded = ObjectCodec.encodeFetchObject(101, 0, 0, payload, state);
 
       // Should have GROUP_ID flag for new group
-      // Draft-16 flag layout: GROUP_ID_PRESENT = 0x10 (bit 4)
-      // flags = 0x20 (OBJECT_ID) | 0x10 (GROUP_ID) = 0x30
+      // moqx bit layout: GROUP_ID_PRESENT = 0x08 (bit 3)
       const reader = new BufferReader(encoded);
       const flags = reader.readVarIntNumber();
-      const hasGroupFlag = (flags & 0x10) !== 0;
+      const hasGroupFlag = (flags & 0x08) !== 0;
       expect(hasGroupFlag).toBe(true);
     });
 
