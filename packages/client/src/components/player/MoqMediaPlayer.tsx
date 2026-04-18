@@ -23,6 +23,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VideoRenderer, VideoRendererMetrics } from '../subscribe/VideoRenderer';
 import { useStore } from '../../store';
+import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@web-moq/media';
 
 export interface MoqMediaPlayerProps {
   /** The VideoFrame to render */
@@ -77,6 +78,10 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
     resumeSubscription,
     isSubscriptionPaused,
     seekSubscription,
+    experienceProfile,
+    jitterBufferDelay,
+    maxLatency,
+    policyType,
   } = useStore();
 
   // Playback state
@@ -317,19 +322,82 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
           </div>
         )}
 
-        {/* Diagnostics Overlay */}
+        {/* Diagnostics Overlay - Glassmorphic Design */}
         {enableDiagnostics && rendererMetrics && (
-          <div className="absolute top-2 left-2 px-2 py-1 bg-black/70 text-white text-xs font-mono rounded">
-            <div>Rendered: {rendererMetrics.framesRendered}</div>
-            <div>Dropped: {rendererMetrics.framesDropped}</div>
-            <div>Queued: {rendererMetrics.framesQueued}</div>
-            <div>Jumps: {rendererMetrics.frameJumps}</div>
-            <div>Avg Interval: {rendererMetrics.avgRenderInterval.toFixed(1)}ms</div>
-            {frameArrivalTimesRef.current.length > 0 && (
-              <div>
-                Arrival Interval: {(frameArrivalTimesRef.current.reduce((a, b) => a + b, 0) / frameArrivalTimesRef.current.length).toFixed(1)}ms
+          <div className="absolute top-3 left-3 right-3 flex gap-2 pointer-events-none">
+            {/* Profile Card */}
+            <div className="backdrop-blur-md bg-white/10 border border-white/20 rounded-xl px-3 py-2 shadow-lg">
+              <div className="flex items-center gap-2 mb-1.5">
+                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-white/90 text-xs font-semibold uppercase tracking-wide">
+                  {experienceProfile !== 'custom'
+                    ? EXPERIENCE_PROFILES[experienceProfile as Exclude<ExperienceProfileName, 'custom'>]?.displayName
+                    : 'Custom'}
+                </span>
               </div>
-            )}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+                <div className="text-white/50">Latency</div>
+                <div className="text-white/80 font-medium">{maxLatency}ms</div>
+                <div className="text-white/50">Jitter Buffer</div>
+                <div className="text-white/80 font-medium">{jitterBufferDelay}ms</div>
+                <div className="text-white/50">Policy</div>
+                <div className="text-white/80 font-medium capitalize">{policyType}</div>
+                <div className="text-white/50">Mode</div>
+                <div className="text-white/80 font-medium">{isLive ? 'Live' : 'VOD'}</div>
+              </div>
+            </div>
+
+            {/* Frame Stats Card */}
+            <div className="backdrop-blur-md bg-white/10 border border-white/20 rounded-xl px-3 py-2 shadow-lg">
+              <div className="flex items-center gap-2 mb-1.5">
+                <svg className="w-3 h-3 text-white/70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+                </svg>
+                <span className="text-white/90 text-xs font-semibold uppercase tracking-wide">Frames</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+                <div className="text-white/50">Rendered</div>
+                <div className="text-emerald-400 font-medium">{rendererMetrics.framesRendered}</div>
+                <div className="text-white/50">Queued</div>
+                <div className="text-sky-400 font-medium">{rendererMetrics.framesQueued}</div>
+                <div className="text-white/50">Reordered</div>
+                <div className="text-amber-400 font-medium">{rendererMetrics.framesReordered}</div>
+                <div className="text-white/50">Dropped</div>
+                <div className={`font-medium ${rendererMetrics.framesDropped > 0 ? 'text-red-400' : 'text-white/80'}`}>
+                  {rendererMetrics.framesDropped}
+                </div>
+              </div>
+            </div>
+
+            {/* Timing Card */}
+            <div className="backdrop-blur-md bg-white/10 border border-white/20 rounded-xl px-3 py-2 shadow-lg">
+              <div className="flex items-center gap-2 mb-1.5">
+                <svg className="w-3 h-3 text-white/70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-white/90 text-xs font-semibold uppercase tracking-wide">Timing</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+                <div className="text-white/50">Render</div>
+                <div className="text-white/80 font-medium">{rendererMetrics.avgRenderInterval.toFixed(1)}ms</div>
+                <div className="text-white/50">Arrival</div>
+                <div className="text-white/80 font-medium">
+                  {frameArrivalTimesRef.current.length > 0
+                    ? `${(frameArrivalTimesRef.current.reduce((a, b) => a + b, 0) / frameArrivalTimesRef.current.length).toFixed(1)}ms`
+                    : '-'}
+                </div>
+                <div className="text-white/50">Jumps</div>
+                <div className={`font-medium ${rendererMetrics.frameJumps > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>
+                  {rendererMetrics.frameJumps}
+                </div>
+                <div className="text-white/50">FPS</div>
+                <div className="text-white/80 font-medium">
+                  {rendererMetrics.avgRenderInterval > 0
+                    ? Math.round(1000 / rendererMetrics.avgRenderInterval)
+                    : '-'}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 

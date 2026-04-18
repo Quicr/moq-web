@@ -21,6 +21,7 @@ export interface VideoRendererMetrics {
   framesRendered: number;
   framesDropped: number;
   framesQueued: number;
+  framesReordered: number;
   avgRenderInterval: number;
   lastFrameTimestamp: number;
   frameJumps: number;
@@ -69,6 +70,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     framesRendered: 0,
     framesDropped: 0,
     framesQueued: 0,
+    framesReordered: 0,
     avgRenderInterval: 0,
     lastFrameTimestamp: 0,
     frameJumps: 0,
@@ -78,8 +80,38 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const lastFrameTimestampRef = useRef<number>(0);
 
   // Maximum queue depth to prevent memory issues
-  const MAX_QUEUE_DEPTH = 10;
+  const MAX_QUEUE_DEPTH = 30;
+  // Minimum frames to buffer before starting render (allows reordering)
+  const MIN_BUFFER_BEFORE_RENDER = 5;
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds - detect jumps
+
+  // Insert frame into queue in sorted order by timestamp
+  const insertFrameSorted = useCallback((queue: VideoFrame[], newFrame: VideoFrame): boolean => {
+    const newTs = newFrame.timestamp;
+    let reordered = false;
+
+    // Find insertion point (binary search for efficiency)
+    let low = 0;
+    let high = queue.length;
+
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (queue[mid].timestamp < newTs) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+
+    // If not inserting at end, we're reordering
+    if (low < queue.length) {
+      reordered = true;
+    }
+
+    // Insert at sorted position
+    queue.splice(low, 0, newFrame);
+    return reordered;
+  }, []);
 
   // Update metrics and optionally report
   const updateMetrics = useCallback((updates: Partial<VideoRendererMetrics>) => {
@@ -96,7 +128,14 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     const canvas = canvasRef.current;
     const queue = frameQueueRef.current;
 
-    // Get next frame from queue
+    // Wait for minimum buffer before rendering (allows frames to be reordered)
+    if (queue.length < MIN_BUFFER_BEFORE_RENDER && queue.length > 0) {
+      // Keep waiting for more frames, but schedule next check
+      rafIdRef.current = requestAnimationFrame(renderLoop);
+      return;
+    }
+
+    // Get next frame from queue (now sorted by timestamp)
     const currentFrame = queue.shift();
 
     if (!canvas || !currentFrame) {
@@ -239,8 +278,18 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
         }
       }
 
-      // Add new frame to queue
-      queue.push(frame);
+      // Add new frame to queue in sorted order by timestamp
+      const wasReordered = insertFrameSorted(queue, frame);
+      if (wasReordered) {
+        metricsRef.current.framesReordered++;
+        if (enableDiagnostics) {
+          console.log('[VideoRenderer] Frame reordered into correct position', {
+            frameTs: frame.timestamp,
+            queueDepth: queue.length,
+            totalReordered: metricsRef.current.framesReordered,
+          });
+        }
+      }
 
       // Ensure render loop is running
       ensureRenderLoop();
