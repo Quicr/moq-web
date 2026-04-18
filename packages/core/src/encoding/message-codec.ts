@@ -2903,21 +2903,22 @@ export class ObjectCodec {
   }
 
   /**
-   * FETCH Serialization Flags bits (draft-16)
-   * Bit layout: |SS|O|G|P|E|Res| where MSB is left
-   *   SS (bits 7-6): Subgroup ID Mode
-   *   O (bit 5): Object ID Present
-   *   G (bit 4): Group ID Present
-   *   P (bit 3): Publisher Priority Present
-   *   E (bit 2): Extensions Present
-   *   Res (bits 1-0): Reserved
+   * FETCH Serialization Flags bits (draft-16) - matches moqx/moxygen relay
+   * Bit layout (LSB-first as per moqx implementation):
+   *   Bits 0-1: Subgroup ID Mode (0=zero, 1=same, 2=inc, 3=present)
+   *   Bit 2: Object ID Present
+   *   Bit 3: Group ID Present
+   *   Bit 4: Publisher Priority Present
+   *   Bit 5: Extensions Present
+   *   Bit 6: Datagram forwarding preference (draft-16+)
+   *   Bit 7: Reserved (must be 0)
    */
-  private static readonly FETCH_FLAG_SUBGROUP_MODE_MASK = 0xC0;
-  private static readonly FETCH_FLAG_SUBGROUP_MODE_SHIFT = 6;
-  private static readonly FETCH_FLAG_OBJECT_ID_PRESENT = 0x20;
-  private static readonly FETCH_FLAG_GROUP_ID_PRESENT = 0x10;
-  private static readonly FETCH_FLAG_PRIORITY_PRESENT = 0x08;
-  private static readonly FETCH_FLAG_EXTENSIONS_PRESENT = 0x04;
+  private static readonly FETCH_FLAG_SUBGROUP_MODE_MASK = 0x03;
+  private static readonly FETCH_FLAG_SUBGROUP_MODE_SHIFT = 0;
+  private static readonly FETCH_FLAG_OBJECT_ID_PRESENT = 0x04;
+  private static readonly FETCH_FLAG_GROUP_ID_PRESENT = 0x08;
+  private static readonly FETCH_FLAG_PRIORITY_PRESENT = 0x10;
+  private static readonly FETCH_FLAG_EXTENSIONS_PRESENT = 0x20;
 
   /**
    * State for FETCH object delta encoding
@@ -3074,8 +3075,27 @@ export class ObjectCodec {
   ): FetchObjectResult {
     const reader = new BufferReader(buffer);
 
+    // Debug: log first few bytes for diagnosis
+    const previewLen = Math.min(20, buffer.length);
+    const preview = Array.from(buffer.subarray(0, previewLen)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log.debug('FETCH object decode start', {
+      bufferLen: buffer.length,
+      preview,
+      prevGroup: state.previousGroupId,
+      prevObject: state.previousObjectId,
+    });
+
     // Read flags (varint)
     const flags = reader.readVarIntNumber();
+
+    log.debug('FETCH flags decoded', {
+      flags: flags.toString(16),
+      groupIdPresent: !!(flags & ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT),
+      objectIdPresent: !!(flags & ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT),
+      priorityPresent: !!(flags & ObjectCodec.FETCH_FLAG_PRIORITY_PRESENT),
+      extPresent: !!(flags & ObjectCodec.FETCH_FLAG_EXTENSIONS_PRESENT),
+      subgroupMode: (flags & ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_MASK) >> ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_SHIFT,
+    });
 
     // Decode group ID
     let groupId: number;
