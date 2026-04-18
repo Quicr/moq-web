@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { MessageCodec, ObjectCodec, MessageCodecError } from './message-codec';
 import { IS_DRAFT_16 } from '../version/constants';
+import { BufferReader } from './varint';
 import {
   MessageType,
   DataStreamType,
@@ -1068,10 +1069,10 @@ describe('ObjectCodec', () => {
         state
       );
 
-      // First object should have:
-      // flags = 0x08 (GROUP_ID) | 0x04 (OBJECT_ID) | 0x10 (PRIORITY) | 0x00 (subgroup mode 0)
-      // = 0x1C
-      const expectedFlags = 0x1C;
+      // First object should have (draft-16 MSB-first bit layout):
+      // flags = 0x10 (GROUP_ID) | 0x20 (OBJECT_ID) | 0x08 (PRIORITY) | 0x00 (subgroup mode 0 in bits 7-6)
+      // = 0x38 (56 decimal, fits in 1-byte varint)
+      const expectedFlags = 0x38;
       expect(encoded[0]).toBe(expectedFlags);
 
       // Verify state was updated
@@ -1091,10 +1092,14 @@ describe('ObjectCodec', () => {
       const encoded = ObjectCodec.encodeFetchObject(100, 0, 1, payload, state);
 
       // Should NOT have GROUP_ID flag, but should have OBJECT_ID
-      // flags = 0x04 (OBJECT_ID) | 0x01 (subgroup mode 1 = same)
-      // = 0x05
-      const expectedFlags = 0x05;
-      expect(encoded[0]).toBe(expectedFlags);
+      // Draft-16 flag layout: |SS|O|G|P|E|Res| (MSB first)
+      // flags = (1 << 6) (subgroup mode 1 = same) | 0x20 (OBJECT_ID)
+      // = 0x40 | 0x20 = 0x60
+      // Since 0x60 > 63, it's encoded as a 2-byte varint
+      const expectedFlags = 0x60;
+      const reader = new BufferReader(encoded);
+      const actualFlags = reader.readVarIntNumber();
+      expect(actualFlags).toBe(expectedFlags);
     });
 
     it('encodes object in new group with group ID', () => {
@@ -1108,7 +1113,11 @@ describe('ObjectCodec', () => {
       const encoded = ObjectCodec.encodeFetchObject(101, 0, 0, payload, state);
 
       // Should have GROUP_ID flag for new group
-      const hasGroupFlag = (encoded[0] & 0x08) !== 0;
+      // Draft-16 flag layout: GROUP_ID_PRESENT = 0x10 (bit 4)
+      // flags = 0x20 (OBJECT_ID) | 0x10 (GROUP_ID) = 0x30
+      const reader = new BufferReader(encoded);
+      const flags = reader.readVarIntNumber();
+      const hasGroupFlag = (flags & 0x10) !== 0;
       expect(hasGroupFlag).toBe(true);
     });
 

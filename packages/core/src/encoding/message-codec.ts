@@ -2878,13 +2878,21 @@ export class ObjectCodec {
   }
 
   /**
-   * FETCH Serialization Flags bits (draft-15/16)
+   * FETCH Serialization Flags bits (draft-16)
+   * Bit layout: |SS|O|G|P|E|Res| where MSB is left
+   *   SS (bits 7-6): Subgroup ID Mode
+   *   O (bit 5): Object ID Present
+   *   G (bit 4): Group ID Present
+   *   P (bit 3): Publisher Priority Present
+   *   E (bit 2): Extensions Present
+   *   Res (bits 1-0): Reserved
    */
-  private static readonly FETCH_FLAG_SUBGROUP_MODE_MASK = 0x03;
-  private static readonly FETCH_FLAG_OBJECT_ID_PRESENT = 0x04;
-  private static readonly FETCH_FLAG_GROUP_ID_PRESENT = 0x08;
-  private static readonly FETCH_FLAG_PRIORITY_PRESENT = 0x10;
-  private static readonly FETCH_FLAG_EXTENSIONS_PRESENT = 0x20;
+  private static readonly FETCH_FLAG_SUBGROUP_MODE_MASK = 0xC0;
+  private static readonly FETCH_FLAG_SUBGROUP_MODE_SHIFT = 6;
+  private static readonly FETCH_FLAG_OBJECT_ID_PRESENT = 0x20;
+  private static readonly FETCH_FLAG_GROUP_ID_PRESENT = 0x10;
+  private static readonly FETCH_FLAG_PRIORITY_PRESENT = 0x08;
+  private static readonly FETCH_FLAG_EXTENSIONS_PRESENT = 0x04;
 
   /**
    * State for FETCH object delta encoding
@@ -2935,30 +2943,32 @@ export class ObjectCodec {
       flags |= ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT;
     }
 
-    // Subgroup mode:
+    // Subgroup mode (stored in bits 7-6):
     // 0 = zero (subgroupId == 0 and doesn't need to be sent)
     // 1 = same as previous
     // 2 = previous + 1
     // 3 = present on wire
+    let subgroupMode = 0;
     if (isFirstObject || !sameGroup) {
       // First object in stream or new group - need to send subgroup
       if (subgroupId === 0) {
         // Mode 0: implicit zero
-        flags |= 0;
+        subgroupMode = 0;
       } else {
         // Mode 3: present on wire
-        flags |= 0x03;
+        subgroupMode = 3;
       }
     } else if (subgroupId === state.previousSubgroupId) {
       // Mode 1: same as previous
-      flags |= 0x01;
+      subgroupMode = 1;
     } else if (subgroupId === state.previousSubgroupId + 1) {
       // Mode 2: previous + 1
-      flags |= 0x02;
+      subgroupMode = 2;
     } else {
       // Mode 3: present on wire
-      flags |= 0x03;
+      subgroupMode = 3;
     }
+    flags |= (subgroupMode << ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_SHIFT);
 
     // Object ID: always present for clarity (could optimize with delta encoding)
     flags |= ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT;
@@ -2980,7 +2990,6 @@ export class ObjectCodec {
     }
 
     // Subgroup ID if mode 3
-    const subgroupMode = flags & ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_MASK;
     if (subgroupMode === 3) {
       writer.writeVarInt(subgroupId);
     }
@@ -3051,9 +3060,9 @@ export class ObjectCodec {
       groupId = state.previousGroupId;
     }
 
-    // Decode subgroup ID based on mode
+    // Decode subgroup ID based on mode (bits 7-6)
     let subgroupId: number;
-    const subgroupMode = flags & ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_MASK;
+    const subgroupMode = (flags & ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_MASK) >> ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_SHIFT;
     switch (subgroupMode) {
       case 0: // Zero
         subgroupId = 0;
