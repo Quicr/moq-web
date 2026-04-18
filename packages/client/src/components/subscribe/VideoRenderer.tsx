@@ -5,15 +5,10 @@
  * @fileoverview Video Renderer Component
  *
  * Canvas-based renderer for WebCodecs VideoFrames.
- * Uses a frame queue and requestAnimationFrame for smooth playback.
- *
- * Key features for smooth VOD playback:
- * - Frame queue prevents frame drops when multiple frames arrive between RAF ticks
- * - One frame rendered per RAF tick (no batching)
- * - Timestamp-based ordering ensures correct playback sequence
+ * Renders frames immediately when they arrive.
  */
 
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 
 interface VideoRendererProps {
   /** The VideoFrame to render */
@@ -29,8 +24,8 @@ interface VideoRendererProps {
 /**
  * VideoRenderer Component
  *
- * Renders WebCodecs VideoFrames to a canvas element using requestAnimationFrame
- * for smooth playback. Uses a frame queue to handle bursty frame delivery.
+ * Renders WebCodecs VideoFrames to a canvas element.
+ * Frame lifecycle is managed by the parent component.
  */
 export const VideoRenderer: React.FC<VideoRendererProps> = ({
   frame,
@@ -40,149 +35,58 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const frameQueueRef = useRef<VideoFrame[]>([]);
-  const lastRenderedFrameRef = useRef<VideoFrame | null>(null);
-  const rafIdRef = useRef<number | null>(null);
   const frameCountRef = useRef<number>(0);
-  const isRenderingRef = useRef<boolean>(false);
-  const droppedFramesRef = useRef<number>(0);
   const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 1280, height: 720 });
 
-  // Maximum queue depth to prevent memory issues
-  const MAX_QUEUE_DEPTH = 10;
+  // Render frame immediately when it changes
+  useEffect(() => {
+    if (!frame) return;
 
-  // Render loop that processes one frame per RAF tick
-  const renderLoop = useCallback(() => {
     const canvas = canvasRef.current;
-    const queue = frameQueueRef.current;
+    if (!canvas) return;
 
-    // Get next frame from queue
-    const currentFrame = queue.shift();
-
-    if (!canvas || !currentFrame) {
-      // No frame to render, but keep the loop running if queue has frames
-      if (queue.length > 0) {
-        rafIdRef.current = requestAnimationFrame(renderLoop);
-      } else {
-        isRenderingRef.current = false;
-        rafIdRef.current = null;
-      }
-      return;
+    // Mark that we've received at least one frame
+    if (!hasReceivedFrame) {
+      setHasReceivedFrame(true);
     }
 
     const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      // Close frame since we can't render it
-      try { currentFrame.close(); } catch { /* ignore */ }
-      rafIdRef.current = requestAnimationFrame(renderLoop);
-      return;
-    }
+    if (!ctx) return;
 
-    // Update canvas size to match frame if needed
-    const frameWidth = currentFrame.displayWidth || currentFrame.codedWidth;
-    const frameHeight = currentFrame.displayHeight || currentFrame.codedHeight;
+    // Get frame dimensions
+    const frameWidth = frame.displayWidth || frame.codedWidth;
+    const frameHeight = frame.displayHeight || frame.codedHeight;
 
+    // Update canvas size if needed
     if (canvas.width !== frameWidth || canvas.height !== frameHeight) {
       canvas.width = frameWidth;
       canvas.height = frameHeight;
+      setCanvasDimensions({ width: frameWidth, height: frameHeight });
     }
 
-    // Draw the frame
+    // Draw the frame immediately
     try {
-      ctx.drawImage(currentFrame, 0, 0);
+      ctx.drawImage(frame, 0, 0);
       frameCountRef.current++;
 
-      // Close the previous frame AFTER successfully drawing the new one
-      if (lastRenderedFrameRef.current && lastRenderedFrameRef.current !== currentFrame) {
-        try {
-          lastRenderedFrameRef.current.close();
-        } catch {
-          // Frame may already be closed
-        }
-      }
-      lastRenderedFrameRef.current = currentFrame;
-
-      // Log stats every 30 frames
-      if (frameCountRef.current % 30 === 0) {
+      // Log stats every 60 frames
+      if (frameCountRef.current % 60 === 0) {
         console.log('[VideoRenderer] Rendering stats', {
           framesRendered: frameCountRef.current,
           frameWidth,
           frameHeight,
-          timestamp: currentFrame.timestamp,
-          queueDepth: queue.length,
-          droppedFrames: droppedFramesRef.current,
+          timestamp: frame.timestamp,
         });
       }
     } catch (err) {
-      console.error('[VideoRenderer] Error drawing frame', err);
-      // Try to close the frame
-      try { currentFrame.close(); } catch { /* ignore */ }
+      // Frame may have been closed - this is expected during fast scrubbing
+      // Parent component manages frame lifecycle
     }
-
-    // Continue render loop if more frames in queue, otherwise wait for new frames
-    if (queue.length > 0) {
-      rafIdRef.current = requestAnimationFrame(renderLoop);
-    } else {
-      isRenderingRef.current = false;
-      rafIdRef.current = null;
-    }
-  }, []);
-
-  // Start render loop if not already running
-  const ensureRenderLoop = useCallback(() => {
-    if (!isRenderingRef.current && frameQueueRef.current.length > 0) {
-      isRenderingRef.current = true;
-      rafIdRef.current = requestAnimationFrame(renderLoop);
-    }
-  }, [renderLoop]);
-
-  // Add frame to queue when frame prop changes
-  useEffect(() => {
-    if (frame) {
-      if (!hasReceivedFrame) {
-        setHasReceivedFrame(true);
-      }
-      const queue = frameQueueRef.current;
-
-      // If queue is too deep, drop oldest frames to prevent memory buildup
-      while (queue.length >= MAX_QUEUE_DEPTH) {
-        const droppedFrame = queue.shift();
-        if (droppedFrame) {
-          try { droppedFrame.close(); } catch { /* ignore */ }
-          droppedFramesRef.current++;
-        }
-      }
-
-      // Add new frame to queue
-      queue.push(frame);
-
-      // Ensure render loop is running
-      ensureRenderLoop();
-    }
-  }, [frame, ensureRenderLoop, hasReceivedFrame]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (rafIdRef.current) {
-        cancelAnimationFrame(rafIdRef.current);
-      }
-      // Close all queued frames
-      for (const queuedFrame of frameQueueRef.current) {
-        try { queuedFrame.close(); } catch { /* ignore */ }
-      }
-      frameQueueRef.current = [];
-      // Close the last rendered frame
-      if (lastRenderedFrameRef.current) {
-        try { lastRenderedFrameRef.current.close(); } catch { /* ignore */ }
-      }
-    };
-  }, []);
+  }, [frame, hasReceivedFrame]);
 
   // Calculate dimensions for responsive sizing
-  const frameWidth = frame?.displayWidth || frame?.codedWidth || 1280;
-  const frameHeight = frame?.displayHeight || frame?.codedHeight || 720;
-  const aspectRatio = frameWidth / frameHeight;
+  const aspectRatio = canvasDimensions.width / canvasDimensions.height;
 
   return (
     <div
