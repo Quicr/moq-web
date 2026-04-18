@@ -13,7 +13,7 @@
  * - Timestamp-based ordering ensures correct playback sequence
  */
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 
 interface VideoRendererProps {
   /** The VideoFrame to render */
@@ -46,6 +46,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const frameCountRef = useRef<number>(0);
   const isRenderingRef = useRef<boolean>(false);
   const droppedFramesRef = useRef<number>(0);
+  const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
 
   // Maximum queue depth to prevent memory issues
   const MAX_QUEUE_DEPTH = 10;
@@ -138,6 +139,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   // Add frame to queue when frame prop changes
   useEffect(() => {
     if (frame) {
+      if (!hasReceivedFrame) {
+        setHasReceivedFrame(true);
+      }
       const queue = frameQueueRef.current;
 
       // If queue is too deep, drop oldest frames to prevent memory buildup
@@ -155,7 +159,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       // Ensure render loop is running
       ensureRenderLoop();
     }
-  }, [frame, ensureRenderLoop]);
+  }, [frame, ensureRenderLoop, hasReceivedFrame]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -190,19 +194,18 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
         position: 'relative',
       }}
     >
-      {frame ? (
-        <canvas
-          ref={canvasRef}
-          style={{
-            display: 'block',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-          }}
-        />
-      ) : (
+      <canvas
+        ref={canvasRef}
+        style={{
+          display: hasReceivedFrame ? 'block' : 'none',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+        }}
+      />
+      {!hasReceivedFrame && (
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center text-gray-400">
             <svg
