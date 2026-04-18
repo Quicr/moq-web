@@ -2234,18 +2234,41 @@ export class MessageCodec {
 
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
-    writer.writeVarInt(message.groupOrder);
-    writer.writeByte(message.endOfTrack ? 1 : 0);
-    writer.writeVarInt(message.largestGroupId);
-    writer.writeVarInt(message.largestObjectId);
-    // Draft-16: Parameters at end (empty for now)
-    writer.writeVarInt(0); // Number of parameters
+    if (IS_DRAFT_16) {
+      // Draft-16: FETCH_OK is just Request ID + Parameters
+      // Group order, end location, etc. are now in parameters or implicit
+      writer.writeVarInt(0); // Number of parameters (empty for now)
+    } else {
+      // Draft-14: Full format with explicit fields
+      writer.writeVarInt(message.groupOrder);
+      writer.writeByte(message.endOfTrack ? 1 : 0);
+      writer.writeVarInt(message.largestGroupId);
+      writer.writeVarInt(message.largestObjectId);
+    }
   }
 
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
+    const requestId = reader.readVarIntNumber();
+    if (IS_DRAFT_16) {
+      // Draft-16: Read parameters (ignore for now)
+      const numParams = reader.readVarIntNumber();
+      for (let i = 0; i < numParams; i++) {
+        reader.readVarIntNumber(); // key
+        const valueLen = reader.readVarIntNumber();
+        reader.readBytes(valueLen); // value
+      }
+      return {
+        type: MessageType.FETCH_OK,
+        requestId,
+        groupOrder: GroupOrder.ASCENDING, // Default
+        endOfTrack: false,
+        largestGroupId: 0,
+        largestObjectId: 0,
+      };
+    }
     return {
       type: MessageType.FETCH_OK,
-      requestId: reader.readVarIntNumber(),
+      requestId,
       groupOrder: reader.readVarIntNumber() as GroupOrder,
       endOfTrack: reader.readByte() === 1,
       largestGroupId: reader.readVarIntNumber(),
