@@ -1063,6 +1063,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                           gopDuration={track.gopDuration}
                           className="w-full rounded-lg overflow-hidden"
                           showControls={true}
+                          enableDiagnostics={true}
                         />
                       </div>
                     )}
@@ -1081,6 +1082,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                           gopDuration={track.gopDuration}
                           className="w-full rounded-lg overflow-hidden border border-emerald-500/30"
                           showControls={true}
+                          enableDiagnostics={true}
                         />
                       </div>
                     )}

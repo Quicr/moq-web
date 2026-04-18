@@ -21,7 +21,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { VideoRenderer } from '../subscribe/VideoRenderer';
+import { VideoRenderer, VideoRendererMetrics } from '../subscribe/VideoRenderer';
 import { useStore } from '../../store';
 
 export interface MoqMediaPlayerProps {
@@ -47,6 +47,8 @@ export interface MoqMediaPlayerProps {
   onPlaybackStateChange?: (playing: boolean) => void;
   /** Callback when seek completes */
   onSeekComplete?: (timeMs: number, success: boolean) => void;
+  /** Enable diagnostic overlay for debugging playback issues */
+  enableDiagnostics?: boolean;
 }
 
 /**
@@ -68,6 +70,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   showControls = true,
   onPlaybackStateChange,
   onSeekComplete,
+  enableDiagnostics = false,
 }) => {
   const {
     pauseSubscription,
@@ -86,6 +89,33 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   // Frame counting for time estimation
   const frameCountRef = useRef(0);
   const lastFrameTimeRef = useRef<number>(0);
+
+  // Diagnostic metrics state
+  const [rendererMetrics, setRendererMetrics] = useState<VideoRendererMetrics | null>(null);
+
+  // Frame arrival tracking for pacing diagnostics
+  const frameArrivalTimesRef = useRef<number[]>([]);
+  const lastFrameArrivalRef = useRef<number>(0);
+
+  // Track frame arrivals for diagnostics
+  useEffect(() => {
+    if (frame && enableDiagnostics) {
+      const now = performance.now();
+      if (lastFrameArrivalRef.current > 0) {
+        const interval = now - lastFrameArrivalRef.current;
+        frameArrivalTimesRef.current.push(interval);
+        if (frameArrivalTimesRef.current.length > 60) {
+          frameArrivalTimesRef.current.shift();
+        }
+      }
+      lastFrameArrivalRef.current = now;
+    }
+  }, [frame, enableDiagnostics]);
+
+  // Handle metrics update from renderer
+  const handleMetricsUpdate = useCallback((metrics: VideoRendererMetrics) => {
+    setRendererMetrics(metrics);
+  }, []);
 
   // Calculate if we have duration info for progress bar
   const hasDuration = duration > 0;
@@ -261,7 +291,11 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
     <div className={`moq-media-player relative group ${className}`}>
       {/* Video Display */}
       <div className="relative">
-        <VideoRenderer frame={frame} />
+        <VideoRenderer
+          frame={frame}
+          enableDiagnostics={enableDiagnostics}
+          onMetricsUpdate={handleMetricsUpdate}
+        />
 
         {/* Seeking Overlay */}
         {isSeeking && (
@@ -280,6 +314,22 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
         {seekFailed && isLive && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-yellow-500/90 text-black text-sm rounded-lg">
             Content not available, returning to live
+          </div>
+        )}
+
+        {/* Diagnostics Overlay */}
+        {enableDiagnostics && rendererMetrics && (
+          <div className="absolute top-2 left-2 px-2 py-1 bg-black/70 text-white text-xs font-mono rounded">
+            <div>Rendered: {rendererMetrics.framesRendered}</div>
+            <div>Dropped: {rendererMetrics.framesDropped}</div>
+            <div>Queued: {rendererMetrics.framesQueued}</div>
+            <div>Jumps: {rendererMetrics.frameJumps}</div>
+            <div>Avg Interval: {rendererMetrics.avgRenderInterval.toFixed(1)}ms</div>
+            {frameArrivalTimesRef.current.length > 0 && (
+              <div>
+                Arrival Interval: {(frameArrivalTimesRef.current.reduce((a, b) => a + b, 0) / frameArrivalTimesRef.current.length).toFixed(1)}ms
+              </div>
+            )}
           </div>
         )}
 
