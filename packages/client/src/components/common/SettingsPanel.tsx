@@ -388,6 +388,13 @@ export const SettingsPanel: React.FC = () => {
       badge: 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300',
       dot: 'bg-slate-500',
     },
+    'vod': {
+      border: 'border-l-indigo-500',
+      bg: 'bg-indigo-50 dark:bg-indigo-900/20',
+      text: 'text-indigo-700 dark:text-indigo-300',
+      badge: 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300',
+      dot: 'bg-indigo-500',
+    },
     'custom': {
       border: 'border-l-purple-500',
       bg: 'bg-purple-50 dark:bg-purple-900/20',
