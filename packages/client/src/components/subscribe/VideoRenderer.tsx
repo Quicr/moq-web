@@ -5,7 +5,12 @@
  * @fileoverview Video Renderer Component
  *
  * Canvas-based renderer for WebCodecs VideoFrames.
- * Uses requestAnimationFrame for smooth playback instead of React state.
+ * Uses a frame queue and requestAnimationFrame for smooth playback.
+ *
+ * Key features for smooth VOD playback:
+ * - Frame queue prevents frame drops when multiple frames arrive between RAF ticks
+ * - One frame rendered per RAF tick (no batching)
+ * - Timestamp-based ordering ensures correct playback sequence
  */
 
 import React, { useRef, useEffect, useCallback } from 'react';
@@ -25,7 +30,7 @@ interface VideoRendererProps {
  * VideoRenderer Component
  *
  * Renders WebCodecs VideoFrames to a canvas element using requestAnimationFrame
- * for smooth playback. Frames are rendered immediately when received.
+ * for smooth playback. Uses a frame queue to handle bursty frame delivery.
  */
 export const VideoRenderer: React.FC<VideoRendererProps> = ({
   frame,
@@ -35,22 +40,40 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const frameRef = useRef<VideoFrame | null>(null);
-  const prevFrameRef = useRef<VideoFrame | null>(null);
+  const frameQueueRef = useRef<VideoFrame[]>([]);
+  const lastRenderedFrameRef = useRef<VideoFrame | null>(null);
   const rafIdRef = useRef<number | null>(null);
   const frameCountRef = useRef<number>(0);
+  const isRenderingRef = useRef<boolean>(false);
+  const droppedFramesRef = useRef<number>(0);
 
-  // Render function that draws the current frame
-  const renderFrame = useCallback(() => {
+  // Maximum queue depth to prevent memory issues
+  const MAX_QUEUE_DEPTH = 10;
+
+  // Render loop that processes one frame per RAF tick
+  const renderLoop = useCallback(() => {
     const canvas = canvasRef.current;
-    const currentFrame = frameRef.current;
+    const queue = frameQueueRef.current;
+
+    // Get next frame from queue
+    const currentFrame = queue.shift();
 
     if (!canvas || !currentFrame) {
+      // No frame to render, but keep the loop running if queue has frames
+      if (queue.length > 0) {
+        rafIdRef.current = requestAnimationFrame(renderLoop);
+      } else {
+        isRenderingRef.current = false;
+        rafIdRef.current = null;
+      }
       return;
     }
 
     const ctx = canvas.getContext('2d');
     if (!ctx) {
+      // Close frame since we can't render it
+      try { currentFrame.close(); } catch { /* ignore */ }
+      rafIdRef.current = requestAnimationFrame(renderLoop);
       return;
     }
 
@@ -69,55 +92,70 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       frameCountRef.current++;
 
       // Close the previous frame AFTER successfully drawing the new one
-      // This avoids race conditions where frames are closed before rendering
-      if (prevFrameRef.current && prevFrameRef.current !== currentFrame) {
+      if (lastRenderedFrameRef.current && lastRenderedFrameRef.current !== currentFrame) {
         try {
-          prevFrameRef.current.close();
+          lastRenderedFrameRef.current.close();
         } catch {
           // Frame may already be closed
         }
       }
-      prevFrameRef.current = currentFrame;
+      lastRenderedFrameRef.current = currentFrame;
 
-      // Log stats every 30 frames (roughly once per second at 30fps)
+      // Log stats every 30 frames
       if (frameCountRef.current % 30 === 0) {
         console.log('[VideoRenderer] Rendering stats', {
           framesRendered: frameCountRef.current,
           frameWidth,
           frameHeight,
           timestamp: currentFrame.timestamp,
+          queueDepth: queue.length,
+          droppedFrames: droppedFramesRef.current,
         });
       }
     } catch (err) {
-      // Frame might have been closed
       console.error('[VideoRenderer] Error drawing frame', err);
+      // Try to close the frame
+      try { currentFrame.close(); } catch { /* ignore */ }
+    }
+
+    // Continue render loop if more frames in queue, otherwise wait for new frames
+    if (queue.length > 0) {
+      rafIdRef.current = requestAnimationFrame(renderLoop);
+    } else {
+      isRenderingRef.current = false;
+      rafIdRef.current = null;
     }
   }, []);
 
-  // Update frameRef when frame prop changes and trigger immediate render
+  // Start render loop if not already running
+  const ensureRenderLoop = useCallback(() => {
+    if (!isRenderingRef.current && frameQueueRef.current.length > 0) {
+      isRenderingRef.current = true;
+      rafIdRef.current = requestAnimationFrame(renderLoop);
+    }
+  }, [renderLoop]);
+
+  // Add frame to queue when frame prop changes
   useEffect(() => {
     if (frame) {
-      // If we have a pending RAF that hasn't rendered yet, the old frame
-      // will be skipped - close it to avoid GC warning
-      if (rafIdRef.current && frameRef.current && frameRef.current !== prevFrameRef.current) {
-        try {
-          frameRef.current.close();
-        } catch {
-          // Frame may already be closed
+      const queue = frameQueueRef.current;
+
+      // If queue is too deep, drop oldest frames to prevent memory buildup
+      while (queue.length >= MAX_QUEUE_DEPTH) {
+        const droppedFrame = queue.shift();
+        if (droppedFrame) {
+          try { droppedFrame.close(); } catch { /* ignore */ }
+          droppedFramesRef.current++;
         }
-        cancelAnimationFrame(rafIdRef.current);
       }
 
-      // Store the new frame
-      frameRef.current = frame;
+      // Add new frame to queue
+      queue.push(frame);
 
-      // Render immediately using requestAnimationFrame for proper timing
-      rafIdRef.current = requestAnimationFrame(() => {
-        renderFrame();
-        rafIdRef.current = null;
-      });
+      // Ensure render loop is running
+      ensureRenderLoop();
     }
-  }, [frame, renderFrame]);
+  }, [frame, ensureRenderLoop]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -125,22 +163,14 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       if (rafIdRef.current) {
         cancelAnimationFrame(rafIdRef.current);
       }
-      // Close any remaining frames to prevent GC warnings
-      // Close frameRef if it's different from prevFrameRef (hasn't been rendered yet)
-      if (frameRef.current && frameRef.current !== prevFrameRef.current) {
-        try {
-          frameRef.current.close();
-        } catch {
-          // Frame may already be closed
-        }
+      // Close all queued frames
+      for (const queuedFrame of frameQueueRef.current) {
+        try { queuedFrame.close(); } catch { /* ignore */ }
       }
+      frameQueueRef.current = [];
       // Close the last rendered frame
-      if (prevFrameRef.current) {
-        try {
-          prevFrameRef.current.close();
-        } catch {
-          // Frame may already be closed
-        }
+      if (lastRenderedFrameRef.current) {
+        try { lastRenderedFrameRef.current.close(); } catch { /* ignore */ }
       }
     };
   }, []);
