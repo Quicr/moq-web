@@ -440,9 +440,10 @@ async function writeStream(
     }
   } catch (err) {
     const message = (err as Error).message;
-    // STOP_SENDING is normal for stream-per-object delivery - relay closes stream after receiving object
-    if (message.includes('STOP_SENDING')) {
-      log('Stream closed by relay (STOP_SENDING)', { streamId });
+    // STOP_SENDING, RESET_STREAM, and aborted are normal for stream-per-object delivery
+    // Relay closes stream after receiving object or when aborting a FETCH
+    if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM') || message.includes('aborted')) {
+      log('Stream closed by relay', { streamId, reason: message });
       outgoingStreams.delete(streamId);
       respond({ type: 'stream-closed', streamId });
     } else {
@@ -469,8 +470,8 @@ async function closeStream(streamId: number): Promise<void> {
     respond({ type: 'stream-closed', streamId });
   } catch (err) {
     const message = (err as Error).message;
-    // STOP_SENDING is normal - relay already closed the stream
-    if (message.includes('STOP_SENDING')) {
+    // STOP_SENDING, RESET_STREAM, and aborted are normal - relay already closed the stream
+    if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM') || message.includes('aborted')) {
       outgoingStreams.delete(streamId);
       respond({ type: 'stream-closed', streamId });
     } else {
