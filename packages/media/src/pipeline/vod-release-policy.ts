@@ -140,6 +140,7 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   // Rebuffering state - pause output when buffer runs low
   private isRebuffering = false;
   private playbackStarted = false;
+  private lastRebufferLog = 0;
 
   constructor(config: Partial<VodReleasePolicyConfig> = {}) {
     super();
@@ -251,10 +252,15 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       if (this.isRebuffering) {
         // Wait until buffer recovers to minBufferFrames
         if (totalBufferedFrames < this.config.minBufferFrames) {
-          this.log('REBUFFERING', {
-            bufferedFrames: totalBufferedFrames,
-            required: this.config.minBufferFrames,
-          });
+          // Rate limit rebuffering logs to once per second
+          const now = Date.now();
+          if (now - this.lastRebufferLog > 1000) {
+            this.log('REBUFFERING', {
+              bufferedFrames: totalBufferedFrames,
+              required: this.config.minBufferFrames,
+            });
+            this.lastRebufferLog = now;
+          }
           return [];
         }
         // Buffer recovered
@@ -444,12 +450,18 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     this.tryActivateNextSequentialGroup();
   }
 
+  private lastWaitingForKeyframeLog = 0;
   private tryActivateNextSequentialGroup(): boolean {
     // Not yet initialized - wait for first keyframe
     if (!this.initialized || this.nextExpectedGroup < 0) {
-      this.log('WAITING FOR FIRST KEYFRAME', {
-        availableGroups: Array.from(this.buffer.getGroupIds()),
-      });
+      // Rate limit this log to once per second
+      const now = Date.now();
+      if (now - this.lastWaitingForKeyframeLog > 1000) {
+        this.log('WAITING FOR FIRST KEYFRAME', {
+          availableGroups: Array.from(this.buffer.getGroupIds()),
+        });
+        this.lastWaitingForKeyframeLog = now;
+      }
       return false;
     }
 

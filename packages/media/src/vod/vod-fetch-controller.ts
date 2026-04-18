@@ -200,6 +200,12 @@ export class VodFetchController {
     this.bufferedUpToGroup = startGroup - 1;
 
     log.info('Starting fetch controller', { startGroup, totalGroups: this.config.totalGroups });
+    console.log('[VodFetchController] START called', {
+      startGroup,
+      playbackGroup: this.playbackGroup,
+      fetchedUpToGroup: this.fetchedUpToGroup,
+      totalGroups: this.config.totalGroups,
+    });
 
     this.setState('initial-buffering');
     this.fetchInitialBuffer();
@@ -556,6 +562,13 @@ export class VodFetchController {
       groupCount: endGroup - startGroup + 1,
       activeFetches: this.activeFetches.size,
       adaptiveFetchAhead: this.adaptiveFetchAhead,
+    });
+    console.log('[VodFetchController] ISSUE FETCH', {
+      requestId,
+      startGroup,
+      endGroup,
+      playbackGroup: this.playbackGroup,
+      fetchedUpToGroup: this.fetchedUpToGroup,
     });
 
     this.emit('fetch-request', { startGroup, endGroup, requestId });

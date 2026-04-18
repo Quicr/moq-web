@@ -524,11 +524,17 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
         groupsToBuffer,
         priority,
         totalGroups: track.totalGroups,
+        startGroup, // Log the startGroup passed from UI
       });
 
       // Create VOD pipeline with FETCH and adaptive buffer config
       // Use user-specified buffer seconds for initial buffer, with sensible defaults for min buffer
-      const startGroupValue = fetchPlaybackState.get(trackName)?.currentGroup ?? 0;
+      // IMPORTANT: Use startGroup directly from function parameter, not from React state
+      // (React state updates are async and may not be applied yet)
+      console.log('[CatalogSubscriber] FETCH startGroup trace', {
+        fromParam: startGroup,
+        fromState: fetchPlaybackState.get(trackName)?.currentGroup,
+      });
       const subscriptionId = await startVodSubscription(
         trackNamespace.join('/'),
         trackName,
@@ -544,7 +550,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
           minBufferSec: Math.max(1, bufferSeconds / 2),
           fetchBatchSec: Math.max(1, bufferSeconds / 3),
         },
-        startGroupValue
+        startGroup
       );
 
       // Map subscription ID for video frame routing - mark as FETCH
