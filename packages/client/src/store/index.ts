@@ -1069,6 +1069,7 @@ export const useStore = create<AppStore>()(
         // Handle fetch requests from controller
         controller.on('fetch-request', async ({ startGroup, endGroup, requestId }: { startGroup: number; endGroup: number; requestId: number }) => {
           log.info('VOD fetch request', { requestId, startGroup, endGroup });
+          console.log('[Store] FETCH request from controller', { requestId, startGroup, endGroup, namespace, trackName });
 
           // Initialize tracking for this fetch
           fetchGroupCounts.set(requestId, {
@@ -1163,6 +1164,7 @@ export const useStore = create<AppStore>()(
         });
 
         // Start the fetch controller (begins initial buffering from startGroup)
+        console.log('[Store] Starting VodFetchController with startGroup', { startGroup, namespace, trackName });
         controller.start(startGroup);
 
         // Add to subscribed tracks
