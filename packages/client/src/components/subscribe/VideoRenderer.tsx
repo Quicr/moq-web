@@ -84,14 +84,21 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const MAX_QUEUE_DEPTH = 30;
   // Minimum frames to buffer before INITIAL render (allows reordering window)
   const INITIAL_BUFFER_SIZE = 8;
-  // Once playing, maintain at least this many frames to handle jitter
-  const MIN_QUEUE_BEFORE_STALL = 2;
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds - detect jumps
 
   // Insert frame into queue in sorted order by timestamp
-  const insertFrameSorted = useCallback((queue: VideoFrame[], newFrame: VideoFrame): boolean => {
+  const insertFrameSorted = useCallback((queue: VideoFrame[], newFrame: VideoFrame, diagnostics: boolean): boolean => {
     const newTs = newFrame.timestamp;
     let reordered = false;
+
+    // Handle invalid timestamps - append to end
+    if (newTs <= 0) {
+      if (diagnostics) {
+        console.warn('[VideoRenderer] Frame has invalid timestamp, appending to end', { timestamp: newTs });
+      }
+      queue.push(newFrame);
+      return false;
+    }
 
     // Find insertion point (binary search for efficiency)
     let low = 0;
@@ -99,7 +106,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
     while (low < high) {
       const mid = Math.floor((low + high) / 2);
-      if (queue[mid].timestamp < newTs) {
+      const midTs = queue[mid].timestamp;
+      // Skip invalid timestamps in queue during search
+      if (midTs <= 0 || midTs < newTs) {
         low = mid + 1;
       } else {
         high = mid;
@@ -109,6 +118,16 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     // If not inserting at end, we're reordering
     if (low < queue.length) {
       reordered = true;
+      if (diagnostics && metricsRef.current.framesReordered < 10) {
+        // Log first few reorders for debugging
+        console.log('[VideoRenderer] Reordering frame', {
+          newTs,
+          insertPosition: low,
+          queueLength: queue.length,
+          headTs: queue[0]?.timestamp,
+          tailTs: queue[queue.length - 1]?.timestamp,
+        });
+      }
     }
 
     // Insert at sorted position
@@ -141,17 +160,27 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       console.log('[VideoRenderer] Initial buffer filled, starting playback', { queueDepth: queue.length });
     }
 
-    // During playback: only stall if queue is nearly empty (prevents flickering)
-    if (queue.length < MIN_QUEUE_BEFORE_STALL) {
-      rafIdRef.current = requestAnimationFrame(renderLoop);
-      return;
+    // Get next frame from queue (now sorted by timestamp)
+    // Skip closed/invalid frames
+    let currentFrame: VideoFrame | undefined;
+    while (queue.length > 0) {
+      const candidate = queue.shift();
+      if (candidate) {
+        // Check if frame is still valid (not closed)
+        try {
+          // Accessing codedWidth on a closed frame throws
+          void candidate.codedWidth;
+          currentFrame = candidate;
+          break;
+        } catch {
+          // Frame was closed by upstream, skip it
+          metricsRef.current.framesDropped++;
+        }
+      }
     }
 
-    // Get next frame from queue (now sorted by timestamp)
-    const currentFrame = queue.shift();
-
     if (!canvas || !currentFrame) {
-      // No frame to render, but keep the loop running if queue has frames
+      // No valid frame to render, keep loop running if queue has frames
       if (queue.length > 0) {
         rafIdRef.current = requestAnimationFrame(renderLoop);
       } else {
@@ -291,7 +320,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       }
 
       // Add new frame to queue in sorted order by timestamp
-      const wasReordered = insertFrameSorted(queue, frame);
+      const wasReordered = insertFrameSorted(queue, frame, enableDiagnostics);
       if (wasReordered) {
         metricsRef.current.framesReordered++;
         if (enableDiagnostics) {

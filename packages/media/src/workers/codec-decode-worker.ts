@@ -350,6 +350,9 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
     output: (frame) => {
       // Send decoded frame immediately instead of batching
       // This reduces latency by one poll cycle
+      // NOTE: We use frame.timestamp directly because it's preserved by WebCodecs
+      // from the EncodedVideoChunk. Using currentVideoMeta would be racy since
+      // decode() is async and meta could be overwritten by subsequent frames.
       const meta = channel.currentVideoMeta;
       const now = performance.now();
 
@@ -361,7 +364,7 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
             frame,
             groupId: meta?.groupId ?? 0,
             objectId: meta?.objectId ?? 0,
-            timestamp: meta?.timestamp ?? frame.timestamp,
+            timestamp: frame.timestamp, // Use frame.timestamp - preserved through decode
           },
         },
         [frame]
