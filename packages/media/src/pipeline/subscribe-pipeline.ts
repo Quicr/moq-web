@@ -40,6 +40,7 @@ import { OpusDecoder, AudioDecoderConfig } from '../webcodecs/audio-decoder.js';
 import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
 import { JitterBuffer } from './jitter-buffer.js';
 import { GroupArbiter } from './group-arbiter.js';
+import { PresentationReorderBuffer } from './presentation-reorder-buffer.js';
 import { CodecDecodeWorkerClient, LatencyStatsSample } from '../workers/codec-decode-worker-api.js';
 import type { DecodeErrorDiagnostics } from '../workers/codec-decode-worker-types.js';
 
@@ -282,6 +283,8 @@ export class SubscribePipeline {
   private pipelineStartTime = 0;
   /** Whether first object has been received */
   private firstObjectReceived = false;
+  /** Presentation reorder buffer for B-frame reordering (VOD only) */
+  private reorderBuffer?: PresentationReorderBuffer;
 
   /**
    * Create a new SubscribePipeline
@@ -367,6 +370,17 @@ export class SubscribePipeline {
     });
     this.decodeWorkerClient = new CodecDecodeWorkerClient(worker, this.channelId);
 
+    // Create reorder buffer for VOD content (B-frames need presentation order sorting)
+    // VOD is detected when isLive is explicitly false
+    const needsReorderBuffer = this.config.isLive === false;
+    if (needsReorderBuffer) {
+      log.info('Creating presentation reorder buffer for VOD B-frame handling');
+      this.reorderBuffer = new PresentationReorderBuffer(
+        (frame) => this.emit('video-frame', frame),
+        { bufferDepth: 4, maxHoldTimeMs: 200, debug: false }
+      );
+    }
+
     // Set up event handlers for decoded frames
     this.decodeWorkerClient.on('video-frame', (response) => {
       log.trace('Pipeline received video-frame from worker', {
@@ -375,7 +389,12 @@ export class SubscribePipeline {
         width: response.result.frame.displayWidth,
         height: response.result.frame.displayHeight,
       });
-      this.emit('video-frame', response.result.frame);
+      // Route through reorder buffer for VOD, direct emit for live
+      if (this.reorderBuffer) {
+        this.reorderBuffer.push(response.result.frame);
+      } else {
+        this.emit('video-frame', response.result.frame);
+      }
     });
 
     this.decodeWorkerClient.on('audio-data', (response) => {
@@ -467,6 +486,16 @@ export class SubscribePipeline {
     // Set up video decoding (only if mediaType is 'video' or not specified)
     const shouldCreateVideoDecoder = this.config.video && (mediaType === 'video' || !mediaType);
     if (shouldCreateVideoDecoder) {
+      // Create reorder buffer for VOD content (B-frames need presentation order sorting)
+      const needsReorderBuffer = this.config.isLive === false;
+      if (needsReorderBuffer && !this.reorderBuffer) {
+        log.info('Creating presentation reorder buffer for VOD B-frame handling (main thread)');
+        this.reorderBuffer = new PresentationReorderBuffer(
+          (frame) => this.emit('video-frame', frame),
+          { bufferDepth: 4, maxHoldTimeMs: 200, debug: false }
+        );
+      }
+
       this.videoDecoder = new H264Decoder();
       log.info('Registering frame handler on video decoder', {
         decoderInstanceId: this.videoDecoder.id,
@@ -477,7 +506,12 @@ export class SubscribePipeline {
           width: frame.displayWidth,
           height: frame.displayHeight,
         });
-        this.emit('video-frame', frame);
+        // Route through reorder buffer for VOD, direct emit for live
+        if (this.reorderBuffer) {
+          this.reorderBuffer.push(frame);
+        } else {
+          this.emit('video-frame', frame);
+        }
       });
       log.debug('Frame handler registered', {
         decoderInstanceId: this.videoDecoder.id,
@@ -921,6 +955,12 @@ export class SubscribePipeline {
     if (this.jitterEmitTimer) {
       clearInterval(this.jitterEmitTimer);
       this.jitterEmitTimer = undefined;
+    }
+
+    // Flush and cleanup reorder buffer
+    if (this.reorderBuffer) {
+      this.reorderBuffer.flush();
+      this.reorderBuffer = undefined;
     }
 
     // Worker mode: close worker

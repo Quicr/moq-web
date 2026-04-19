@@ -145,6 +145,10 @@ export type { LiveReleasePolicyConfig, LivePolicyStats } from './pipeline/live-r
 export { AdaptiveReleasePolicy, DEFAULT_ADAPTIVE_POLICY_CONFIG } from './pipeline/adaptive-release-policy.js';
 export type { AdaptiveReleasePolicyConfig, AdaptivePolicyStats } from './pipeline/adaptive-release-policy.js';
 
+// Presentation Reorder Buffer - Sorts decoded frames by PTS for B-frame support
+export { PresentationReorderBuffer } from './pipeline/presentation-reorder-buffer.js';
+export type { PresentationReorderBufferConfig } from './pipeline/presentation-reorder-buffer.js';
+
 // PlayoutBuffer Factory - Easy creation based on content type
 // Selection modes: catalog-driven, explicit config, or adaptive (default)
 export {
