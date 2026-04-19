@@ -609,7 +609,16 @@ function pushData(
       if (channel.videoPlayoutBuffer) {
         // NEW: Use PlayoutBuffer
         // Pass LOC captureTimestamp for proper frame ordering and timing
-        const locTimestampUs = frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined;
+        const locTimestampUs = frame.captureTimestamp !== undefined ? Math.floor(frame.captureTimestamp * 1000) : undefined;
+
+        // DIAGNOSTIC: Log if captureTimestamp is missing (first 10 frames only to avoid spam)
+        if (locTimestampUs === undefined && channel.videoFramesDecoded < 10) {
+          console.warn(`[CodecDecodeWorker] WARNING: No captureTimestamp in LOC for g${groupId}/o${objectId}`, {
+            hasCaptureTimestamp: frame.captureTimestamp !== undefined,
+            captureTimestamp: frame.captureTimestamp,
+          });
+        }
+
         channel.videoPlayoutBuffer.addFrame({
           groupId,
           objectId,
@@ -623,6 +632,7 @@ function pushData(
           objectId,
           isKeyframe,
           locTimestamp: locTimestampUs,
+          captureTimestampMs: frame.captureTimestamp,
           activeGroup: channel.videoPlayoutBuffer.getActiveGroupId(),
           groupCount: channel.videoPlayoutBuffer.getGroupCount(),
           policyType: channel.policyType,
