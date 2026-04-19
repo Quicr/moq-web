@@ -312,6 +312,8 @@ export const SettingsPanel: React.FC = () => {
     setQuicrInteropEnabled,
     quicrParticipantId,
     setQuicrParticipantId,
+    qdroidInteropEnabled,
+    setQdroidInteropEnabled,
     vodPublishEnabled,
     setVodPublishEnabled,
   } = useStore();
@@ -575,6 +577,15 @@ export const SettingsPanel: React.FC = () => {
                     />
                   </SettingRow>
                 )}
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-gradient-to-br from-green-50 to-white dark:from-green-900/20 dark:to-gray-900 border border-green-100 dark:border-green-900/30">
+              <SectionHeader icon={Icons.network} title="qdroid Interop" description="Interoperability with qdroid Android client" colorScheme={sectionColors.network} />
+              <div className="space-y-1">
+                <SettingRow label="Enable qdroid Mode" description="Use loc-cpp property-based LOC format for qdroid compatibility" tooltip="When enabled, LOC packets use the loc-cpp property-based wire format instead of standard LOC. Required for interop with qdroid Android client.">
+                  <Toggle enabled={qdroidInteropEnabled} onChange={() => setQdroidInteropEnabled(!qdroidInteropEnabled)} color="bg-green-500" />
+                </SettingRow>
               </div>
             </div>
 

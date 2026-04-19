@@ -402,6 +402,8 @@ interface SettingsSlice {
   quicrInteropEnabled: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId: number;
+  /** Enable qdroid interop mode (loc-cpp property-based LOC format) */
+  qdroidInteropEnabled: boolean;
   /** Enable VOD publishing mode (load video from URL) */
   vodPublishEnabled: boolean;
 
@@ -596,7 +598,7 @@ export const useStore = create<AppStore>()(
               trackAlias: event.trackAlias.toString(),
             });
 
-            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
+            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId, qdroidInteropEnabled } = get();
 
             if (pendingAnnounceStream && pendingAnnounceConfig) {
               try {
@@ -629,6 +631,8 @@ export const useStore = create<AppStore>()(
                   // QuicR-Mac interop settings
                   quicrInteropEnabled,
                   quicrParticipantId,
+                  // qdroid interop settings
+                  qdroidInteropEnabled,
                 };
 
                 await session.startAnnouncePublish(
@@ -777,7 +781,7 @@ export const useStore = create<AppStore>()(
         const hasVideoTracks = localStream.getVideoTracks().length > 0;
         const hasAudioTracks = localStream.getAudioTracks().length > 0;
 
-        const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
+        const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId, qdroidInteropEnabled } = get();
         const config: MediaConfig = {
           videoBitrate,
           audioBitrate,
@@ -797,6 +801,8 @@ export const useStore = create<AppStore>()(
           // QuicR-Mac interop settings
           quicrInteropEnabled,
           quicrParticipantId,
+          // qdroid interop settings
+          qdroidInteropEnabled,
         };
 
         // Use announce flow if enabled
@@ -924,7 +930,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, qdroidInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -962,6 +968,8 @@ export const useStore = create<AppStore>()(
           secureObjectsBaseKey,
           // QuicR-Mac interop settings
           quicrInteropEnabled,
+          // qdroid interop settings
+          qdroidInteropEnabled,
           // Override video decoder config from catalog track info
           videoDecoderConfig: videoConfig ? {
             codec: videoConfig.codec,
@@ -1426,7 +1434,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, qdroidInteropEnabled } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1458,6 +1466,8 @@ export const useStore = create<AppStore>()(
           secureObjectsBaseKey,
           // QuicR-Mac interop settings
           quicrInteropEnabled,
+          // qdroid interop settings
+          qdroidInteropEnabled,
         };
 
         const subscriptionId = await session.subscribeNamespace(namespacePrefix, config);
@@ -1573,6 +1583,7 @@ export const useStore = create<AppStore>()(
       secureObjectsBaseKey: '', // Default: empty (user must provide)
       quicrInteropEnabled: false, // Default: standard LOC packaging
       quicrParticipantId: 0, // Default: 0 (should be set by user)
+      qdroidInteropEnabled: false, // Default: qdroid interop off
       vodPublishEnabled: false, // Default: VOD publishing off
 
       setTheme: (theme) => {
@@ -1626,6 +1637,7 @@ export const useStore = create<AppStore>()(
       setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
       setQuicrInteropEnabled: (value) => set({ quicrInteropEnabled: value }),
       setQuicrParticipantId: (value) => set({ quicrParticipantId: value }),
+      setQdroidInteropEnabled: (value: boolean) => set({ qdroidInteropEnabled: value }),
       setVodPublishEnabled: (value) => set({ vodPublishEnabled: value }),
 
       applyExperienceProfile: (profileName) => {
@@ -1706,6 +1718,7 @@ export const useStore = create<AppStore>()(
         secureObjectsBaseKey: state.secureObjectsBaseKey,
         quicrInteropEnabled: state.quicrInteropEnabled,
         quicrParticipantId: state.quicrParticipantId,
+        qdroidInteropEnabled: state.qdroidInteropEnabled,
         vodPublishEnabled: state.vodPublishEnabled,
       }),
     }

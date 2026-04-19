@@ -148,3 +148,84 @@ export function parseCatalogFromBytes(data: Uint8Array): Catalog {
   const json = decoder.decode(data);
   return parseCatalog(json);
 }
+
+// ============================================================================
+// qdroid interop catalog support
+// ============================================================================
+
+/**
+ * Decode a qdroid-encoded namespace string into a namespace tuple.
+ *
+ * qdroid encodes namespaces as: elements joined by `-`, dots encoded as `.2e`,
+ * and track name separated by `--`.
+ *
+ * Example: "cisco.2ewebex.2ecom-nab-v1-avc1-1080-publisher_X" →
+ *          ["cisco.webex.com", "nab", "v1", "avc1", "1080", "publisher_X"]
+ */
+export function decodeQdroidNamespace(encoded: string): string[] {
+  // Split on single hyphens (but not double-hyphens which separate namespace from track name)
+  // First split on -- to separate namespace from track name
+  const parts = encoded.split('--');
+  const namespacePart = parts[0];
+
+  // Split namespace part on single hyphens
+  const elements = namespacePart.split('-');
+
+  // Decode each element: .2e → ., .2d → -
+  return elements.map((elem) =>
+    elem.replace(/\.2e/g, '.').replace(/\.2d/g, '-')
+  );
+}
+
+/**
+ * Pre-process qdroid catalog JSON to normalize namespace fields.
+ *
+ * qdroid catalogs have `namespace` as an encoded string per track.
+ * This converts them to arrays that the standard schema expects.
+ */
+export function normalizeQdroidCatalog(data: unknown): unknown {
+  if (typeof data !== 'object' || data === null) return data;
+  const catalog = data as Record<string, unknown>;
+
+  if (Array.isArray(catalog.tracks)) {
+    catalog.tracks = (catalog.tracks as Record<string, unknown>[]).map(
+      (track) => {
+        if (typeof track.namespace === 'string') {
+          track.namespace = decodeQdroidNamespace(track.namespace);
+        }
+        return track;
+      }
+    );
+  }
+
+  return catalog;
+}
+
+/**
+ * Parse a qdroid-format catalog from JSON string.
+ * Handles qdroid's encoded namespace strings and missing fields.
+ */
+export function parseQdroidCatalog(json: string): Catalog {
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch (e) {
+    throw new CatalogParseError(
+      `Invalid JSON: ${e instanceof Error ? e.message : 'Unknown error'}`
+    );
+  }
+
+  // Normalize qdroid-specific format
+  data = normalizeQdroidCatalog(data);
+
+  return validateCatalog(data);
+}
+
+/**
+ * Parse a qdroid-format catalog from binary data.
+ */
+export function parseQdroidCatalogFromBytes(data: Uint8Array): Catalog {
+  const decoder = new TextDecoder();
+  const json = decoder.decode(data);
+  return parseQdroidCatalog(json);
+}
