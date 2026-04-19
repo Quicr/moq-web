@@ -99,6 +99,10 @@ interface DecodeChannel {
   lastAudioFrameInfo: { groupId: number; objectId: number; dataSize: number; sequence: number } | null;
   /** QuicR-Mac interop mode for LOC unpackaging */
   quicrInteropEnabled: boolean;
+  /** Reorder buffer for B-frame presentation order (timestamp-sorted) */
+  frameReorderBuffer: Array<{ frame: VideoFrame; groupId: number; objectId: number; timestamp: number; arrivedAt: number }>;
+  /** Last emitted timestamp for reorder buffer */
+  lastEmittedTimestamp: number;
 }
 
 // Map of channel ID to decode context
@@ -168,6 +172,8 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     lastVideoFrameInfo: null,
     lastAudioFrameInfo: null,
     quicrInteropEnabled: config.quicrInteropEnabled ?? false,
+    frameReorderBuffer: [],
+    lastEmittedTimestamp: -1,
   };
 
   const jitterDelay = config.jitterBufferDelay ?? 100;
@@ -348,43 +354,74 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
 
   channel.videoDecoder = new VideoDecoder({
     output: (frame) => {
-      // Send decoded frame immediately instead of batching
-      // This reduces latency by one poll cycle
-      // NOTE: We use frame.timestamp directly because it's preserved by WebCodecs
-      // from the EncodedVideoChunk. Using currentVideoMeta would be racy since
-      // decode() is async and meta could be overwritten by subsequent frames.
+      // B-frame reorder buffer: WebCodecs outputs frames in decode order,
+      // but H.264/HEVC with B-frames need presentation order reordering.
+      // Buffer frames and emit in timestamp order with a small delay.
       const meta = channel.currentVideoMeta;
       const now = performance.now();
+      const ts = frame.timestamp;
 
-      respond(
-        {
-          type: 'video-frame',
-          channelId: channel.channelId,
-          result: {
-            frame,
-            groupId: meta?.groupId ?? 0,
-            objectId: meta?.objectId ?? 0,
-            timestamp: frame.timestamp, // Use frame.timestamp - preserved through decode
+      // Add to reorder buffer
+      channel.frameReorderBuffer.push({
+        frame,
+        groupId: meta?.groupId ?? 0,
+        objectId: meta?.objectId ?? 0,
+        timestamp: ts,
+        arrivedAt: meta?.arrivedAt ?? now,
+      });
+
+      // Sort by timestamp (presentation order)
+      channel.frameReorderBuffer.sort((a, b) => a.timestamp - b.timestamp);
+
+      // Reorder buffer depth: wait for 3 frames before emitting
+      // This allows B-frames to be reordered (typical B-frame distance is 1-2)
+      const REORDER_BUFFER_DEPTH = 3;
+
+      // Emit frames that are ready (have enough frames after them)
+      while (channel.frameReorderBuffer.length > REORDER_BUFFER_DEPTH) {
+        const ready = channel.frameReorderBuffer.shift()!;
+
+        // Skip frames with timestamps we've already emitted (shouldn't happen but safety check)
+        if (channel.lastEmittedTimestamp >= 0 && ready.timestamp < channel.lastEmittedTimestamp) {
+          log(`Skipping out-of-order frame after reorder buffer`, {
+            frameTs: ready.timestamp,
+            lastEmitted: channel.lastEmittedTimestamp,
+          });
+          try { ready.frame.close(); } catch { /* ignore */ }
+          continue;
+        }
+        channel.lastEmittedTimestamp = ready.timestamp;
+
+        respond(
+          {
+            type: 'video-frame',
+            channelId: channel.channelId,
+            result: {
+              frame: ready.frame,
+              groupId: ready.groupId,
+              objectId: ready.objectId,
+              timestamp: ready.timestamp,
+            },
           },
-        },
-        [frame]
-      );
+          [ready.frame]
+        );
 
-      // Emit latency stats if enabled
-      if (channel.enableStats && meta?.arrivedAt) {
-        const processingDelay = now - meta.arrivedAt;
-        const bufferDepth = channel.videoBuffer?.size ?? 0;
-        const bufferDelay = channel.videoBuffer?.delay ?? 0;
-        const bufferStats = channel.videoBuffer?.getStats();
-        const framesDropped = bufferStats?.framesDropped ?? 0;
-        const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
-        const framesOutOfOrder = channel.framesOutOfOrder;
-        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
-        respond({
-          type: 'latency-stats',
-          channelId: channel.channelId,
-          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
-        });
+        // Emit latency stats if enabled
+        if (channel.enableStats) {
+          const processingDelay = now - ready.arrivedAt;
+          const bufferDepth = channel.videoBuffer?.size ?? 0;
+          const bufferDelay = channel.videoBuffer?.delay ?? 0;
+          const bufferStats = channel.videoBuffer?.getStats();
+          const framesDropped = bufferStats?.framesDropped ?? 0;
+          const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
+          const framesOutOfOrder = channel.framesOutOfOrder;
+          log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
+          respond({
+            type: 'latency-stats',
+            channelId: channel.channelId,
+            stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
+          });
+        }
       }
     },
     error: (err) => {
@@ -1140,6 +1177,13 @@ function resetChannel(channel: DecodeChannel): void {
     data.close();
   }
   channel.pendingAudioData = [];
+
+  // Reset reorder buffer
+  for (const entry of channel.frameReorderBuffer) {
+    try { entry.frame.close(); } catch { /* ignore */ }
+  }
+  channel.frameReorderBuffer = [];
+  channel.lastEmittedTimestamp = -1;
 
   log(`Channel ${channel.channelId} reset`);
 }
