@@ -2235,14 +2235,15 @@ export class MessageCodec {
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
     if (IS_DRAFT_16) {
-      // Draft-16 FETCH_OK: requestId | endOfTrack (8) | EndLocation | numParams | [params...]
-      // Track Extensions appear to be optional or handled differently
+      // Draft-16 FETCH_OK: requestId | endOfTrack (8) | EndLocation | numParams | [params...] | [extensions...]
+      // Track extensions are NOT count-prefixed - they're parsed until message end
       writer.writeByte(message.endOfTrack ? 1 : 0);
       // End Location (group, object)
       writer.writeVarInt(message.largestGroupId);
       writer.writeVarInt(message.largestObjectId);
-      // Number of parameters
+      // Number of parameters (length-prefixed KVP sequence)
       writer.writeVarInt(0);
+      // Track extensions: empty (no bytes = no extensions)
     } else {
       // Pre-draft-16: full fields
       writer.writeVarInt(message.groupOrder);
