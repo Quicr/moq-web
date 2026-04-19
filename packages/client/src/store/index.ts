@@ -1162,8 +1162,32 @@ export const useStore = create<AppStore>()(
                 }
 
                 // Track which groups we've received objects for
+                const isNewGroup = !fetchGroups.has(groupId);
                 fetchGroups.add(groupId);
                 lastObjectIdByGroup.set(groupId, Math.max(lastObjectIdByGroup.get(groupId) ?? -1, objectId));
+
+                // When we start receiving a new group, mark all previous groups as complete
+                // (FETCH delivers groups in ascending order per draft-16)
+                if (isNewGroup) {
+                  for (const g of fetchGroups) {
+                    if (g < groupId) {
+                      markGroupComplete(g);
+                    }
+                  }
+                }
+
+                // Check if this is the last group in the fetch range - mark complete when we receive any object for it
+                // This handles the case where the FETCH stream doesn't close properly
+                if (groupId === endGroup && isNewGroup) {
+                  // Slight delay to ensure all objects for this group arrive before marking complete
+                  setTimeout(() => {
+                    markGroupComplete(groupId);
+                    // Notify controller that fetch is done
+                    controller.onFetchComplete(controllerRequestId);
+                    fetchGroupCounts.delete(controllerRequestId);
+                    if (unsubscribeFetchComplete) unsubscribeFetchComplete();
+                  }, 100);
+                }
 
                 // Push data to decode pipeline (created above)
                 const timestamp = performance.now() * 1000; // microseconds
