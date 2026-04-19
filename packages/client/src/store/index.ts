@@ -672,7 +672,21 @@ export const useStore = create<AppStore>()(
           });
 
           // Handle incoming PUBLISH (subscribe namespace flow)
+          // Track already-seen tracks to deduplicate repeated PUBLISH intents (e.g., catalog republish)
+          const seenPublishTracks = new Set<string>();
           session.on('incoming-publish', (event) => {
+            const fullTrackKey = `${event.namespace.join('/')}/${event.trackName}`;
+
+            // Deduplicate: ignore repeated PUBLISH for the same track
+            if (seenPublishTracks.has(fullTrackKey)) {
+              log.info('Ignoring duplicate PUBLISH for already-discovered track', {
+                fullTrackKey,
+                trackAlias: event.trackAlias.toString(),
+              });
+              return;
+            }
+            seenPublishTracks.add(fullTrackKey);
+
             log.info('Incoming publish (subscribe namespace flow)', {
               namespaceSubscriptionId: event.namespaceSubscriptionId,
               namespace: event.namespace.join('/'),
@@ -689,12 +703,13 @@ export const useStore = create<AppStore>()(
               return;
             }
 
-            // Determine track type from trackName
+            // Determine track type from trackName and namespace
             let trackType: 'video' | 'audio' | 'chat' | 'unknown' = 'unknown';
             const trackNameLower = event.trackName.toLowerCase();
-            if (trackNameLower.includes('video')) {
+            const namespaceLower = event.namespace.join('/').toLowerCase();
+            if (trackNameLower.includes('video') || namespaceLower.includes('avc1') || namespaceLower.includes('h264')) {
               trackType = 'video';
-            } else if (trackNameLower.includes('audio')) {
+            } else if (trackNameLower.includes('audio') || namespaceLower.includes('opus')) {
               trackType = 'audio';
             } else if (trackNameLower.includes('chat')) {
               trackType = 'chat';
