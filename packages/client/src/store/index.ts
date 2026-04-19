@@ -1180,7 +1180,7 @@ export const useStore = create<AppStore>()(
 
                 // Use idle detection to handle incomplete FETCH streams
                 // Relay may not deliver all requested groups, or stream may not close properly
-                // Reset timer on every object; complete after 500ms of silence
+                // Reset timer on every object; complete after 300ms of silence
                 if (fetchIdleTimer) {
                   clearTimeout(fetchIdleTimer);
                 }
@@ -1203,7 +1203,7 @@ export const useStore = create<AppStore>()(
                       groupsReceived: Array.from(fetchGroups).sort((a, b) => a - b),
                     });
                   }
-                }, 500);
+                }, 300);
 
                 // Push data to decode pipeline (created above)
                 const timestamp = performance.now() * 1000; // microseconds
@@ -1239,7 +1239,7 @@ export const useStore = create<AppStore>()(
                 fetchGroupCounts.delete(controllerRequestId);
                 if (unsubscribeFetchComplete) unsubscribeFetchComplete();
               }
-            }, 3000); // 3 second timeout for initial data
+            }, 1000); // 1 second timeout for initial data
 
             // Process any events that arrived while we were waiting for fetch() to return
             for (const event of pendingEvents) {
