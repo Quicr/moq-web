@@ -366,6 +366,10 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
                 <div className={`font-medium ${rendererMetrics.framesDropped > 0 ? 'text-red-400' : 'text-white/80'}`}>
                   {rendererMetrics.framesDropped}
                 </div>
+                <div className="text-white/50">No TS</div>
+                <div className={`font-medium ${rendererMetrics.framesWithoutTimestamp > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                  {rendererMetrics.framesWithoutTimestamp}
+                </div>
               </div>
             </div>
 

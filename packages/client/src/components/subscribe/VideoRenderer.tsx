@@ -22,6 +22,7 @@ export interface VideoRendererMetrics {
   framesDropped: number;
   framesQueued: number;
   framesReordered: number;
+  framesWithoutTimestamp: number;
   avgRenderInterval: number;
   lastFrameTimestamp: number;
   frameJumps: number;
@@ -72,6 +73,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     framesDropped: 0,
     framesQueued: 0,
     framesReordered: 0,
+    framesWithoutTimestamp: 0,
     avgRenderInterval: 0,
     lastFrameTimestamp: 0,
     frameJumps: 0,
@@ -91,9 +93,10 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     const newTs = newFrame.timestamp;
     let reordered = false;
 
-    // Handle invalid timestamps - append to end
+    // Handle invalid timestamps - append to end and track
     if (newTs <= 0) {
-      if (diagnostics) {
+      metricsRef.current.framesWithoutTimestamp++;
+      if (diagnostics && metricsRef.current.framesWithoutTimestamp <= 5) {
         console.warn('[VideoRenderer] Frame has invalid timestamp, appending to end', { timestamp: newTs });
       }
       queue.push(newFrame);
