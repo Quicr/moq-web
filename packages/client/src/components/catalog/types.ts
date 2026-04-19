@@ -59,6 +59,12 @@ export interface VODTrackConfig extends BaseTrackConfig {
   enableDvr: boolean;
   loopPlayback: boolean;
   loadProgress?: VODLoadProgress;
+  /**
+   * Fetch-only mode: if true, don't auto-stream via SUBSCRIBE.
+   * Subscribers must use FETCH to retrieve content.
+   * Default: true (recommended for smooth VOD playback)
+   */
+  fetchOnly?: boolean;
 }
 
 /**
