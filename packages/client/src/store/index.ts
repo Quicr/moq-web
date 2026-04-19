@@ -1093,6 +1093,8 @@ export const useStore = create<AppStore>()(
             // Queue to store events that arrive before sessionRequestId is set
             let pendingEvents: { requestId: number }[] = [];
             let listenerActive = true;
+            // Per-fetch idle timer (not global, so multiple concurrent fetches work)
+            let fetchIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
             const handleFetchStreamComplete = (event: { requestId: number; lastGroupId: number }) => {
               if (!listenerActive) return;
@@ -1179,10 +1181,10 @@ export const useStore = create<AppStore>()(
                 // Use idle detection to handle incomplete FETCH streams
                 // Relay may not deliver all requested groups, or stream may not close properly
                 // Reset timer on every object; complete after 500ms of silence
-                if ((globalThis as Record<string, unknown>).__vodFetchIdleTimer) {
-                  clearTimeout((globalThis as Record<string, unknown>).__vodFetchIdleTimer as ReturnType<typeof setTimeout>);
+                if (fetchIdleTimer) {
+                  clearTimeout(fetchIdleTimer);
                 }
-                (globalThis as Record<string, unknown>).__vodFetchIdleTimer = setTimeout(() => {
+                fetchIdleTimer = setTimeout(() => {
                   // Only complete if we haven't already (via fetch-stream-complete)
                   if (listenerActive) {
                     listenerActive = false;
