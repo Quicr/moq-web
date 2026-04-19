@@ -4,17 +4,12 @@
 /**
  * @fileoverview Video Renderer Component
  *
- * Canvas-based renderer for WebCodecs VideoFrames.
- * Uses a frame queue and requestAnimationFrame for smooth playback.
- *
- * Key features for smooth VOD playback:
- * - Frame queue prevents frame drops when multiple frames arrive between RAF ticks
- * - One frame rendered per RAF tick (no batching)
- * - Timestamp-based ordering ensures correct playback sequence
- * - Diagnostic metrics for debugging playback issues
+ * Simple canvas-based renderer for WebCodecs VideoFrames.
+ * Renders frames immediately as they arrive - trusts upstream (PlayoutBuffer)
+ * for ordering and pacing.
  */
 
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 
 /** Diagnostic metrics for frame rendering */
 export interface VideoRendererMetrics {
@@ -28,6 +23,7 @@ export interface VideoRendererMetrics {
   frameJumps: number;
   backwardJumps: number;
   forwardJumps: number;
+  targetFps: number;
 }
 
 interface VideoRendererProps {
@@ -43,15 +39,15 @@ interface VideoRendererProps {
   enableDiagnostics?: boolean;
   /** Callback for metrics updates */
   onMetricsUpdate?: (metrics: VideoRendererMetrics) => void;
-  /** Framerate from catalog for proper pacing (default: 30) */
+  /** Framerate from catalog for diagnostics (default: 30) */
   framerate?: number;
 }
 
 /**
  * VideoRenderer Component
  *
- * Renders WebCodecs VideoFrames to a canvas element using requestAnimationFrame
- * for smooth playback. Uses a frame queue to handle bursty frame delivery.
+ * Simple renderer that draws frames immediately as they arrive.
+ * Upstream PlayoutBuffer handles ordering and pacing.
  */
 export const VideoRenderer: React.FC<VideoRendererProps> = ({
   frame,
@@ -64,16 +60,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const frameQueueRef = useRef<VideoFrame[]>([]);
   const lastRenderedFrameRef = useRef<VideoFrame | null>(null);
-  const rafIdRef = useRef<number | null>(null);
-  const isRenderingRef = useRef<boolean>(false);
-  const hasInitialBufferRef = useRef<boolean>(false);
   const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 1280, height: 720 });
-
-  // Playback timing - for pacing frames at correct rate
-  const playbackStartTimeRef = useRef<number>(0); // Wall clock when playback started
 
   // Diagnostic metrics refs
   const metricsRef = useRef<VideoRendererMetrics>({
@@ -87,149 +76,41 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     frameJumps: 0,
     backwardJumps: 0,
     forwardJumps: 0,
+    targetFps: framerate,
   });
   const lastRenderTimeRef = useRef<number>(0);
   const renderIntervalsRef = useRef<number[]>([]);
   const lastFrameTimestampRef = useRef<number>(0);
 
-  // Maximum queue depth to prevent memory issues
-  const MAX_QUEUE_DEPTH = 60;
-  // Minimum frames to buffer before INITIAL render (allows reordering window)
-  const INITIAL_BUFFER_SIZE = 15;
-  // Minimum queue depth to maintain during playback (allows late frames to be sorted)
-  const MIN_QUEUE_DEPTH = 3;
-  const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds - detect jumps
+  const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds
 
-  // Insert frame into queue in sorted order by timestamp
-  const insertFrameSorted = useCallback((queue: VideoFrame[], newFrame: VideoFrame, diagnostics: boolean): boolean => {
-    const newTs = newFrame.timestamp;
-    let reordered = false;
+  // Render frame immediately when it arrives
+  useEffect(() => {
+    if (!frame) return;
 
-    // Handle invalid timestamps - append to end and track
-    if (newTs <= 0) {
-      metricsRef.current.framesWithoutTimestamp++;
-      if (diagnostics && metricsRef.current.framesWithoutTimestamp <= 5) {
-        console.warn('[VideoRenderer] Frame has invalid timestamp, appending to end', { timestamp: newTs });
-      }
-      queue.push(newFrame);
-      return false;
-    }
-
-    // Find insertion point (binary search for efficiency)
-    let low = 0;
-    let high = queue.length;
-
-    while (low < high) {
-      const mid = Math.floor((low + high) / 2);
-      const midTs = queue[mid].timestamp;
-      // Skip invalid timestamps in queue during search
-      if (midTs <= 0 || midTs < newTs) {
-        low = mid + 1;
-      } else {
-        high = mid;
-      }
-    }
-
-    // If not inserting at end, we're reordering
-    if (low < queue.length) {
-      reordered = true;
-      if (diagnostics && metricsRef.current.framesReordered < 10) {
-        // Log first few reorders for debugging
-        console.log('[VideoRenderer] Reordering frame', {
-          newTs,
-          insertPosition: low,
-          queueLength: queue.length,
-          headTs: queue[0]?.timestamp,
-          tailTs: queue[queue.length - 1]?.timestamp,
-        });
-      }
-    }
-
-    // Insert at sorted position
-    queue.splice(low, 0, newFrame);
-    return reordered;
-  }, []);
-
-  // Update metrics and optionally report
-  const updateMetrics = useCallback((updates: Partial<VideoRendererMetrics>) => {
-    Object.assign(metricsRef.current, updates);
-    metricsRef.current.framesQueued = frameQueueRef.current.length;
-
-    if (enableDiagnostics && onMetricsUpdate) {
-      onMetricsUpdate({ ...metricsRef.current });
-    }
-  }, [enableDiagnostics, onMetricsUpdate]);
-
-  // Render loop with fixed-rate pacing (one frame per ~33ms for 30fps)
-  const renderLoop = useCallback(() => {
     const canvas = canvasRef.current;
-    const queue = frameQueueRef.current;
-    const now = performance.now();
-
-    // Initial buffering: wait for enough frames to allow reordering
-    if (!hasInitialBufferRef.current) {
-      if (queue.length < INITIAL_BUFFER_SIZE) {
-        rafIdRef.current = requestAnimationFrame(renderLoop);
-        return;
-      }
-      hasInitialBufferRef.current = true;
-      playbackStartTimeRef.current = now;
-      console.log('[VideoRenderer] Initial buffer filled, starting playback', {
-        queueDepth: queue.length,
-      });
-    }
-
-    // Minimum queue check
-    if (queue.length <= MIN_QUEUE_DEPTH) {
-      rafIdRef.current = requestAnimationFrame(renderLoop);
-      return;
-    }
-
-    // Fixed-rate pacing: render one frame per interval based on catalog framerate
-    const TARGET_FRAME_INTERVAL = 1000 / framerate; // ms per frame
-    const timeSinceLastRender = now - lastRenderTimeRef.current;
-    if (lastRenderTimeRef.current > 0 && timeSinceLastRender < TARGET_FRAME_INTERVAL) {
-      rafIdRef.current = requestAnimationFrame(renderLoop);
-      return;
-    }
-
-    // Get next valid frame from queue (already sorted by timestamp)
-    let currentFrame: VideoFrame | undefined;
-    while (queue.length > MIN_QUEUE_DEPTH) {
-      const candidate = queue.shift();
-      if (!candidate) break;
-
-      try {
-        void candidate.codedWidth; // Check if valid
-        currentFrame = candidate;
-        break;
-      } catch {
-        metricsRef.current.framesDropped++;
-      }
-    }
-
-    if (!canvas || !currentFrame) {
-      // No valid frame to render, keep loop running if queue has frames
-      if (queue.length > 0) {
-        rafIdRef.current = requestAnimationFrame(renderLoop);
-      } else {
-        isRenderingRef.current = false;
-        rafIdRef.current = null;
-      }
+    if (!canvas) {
+      try { frame.close(); } catch { /* ignore */ }
       return;
     }
 
     const ctx = canvas.getContext('2d');
     if (!ctx) {
-      // Close frame since we can't render it
-      try { currentFrame.close(); } catch { /* ignore */ }
-      rafIdRef.current = requestAnimationFrame(renderLoop);
+      try { frame.close(); } catch { /* ignore */ }
+      return;
+    }
+
+    // Check if frame is valid
+    try {
+      void frame.codedWidth;
+    } catch {
+      metricsRef.current.framesDropped++;
       return;
     }
 
     // Update canvas size to match frame if needed
-    const frameWidth = currentFrame.displayWidth || currentFrame.codedWidth;
-    const frameHeight = currentFrame.displayHeight || currentFrame.codedHeight;
+    const frameWidth = frame.displayWidth || frame.codedWidth;
+    const frameHeight = frame.displayHeight || frame.codedHeight;
 
     if (canvas.width !== frameWidth || canvas.height !== frameHeight) {
       canvas.width = frameWidth;
@@ -239,7 +120,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
     // Draw the frame
     try {
-      ctx.drawImage(currentFrame, 0, 0);
+      ctx.drawImage(frame, 0, 0);
       metricsRef.current.framesRendered++;
 
       // Track render intervals for diagnostics
@@ -256,10 +137,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       lastRenderTimeRef.current = now;
 
       // Detect frame jumps (non-sequential timestamps)
-      const frameTs = currentFrame.timestamp;
+      const frameTs = frame.timestamp;
       if (lastFrameTimestampRef.current > 0 && frameTs > 0) {
         const tsDiff = frameTs - lastFrameTimestampRef.current;
-        // Detect backwards jumps or large forward jumps
         if (tsDiff < 0) {
           metricsRef.current.frameJumps++;
           metricsRef.current.backwardJumps++;
@@ -267,7 +147,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
             console.warn('[VideoRenderer] BACKWARD jump', {
               previousTs: lastFrameTimestampRef.current,
               currentTs: frameTs,
-              diff: tsDiff / 1000, // Show in ms
+              diff: tsDiff / 1000,
             });
           }
         } else if (tsDiff > FRAME_JUMP_THRESHOLD_MS) {
@@ -277,122 +157,57 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
             console.warn('[VideoRenderer] FORWARD jump (>100ms)', {
               previousTs: lastFrameTimestampRef.current,
               currentTs: frameTs,
-              diff: tsDiff / 1000, // Show in ms
+              diff: tsDiff / 1000,
             });
           }
         }
       }
       lastFrameTimestampRef.current = frameTs;
       metricsRef.current.lastFrameTimestamp = frameTs;
+      metricsRef.current.targetFps = framerate;
 
-      // Mark that we've received at least one frame
       if (!hasReceivedFrame) {
         setHasReceivedFrame(true);
       }
 
       // Close the previous frame AFTER successfully drawing the new one
-      if (lastRenderedFrameRef.current && lastRenderedFrameRef.current !== currentFrame) {
+      if (lastRenderedFrameRef.current && lastRenderedFrameRef.current !== frame) {
         try {
           lastRenderedFrameRef.current.close();
         } catch {
           // Frame may already be closed
         }
       }
-      lastRenderedFrameRef.current = currentFrame;
+      lastRenderedFrameRef.current = frame;
 
       // Log stats every 30 frames
-      if (metricsRef.current.framesRendered % 30 === 0) {
-        console.log('[VideoRenderer] Rendering stats', {
-          framesRendered: metricsRef.current.framesRendered,
-          framesDropped: metricsRef.current.framesDropped,
-          frameJumps: metricsRef.current.frameJumps,
-          frameWidth,
-          frameHeight,
-          timestamp: currentFrame.timestamp,
-          queueDepth: queue.length,
-          avgRenderInterval: metricsRef.current.avgRenderInterval.toFixed(2) + 'ms',
+      if (enableDiagnostics && metricsRef.current.framesRendered % 30 === 0) {
+        console.log('[VideoRenderer] Stats', {
+          rendered: metricsRef.current.framesRendered,
+          dropped: metricsRef.current.framesDropped,
+          jumps: `${metricsRef.current.backwardJumps}↓ ${metricsRef.current.forwardJumps}↑`,
+          avgInterval: metricsRef.current.avgRenderInterval.toFixed(1) + 'ms',
+          targetInterval: (1000 / framerate).toFixed(1) + 'ms',
+          timestamp: frameTs,
         });
       }
 
-      updateMetrics({});
+      // Report metrics
+      if (onMetricsUpdate) {
+        onMetricsUpdate({ ...metricsRef.current });
+      }
     } catch (err) {
       console.error('[VideoRenderer] Error drawing frame', err);
-      // Try to close the frame
-      try { currentFrame.close(); } catch { /* ignore */ }
+      try { frame.close(); } catch { /* ignore */ }
     }
-
-    // Continue render loop if more frames in queue, otherwise wait for new frames
-    if (queue.length > 0) {
-      rafIdRef.current = requestAnimationFrame(renderLoop);
-    } else {
-      isRenderingRef.current = false;
-      rafIdRef.current = null;
-    }
-  }, [enableDiagnostics, hasReceivedFrame, updateMetrics, framerate]);
-
-  // Start render loop if not already running
-  const ensureRenderLoop = useCallback(() => {
-    if (!isRenderingRef.current && frameQueueRef.current.length > 0) {
-      isRenderingRef.current = true;
-      rafIdRef.current = requestAnimationFrame(renderLoop);
-    }
-  }, [renderLoop]);
-
-  // Add frame to queue when frame prop changes
-  useEffect(() => {
-    if (frame) {
-      const queue = frameQueueRef.current;
-
-      // If queue is too deep, drop oldest frames to prevent memory buildup
-      while (queue.length >= MAX_QUEUE_DEPTH) {
-        const droppedFrame = queue.shift();
-        if (droppedFrame) {
-          try { droppedFrame.close(); } catch { /* ignore */ }
-          metricsRef.current.framesDropped++;
-          if (enableDiagnostics) {
-            console.warn('[VideoRenderer] Dropped frame due to queue overflow', {
-              queueDepth: queue.length,
-              totalDropped: metricsRef.current.framesDropped,
-            });
-          }
-        }
-      }
-
-      // Add new frame to queue in sorted order by timestamp
-      const wasReordered = insertFrameSorted(queue, frame, enableDiagnostics);
-      if (wasReordered) {
-        metricsRef.current.framesReordered++;
-        if (enableDiagnostics) {
-          console.log('[VideoRenderer] Frame reordered into correct position', {
-            frameTs: frame.timestamp,
-            queueDepth: queue.length,
-            totalReordered: metricsRef.current.framesReordered,
-          });
-        }
-      }
-
-      // Ensure render loop is running
-      ensureRenderLoop();
-    }
-  }, [frame, ensureRenderLoop, enableDiagnostics]);
+  }, [frame, enableDiagnostics, onMetricsUpdate, framerate, hasReceivedFrame]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (rafIdRef.current) {
-        cancelAnimationFrame(rafIdRef.current);
-      }
-      // Close all queued frames
-      for (const queuedFrame of frameQueueRef.current) {
-        try { queuedFrame.close(); } catch { /* ignore */ }
-      }
-      frameQueueRef.current = [];
-      // Close the last rendered frame
       if (lastRenderedFrameRef.current) {
         try { lastRenderedFrameRef.current.close(); } catch { /* ignore */ }
       }
-      // Reset initial buffer state for next mount
-      hasInitialBufferRef.current = false;
     };
   }, []);
 
