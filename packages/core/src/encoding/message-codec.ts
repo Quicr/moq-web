@@ -2234,31 +2234,21 @@ export class MessageCodec {
 
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
-    // Both draft-14 and draft-16 use the same format for FETCH_OK:
-    // - Group Order
-    // - End of Track flag
-    // - Largest Group ID
-    // - Largest Object ID
-    // - Parameters (draft-16 only)
+    if (IS_DRAFT_16) {
+      // Draft-16: Request ID | Parameters | Group Order | EndOfTrack | Largest Group | Largest Object
+      writer.writeVarInt(0); // Number of parameters (empty for now)
+    }
     writer.writeVarInt(message.groupOrder);
     writer.writeByte(message.endOfTrack ? 1 : 0);
     writer.writeVarInt(message.largestGroupId);
     writer.writeVarInt(message.largestObjectId);
-    if (IS_DRAFT_16) {
-      writer.writeVarInt(0); // Number of parameters (empty for now)
-    }
   }
 
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
     const requestId = reader.readVarIntNumber();
-    // Both draft-14 and draft-16 use the same core format
-    const groupOrder = reader.readVarIntNumber() as GroupOrder;
-    const endOfTrack = reader.readByte() === 1;
-    const largestGroupId = reader.readVarIntNumber();
-    const largestObjectId = reader.readVarIntNumber();
 
     if (IS_DRAFT_16) {
-      // Draft-16: Read parameters (ignore for now)
+      // Draft-16: Parameters come before other fields
       const numParams = reader.readVarIntNumber();
       for (let i = 0; i < numParams; i++) {
         reader.readVarIntNumber(); // key
@@ -2266,6 +2256,11 @@ export class MessageCodec {
         reader.readBytes(valueLen); // value
       }
     }
+
+    const groupOrder = reader.readVarIntNumber() as GroupOrder;
+    const endOfTrack = reader.readByte() === 1;
+    const largestGroupId = reader.readVarIntNumber();
+    const largestObjectId = reader.readVarIntNumber();
 
     return {
       type: MessageType.FETCH_OK,
