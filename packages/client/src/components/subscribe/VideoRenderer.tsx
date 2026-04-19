@@ -62,6 +62,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const lastRenderedFrameRef = useRef<VideoFrame | null>(null);
   const rafIdRef = useRef<number | null>(null);
   const isRenderingRef = useRef<boolean>(false);
+  const hasInitialBufferRef = useRef<boolean>(false);
   const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 1280, height: 720 });
 
@@ -81,8 +82,10 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
   // Maximum queue depth to prevent memory issues
   const MAX_QUEUE_DEPTH = 30;
-  // Minimum frames to buffer before starting render (allows reordering)
-  const MIN_BUFFER_BEFORE_RENDER = 5;
+  // Minimum frames to buffer before INITIAL render (allows reordering window)
+  const INITIAL_BUFFER_SIZE = 8;
+  // Once playing, maintain at least this many frames to handle jitter
+  const MIN_QUEUE_BEFORE_STALL = 2;
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds - detect jumps
 
   // Insert frame into queue in sorted order by timestamp
@@ -128,9 +131,18 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     const canvas = canvasRef.current;
     const queue = frameQueueRef.current;
 
-    // Wait for minimum buffer before rendering (allows frames to be reordered)
-    if (queue.length < MIN_BUFFER_BEFORE_RENDER && queue.length > 0) {
-      // Keep waiting for more frames, but schedule next check
+    // Initial buffering: wait for enough frames to allow reordering
+    if (!hasInitialBufferRef.current) {
+      if (queue.length < INITIAL_BUFFER_SIZE) {
+        rafIdRef.current = requestAnimationFrame(renderLoop);
+        return;
+      }
+      hasInitialBufferRef.current = true;
+      console.log('[VideoRenderer] Initial buffer filled, starting playback', { queueDepth: queue.length });
+    }
+
+    // During playback: only stall if queue is nearly empty (prevents flickering)
+    if (queue.length < MIN_QUEUE_BEFORE_STALL) {
       rafIdRef.current = requestAnimationFrame(renderLoop);
       return;
     }
@@ -311,6 +323,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       if (lastRenderedFrameRef.current) {
         try { lastRenderedFrameRef.current.close(); } catch { /* ignore */ }
       }
+      // Reset initial buffer state for next mount
+      hasInitialBufferRef.current = false;
     };
   }, []);
 
