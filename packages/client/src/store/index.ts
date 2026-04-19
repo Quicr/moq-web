@@ -1176,17 +1176,30 @@ export const useStore = create<AppStore>()(
                   }
                 }
 
-                // Check if this is the last group in the fetch range - mark complete when we receive any object for it
-                // This handles the case where the FETCH stream doesn't close properly
-                if (groupId === endGroup && isNewGroup) {
-                  // Slight delay to ensure all objects for this group arrive before marking complete
-                  setTimeout(() => {
-                    markGroupComplete(groupId);
-                    // Notify controller that fetch is done
-                    controller.onFetchComplete(controllerRequestId);
-                    fetchGroupCounts.delete(controllerRequestId);
-                    if (unsubscribeFetchComplete) unsubscribeFetchComplete();
-                  }, 100);
+                // For the last group in the range, use idle detection instead of fixed timeout
+                // Large 4K keyframes (170KB+) can take >100ms to transfer
+                if (groupId === endGroup) {
+                  // Reset idle timer on each object received for the last group
+                  if ((globalThis as Record<string, unknown>).__vodFetchIdleTimer) {
+                    clearTimeout((globalThis as Record<string, unknown>).__vodFetchIdleTimer as ReturnType<typeof setTimeout>);
+                  }
+                  // Mark complete after 500ms of no data (accounts for large keyframes)
+                  (globalThis as Record<string, unknown>).__vodFetchIdleTimer = setTimeout(() => {
+                    // Only complete if we haven't already (via fetch-stream-complete)
+                    if (listenerActive) {
+                      listenerActive = false;
+                      markGroupComplete(groupId);
+                      controller.onFetchComplete(controllerRequestId);
+                      fetchGroupCounts.delete(controllerRequestId);
+                      if (unsubscribeFetchComplete) unsubscribeFetchComplete();
+                      log.info('VOD fetch completed via idle detection', {
+                        controllerRequestId,
+                        sessionRequestId,
+                        lastGroup: groupId,
+                        lastObjectId: lastObjectIdByGroup.get(groupId),
+                      });
+                    }
+                  }, 500);
                 }
 
                 // Push data to decode pipeline (created above)
