@@ -91,7 +91,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   // Minimum frames to buffer before INITIAL render (allows reordering window)
   const INITIAL_BUFFER_SIZE = 15;
   // Minimum queue depth to maintain during playback (allows late frames to be sorted)
-  const MIN_QUEUE_DEPTH = 10;
+  // Keep this small (3-5) to avoid stuttering while still allowing some reorder window
+  const MIN_QUEUE_DEPTH = 3;
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds - detect jumps
 
   // Insert frame into queue in sorted order by timestamp
