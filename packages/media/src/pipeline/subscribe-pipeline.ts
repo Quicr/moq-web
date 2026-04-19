@@ -37,7 +37,7 @@
 import { Logger } from '@web-moq/core';
 import { H264Decoder, VideoDecoderConfig } from '../webcodecs/video-decoder.js';
 import { OpusDecoder, AudioDecoderConfig } from '../webcodecs/audio-decoder.js';
-import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
+import { LOCUnpackager, MediaType, unpackageQdroid } from '../loc/loc-container.js';
 import { JitterBuffer } from './jitter-buffer.js';
 import { GroupArbiter } from './group-arbiter.js';
 import { PresentationReorderBuffer } from './presentation-reorder-buffer.js';
@@ -121,6 +121,8 @@ export interface SubscribePipelineConfig {
 
   /** Enable QuicR-Mac interop mode for LOC unpackaging (default: false) */
   quicrInteropEnabled?: boolean;
+  /** Enable qdroid interop mode for LOC unpackaging (loc-cpp property format) */
+  qdroidInteropEnabled?: boolean;
 
   /**
    * Optional decode worker for offloading decoding to a web worker.
@@ -662,7 +664,11 @@ export class SubscribePipeline {
 
     // Main thread mode: process locally
     try {
-      const mediaType = this.unpackager.getMediaType(data);
+      // In qdroid mode, we can't detect media type from header byte - need full parse
+      // For qdroid, the track name determines type; fall back to full unpackage
+      const mediaType = (this.config.qdroidInteropEnabled)
+        ? unpackageQdroid(data).header.mediaType
+        : this.unpackager.getMediaType(data);
       log.trace('Pipeline received object', {
         mediaType: mediaType === MediaType.VIDEO ? 'video' : 'audio',
         groupId,
@@ -699,7 +705,7 @@ export class SubscribePipeline {
       return;
     }
 
-    const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false);
+    const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false, this.config.qdroidInteropEnabled ?? false);
     const isKeyframe = frame.header.isKeyframe;
 
     log.trace('Unpacked video frame', {
@@ -773,7 +779,7 @@ export class SubscribePipeline {
       return;
     }
 
-    const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false);
+    const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false, this.config.qdroidInteropEnabled ?? false);
 
     log.trace('Unpacked audio frame', {
       groupId,

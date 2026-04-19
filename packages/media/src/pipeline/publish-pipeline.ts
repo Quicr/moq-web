@@ -36,7 +36,7 @@
 import { Logger, Priority } from '@web-moq/core';
 import { H264Encoder, VideoEncoderConfig, EncodedVideoFrame } from '../webcodecs/video-encoder.js';
 import { OpusEncoder, OpusEncoderOptions, EncodedAudioFrame } from '../webcodecs/audio-encoder.js';
-import { LOCPackager } from '../loc/loc-container.js';
+import { LOCPackager, calculateQdroidVideoPacketSize, calculateQdroidAudioPacketSize } from '../loc/loc-container.js';
 import { CodecEncodeWorkerClient } from '../workers/codec-encode-worker-api.js';
 
 const log = Logger.create('moqt:media:publish-pipeline');
@@ -61,6 +61,8 @@ export interface PublishPipelineConfig {
   quicrInteropEnabled?: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId?: number;
+  /** Enable qdroid interop mode (loc-cpp property-based LOC format) */
+  qdroidInteropEnabled?: boolean;
 }
 
 /**
@@ -468,8 +470,11 @@ export class PublishPipeline {
       captureTimestamp: performance.now(),
       codecDescription: frame.codecDescription,
       quicrInterop: this.config.quicrInteropEnabled,
+      qdroidInterop: this.config.qdroidInteropEnabled,
     };
-    const packetSize = this.packager.calculateVideoPacketSize(frame.data, options);
+    const packetSize = this.config.qdroidInteropEnabled
+      ? calculateQdroidVideoPacketSize(frame.data.byteLength, options)
+      : this.packager.calculateVideoPacketSize(frame.data, options);
     const buffer = new Uint8Array(packetSize);
     const bytesWritten = this.packager.packageVideoInto(buffer, frame.data, options);
     const locData = buffer.subarray(0, bytesWritten);
@@ -728,9 +733,12 @@ export class PublishPipeline {
     const options = {
       captureTimestamp: performance.now(),
       quicrInterop: this.config.quicrInteropEnabled,
+      qdroidInterop: this.config.qdroidInteropEnabled,
       participantId: this.config.quicrParticipantId,
     };
-    const packetSize = this.packager.calculateAudioPacketSize(frame.data, options);
+    const packetSize = this.config.qdroidInteropEnabled
+      ? calculateQdroidAudioPacketSize(frame.data.byteLength, options)
+      : this.packager.calculateAudioPacketSize(frame.data, options);
     const buffer = new Uint8Array(packetSize);
     const bytesWritten = this.packager.packageAudioInto(buffer, frame.data, options);
     const locData = buffer.subarray(0, bytesWritten);

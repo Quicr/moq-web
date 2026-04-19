@@ -63,6 +63,29 @@ export enum LOCExtensionType {
 }
 
 /**
+ * qdroid (loc-cpp) property IDs for property-based LOC format.
+ * Format: [property_id(varint)] [value(varint)] pairs, then raw payload.
+ */
+export enum QdroidPropertyId {
+  /** Video frame marking (varint-encoded) */
+  VIDEO_FRAME_MARKING = 4,
+  /** Capture timestamp in microseconds (varint-encoded) */
+  TIMESTAMP = 6,
+  /** Timescale (varint-encoded) */
+  TIMESCALE = 8,
+  /** Audio level (varint-encoded) */
+  AUDIO_LEVEL = 10,
+}
+
+/** Set of known qdroid property IDs for parsing */
+const QDROID_KNOWN_PROPERTIES = new Set<number>([
+  QdroidPropertyId.VIDEO_FRAME_MARKING,
+  QdroidPropertyId.TIMESTAMP,
+  QdroidPropertyId.TIMESCALE,
+  QdroidPropertyId.AUDIO_LEVEL,
+]);
+
+/**
  * QuicR extension types (fixed-size immutable extensions for quicr-mac interop)
  * @see docs/quicr-interop-report.md
  */
@@ -134,6 +157,8 @@ export interface LOCVideoOptions {
   outputBuffer?: Uint8Array;
   /** Enable QuicR-Mac interop mode (fixed-size immutable extensions) */
   quicrInterop?: boolean;
+  /** Enable qdroid interop mode (loc-cpp property-based format) */
+  qdroidInterop?: boolean;
   /** VAD data for QuicR interop mode */
   vadData?: VADData;
 }
@@ -152,6 +177,8 @@ export interface LOCAudioOptions {
   outputBuffer?: Uint8Array;
   /** Enable QuicR-Mac interop mode (fixed-size immutable extensions) */
   quicrInterop?: boolean;
+  /** Enable qdroid interop mode (loc-cpp property-based format) */
+  qdroidInterop?: boolean;
   /** VAD data for QuicR interop mode */
   vadData?: VADData;
   /** Participant ID for QuicR interop mode (32-bit) */
@@ -644,6 +671,10 @@ export class LOCPackager {
    * @returns Number of bytes written
    */
   packageVideoInto(buffer: Uint8Array, payload: Uint8Array, options: LOCVideoOptions): number {
+    // qdroid interop mode uses loc-cpp property-based format
+    if (options.qdroidInterop) {
+      return packageQdroidVideoInto(buffer, payload, options);
+    }
     // QuicR interop mode uses fixed-size extensions
     if (options.quicrInterop) {
       return this.packageQuicRVideoInto(buffer, payload, options);
@@ -786,6 +817,10 @@ export class LOCPackager {
    * @returns Number of bytes written
    */
   packageAudioInto(buffer: Uint8Array, payload: Uint8Array, options: LOCAudioOptions = {}): number {
+    // qdroid interop mode uses loc-cpp property-based format
+    if (options.qdroidInterop) {
+      return packageQdroidAudioInto(buffer, payload, options);
+    }
     // QuicR interop mode uses fixed-size extensions
     if (options.quicrInterop) {
       return this.packageQuicRAudioInto(buffer, payload, options);
@@ -1039,7 +1074,12 @@ export class LOCUnpackager {
    * 2. LOC without payload length (for datagram delivery)
    * 3. QuicR interop mode with fixed-size extensions
    */
-  unpackage(packet: Uint8Array, quicrInterop = false): LOCFrame {
+  unpackage(packet: Uint8Array, quicrInterop = false, qdroidInterop = false): LOCFrame {
+    // qdroid interop: loc-cpp property-based format (no header byte)
+    if (qdroidInterop) {
+      return unpackageQdroid(packet);
+    }
+
     const reader = new BufferReader(packet);
 
     // Header byte
@@ -1210,6 +1250,242 @@ export class LOCUnpackager {
     if (packet.length < 1) return MediaType.VIDEO;
     return (packet[0] >> 7) & 0x01;
   }
+}
+
+// ============================================================================
+// qdroid (loc-cpp) Interop Format
+// ============================================================================
+
+/**
+ * Read a QUIC-style varint from a Uint8Array at a given offset.
+ * Returns [value, bytesRead].
+ */
+function readVarintAt(data: Uint8Array, offset: number): [bigint, number] {
+  if (offset >= data.length) throw new Error('readVarintAt: out of bounds');
+  const first = data[offset];
+  const prefix = first >> 6;
+  const len = 1 << prefix; // 1, 2, 4, or 8
+
+  if (offset + len > data.length) throw new Error('readVarintAt: insufficient data');
+
+  let value = BigInt(first & 0x3f);
+  for (let i = 1; i < len; i++) {
+    value = (value << 8n) | BigInt(data[offset + i]);
+  }
+  return [value, len];
+}
+
+/**
+ * Package a video frame in qdroid (loc-cpp) property-based LOC format.
+ *
+ * Wire format: [prop_id(varint) prop_value(varint)]* payload
+ */
+export function packageQdroidVideoInto(
+  buffer: Uint8Array,
+  payload: Uint8Array,
+  options: LOCVideoOptions
+): number {
+  let offset = 0;
+
+  // Write timestamp property: id=6, value=microseconds
+  if (options.captureTimestamp !== undefined) {
+    const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
+    offset += writeVarintAt(buffer, offset, QdroidPropertyId.TIMESTAMP);
+    offset += writeVarintBigIntAt(buffer, offset, timestampMicros);
+  }
+
+  // Write video_frame_marking property: id=4, value=encoded marking
+  // loc-cpp encoding: bit0=independent, bit1=discardable, bit2=base_layer_sync,
+  //                   bits[5:3]=temporal_id, bits[7:6]=spatial_id
+  {
+    let marking = 0;
+    if (options.isKeyframe) marking |= 0x01; // independent
+    if (options.frameMarking?.discardable) marking |= 0x02;
+    if (options.isKeyframe) marking |= 0x04; // base_layer_sync
+    if (options.frameMarking) {
+      marking |= (options.frameMarking.temporalId & 0x07) << 3;
+      marking |= (options.frameMarking.spatialId & 0x03) << 6;
+    }
+    offset += writeVarintAt(buffer, offset, QdroidPropertyId.VIDEO_FRAME_MARKING);
+    offset += writeVarintAt(buffer, offset, marking);
+  }
+
+  // Raw payload (no length prefix in loc-cpp format)
+  buffer.set(payload, offset);
+  offset += payload.byteLength;
+
+  return offset;
+}
+
+/**
+ * Package an audio frame in qdroid (loc-cpp) property-based LOC format.
+ */
+export function packageQdroidAudioInto(
+  buffer: Uint8Array,
+  payload: Uint8Array,
+  options: LOCAudioOptions
+): number {
+  let offset = 0;
+
+  // Write timestamp property: id=6, value=microseconds
+  if (options.captureTimestamp !== undefined) {
+    const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
+    offset += writeVarintAt(buffer, offset, QdroidPropertyId.TIMESTAMP);
+    offset += writeVarintBigIntAt(buffer, offset, timestampMicros);
+  }
+
+  // Write audio_level property: id=10, value=level
+  if (options.audioLevel !== undefined) {
+    const level = options.audioLevel & 0x7f;
+    const va = options.voiceActivity ? 0x80 : 0;
+    offset += writeVarintAt(buffer, offset, QdroidPropertyId.AUDIO_LEVEL);
+    offset += writeVarintAt(buffer, offset, va | level);
+  }
+
+  // Raw payload (no length prefix)
+  buffer.set(payload, offset);
+  offset += payload.byteLength;
+
+  return offset;
+}
+
+/**
+ * Calculate buffer size needed for qdroid video LOC packet.
+ */
+export function calculateQdroidVideoPacketSize(
+  payloadLength: number,
+  options: LOCVideoOptions
+): number {
+  let size = 0;
+  if (options.captureTimestamp !== undefined) {
+    const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
+    size += varintEncodedLength(QdroidPropertyId.TIMESTAMP);
+    size += varintBigIntEncodedLength(timestampMicros);
+  }
+  // video_frame_marking: id + value (both small varints)
+  size += varintEncodedLength(QdroidPropertyId.VIDEO_FRAME_MARKING);
+  size += 1; // marking value fits in 1 byte
+  size += payloadLength;
+  return size;
+}
+
+/**
+ * Calculate buffer size needed for qdroid audio LOC packet.
+ */
+export function calculateQdroidAudioPacketSize(
+  payloadLength: number,
+  options: LOCAudioOptions
+): number {
+  let size = 0;
+  if (options.captureTimestamp !== undefined) {
+    const timestampMicros = BigInt(Math.floor(options.captureTimestamp * 1000));
+    size += varintEncodedLength(QdroidPropertyId.TIMESTAMP);
+    size += varintBigIntEncodedLength(timestampMicros);
+  }
+  if (options.audioLevel !== undefined) {
+    size += varintEncodedLength(QdroidPropertyId.AUDIO_LEVEL);
+    size += 1;
+  }
+  size += payloadLength;
+  return size;
+}
+
+/**
+ * Unpackage a qdroid (loc-cpp) property-based LOC packet.
+ *
+ * Parses [prop_id(varint) prop_value(varint)]* pairs until an unknown
+ * property ID is encountered, then treats the rest as payload.
+ */
+export function unpackageQdroid(packet: Uint8Array): LOCFrame {
+  let offset = 0;
+  let captureTimestamp: number | undefined;
+  let frameMarking: VideoFrameMarking | undefined;
+  let audioLevel: { level: number; voiceActivity: boolean } | undefined;
+  let isKeyframe = false;
+  let mediaType = MediaType.VIDEO; // default; updated if audio_level found
+  let isVideo = false;
+
+  // Parse property pairs
+  while (offset < packet.length) {
+    const savedOffset = offset;
+
+    // Try to read property ID
+    let propId: bigint;
+    let bytesRead: number;
+    try {
+      [propId, bytesRead] = readVarintAt(packet, offset);
+    } catch {
+      // Can't read varint - rest is payload
+      break;
+    }
+
+    const propIdNum = Number(propId);
+    if (!QDROID_KNOWN_PROPERTIES.has(propIdNum)) {
+      // Unknown property - rewind and treat rest as payload
+      offset = savedOffset;
+      break;
+    }
+    offset += bytesRead;
+
+    // Read property value
+    let propValue: bigint;
+    try {
+      [propValue, bytesRead] = readVarintAt(packet, offset);
+    } catch {
+      offset = savedOffset;
+      break;
+    }
+    offset += bytesRead;
+
+    // Interpret property
+    switch (propIdNum) {
+      case QdroidPropertyId.TIMESTAMP:
+        captureTimestamp = Number(propValue) / 1000; // microseconds -> milliseconds
+        break;
+      case QdroidPropertyId.VIDEO_FRAME_MARKING: {
+        isVideo = true;
+        const v = Number(propValue);
+        isKeyframe = (v & 0x01) !== 0; // independent bit
+        frameMarking = {
+          temporalId: (v >> 3) & 0x07,
+          spatialId: (v >> 6) & 0x03,
+          endOfFrame: true,
+          discardable: (v & 0x02) !== 0,
+          baseLayer: (v & 0x04) !== 0,
+        };
+        mediaType = MediaType.VIDEO;
+        break;
+      }
+      case QdroidPropertyId.AUDIO_LEVEL: {
+        const v = Number(propValue);
+        audioLevel = {
+          voiceActivity: (v & 0x80) !== 0,
+          level: v & 0x7f,
+        };
+        mediaType = MediaType.AUDIO;
+        break;
+      }
+      case QdroidPropertyId.TIMESCALE:
+        // Ignore timescale for now
+        break;
+    }
+  }
+
+  // Remaining bytes are the payload
+  const payload = packet.subarray(offset);
+
+  return {
+    header: {
+      mediaType,
+      isKeyframe,
+      sequenceNumber: 0,
+      extensions: [],
+    },
+    payload,
+    captureTimestamp,
+    frameMarking: isVideo ? frameMarking : undefined,
+    audioLevel,
+  };
 }
 
 // ============================================================================
