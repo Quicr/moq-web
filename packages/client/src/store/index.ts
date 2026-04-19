@@ -1123,7 +1123,7 @@ export const useStore = create<AppStore>()(
                 lastGroupId: event.lastGroupId,
               });
 
-              controller.onFetchComplete(controllerRequestId);
+              controller.onFetchComplete(controllerRequestId, event.lastGroupId);
               fetchGroupCounts.delete(controllerRequestId);
               if (unsubscribeFetchComplete) unsubscribeFetchComplete();
             };
@@ -1189,7 +1189,7 @@ export const useStore = create<AppStore>()(
                     // Mark the highest group we actually received as complete
                     const highestGroup = Math.max(...fetchGroups);
                     markGroupComplete(highestGroup);
-                    controller.onFetchComplete(controllerRequestId);
+                    controller.onFetchComplete(controllerRequestId, highestGroup);
                     fetchGroupCounts.delete(controllerRequestId);
                     if (unsubscribeFetchComplete) unsubscribeFetchComplete();
                     log.info('VOD fetch completed via idle detection', {

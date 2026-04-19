@@ -246,13 +246,29 @@ export class VodFetchController {
 
   /**
    * Notify controller that a fetch request completed
+   * @param requestId - The fetch request ID
+   * @param actualLastGroup - The actual last group received (may be less than requested endGroup)
    */
-  onFetchComplete(requestId: number): void {
+  onFetchComplete(requestId: number, actualLastGroup?: number): void {
     const fetch = this.activeFetches.get(requestId);
     if (fetch) {
       fetch.completed = true;
       const durationMs = performance.now() - fetch.startTime;
-      const groupCount = fetch.endGroup - fetch.startGroup + 1;
+
+      // Use actualLastGroup if provided, otherwise fall back to requested endGroup
+      const receivedEndGroup = actualLastGroup ?? fetch.endGroup;
+      const groupCount = receivedEndGroup - fetch.startGroup + 1;
+
+      // Correct fetchedUpToGroup if we received fewer groups than requested
+      if (actualLastGroup !== undefined && actualLastGroup < fetch.endGroup) {
+        log.warn('Fetch received fewer groups than requested', {
+          requestId,
+          requestedEndGroup: fetch.endGroup,
+          actualLastGroup,
+        });
+        // Reset fetchedUpToGroup to actual received, so next fetch starts from right place
+        this.fetchedUpToGroup = actualLastGroup;
+      }
 
       // Track download performance
       this.downloadHistory.push({
