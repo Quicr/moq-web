@@ -69,6 +69,10 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 1280, height: 720 });
 
+  // Playback timing - for pacing frames at correct rate
+  const playbackStartTimeRef = useRef<number>(0); // Wall clock when playback started
+  const firstFrameTimestampRef = useRef<number>(0); // Timestamp of first frame
+
   // Diagnostic metrics refs
   const metricsRef = useRef<VideoRendererMetrics>({
     framesRendered: 0,
@@ -91,7 +95,6 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   // Minimum frames to buffer before INITIAL render (allows reordering window)
   const INITIAL_BUFFER_SIZE = 15;
   // Minimum queue depth to maintain during playback (allows late frames to be sorted)
-  // Keep this small (3-5) to avoid stuttering while still allowing some reorder window
   const MIN_QUEUE_DEPTH = 3;
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds - detect jumps
 
@@ -155,10 +158,11 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     }
   }, [enableDiagnostics, onMetricsUpdate]);
 
-  // Render loop that processes one frame per RAF tick
+  // Render loop with timestamp-based pacing
   const renderLoop = useCallback(() => {
     const canvas = canvasRef.current;
     const queue = frameQueueRef.current;
+    const now = performance.now();
 
     // Initial buffering: wait for enough frames to allow reordering
     if (!hasInitialBufferRef.current) {
@@ -167,7 +171,16 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
         return;
       }
       hasInitialBufferRef.current = true;
-      console.log('[VideoRenderer] Initial buffer filled, starting playback', { queueDepth: queue.length });
+      // Initialize playback timing from first frame
+      const firstFrame = queue[0];
+      if (firstFrame) {
+        playbackStartTimeRef.current = now;
+        firstFrameTimestampRef.current = firstFrame.timestamp;
+      }
+      console.log('[VideoRenderer] Initial buffer filled, starting playback', {
+        queueDepth: queue.length,
+        firstFrameTs: firstFrameTimestampRef.current / 1000,
+      });
     }
 
     // Minimum queue check
@@ -176,30 +189,41 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       return;
     }
 
-    // Get next frame from queue (sorted by timestamp)
-    // Skip closed/invalid frames AND frames older than last rendered (late arrivals)
+    // Calculate current playback position based on elapsed wall-clock time
+    const elapsedMs = now - playbackStartTimeRef.current;
+    const currentPlaybackTs = firstFrameTimestampRef.current + (elapsedMs * 1000); // Convert to microseconds
+
+    // Drop frames that are too old (behind playback position by more than 1 frame)
+    // and find the frame to render
     let currentFrame: VideoFrame | undefined;
     while (queue.length > MIN_QUEUE_DEPTH) {
-      const candidate = queue.shift();
-      if (candidate) {
-        // Check if frame is still valid (not closed)
-        try {
-          void candidate.codedWidth;
+      const candidate = queue[0]; // Peek at head
+      if (!candidate) break;
 
-          // Skip frames that arrived too late (older than last rendered)
-          // This prevents backward jumps and visual stutter
-          if (lastFrameTimestampRef.current > 0 && candidate.timestamp < lastFrameTimestampRef.current) {
-            metricsRef.current.framesDropped++;
-            try { candidate.close(); } catch { /* ignore */ }
-            continue; // Try next frame
-          }
+      try {
+        void candidate.codedWidth; // Check if valid
 
-          currentFrame = candidate;
-          break;
-        } catch {
-          // Frame was closed by upstream, skip it
+        // If frame is way behind playback (> 100ms), drop it
+        if (candidate.timestamp < currentPlaybackTs - 100000) {
+          queue.shift();
           metricsRef.current.framesDropped++;
+          try { candidate.close(); } catch { /* ignore */ }
+          continue;
         }
+
+        // If frame is not yet due, wait
+        if (candidate.timestamp > currentPlaybackTs + 16000) { // 16ms ahead tolerance
+          rafIdRef.current = requestAnimationFrame(renderLoop);
+          return;
+        }
+
+        // Frame is ready to render
+        queue.shift();
+        currentFrame = candidate;
+        break;
+      } catch {
+        queue.shift();
+        metricsRef.current.framesDropped++;
       }
     }
 
