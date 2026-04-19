@@ -42,6 +42,8 @@ interface TrackConfig {
   vodProgress?: VODLoadProgress;
   vodPlaybackUrl?: string;
   vodIsPlaying?: boolean;
+  /** Fetch-only mode: if true, don't auto-stream - wait for FETCH requests */
+  fetchOnly?: boolean;
 }
 
 // Collapsible Section Component
@@ -339,6 +341,7 @@ export const PublishPanel: React.FC = () => {
         const publishOptions = loader.getPublishOptions();
 
         // Publish VOD track
+        // Default to fetchOnly mode for smoother playback (subscriber controls pacing via FETCH)
         const trackAlias = await session.publishVOD(
           config.namespace.split('/'),
           config.trackName,
@@ -347,6 +350,7 @@ export const PublishPanel: React.FC = () => {
             priority: config.priority,
             deliveryTimeout: config.deliveryTimeout,
             deliveryMode: config.deliveryMode,
+            fetchOnly: config.fetchOnly ?? true, // Default to fetch-only for VOD
           }
         );
 

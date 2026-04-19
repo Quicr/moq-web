@@ -1966,12 +1966,19 @@ export class MOQTSession {
     };
     this.publicationManager.add(publication);
 
-    // Always start VOD auto-stream - it will wait for forward=1 if needed
-    log.info('Starting VOD auto-stream', {
-      trackAlias: trackAlias.toString(),
-      initialForward: publishOkResult.forward,
-    });
-    this.startVODAutoStream(trackAlias, options);
+    // Start VOD auto-stream unless fetchOnly mode is enabled
+    // In fetchOnly mode, content is only delivered via FETCH requests
+    if (!options.fetchOnly) {
+      log.info('Starting VOD auto-stream', {
+        trackAlias: trackAlias.toString(),
+        initialForward: publishOkResult.forward,
+      });
+      this.startVODAutoStream(trackAlias, options);
+    } else {
+      log.info('VOD fetchOnly mode - waiting for FETCH requests', {
+        trackAlias: trackAlias.toString(),
+      });
+    }
 
     log.info('VOD publishing started', { trackAlias: trackAlias.toString() });
     return trackAlias;

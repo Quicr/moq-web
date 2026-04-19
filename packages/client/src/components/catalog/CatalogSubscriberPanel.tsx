@@ -822,15 +822,43 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                         </div>
                       </div>
 
-                      {/* Subscribe Button */}
+                      {/* Subscribe/Fetch Buttons - for VOD tracks, show both options as mutually exclusive */}
                       {(trackType === 'video' || trackType === 'audio') && (
-                        <button
-                          onClick={() => handleTrackSubscribe(track)}
-                          disabled={isSubscribed}
-                          className={`btn-sm ${isSubscribed ? 'btn-success opacity-60' : 'btn-primary'}`}
-                        >
-                          {isSubscribed ? 'Subscribed' : 'Subscribe'}
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {/* For VOD (isLive === false), show Subscribe and Fetch as separate options */}
+                          {track.isLive === false ? (
+                            <>
+                              <button
+                                onClick={() => handleTrackSubscribe(track)}
+                                disabled={isSubscribed || fetchPlaybackState.get(track.name)?.isActive}
+                                className={`btn-sm ${isSubscribed ? 'btn-success opacity-60' : 'btn-secondary'}`}
+                                title="Push-based delivery (may have jitter)"
+                              >
+                                {isSubscribed ? 'Subscribed' : 'Subscribe'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  // Use default settings for quick fetch start
+                                  handleFetchPlayback(track, 3, 128, 0);
+                                }}
+                                disabled={isSubscribed || fetchPlaybackState.get(track.name)?.isActive}
+                                className={`btn-sm ${fetchPlaybackState.get(track.name)?.isActive ? 'btn-success opacity-60' : 'btn-primary'}`}
+                                title="Pull-based delivery (smoother playback)"
+                              >
+                                {fetchPlaybackState.get(track.name)?.isActive ? 'Fetching' : 'Fetch'}
+                              </button>
+                            </>
+                          ) : (
+                            /* For Live tracks, only show Subscribe */
+                            <button
+                              onClick={() => handleTrackSubscribe(track)}
+                              disabled={isSubscribed}
+                              className={`btn-sm ${isSubscribed ? 'btn-success opacity-60' : 'btn-primary'}`}
+                            >
+                              {isSubscribed ? 'Subscribed' : 'Subscribe'}
+                            </button>
+                          )}
+                        </div>
                       )}
                       {trackType === 'subtitle' && (
                         <>

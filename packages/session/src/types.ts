@@ -435,6 +435,13 @@ export interface VODPublishOptions extends PublishOptions {
   objectsPerGroup?: number;
   /** Max cache duration in milliseconds - tells relay how long to cache content (default: 60000ms = 1 minute) */
   maxCacheDuration?: number;
+  /**
+   * Fetch-only mode: if true, don't auto-stream via SUBSCRIBE.
+   * Content will only be delivered in response to FETCH requests.
+   * This provides smoother VOD playback as subscriber controls pacing.
+   * Default: false (auto-stream enabled for backward compatibility)
+   */
+  fetchOnly?: boolean;
 }
 
 /**
