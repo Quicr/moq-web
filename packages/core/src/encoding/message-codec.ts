@@ -2234,32 +2234,46 @@ export class MessageCodec {
 
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
-    writer.writeVarInt(message.groupOrder);
-    writer.writeByte(message.endOfTrack ? 1 : 0);
-    writer.writeVarInt(message.largestGroupId);
-    writer.writeVarInt(message.largestObjectId);
     if (IS_DRAFT_16) {
-      // Draft-16: Parameters at the end (even if empty, count must be present)
+      // Draft-16 FETCH_OK: requestId | numParams | [params...]
+      // Only requestId + parameters on the wire
       writer.writeVarInt(0); // Number of parameters
+    } else {
+      // Pre-draft-16: full fields
+      writer.writeVarInt(message.groupOrder);
+      writer.writeByte(message.endOfTrack ? 1 : 0);
+      writer.writeVarInt(message.largestGroupId);
+      writer.writeVarInt(message.largestObjectId);
     }
   }
 
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
     const requestId = reader.readVarIntNumber();
-    const groupOrder = reader.readVarIntNumber() as GroupOrder;
-    const endOfTrack = reader.readByte() === 1;
-    const largestGroupId = reader.readVarIntNumber();
-    const largestObjectId = reader.readVarIntNumber();
 
     if (IS_DRAFT_16) {
-      // Draft-16: Parameters at the end
+      // Draft-16 FETCH_OK: requestId | numParams | [params...]
       const numParams = reader.readVarIntNumber();
       for (let i = 0; i < numParams; i++) {
         reader.readVarIntNumber(); // key
         const valueLen = reader.readVarIntNumber();
         reader.readBytes(valueLen); // value
       }
+      // Return with defaults for fields not on wire
+      return {
+        type: MessageType.FETCH_OK,
+        requestId,
+        groupOrder: GroupOrder.ASCENDING,
+        endOfTrack: false,
+        largestGroupId: 0,
+        largestObjectId: 0,
+      };
     }
+
+    // Pre-draft-16: full fields on wire
+    const groupOrder = reader.readVarIntNumber() as GroupOrder;
+    const endOfTrack = reader.readByte() === 1;
+    const largestGroupId = reader.readVarIntNumber();
+    const largestObjectId = reader.readVarIntNumber();
 
     return {
       type: MessageType.FETCH_OK,
