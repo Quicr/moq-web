@@ -64,6 +64,10 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 1280, height: 720 });
 
+  // B-frame reorder buffer - sort frames by timestamp before rendering
+  const reorderBufferRef = useRef<VideoFrame[]>([]);
+  const REORDER_BUFFER_SIZE = 3; // Buffer 3 frames to allow B-frame reordering
+
   // Diagnostic metrics refs
   const metricsRef = useRef<VideoRendererMetrics>({
     framesRendered: 0,
@@ -84,21 +88,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds
 
-  // Render frame immediately when it arrives
+  // Render frame with B-frame reordering
   useEffect(() => {
     if (!frame) return;
-
-    const canvas = canvasRef.current;
-    if (!canvas) {
-      try { frame.close(); } catch { /* ignore */ }
-      return;
-    }
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      try { frame.close(); } catch { /* ignore */ }
-      return;
-    }
 
     // Check if frame is valid
     try {
@@ -108,9 +100,36 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       return;
     }
 
+    // Add to reorder buffer
+    const buffer = reorderBufferRef.current;
+    buffer.push(frame);
+
+    // Sort buffer by timestamp (presentation order)
+    buffer.sort((a, b) => a.timestamp - b.timestamp);
+
+    // Only render when buffer has enough frames
+    if (buffer.length < REORDER_BUFFER_SIZE) {
+      return;
+    }
+
+    // Take the oldest frame (lowest timestamp)
+    const frameToRender = buffer.shift()!;
+
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      try { frameToRender.close(); } catch { /* ignore */ }
+      return;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      try { frameToRender.close(); } catch { /* ignore */ }
+      return;
+    }
+
     // Update canvas size to match frame if needed
-    const frameWidth = frame.displayWidth || frame.codedWidth;
-    const frameHeight = frame.displayHeight || frame.codedHeight;
+    const frameWidth = frameToRender.displayWidth || frameToRender.codedWidth;
+    const frameHeight = frameToRender.displayHeight || frameToRender.codedHeight;
 
     if (canvas.width !== frameWidth || canvas.height !== frameHeight) {
       canvas.width = frameWidth;
@@ -120,8 +139,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
     // Draw the frame
     try {
-      ctx.drawImage(frame, 0, 0);
+      ctx.drawImage(frameToRender, 0, 0);
       metricsRef.current.framesRendered++;
+      metricsRef.current.framesQueued = buffer.length;
 
       // Track render intervals for diagnostics
       const now = performance.now();
@@ -137,7 +157,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       lastRenderTimeRef.current = now;
 
       // Detect frame jumps (non-sequential timestamps)
-      const frameTs = frame.timestamp;
+      const frameTs = frameToRender.timestamp;
       if (lastFrameTimestampRef.current > 0 && frameTs > 0) {
         const tsDiff = frameTs - lastFrameTimestampRef.current;
         if (tsDiff < 0) {
@@ -171,14 +191,14 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       }
 
       // Close the previous frame AFTER successfully drawing the new one
-      if (lastRenderedFrameRef.current && lastRenderedFrameRef.current !== frame) {
+      if (lastRenderedFrameRef.current && lastRenderedFrameRef.current !== frameToRender) {
         try {
           lastRenderedFrameRef.current.close();
         } catch {
           // Frame may already be closed
         }
       }
-      lastRenderedFrameRef.current = frame;
+      lastRenderedFrameRef.current = frameToRender;
 
       // Log stats every 30 frames
       if (enableDiagnostics && metricsRef.current.framesRendered % 30 === 0) {
@@ -189,6 +209,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
           avgInterval: metricsRef.current.avgRenderInterval.toFixed(1) + 'ms',
           targetInterval: (1000 / framerate).toFixed(1) + 'ms',
           timestamp: frameTs,
+          reorderBuffer: buffer.length,
         });
       }
 
@@ -198,7 +219,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       }
     } catch (err) {
       console.error('[VideoRenderer] Error drawing frame', err);
-      try { frame.close(); } catch { /* ignore */ }
+      try { frameToRender.close(); } catch { /* ignore */ }
     }
   }, [frame, enableDiagnostics, onMetricsUpdate, framerate, hasReceivedFrame]);
 
@@ -208,6 +229,11 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       if (lastRenderedFrameRef.current) {
         try { lastRenderedFrameRef.current.close(); } catch { /* ignore */ }
       }
+      // Clean up reorder buffer
+      for (const f of reorderBufferRef.current) {
+        try { f.close(); } catch { /* ignore */ }
+      }
+      reorderBufferRef.current = [];
     };
   }, []);
 
