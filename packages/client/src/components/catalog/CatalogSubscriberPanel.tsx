@@ -230,12 +230,9 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       if (msfSessionRef.current) {
         msfSessionRef.current.close().catch(console.error);
       }
-      // Close any remaining video frames
-      videoFrames.forEach(frame => {
-        if (frame) {
-          try { frame.close(); } catch { /* already closed */ }
-        }
-      });
+      // Note: Don't close video frames here - VideoRenderer handles cleanup
+      // in its own useEffect cleanup. The frames in videoFrames map may still
+      // be queued in VideoRenderer waiting to be rendered.
     };
   }, []);
 
@@ -267,11 +264,9 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
         setFrames(prev => {
           const newMap = new Map(prev);
-          // Close previous frame to avoid memory leak
-          const oldFrame = newMap.get(trackName);
-          if (oldFrame) {
-            try { oldFrame.close(); } catch { /* already closed */ }
-          }
+          // Don't close previous frame here - VideoRenderer manages frame lifecycle
+          // via its queue. Closing here causes black frames when the renderer
+          // tries to draw a frame that was already closed.
           newMap.set(trackName, frame);
           return newMap;
         });
