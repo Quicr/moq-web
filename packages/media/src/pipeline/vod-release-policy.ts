@@ -71,9 +71,9 @@ export interface VodReleasePolicyConfig {
  * Default VOD policy configuration
  */
 export const DEFAULT_VOD_POLICY_CONFIG: VodReleasePolicyConfig = {
-  minBufferFrames: 30, // ~1 GOP at 30fps, ~0.5s at 60fps
+  minBufferFrames: 5, // Small initial buffer - start quickly
   rebufferThreshold: 0, // Disabled - let frames play as they arrive, no rebuffering pauses
-  waitForCompleteGop: true,
+  waitForCompleteGop: false, // Don't wait for complete GOP - stream frames as they arrive
   maxWaitTimeMs: Infinity,
   targetFramerate: 30,
   enablePacing: true,
