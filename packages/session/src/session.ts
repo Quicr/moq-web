@@ -2220,6 +2220,12 @@ export class MOQTSession {
       endGroup,
       endObject,
       objectsPerGroup,
+      objectsPerGroupSource: vodOptions.objectsPerGroup,
+    });
+    console.log('[FETCH] Sending objects', {
+      requestId,
+      range: `group ${startGroup}-${endGroup}, objects 0-${objectsPerGroup - 1}`,
+      objectsPerGroup,
     });
 
     try {
