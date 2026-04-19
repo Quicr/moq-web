@@ -259,16 +259,16 @@ export class VodFetchController {
       const receivedEndGroup = actualLastGroup ?? fetch.endGroup;
       const groupCount = receivedEndGroup - fetch.startGroup + 1;
 
-      // Correct fetchedUpToGroup if we received fewer groups than requested
+      // Update fetchedUpToGroup based on what was actually received
+      // (we no longer set this optimistically when issuing the fetch)
       if (actualLastGroup !== undefined && actualLastGroup < fetch.endGroup) {
         log.warn('Fetch received fewer groups than requested', {
           requestId,
           requestedEndGroup: fetch.endGroup,
           actualLastGroup,
         });
-        // Reset fetchedUpToGroup to actual received, so next fetch starts from right place
-        this.fetchedUpToGroup = actualLastGroup;
       }
+      this.fetchedUpToGroup = Math.max(this.fetchedUpToGroup, receivedEndGroup);
 
       // Track download performance
       this.downloadHistory.push({
@@ -534,12 +534,20 @@ export class VodFetchController {
       return;
     }
 
+    // Find the highest endGroup among active (in-flight) fetches
+    let highestInFlightGroup = this.fetchedUpToGroup;
+    for (const fetch of this.activeFetches.values()) {
+      if (!fetch.completed) {
+        highestInFlightGroup = Math.max(highestInFlightGroup, fetch.endGroup);
+      }
+    }
+
     // Calculate how far ahead we should be (use adaptive value)
     const targetFetchGroup = this.playbackGroup + this.adaptiveFetchAhead;
 
-    // If we haven't fetched up to target, issue fetch
-    if (this.fetchedUpToGroup < targetFetchGroup) {
-      const startGroup = this.fetchedUpToGroup + 1;
+    // If we haven't fetched (or have in-flight) up to target, issue fetch
+    if (highestInFlightGroup < targetFetchGroup) {
+      const startGroup = highestInFlightGroup + 1;
       // Fetch more groups at once if network is slow
       const fetchBatch = this.avgGroupDownloadMs > this.config.gopDurationMs
         ? Math.min(this.gopsPerFetch * 2, 8)  // Double batch size, cap at 8 GOPs
@@ -569,7 +577,8 @@ export class VodFetchController {
     };
 
     this.activeFetches.set(requestId, fetchRequest);
-    this.fetchedUpToGroup = Math.max(this.fetchedUpToGroup, endGroup);
+    // Don't optimistically set fetchedUpToGroup here - wait for onFetchComplete
+    // to know what was actually received (relay may deliver fewer groups)
 
     log.info('Issuing FETCH', {
       requestId,
