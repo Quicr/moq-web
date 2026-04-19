@@ -300,6 +300,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
           frame={frame}
           enableDiagnostics={enableDiagnostics}
           onMetricsUpdate={handleMetricsUpdate}
+          framerate={framerate}
         />
 
         {/* Seeking Overlay */}

@@ -43,6 +43,8 @@ interface VideoRendererProps {
   enableDiagnostics?: boolean;
   /** Callback for metrics updates */
   onMetricsUpdate?: (metrics: VideoRendererMetrics) => void;
+  /** Framerate from catalog for proper pacing (default: 30) */
+  framerate?: number;
 }
 
 /**
@@ -58,6 +60,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   className = '',
   enableDiagnostics = false,
   onMetricsUpdate,
+  framerate = 30,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -182,8 +185,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       return;
     }
 
-    // Fixed-rate pacing: render one frame per ~33ms (30fps)
-    const TARGET_FRAME_INTERVAL = 33; // ms
+    // Fixed-rate pacing: render one frame per interval based on catalog framerate
+    const TARGET_FRAME_INTERVAL = 1000 / framerate; // ms per frame
     const timeSinceLastRender = now - lastRenderTimeRef.current;
     if (lastRenderTimeRef.current > 0 && timeSinceLastRender < TARGET_FRAME_INTERVAL) {
       rafIdRef.current = requestAnimationFrame(renderLoop);
@@ -325,7 +328,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       isRenderingRef.current = false;
       rafIdRef.current = null;
     }
-  }, [enableDiagnostics, hasReceivedFrame, updateMetrics]);
+  }, [enableDiagnostics, hasReceivedFrame, updateMetrics, framerate]);
 
   // Start render loop if not already running
   const ensureRenderLoop = useCallback(() => {
