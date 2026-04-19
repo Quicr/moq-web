@@ -2238,9 +2238,10 @@ export class MessageCodec {
     writer.writeByte(message.endOfTrack ? 1 : 0);
     writer.writeVarInt(message.largestGroupId);
     writer.writeVarInt(message.largestObjectId);
-    // Note: Draft-16 FETCH_OK does NOT have a parameters section
-    // The relay MoQFramer.cpp:620 error "Unknown parameter key 0 in v16+"
-    // indicates parameters are parsed elsewhere in the protocol, not here
+    if (IS_DRAFT_16) {
+      // Draft-16: Parameters at the end (even if empty, count must be present)
+      writer.writeVarInt(0); // Number of parameters
+    }
   }
 
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
@@ -2249,7 +2250,16 @@ export class MessageCodec {
     const endOfTrack = reader.readByte() === 1;
     const largestGroupId = reader.readVarIntNumber();
     const largestObjectId = reader.readVarIntNumber();
-    // Note: Draft-16 FETCH_OK does NOT have a parameters section
+
+    if (IS_DRAFT_16) {
+      // Draft-16: Parameters at the end
+      const numParams = reader.readVarIntNumber();
+      for (let i = 0; i < numParams; i++) {
+        reader.readVarIntNumber(); // key
+        const valueLen = reader.readVarIntNumber();
+        reader.readBytes(valueLen); // value
+      }
+    }
 
     return {
       type: MessageType.FETCH_OK,
