@@ -392,7 +392,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
                 </div>
                 <div className="text-white/50">Jumps</div>
                 <div className={`font-medium ${rendererMetrics.frameJumps > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>
-                  {rendererMetrics.frameJumps}
+                  {rendererMetrics.frameJumps} ({rendererMetrics.backwardJumps}↓ {rendererMetrics.forwardJumps}↑)
                 </div>
                 <div className="text-white/50">FPS</div>
                 <div className="text-white/80 font-medium">
