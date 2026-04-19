@@ -1565,7 +1565,7 @@ export class MessageCodec {
       // Request ID, Full Track Name, Track Alias, Parameters, [Track Extensions]
       const requestId = reader.readVarIntNumber();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
-      const trackAlias = reader.readVarIntNumber();
+      const trackAlias = reader.readVarInt(); // BigInt - relay may send 64-bit aliases
       const parameters = MessageCodec.decodeRequestParameters(reader);
 
       // Read track extensions only if there are at least 2 bytes remaining (minimum for valid extension)
@@ -1627,7 +1627,7 @@ export class MessageCodec {
       // [Largest Location], Forward (8), Parameters
       const requestId = reader.readVarIntNumber();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
-      const trackAlias = reader.readVarIntNumber();
+      const trackAlias = reader.readVarInt(); // BigInt - relay may send 64-bit aliases
       const groupOrder = reader.readByte() as GroupOrder;
       const contentExists = reader.readByte() === 1;
 
