@@ -354,74 +354,40 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
 
   channel.videoDecoder = new VideoDecoder({
     output: (frame) => {
-      // B-frame reorder buffer: WebCodecs outputs frames in decode order,
-      // but H.264/HEVC with B-frames need presentation order reordering.
-      // Buffer frames and emit in timestamp order with a small delay.
+      // Send decoded frame immediately
+      // WebCodecs VideoDecoder handles B-frame reordering internally
       const meta = channel.currentVideoMeta;
       const now = performance.now();
-      const ts = frame.timestamp;
 
-      // Add to reorder buffer
-      channel.frameReorderBuffer.push({
-        frame,
-        groupId: meta?.groupId ?? 0,
-        objectId: meta?.objectId ?? 0,
-        timestamp: ts,
-        arrivedAt: meta?.arrivedAt ?? now,
-      });
-
-      // Sort by timestamp (presentation order)
-      channel.frameReorderBuffer.sort((a, b) => a.timestamp - b.timestamp);
-
-      // Reorder buffer depth: wait for 3 frames before emitting
-      // This allows B-frames to be reordered (typical B-frame distance is 1-2)
-      const REORDER_BUFFER_DEPTH = 3;
-
-      // Emit frames that are ready (have enough frames after them)
-      while (channel.frameReorderBuffer.length > REORDER_BUFFER_DEPTH) {
-        const ready = channel.frameReorderBuffer.shift()!;
-
-        // Skip frames with timestamps we've already emitted (shouldn't happen but safety check)
-        if (channel.lastEmittedTimestamp >= 0 && ready.timestamp < channel.lastEmittedTimestamp) {
-          log(`Skipping out-of-order frame after reorder buffer`, {
-            frameTs: ready.timestamp,
-            lastEmitted: channel.lastEmittedTimestamp,
-          });
-          try { ready.frame.close(); } catch { /* ignore */ }
-          continue;
-        }
-        channel.lastEmittedTimestamp = ready.timestamp;
-
-        respond(
-          {
-            type: 'video-frame',
-            channelId: channel.channelId,
-            result: {
-              frame: ready.frame,
-              groupId: ready.groupId,
-              objectId: ready.objectId,
-              timestamp: ready.timestamp,
-            },
+      respond(
+        {
+          type: 'video-frame',
+          channelId: channel.channelId,
+          result: {
+            frame,
+            groupId: meta?.groupId ?? 0,
+            objectId: meta?.objectId ?? 0,
+            timestamp: frame.timestamp,
           },
-          [ready.frame]
-        );
+        },
+        [frame]
+      );
 
-        // Emit latency stats if enabled
-        if (channel.enableStats) {
-          const processingDelay = now - ready.arrivedAt;
-          const bufferDepth = channel.videoBuffer?.size ?? 0;
-          const bufferDelay = channel.videoBuffer?.delay ?? 0;
-          const bufferStats = channel.videoBuffer?.getStats();
-          const framesDropped = bufferStats?.framesDropped ?? 0;
-          const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
-          const framesOutOfOrder = channel.framesOutOfOrder;
-          log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
-          respond({
-            type: 'latency-stats',
-            channelId: channel.channelId,
-            stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
-          });
-        }
+      // Emit latency stats if enabled
+      if (channel.enableStats && meta?.arrivedAt) {
+        const processingDelay = now - meta.arrivedAt;
+        const bufferDepth = channel.videoBuffer?.size ?? 0;
+        const bufferDelay = channel.videoBuffer?.delay ?? 0;
+        const bufferStats = channel.videoBuffer?.getStats();
+        const framesDropped = bufferStats?.framesDropped ?? 0;
+        const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
+        const framesOutOfOrder = channel.framesOutOfOrder;
+        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
+        respond({
+          type: 'latency-stats',
+          channelId: channel.channelId,
+          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
+        });
       }
     },
     error: (err) => {
