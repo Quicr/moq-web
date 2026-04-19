@@ -23,6 +23,7 @@ import {
   createVodFetchController,
   type VodFetchController,
 } from '@web-moq/media';
+import { parseQdroidCatalog } from '@web-moq/msf';
 import { TransportState, LogLevel } from '../types';
 import { isDebugMode } from '../components/common/DevSettingsPanel';
 
@@ -732,6 +733,53 @@ export const useStore = create<AppStore>()(
               trackType,
               trackAlias: event.trackAlias.toString(),
             });
+
+            // qdroid interop: auto-handle catalog and media tracks
+            if (get().qdroidInteropEnabled) {
+              if (trackType === 'catalog') {
+                // Set up object callback to receive and parse catalog data
+                log.info('[qdroid-interop] Catalog track discovered, setting up object handler', {
+                  subscriptionId: event.subscriptionId,
+                });
+                let catalogParsed = false;
+                session.setSubscriptionCallback(event.subscriptionId, (data: Uint8Array) => {
+                  if (catalogParsed) return; // Only parse first catalog
+                  try {
+                    // Catalog may be LOC-wrapped (qdroid wraps it) - try to strip LOC properties
+                    // or it may be raw JSON. Try raw first.
+                    let json: string;
+                    const rawStr = new TextDecoder().decode(data);
+                    if (rawStr.trimStart().startsWith('{')) {
+                      json = rawStr;
+                    } else {
+                      // LOC-wrapped: skip property pairs until we hit JSON
+                      const jsonStart = rawStr.indexOf('{');
+                      json = jsonStart >= 0 ? rawStr.substring(jsonStart) : rawStr;
+                    }
+                    log.info('[qdroid-interop] Received catalog', { size: data.length, jsonPreview: json.substring(0, 200) });
+
+                    const catalog = parseQdroidCatalog(json);
+                    catalogParsed = true;
+                    log.info('[qdroid-interop] Parsed catalog', {
+                      version: catalog.version,
+                      trackCount: catalog.tracks?.length,
+                      tracks: catalog.tracks?.map(t => `${t.name} (${(t as Record<string, unknown>).codec})`),
+                    });
+
+                    // Auto-subscribe to parent namespace for media track discovery
+                    // cisco.webex.com/nab/v1 (first 3 tuples of catalog namespace)
+                    const parentNsStr = event.namespace.slice(0, 3).join('/');
+                    log.info('[qdroid-interop] Auto-subscribing to namespace for media discovery', { parentNsStr });
+                    const mediaPanelId = get().addNamespacePanel(parentNsStr);
+                    if (mediaPanelId) {
+                      get().startNamespaceSubscription(mediaPanelId);
+                    }
+                  } catch (err) {
+                    log.error('[qdroid-interop] Failed to parse catalog', { error: (err as Error).message });
+                  }
+                });
+              }
+            }
           });
 
           set({ session, sessionState: 'setup' });

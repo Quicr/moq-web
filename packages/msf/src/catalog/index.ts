@@ -15,6 +15,10 @@ export {
   parseDeltaCatalog,
   tryParseCatalog,
   parseCatalogFromBytes,
+  parseQdroidCatalog,
+  parseQdroidCatalogFromBytes,
+  decodeQdroidNamespace,
+  normalizeQdroidCatalog,
 } from './parser.js';
 
 export {
