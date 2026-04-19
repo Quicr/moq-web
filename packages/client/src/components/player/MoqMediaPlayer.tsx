@@ -400,6 +400,12 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
                     ? Math.round(1000 / rendererMetrics.avgRenderInterval)
                     : '-'}
                 </div>
+                <div className="text-white/50">Last TS</div>
+                <div className="text-white/80 font-medium text-[8px]">
+                  {rendererMetrics.lastFrameTimestamp > 0
+                    ? `${(rendererMetrics.lastFrameTimestamp / 1000).toFixed(0)}ms`
+                    : '-'}
+                </div>
               </div>
             </div>
           </div>
