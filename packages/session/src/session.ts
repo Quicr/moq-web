@@ -2188,7 +2188,12 @@ export class MOQTSession {
 
     const fetchOkBytes = MessageCodec.encode(fetchOk);
     await this.doSendControl(fetchOkBytes);
-    log.info('Sent FETCH_OK', { requestId: message.requestId });
+    log.info('Sent FETCH_OK', {
+      requestId: message.requestId,
+      largestGroupId: fetchOk.largestGroupId,
+      largestObjectId: fetchOk.largestObjectId,
+      encodedLength: fetchOkBytes.length,
+    });
 
     // Create a stream to send the fetched objects
     await this.sendFetchedObjects(message, vodOptions);
