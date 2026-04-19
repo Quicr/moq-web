@@ -1176,31 +1176,32 @@ export const useStore = create<AppStore>()(
                   }
                 }
 
-                // For the last group in the range, use idle detection instead of fixed timeout
-                // Large 4K keyframes (170KB+) can take >100ms to transfer
-                if (groupId === endGroup) {
-                  // Reset idle timer on each object received for the last group
-                  if ((globalThis as Record<string, unknown>).__vodFetchIdleTimer) {
-                    clearTimeout((globalThis as Record<string, unknown>).__vodFetchIdleTimer as ReturnType<typeof setTimeout>);
-                  }
-                  // Mark complete after 500ms of no data (accounts for large keyframes)
-                  (globalThis as Record<string, unknown>).__vodFetchIdleTimer = setTimeout(() => {
-                    // Only complete if we haven't already (via fetch-stream-complete)
-                    if (listenerActive) {
-                      listenerActive = false;
-                      markGroupComplete(groupId);
-                      controller.onFetchComplete(controllerRequestId);
-                      fetchGroupCounts.delete(controllerRequestId);
-                      if (unsubscribeFetchComplete) unsubscribeFetchComplete();
-                      log.info('VOD fetch completed via idle detection', {
-                        controllerRequestId,
-                        sessionRequestId,
-                        lastGroup: groupId,
-                        lastObjectId: lastObjectIdByGroup.get(groupId),
-                      });
-                    }
-                  }, 500);
+                // Use idle detection to handle incomplete FETCH streams
+                // Relay may not deliver all requested groups, or stream may not close properly
+                // Reset timer on every object; complete after 500ms of silence
+                if ((globalThis as Record<string, unknown>).__vodFetchIdleTimer) {
+                  clearTimeout((globalThis as Record<string, unknown>).__vodFetchIdleTimer as ReturnType<typeof setTimeout>);
                 }
+                (globalThis as Record<string, unknown>).__vodFetchIdleTimer = setTimeout(() => {
+                  // Only complete if we haven't already (via fetch-stream-complete)
+                  if (listenerActive) {
+                    listenerActive = false;
+                    // Mark the highest group we actually received as complete
+                    const highestGroup = Math.max(...fetchGroups);
+                    markGroupComplete(highestGroup);
+                    controller.onFetchComplete(controllerRequestId);
+                    fetchGroupCounts.delete(controllerRequestId);
+                    if (unsubscribeFetchComplete) unsubscribeFetchComplete();
+                    log.info('VOD fetch completed via idle detection', {
+                      controllerRequestId,
+                      sessionRequestId,
+                      requestedEndGroup: endGroup,
+                      actualLastGroup: highestGroup,
+                      lastObjectId: lastObjectIdByGroup.get(highestGroup),
+                      groupsReceived: Array.from(fetchGroups).sort((a, b) => a - b),
+                    });
+                  }
+                }, 500);
 
                 // Push data to decode pipeline (created above)
                 const timestamp = performance.now() * 1000; // microseconds
