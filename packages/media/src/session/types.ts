@@ -165,6 +165,8 @@ export interface MediaConfig {
   quicrInteropEnabled?: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId?: number;
+  /** Enable qdroid interop mode (loc-cpp property-based LOC format) */
+  qdroidInteropEnabled?: boolean;
 
   // Video decoder config override (from catalog track info)
   /** Override video decoder configuration instead of using videoResolution preset */

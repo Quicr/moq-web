@@ -440,6 +440,7 @@ interface SettingsSlice {
   setSecureObjectsBaseKey: (value: string) => void;
   setQuicrInteropEnabled: (value: boolean) => void;
   setQuicrParticipantId: (value: number) => void;
+  setQdroidInteropEnabled: (value: boolean) => void;
   setVodPublishEnabled: (value: boolean) => void;
   /** Apply an experience profile (sets all related settings) */
   applyExperienceProfile: (profile: ExperienceProfileName) => void;
