@@ -1090,12 +1090,23 @@ export const useStore = create<AppStore>()(
 
             // Variable to store the session's requestId (set after fetch() returns)
             let sessionRequestId: number | null = null;
+            // Queue to store events that arrive before sessionRequestId is set
+            let pendingEvents: { requestId: number }[] = [];
+            let listenerActive = true;
 
-            // Set up fetch-complete listener BEFORE issuing fetch
-            // Use a closure variable that gets updated after fetch() returns
-            unsubscribeFetchComplete = session.getMOQTSession().on('fetch-complete', (event: { requestId: number }) => {
-              // Match against session's requestId, not controller's
-              if (sessionRequestId === null || event.requestId !== sessionRequestId) return;
+            const handleFetchComplete = (event: { requestId: number }) => {
+              if (!listenerActive) return;
+
+              // If sessionRequestId not yet set, queue the event
+              if (sessionRequestId === null) {
+                pendingEvents.push(event);
+                return;
+              }
+
+              // Match against session's requestId
+              if (event.requestId !== sessionRequestId) return;
+
+              listenerActive = false;
 
               // Now that all objects have arrived, mark groups complete
               for (const g of fetchGroups) {
@@ -1114,7 +1125,10 @@ export const useStore = create<AppStore>()(
               controller.onFetchComplete(controllerRequestId);
               fetchGroupCounts.delete(controllerRequestId);
               if (unsubscribeFetchComplete) unsubscribeFetchComplete();
-            });
+            };
+
+            // Set up fetch-complete listener BEFORE issuing fetch
+            unsubscribeFetchComplete = session.getMOQTSession().on('fetch-complete', handleFetchComplete);
 
             // Issue fetch and capture the session's requestId
             sessionRequestId = await moqtSession.fetch(
@@ -1165,6 +1179,12 @@ export const useStore = create<AppStore>()(
             );
 
             log.info('VOD fetch issued', { controllerRequestId, sessionRequestId, startGroup, endGroup });
+
+            // Process any events that arrived while we were waiting for fetch() to return
+            for (const event of pendingEvents) {
+              handleFetchComplete(event);
+            }
+            pendingEvents = [];
           } catch (err) {
             log.error('VOD fetch error', { controllerRequestId, error: (err as Error).message });
             fetchGroupCounts.delete(controllerRequestId);
