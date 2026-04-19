@@ -1076,10 +1076,39 @@ export const useStore = create<AppStore>()(
             bytesReceived: 0,
           });
 
+          // Declare unsubscribe function outside try for cleanup in catch
+          let unsubscribeFetchComplete: (() => void) | undefined;
+
           try {
             // Get the MOQT session to issue fetch
             const moqtSession = session.getMOQTSession();
             const fetchStartTime = performance.now();
+
+            // Track groups received in this specific fetch for marking complete
+            const fetchGroups = new Set<number>();
+            let lastObjectIdByGroup = new Map<number, number>();
+
+            // Set up fetch-complete listener BEFORE issuing fetch
+            unsubscribeFetchComplete = session.getMOQTSession().on('fetch-complete', (event: { requestId: number }) => {
+              if (event.requestId !== requestId) return;
+
+              // Now that all objects have arrived, mark groups complete
+              for (const g of fetchGroups) {
+                markGroupComplete(g);
+              }
+
+              const fetchDuration = performance.now() - fetchStartTime;
+              log.info('VOD fetch completed (fetch-complete event)', {
+                requestId,
+                durationMs: Math.round(fetchDuration),
+                groupsReceived: fetchGroups.size,
+                framesReceived: fetchGroupCounts.get(requestId)?.framesReceived ?? 0,
+              });
+
+              controller.onFetchComplete(requestId);
+              fetchGroupCounts.delete(requestId);
+              if (unsubscribeFetchComplete) unsubscribeFetchComplete();
+            });
 
             await moqtSession.fetch(
               namespace.split('/'),
@@ -1088,7 +1117,7 @@ export const useStore = create<AppStore>()(
                 startGroup,
                 startObject: 0,
                 endGroup,
-                endObject: 0, // 0 = entire group
+                endObject: 0, // 0 = entire group (publisher uses objectsPerGroup)
               },
               {},
               (data: Uint8Array, groupId: number, objectId: number) => {
@@ -1109,6 +1138,10 @@ export const useStore = create<AppStore>()(
                   controller.onFetchData(requestId, data.length);
                 }
 
+                // Track which groups we've received objects for
+                fetchGroups.add(groupId);
+                lastObjectIdByGroup.set(groupId, Math.max(lastObjectIdByGroup.get(groupId) ?? -1, objectId));
+
                 // Push data to decode pipeline (created above)
                 const timestamp = performance.now() * 1000; // microseconds
                 pushData(data, groupId, objectId, timestamp);
@@ -1118,27 +1151,19 @@ export const useStore = create<AppStore>()(
                   groupId,
                   objectId,
                   size: data.length,
+                  totalFramesInFetch: stats?.framesReceived ?? 0,
                 });
               }
             );
-
-            // Mark all groups in this fetch as complete
-            for (let g = startGroup; g <= endGroup; g++) {
-              markGroupComplete(g);
-            }
-
-            const fetchDuration = performance.now() - fetchStartTime;
-            log.info('VOD fetch completed', {
-              requestId,
-              durationMs: Math.round(fetchDuration),
-              groupsReceived: fetchGroupCounts.get(requestId)?.groupsReceived.size ?? 0,
-            });
-
-            controller.onFetchComplete(requestId);
-            fetchGroupCounts.delete(requestId);
+            // Note: fetch() returns after sending FETCH message, not after receiving objects
+            // The fetch-complete listener above handles marking groups complete
           } catch (err) {
             log.error('VOD fetch error', { requestId, error: (err as Error).message });
             fetchGroupCounts.delete(requestId);
+            // Clean up the fetch-complete listener on error
+            if (typeof unsubscribeFetchComplete === 'function') {
+              unsubscribeFetchComplete();
+            }
           }
         });
 
