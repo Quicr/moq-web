@@ -152,6 +152,11 @@ export {
   parseDeltaCatalog,
   tryParseCatalog,
   parseCatalogFromBytes,
+  // qdroid interop
+  parseQdroidCatalog,
+  parseQdroidCatalogFromBytes,
+  decodeQdroidNamespace,
+  normalizeQdroidCatalog,
   // Serializer
   serializeCatalog,
   serializeCatalogToBytes,
