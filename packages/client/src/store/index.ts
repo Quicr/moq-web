@@ -929,14 +929,11 @@ export const useStore = create<AppStore>()(
           throw new Error('No session');
         }
 
-        // Calculate minBufferFrames from catalog info: buffer 6 GOPs worth of frames
-        // For 4K VOD content, keyframes can be 500KB-1MB+ and take several seconds to download
-        // Formula: framerate * (gopDuration / 1000) * 6, minimum 60 frames
-        let minBufferFrames: number | undefined;
+        // For VOD with FETCH, use small initial buffer - data arrives quickly
+        let minBufferFrames: number | undefined = 5;
         if (catalogFramerate && catalogGopDuration) {
           const framesPerGop = catalogFramerate * (catalogGopDuration / 1000);
-          minBufferFrames = Math.max(60, Math.round(framesPerGop * 6));
-          log.info('Calculated minBufferFrames from catalog', { catalogFramerate, catalogGopDuration, framesPerGop, minBufferFrames });
+          log.info('VOD catalog info', { catalogFramerate, catalogGopDuration, framesPerGop, minBufferFrames });
         }
 
         const config: MediaConfig = {
@@ -1022,10 +1019,11 @@ export const useStore = create<AppStore>()(
         const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
 
         // Calculate minBufferFrames from track info
+        // Keep initial buffer small (5 frames) for quick start - FETCH provides data fast
         const framerate = trackInfo.framerate ?? 30;
         const gopDurationMs = trackInfo.gopDuration ?? 2000;
         const framesPerGop = Math.round(framerate * (gopDurationMs / 1000));
-        const minBufferFrames = Math.max(60, framesPerGop * 6);
+        const minBufferFrames = 5; // Small buffer - FETCH delivers data quickly
 
         log.info('VOD buffer config', {
           framerate,
