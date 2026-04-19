@@ -608,17 +608,21 @@ function pushData(
 
       if (channel.videoPlayoutBuffer) {
         // NEW: Use PlayoutBuffer
+        // Pass LOC captureTimestamp for proper frame ordering and timing
+        const locTimestampUs = frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined;
         channel.videoPlayoutBuffer.addFrame({
           groupId,
           objectId,
           data: videoData,
           isKeyframe,
+          locTimestamp: locTimestampUs,
         });
 
         log(`Pushed video to PlayoutBuffer (channel ${channel.channelId})`, {
           groupId,
           objectId,
           isKeyframe,
+          locTimestamp: locTimestampUs,
           activeGroup: channel.videoPlayoutBuffer.getActiveGroupId(),
           groupCount: channel.videoPlayoutBuffer.getGroupCount(),
           policyType: channel.policyType,
@@ -869,12 +873,17 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
 
     for (const frame of readyFrames) {
       const sequence = channel.videoSequence++;
+      // Use locTimestamp (presentation time) if available, fall back to receivedAt
+      // locTimestamp is in microseconds, convert to milliseconds for decodeVideoFrame
+      const timestampMs = frame.locTimestamp !== undefined
+        ? frame.locTimestamp / 1000
+        : frame.receivedAt;
       if (decodeVideoFrame(
         channel,
         frame.data,
         frameGroupId,
         frame.objectId,
-        frame.receivedAt, // Use receivedAt as timestamp proxy
+        timestampMs,
         sequence
       )) {
         videoCount++;
