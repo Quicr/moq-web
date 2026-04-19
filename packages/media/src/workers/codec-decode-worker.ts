@@ -346,9 +346,10 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
   return channel;
 }
 
-// B-frame reorder buffer size - handles typical GOP patterns (IBPBP)
+// B-frame reorder buffer size - handles complex GOP patterns
 // WebCodecs outputs in decode order (DTS), we need presentation order (PTS)
-const REORDER_BUFFER_SIZE = 4;
+// Larger buffer (8) handles more aggressive B-frame patterns in 4K content
+const REORDER_BUFFER_SIZE = 8;
 
 /**
  * Emit a video frame from the reorder buffer
@@ -905,9 +906,10 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
   let audioCount = 0;
 
   // Flush aged frames from B-frame reorder buffer
-  // If oldest frame has been waiting > 50ms, emit it (handles end of stream / stalls)
+  // If oldest frame has been waiting > 150ms, emit it (handles end of stream / stalls)
+  // Use longer timeout to allow proper reordering of complex B-frame patterns
   const now = performance.now();
-  const MAX_REORDER_WAIT_MS = 50;
+  const MAX_REORDER_WAIT_MS = 150;
   while (channel.frameReorderBuffer.length > 0) {
     const oldest = channel.frameReorderBuffer[0];
     if (now - oldest.arrivedAt > MAX_REORDER_WAIT_MS) {
