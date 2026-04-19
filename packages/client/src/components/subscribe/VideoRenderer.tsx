@@ -176,32 +176,24 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       return;
     }
 
-    // CRITICAL: Only render if head frame has timestamp >= last rendered
-    // This prevents backward jumps when late frames arrive
-    const headFrame = queue[0];
-    if (headFrame && lastFrameTimestampRef.current > 0) {
-      if (headFrame.timestamp < lastFrameTimestampRef.current) {
-        // Head frame is older than last rendered - wait for it to be sorted properly
-        // or for more frames to arrive
-        if (queue.length < MAX_QUEUE_DEPTH / 2) {
-          // Buffer not full, wait for more frames
-          rafIdRef.current = requestAnimationFrame(renderLoop);
-          return;
-        }
-        // Buffer getting full, we have to render - this will be a backward jump
-      }
-    }
-
-    // Get next frame from queue (now sorted by timestamp)
-    // Skip closed/invalid frames
+    // Get next frame from queue (sorted by timestamp)
+    // Skip closed/invalid frames AND frames older than last rendered (late arrivals)
     let currentFrame: VideoFrame | undefined;
     while (queue.length > MIN_QUEUE_DEPTH) {
       const candidate = queue.shift();
       if (candidate) {
         // Check if frame is still valid (not closed)
         try {
-          // Accessing codedWidth on a closed frame throws
           void candidate.codedWidth;
+
+          // Skip frames that arrived too late (older than last rendered)
+          // This prevents backward jumps and visual stutter
+          if (lastFrameTimestampRef.current > 0 && candidate.timestamp < lastFrameTimestampRef.current) {
+            metricsRef.current.framesDropped++;
+            try { candidate.close(); } catch { /* ignore */ }
+            continue; // Try next frame
+          }
+
           currentFrame = candidate;
           break;
         } catch {
