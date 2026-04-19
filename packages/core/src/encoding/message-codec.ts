@@ -2234,21 +2234,29 @@ export class MessageCodec {
 
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
+    // Both draft-14 and draft-16 use the same format for FETCH_OK:
+    // - Group Order
+    // - End of Track flag
+    // - Largest Group ID
+    // - Largest Object ID
+    // - Parameters (draft-16 only)
+    writer.writeVarInt(message.groupOrder);
+    writer.writeByte(message.endOfTrack ? 1 : 0);
+    writer.writeVarInt(message.largestGroupId);
+    writer.writeVarInt(message.largestObjectId);
     if (IS_DRAFT_16) {
-      // Draft-16: FETCH_OK is just Request ID + Parameters
-      // Group order, end location, etc. are now in parameters or implicit
       writer.writeVarInt(0); // Number of parameters (empty for now)
-    } else {
-      // Draft-14: Full format with explicit fields
-      writer.writeVarInt(message.groupOrder);
-      writer.writeByte(message.endOfTrack ? 1 : 0);
-      writer.writeVarInt(message.largestGroupId);
-      writer.writeVarInt(message.largestObjectId);
     }
   }
 
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
     const requestId = reader.readVarIntNumber();
+    // Both draft-14 and draft-16 use the same core format
+    const groupOrder = reader.readVarIntNumber() as GroupOrder;
+    const endOfTrack = reader.readByte() === 1;
+    const largestGroupId = reader.readVarIntNumber();
+    const largestObjectId = reader.readVarIntNumber();
+
     if (IS_DRAFT_16) {
       // Draft-16: Read parameters (ignore for now)
       const numParams = reader.readVarIntNumber();
@@ -2257,22 +2265,15 @@ export class MessageCodec {
         const valueLen = reader.readVarIntNumber();
         reader.readBytes(valueLen); // value
       }
-      return {
-        type: MessageType.FETCH_OK,
-        requestId,
-        groupOrder: GroupOrder.ASCENDING, // Default
-        endOfTrack: false,
-        largestGroupId: 0,
-        largestObjectId: 0,
-      };
     }
+
     return {
       type: MessageType.FETCH_OK,
       requestId,
-      groupOrder: reader.readVarIntNumber() as GroupOrder,
-      endOfTrack: reader.readByte() === 1,
-      largestGroupId: reader.readVarIntNumber(),
-      largestObjectId: reader.readVarIntNumber(),
+      groupOrder,
+      endOfTrack,
+      largestGroupId,
+      largestObjectId,
     };
   }
 
