@@ -87,9 +87,11 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const lastFrameTimestampRef = useRef<number>(0);
 
   // Maximum queue depth to prevent memory issues
-  const MAX_QUEUE_DEPTH = 30;
+  const MAX_QUEUE_DEPTH = 60;
   // Minimum frames to buffer before INITIAL render (allows reordering window)
-  const INITIAL_BUFFER_SIZE = 8;
+  const INITIAL_BUFFER_SIZE = 15;
+  // Minimum queue depth to maintain during playback (allows late frames to be sorted)
+  const MIN_QUEUE_DEPTH = 10;
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds - detect jumps
 
   // Insert frame into queue in sorted order by timestamp
@@ -167,10 +169,17 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       console.log('[VideoRenderer] Initial buffer filled, starting playback', { queueDepth: queue.length });
     }
 
+    // Maintain minimum queue depth during playback to allow late frames to be sorted
+    // This gives a reordering window for async decoder output
+    if (queue.length <= MIN_QUEUE_DEPTH) {
+      rafIdRef.current = requestAnimationFrame(renderLoop);
+      return;
+    }
+
     // Get next frame from queue (now sorted by timestamp)
     // Skip closed/invalid frames
     let currentFrame: VideoFrame | undefined;
-    while (queue.length > 0) {
+    while (queue.length > MIN_QUEUE_DEPTH) {
       const candidate = queue.shift();
       if (candidate) {
         // Check if frame is still valid (not closed)
