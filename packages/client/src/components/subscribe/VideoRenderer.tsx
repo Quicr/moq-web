@@ -26,6 +26,8 @@ export interface VideoRendererMetrics {
   avgRenderInterval: number;
   lastFrameTimestamp: number;
   frameJumps: number;
+  backwardJumps: number;
+  forwardJumps: number;
 }
 
 interface VideoRendererProps {
@@ -77,6 +79,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     avgRenderInterval: 0,
     lastFrameTimestamp: 0,
     frameJumps: 0,
+    backwardJumps: 0,
+    forwardJumps: 0,
   });
   const lastRenderTimeRef = useRef<number>(0);
   const renderIntervalsRef = useRef<number[]>([]);
@@ -234,14 +238,24 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       if (lastFrameTimestampRef.current > 0 && frameTs > 0) {
         const tsDiff = frameTs - lastFrameTimestampRef.current;
         // Detect backwards jumps or large forward jumps
-        if (tsDiff < 0 || tsDiff > FRAME_JUMP_THRESHOLD_MS) {
+        if (tsDiff < 0) {
           metricsRef.current.frameJumps++;
-          if (enableDiagnostics) {
-            console.warn('[VideoRenderer] Frame jump detected', {
+          metricsRef.current.backwardJumps++;
+          if (enableDiagnostics && metricsRef.current.backwardJumps <= 5) {
+            console.warn('[VideoRenderer] BACKWARD jump', {
               previousTs: lastFrameTimestampRef.current,
               currentTs: frameTs,
-              diff: tsDiff,
-              totalJumps: metricsRef.current.frameJumps,
+              diff: tsDiff / 1000, // Show in ms
+            });
+          }
+        } else if (tsDiff > FRAME_JUMP_THRESHOLD_MS) {
+          metricsRef.current.frameJumps++;
+          metricsRef.current.forwardJumps++;
+          if (enableDiagnostics && metricsRef.current.forwardJumps <= 5) {
+            console.warn('[VideoRenderer] FORWARD jump (>100ms)', {
+              previousTs: lastFrameTimestampRef.current,
+              currentTs: frameTs,
+              diff: tsDiff / 1000, // Show in ms
             });
           }
         }
