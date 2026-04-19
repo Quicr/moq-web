@@ -2235,11 +2235,15 @@ export class MessageCodec {
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
     if (IS_DRAFT_16) {
-      // Draft-16 FETCH_OK: requestId | endOfTrack | largestGroup | largestObject | numParams | [params...]
+      // Draft-16 FETCH_OK: requestId | endOfTrack (8) | EndLocation | numParams | [params...] | trackExtensions
       writer.writeByte(message.endOfTrack ? 1 : 0);
+      // End Location (group, object)
       writer.writeVarInt(message.largestGroupId);
       writer.writeVarInt(message.largestObjectId);
-      writer.writeVarInt(0); // Number of parameters
+      // Number of parameters
+      writer.writeVarInt(0);
+      // Track Extensions (empty)
+      writer.writeVarInt(0);
     } else {
       // Pre-draft-16: full fields
       writer.writeVarInt(message.groupOrder);
