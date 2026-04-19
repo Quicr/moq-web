@@ -2235,7 +2235,8 @@ export class MessageCodec {
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
     if (IS_DRAFT_16) {
-      // Draft-16 FETCH_OK: requestId | largestGroup | largestObject | numParams | [params...]
+      // Draft-16 FETCH_OK: requestId | endOfTrack | largestGroup | largestObject | numParams | [params...]
+      writer.writeByte(message.endOfTrack ? 1 : 0);
       writer.writeVarInt(message.largestGroupId);
       writer.writeVarInt(message.largestObjectId);
       writer.writeVarInt(0); // Number of parameters
@@ -2252,7 +2253,8 @@ export class MessageCodec {
     const requestId = reader.readVarIntNumber();
 
     if (IS_DRAFT_16) {
-      // Draft-16 FETCH_OK: requestId | largestGroup | largestObject | numParams | [params...]
+      // Draft-16 FETCH_OK: requestId | endOfTrack | largestGroup | largestObject | numParams | [params...]
+      const endOfTrack = reader.readByte() === 1;
       const largestGroupId = reader.readVarIntNumber();
       const largestObjectId = reader.readVarIntNumber();
       const numParams = reader.readVarIntNumber();
@@ -2265,7 +2267,7 @@ export class MessageCodec {
         type: MessageType.FETCH_OK,
         requestId,
         groupOrder: GroupOrder.ASCENDING, // not on wire in draft-16
-        endOfTrack: false, // not on wire in draft-16
+        endOfTrack,
         largestGroupId,
         largestObjectId,
       };
