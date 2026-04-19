@@ -346,6 +346,52 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
   return channel;
 }
 
+// B-frame reorder buffer size - handles typical GOP patterns (IBPBP)
+// WebCodecs outputs in decode order (DTS), we need presentation order (PTS)
+const REORDER_BUFFER_SIZE = 4;
+
+/**
+ * Emit a video frame from the reorder buffer
+ */
+function emitVideoFrame(
+  channel: DecodeChannel,
+  entry: { frame: VideoFrame; groupId: number; objectId: number; timestamp: number; arrivedAt: number }
+): void {
+  respond(
+    {
+      type: 'video-frame',
+      channelId: channel.channelId,
+      result: {
+        frame: entry.frame,
+        groupId: entry.groupId,
+        objectId: entry.objectId,
+        timestamp: entry.timestamp,
+      },
+    },
+    [entry.frame]
+  );
+
+  // Emit latency stats if enabled
+  if (channel.enableStats) {
+    const now = performance.now();
+    const processingDelay = now - entry.arrivedAt;
+    const bufferDepth = channel.videoBuffer?.size ?? 0;
+    const bufferDelay = channel.videoBuffer?.delay ?? 0;
+    const bufferStats = channel.videoBuffer?.getStats();
+    const framesDropped = bufferStats?.framesDropped ?? 0;
+    const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
+    const framesOutOfOrder = channel.framesOutOfOrder;
+    log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
+    respond({
+      type: 'latency-stats',
+      channelId: channel.channelId,
+      stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
+    });
+  }
+
+  channel.lastEmittedTimestamp = entry.timestamp;
+}
+
 /**
  * Initialize video decoder for a channel
  */
@@ -354,40 +400,25 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
 
   channel.videoDecoder = new VideoDecoder({
     output: (frame) => {
-      // Send decoded frame immediately
-      // WebCodecs VideoDecoder handles B-frame reordering internally
       const meta = channel.currentVideoMeta;
       const now = performance.now();
 
-      respond(
-        {
-          type: 'video-frame',
-          channelId: channel.channelId,
-          result: {
-            frame,
-            groupId: meta?.groupId ?? 0,
-            objectId: meta?.objectId ?? 0,
-            timestamp: frame.timestamp,
-          },
-        },
-        [frame]
-      );
+      // Add to reorder buffer
+      channel.frameReorderBuffer.push({
+        frame,
+        groupId: meta?.groupId ?? 0,
+        objectId: meta?.objectId ?? 0,
+        timestamp: frame.timestamp,
+        arrivedAt: now,
+      });
 
-      // Emit latency stats if enabled
-      if (channel.enableStats && meta?.arrivedAt) {
-        const processingDelay = now - meta.arrivedAt;
-        const bufferDepth = channel.videoBuffer?.size ?? 0;
-        const bufferDelay = channel.videoBuffer?.delay ?? 0;
-        const bufferStats = channel.videoBuffer?.getStats();
-        const framesDropped = bufferStats?.framesDropped ?? 0;
-        const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
-        const framesOutOfOrder = channel.framesOutOfOrder;
-        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
-        respond({
-          type: 'latency-stats',
-          channelId: channel.channelId,
-          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
-        });
+      // Sort by presentation timestamp (ascending)
+      channel.frameReorderBuffer.sort((a, b) => a.timestamp - b.timestamp);
+
+      // Emit frames when buffer is full or we have frames ready in sequence
+      while (channel.frameReorderBuffer.length >= REORDER_BUFFER_SIZE) {
+        const oldest = channel.frameReorderBuffer.shift()!;
+        emitVideoFrame(channel, oldest);
       }
     },
     error: (err) => {
@@ -872,6 +903,20 @@ function decodeVideoFrame(
 function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames: number } {
   let videoCount = 0;
   let audioCount = 0;
+
+  // Flush aged frames from B-frame reorder buffer
+  // If oldest frame has been waiting > 50ms, emit it (handles end of stream / stalls)
+  const now = performance.now();
+  const MAX_REORDER_WAIT_MS = 50;
+  while (channel.frameReorderBuffer.length > 0) {
+    const oldest = channel.frameReorderBuffer[0];
+    if (now - oldest.arrivedAt > MAX_REORDER_WAIT_MS) {
+      channel.frameReorderBuffer.shift();
+      emitVideoFrame(channel, oldest);
+    } else {
+      break;
+    }
+  }
 
   // Process video - PlayoutBuffer path (NEW)
   if (channel.videoPlayoutBuffer && channel.videoDecoder) {
