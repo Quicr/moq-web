@@ -280,7 +280,7 @@ interface DiscoveredTrack {
   /** Internal subscription ID for object routing */
   subscriptionId?: number;
   /** Track type inferred from trackName */
-  type: 'video' | 'audio' | 'chat' | 'unknown';
+  type: 'video' | 'audio' | 'catalog' | 'chat' | 'unknown';
 }
 
 /** A namespace subscription panel */
@@ -704,10 +704,12 @@ export const useStore = create<AppStore>()(
             }
 
             // Determine track type from trackName and namespace
-            let trackType: 'video' | 'audio' | 'chat' | 'unknown' = 'unknown';
+            let trackType: 'video' | 'audio' | 'catalog' | 'chat' | 'unknown' = 'unknown';
             const trackNameLower = event.trackName.toLowerCase();
             const namespaceLower = event.namespace.join('/').toLowerCase();
-            if (trackNameLower.includes('video') || namespaceLower.includes('avc1') || namespaceLower.includes('h264')) {
+            if (trackNameLower.includes('catalog') || namespaceLower.includes('catalog')) {
+              trackType = 'catalog';
+            } else if (trackNameLower.includes('video') || namespaceLower.includes('avc1') || namespaceLower.includes('h264')) {
               trackType = 'video';
             } else if (trackNameLower.includes('audio') || namespaceLower.includes('opus')) {
               trackType = 'audio';
