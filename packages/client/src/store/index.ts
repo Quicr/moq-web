@@ -1065,12 +1065,12 @@ export const useStore = create<AppStore>()(
         );
 
         // Handle fetch requests from controller
-        controller.on('fetch-request', async ({ startGroup, endGroup, requestId }: { startGroup: number; endGroup: number; requestId: number }) => {
-          log.info('VOD fetch request', { requestId, startGroup, endGroup });
-          console.log('[Store] FETCH request from controller', { requestId, startGroup, endGroup, namespace, trackName });
+        controller.on('fetch-request', async ({ startGroup, endGroup, requestId: controllerRequestId }: { startGroup: number; endGroup: number; requestId: number }) => {
+          log.info('VOD fetch request', { controllerRequestId, startGroup, endGroup });
+          console.log('[Store] FETCH request from controller', { controllerRequestId, startGroup, endGroup, namespace, trackName });
 
-          // Initialize tracking for this fetch
-          fetchGroupCounts.set(requestId, {
+          // Initialize tracking for this fetch using controller's requestId
+          fetchGroupCounts.set(controllerRequestId, {
             groupsReceived: new Set(),
             framesReceived: 0,
             bytesReceived: 0,
@@ -1088,9 +1088,14 @@ export const useStore = create<AppStore>()(
             const fetchGroups = new Set<number>();
             let lastObjectIdByGroup = new Map<number, number>();
 
+            // Variable to store the session's requestId (set after fetch() returns)
+            let sessionRequestId: number | null = null;
+
             // Set up fetch-complete listener BEFORE issuing fetch
+            // Use a closure variable that gets updated after fetch() returns
             unsubscribeFetchComplete = session.getMOQTSession().on('fetch-complete', (event: { requestId: number }) => {
-              if (event.requestId !== requestId) return;
+              // Match against session's requestId, not controller's
+              if (sessionRequestId === null || event.requestId !== sessionRequestId) return;
 
               // Now that all objects have arrived, mark groups complete
               for (const g of fetchGroups) {
@@ -1099,18 +1104,20 @@ export const useStore = create<AppStore>()(
 
               const fetchDuration = performance.now() - fetchStartTime;
               log.info('VOD fetch completed (fetch-complete event)', {
-                requestId,
+                controllerRequestId,
+                sessionRequestId,
                 durationMs: Math.round(fetchDuration),
                 groupsReceived: fetchGroups.size,
-                framesReceived: fetchGroupCounts.get(requestId)?.framesReceived ?? 0,
+                framesReceived: fetchGroupCounts.get(controllerRequestId)?.framesReceived ?? 0,
               });
 
-              controller.onFetchComplete(requestId);
-              fetchGroupCounts.delete(requestId);
+              controller.onFetchComplete(controllerRequestId);
+              fetchGroupCounts.delete(controllerRequestId);
               if (unsubscribeFetchComplete) unsubscribeFetchComplete();
             });
 
-            await moqtSession.fetch(
+            // Issue fetch and capture the session's requestId
+            sessionRequestId = await moqtSession.fetch(
               namespace.split('/'),
               trackName,
               {
@@ -1122,7 +1129,7 @@ export const useStore = create<AppStore>()(
               {},
               (data: Uint8Array, groupId: number, objectId: number) => {
                 // Track stats for adaptive fetch-ahead
-                const stats = fetchGroupCounts.get(requestId);
+                const stats = fetchGroupCounts.get(controllerRequestId);
                 if (stats) {
                   stats.bytesReceived += data.length;
                   stats.framesReceived++;
@@ -1135,7 +1142,7 @@ export const useStore = create<AppStore>()(
                   }
 
                   // Report bytes for download speed tracking
-                  controller.onFetchData(requestId, data.length);
+                  controller.onFetchData(controllerRequestId, data.length);
                 }
 
                 // Track which groups we've received objects for
@@ -1147,7 +1154,8 @@ export const useStore = create<AppStore>()(
                 pushData(data, groupId, objectId, timestamp);
 
                 log.info('VOD fetch received object', {
-                  requestId,
+                  controllerRequestId,
+                  sessionRequestId,
                   groupId,
                   objectId,
                   size: data.length,
@@ -1155,11 +1163,11 @@ export const useStore = create<AppStore>()(
                 });
               }
             );
-            // Note: fetch() returns after sending FETCH message, not after receiving objects
-            // The fetch-complete listener above handles marking groups complete
+
+            log.info('VOD fetch issued', { controllerRequestId, sessionRequestId, startGroup, endGroup });
           } catch (err) {
-            log.error('VOD fetch error', { requestId, error: (err as Error).message });
-            fetchGroupCounts.delete(requestId);
+            log.error('VOD fetch error', { controllerRequestId, error: (err as Error).message });
+            fetchGroupCounts.delete(controllerRequestId);
             // Clean up the fetch-complete listener on error
             if (typeof unsubscribeFetchComplete === 'function') {
               unsubscribeFetchComplete();
