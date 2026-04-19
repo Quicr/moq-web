@@ -305,9 +305,6 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         return [];
       }
 
-      // Consume time for frames we'll release (keep fractional remainder)
-      const timeToConsume = framesToRelease * this.frameDurationMs;
-
       // Limit actual release to available frames and maxFrames
       const actualFramesToRelease = Math.min(maxFrames, framesToRelease);
 
@@ -329,11 +326,12 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
           frameDurationMs: this.frameDurationMs.toFixed(2),
         });
       } else {
-        // No frames available - don't consume time (wait for data)
-        this.accumulatedTimeMs -= timeToConsume;
-        // Cap accumulated time to prevent runaway buildup when starved
-        if (this.accumulatedTimeMs < 0) {
-          this.accumulatedTimeMs = 0;
+        // No frames available - DON'T consume time, but cap to prevent runaway
+        // This ensures smooth pacing when frames arrive (no burst after starvation)
+        // Cap at ~2 frames worth to allow small catch-up but prevent large bursts
+        const maxAccumulated = this.frameDurationMs * 2;
+        if (this.accumulatedTimeMs > maxAccumulated) {
+          this.accumulatedTimeMs = maxAccumulated;
         }
       }
 
