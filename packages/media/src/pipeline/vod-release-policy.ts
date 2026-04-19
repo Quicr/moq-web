@@ -412,11 +412,7 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private checkGroupCompletion(group: GroupState<T>): void {
     // Group is complete when:
     // 1. Buffer is empty AND
-    // 2. Either END_OF_GROUP received OR (waitForCompleteGop=false and next group ready)
-    //
-    // IMPORTANT: Do NOT assume "next keyframe arrived = current group complete"
-    // With parallel QUIC streams, objects from different groups arrive out of order.
-    // Group N+2's keyframe can arrive before Group N's remaining frames.
+    // 2. Either END_OF_GROUP received OR waitForCompleteGop=false
 
     if (group.frames.size > 0) {
       return; // Still have frames to output
@@ -430,11 +426,9 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       // Explicit end signal - safe to complete
       this.completeAndPromote(group.groupId, 'end_of_group');
     } else if (!this.config.waitForCompleteGop) {
-      // Not waiting for complete GOP - check if next group is ready
-      const nextGroup = this.buffer.findNextKeyframeGroup(group.groupId);
-      if (nextGroup) {
-        this.completeAndPromote(group.groupId, 'next_group_ready');
-      }
+      // Not waiting for complete GOP - complete immediately when buffer empty
+      // Don't wait for next keyframe - that causes long pauses with large 4K keyframes
+      this.completeAndPromote(group.groupId, 'buffer_empty');
     }
     // Otherwise, wait for END_OF_GROUP signal (required for VOD with parallel streams)
   }

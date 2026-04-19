@@ -161,7 +161,8 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   }, [enableDiagnostics]);
 
   // Download diagnostic logs
-  const handleDownloadLogs = useCallback(() => {
+  const handleDownloadLogs = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
     const logs = diagnosticLogsRef.current;
     const summary = {
       totalFrames: logs.filter(l => l.type === 'frame').length,
@@ -182,7 +183,8 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   }, [rendererMetrics, experienceProfile, maxLatency, jitterBufferDelay, policyType, isLive, framerate]);
 
   // Clear diagnostic logs
-  const handleClearLogs = useCallback(() => {
+  const handleClearLogs = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
     diagnosticLogsRef.current = [];
     logStartTimeRef.current = performance.now();
   }, []);
