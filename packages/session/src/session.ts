@@ -80,6 +80,7 @@ import type {
   FetchInfo,
   FetchObjectEvent,
   FetchCompleteEvent,
+  FetchStreamCompleteEvent,
   FetchErrorEvent,
   VODPublishOptions,
   VODTrackInfo,
@@ -267,9 +268,13 @@ export class MOQTSession {
       } as FetchObjectEvent);
     });
 
-    // Set up FETCH end-of-group callback
+    // Set up FETCH end-of-group callback - fires when FETCH stream completes
     this.objectRouter.setFetchEndOfGroupCallback((requestId, groupId) => {
-      log.info('FETCH end-of-group received', { requestId, groupId });
+      log.info('FETCH stream complete (all data received)', { requestId, lastGroupId: groupId });
+      this.emit('fetch-stream-complete', {
+        requestId,
+        lastGroupId: groupId,
+      });
     });
 
     // Set up forward state change listener to emit events for MediaSession
@@ -2867,6 +2872,7 @@ export class MOQTSession {
   // FETCH / DVR events
   on(event: 'fetch-object', handler: (event: FetchObjectEvent) => void): () => void;
   on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
+  on(event: 'fetch-stream-complete', handler: (event: FetchStreamCompleteEvent) => void): () => void;
   on(event: 'fetch-error', handler: (event: FetchErrorEvent) => void): () => void;
   on(event: 'incoming-fetch', handler: (event: IncomingFetchEvent) => void): () => void;
   // Message logging events

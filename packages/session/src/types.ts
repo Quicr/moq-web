@@ -31,6 +31,7 @@ export type SessionEventType =
   | 'incoming-publish'
   | 'fetch-object'
   | 'fetch-complete'
+  | 'fetch-stream-complete'
   | 'fetch-error'
   | 'incoming-fetch'
   | 'message-sent'
@@ -387,6 +388,18 @@ export interface FetchCompleteEvent {
   largestObjectId: number;
   /** Whether this is the end of the track */
   endOfTrack: boolean;
+}
+
+/**
+ * Event fired when FETCH data stream completes (all objects received)
+ * This fires after all data has been received, unlike fetch-complete which
+ * fires on FETCH_OK (before data arrives).
+ */
+export interface FetchStreamCompleteEvent {
+  /** Fetch request ID */
+  requestId: number;
+  /** Last group ID received on this stream */
+  lastGroupId: number;
 }
 
 /**

@@ -1094,7 +1094,7 @@ export const useStore = create<AppStore>()(
             let pendingEvents: { requestId: number }[] = [];
             let listenerActive = true;
 
-            const handleFetchComplete = (event: { requestId: number }) => {
+            const handleFetchStreamComplete = (event: { requestId: number; lastGroupId: number }) => {
               if (!listenerActive) return;
 
               // If sessionRequestId not yet set, queue the event
@@ -1114,12 +1114,13 @@ export const useStore = create<AppStore>()(
               }
 
               const fetchDuration = performance.now() - fetchStartTime;
-              log.info('VOD fetch completed (fetch-complete event)', {
+              log.info('VOD fetch stream complete (all data received)', {
                 controllerRequestId,
                 sessionRequestId,
                 durationMs: Math.round(fetchDuration),
                 groupsReceived: fetchGroups.size,
                 framesReceived: fetchGroupCounts.get(controllerRequestId)?.framesReceived ?? 0,
+                lastGroupId: event.lastGroupId,
               });
 
               controller.onFetchComplete(controllerRequestId);
@@ -1127,8 +1128,9 @@ export const useStore = create<AppStore>()(
               if (unsubscribeFetchComplete) unsubscribeFetchComplete();
             };
 
-            // Set up fetch-complete listener BEFORE issuing fetch
-            unsubscribeFetchComplete = session.getMOQTSession().on('fetch-complete', handleFetchComplete);
+            // Set up fetch-stream-complete listener BEFORE issuing fetch
+            // This fires when all data has been received, unlike fetch-complete which fires on FETCH_OK
+            unsubscribeFetchComplete = session.getMOQTSession().on('fetch-stream-complete', handleFetchStreamComplete);
 
             // Issue fetch and capture the session's requestId
             sessionRequestId = await moqtSession.fetch(
@@ -1182,7 +1184,7 @@ export const useStore = create<AppStore>()(
 
             // Process any events that arrived while we were waiting for fetch() to return
             for (const event of pendingEvents) {
-              handleFetchComplete(event);
+              handleFetchStreamComplete(event as { requestId: number; lastGroupId: number });
             }
             pendingEvents = [];
           } catch (err) {
