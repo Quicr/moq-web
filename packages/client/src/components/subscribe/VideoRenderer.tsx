@@ -71,7 +71,6 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
   // Playback timing - for pacing frames at correct rate
   const playbackStartTimeRef = useRef<number>(0); // Wall clock when playback started
-  const firstFrameTimestampRef = useRef<number>(0); // Timestamp of first frame
 
   // Diagnostic metrics refs
   const metricsRef = useRef<VideoRendererMetrics>({
@@ -158,7 +157,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     }
   }, [enableDiagnostics, onMetricsUpdate]);
 
-  // Render loop with timestamp-based pacing
+  // Render loop with fixed-rate pacing (one frame per ~33ms for 30fps)
   const renderLoop = useCallback(() => {
     const canvas = canvasRef.current;
     const queue = frameQueueRef.current;
@@ -171,15 +170,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
         return;
       }
       hasInitialBufferRef.current = true;
-      // Initialize playback timing from first frame
-      const firstFrame = queue[0];
-      if (firstFrame) {
-        playbackStartTimeRef.current = now;
-        firstFrameTimestampRef.current = firstFrame.timestamp;
-      }
+      playbackStartTimeRef.current = now;
       console.log('[VideoRenderer] Initial buffer filled, starting playback', {
         queueDepth: queue.length,
-        firstFrameTs: firstFrameTimestampRef.current / 1000,
       });
     }
 
@@ -189,40 +182,25 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       return;
     }
 
-    // Calculate current playback position based on elapsed wall-clock time
-    const elapsedMs = now - playbackStartTimeRef.current;
-    const currentPlaybackTs = firstFrameTimestampRef.current + (elapsedMs * 1000); // Convert to microseconds
+    // Fixed-rate pacing: render one frame per ~33ms (30fps)
+    const TARGET_FRAME_INTERVAL = 33; // ms
+    const timeSinceLastRender = now - lastRenderTimeRef.current;
+    if (lastRenderTimeRef.current > 0 && timeSinceLastRender < TARGET_FRAME_INTERVAL) {
+      rafIdRef.current = requestAnimationFrame(renderLoop);
+      return;
+    }
 
-    // Drop frames that are too old (behind playback position by more than 1 frame)
-    // and find the frame to render
+    // Get next valid frame from queue (already sorted by timestamp)
     let currentFrame: VideoFrame | undefined;
     while (queue.length > MIN_QUEUE_DEPTH) {
-      const candidate = queue[0]; // Peek at head
+      const candidate = queue.shift();
       if (!candidate) break;
 
       try {
         void candidate.codedWidth; // Check if valid
-
-        // If frame is way behind playback (> 100ms), drop it
-        if (candidate.timestamp < currentPlaybackTs - 100000) {
-          queue.shift();
-          metricsRef.current.framesDropped++;
-          try { candidate.close(); } catch { /* ignore */ }
-          continue;
-        }
-
-        // If frame is not yet due, wait
-        if (candidate.timestamp > currentPlaybackTs + 16000) { // 16ms ahead tolerance
-          rafIdRef.current = requestAnimationFrame(renderLoop);
-          return;
-        }
-
-        // Frame is ready to render
-        queue.shift();
         currentFrame = candidate;
         break;
       } catch {
-        queue.shift();
         metricsRef.current.framesDropped++;
       }
     }
