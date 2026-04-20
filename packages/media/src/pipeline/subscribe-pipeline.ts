@@ -594,7 +594,7 @@ export class SubscribePipeline {
 
     // Worker mode: forward data to worker for processing
     if (this.useWorker && this.decodeWorkerClient) {
-      log.trace('Pushing to decode worker', { groupId, objectId, dataSize: data.length });
+      log.info('Pushing to decode worker', { channelId: this.channelId, groupId, objectId, dataSize: data.length });
       this.decodeWorkerClient.push(data, groupId, objectId, timestamp);
       return;
     }
