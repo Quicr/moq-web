@@ -742,7 +742,8 @@ export const useStore = create<AppStore>()(
                   subscriptionId: event.subscriptionId,
                 });
                 let catalogParsed = false;
-                session.setSubscriptionCallback(event.subscriptionId, (data: Uint8Array) => {
+                const moqtSession = session.getMOQTSession();
+                moqtSession.setSubscriptionCallback(event.subscriptionId, (data: Uint8Array) => {
                   if (catalogParsed) return; // Only parse first catalog
                   try {
                     // Catalog may be LOC-wrapped (qdroid wraps it) - try to strip LOC properties
@@ -760,10 +761,11 @@ export const useStore = create<AppStore>()(
 
                     const catalog = parseQdroidCatalog(json);
                     catalogParsed = true;
+                    const tracks = 'tracks' in catalog ? catalog.tracks : [];
                     log.info('[qdroid-interop] Parsed catalog', {
                       version: catalog.version,
-                      trackCount: catalog.tracks?.length,
-                      tracks: catalog.tracks?.map(t => `${t.name} (${(t as Record<string, unknown>).codec})`),
+                      trackCount: tracks?.length,
+                      tracks: tracks?.map((t: Record<string, unknown>) => `${t.name} (${t.codec})`),
                     });
 
                     // Auto-subscribe to parent namespace for media track discovery
