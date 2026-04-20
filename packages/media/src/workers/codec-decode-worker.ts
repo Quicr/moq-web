@@ -544,6 +544,9 @@ function pushData(
         });
 
         log(`Pushed audio (channel ${channel.channelId})`, { groupId, objectId, bufferSize: channel.audioBuffer.size });
+      } else {
+        // No audio buffer configured - this channel was set up for video only
+        log(`WARNING: Received audio but no audio buffer configured (channel ${channel.channelId}) - audio dropped`, { groupId, objectId, payloadSize: frame.payload.byteLength });
       }
     }
   } catch (err) {

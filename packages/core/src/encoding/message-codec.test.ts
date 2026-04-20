@@ -877,11 +877,38 @@ describe('ObjectCodec', () => {
       expect(decoded.objectStatus).toBe(ObjectStatus.END_OF_GROUP);
     });
 
-    it('throws error for wrong stream type', () => {
+    it.skipIf(IS_DRAFT_16)('throws error for wrong stream type', () => {
       // Create buffer with wrong stream type (0x04 = SUBGROUP_HEADER instead of 0x01)
+      // This test only applies to draft-14 since draft-16 uses a different type format
       const invalidBuffer = new Uint8Array([0x04, 0x01, 0x00, 0x00, 0x00, 0x80, 0x00]);
 
       expect(() => ObjectCodec.decodeDatagramHeader(invalidBuffer)).toThrow(MessageCodecError);
+    });
+
+    it.runIf(IS_DRAFT_16)('throws error for invalid datagram type (draft-16)', () => {
+      // Create buffer with invalid datagram type (0x10 = SUBGROUP_HEADER range, not datagram)
+      const invalidBuffer = new Uint8Array([0x10, 0x01, 0x00, 0x00, 0x80]);
+
+      expect(() => ObjectCodec.decodeDatagramHeader(invalidBuffer)).toThrow(MessageCodecError);
+    });
+
+    it.runIf(IS_DRAFT_16)('decodes datagram with ZERO_OBJECT_ID flag (draft-16)', () => {
+      // Type 0x04 = ZERO_OBJECT_ID bit set: objectId omitted, implies 0
+      // Format: type(0x04) + trackAlias + groupId + priority (no objectId field)
+      const buffer = new Uint8Array([
+        0x04, // type with ZERO_OBJECT_ID
+        0x01, // trackAlias = 1
+        0x05, // groupId = 5
+        0x80, // publisherPriority = 128
+      ]);
+
+      const [header, bytesConsumed] = ObjectCodec.decodeDatagramHeader(buffer);
+
+      expect(header.trackAlias).toBe(BigInt(1));
+      expect(header.groupId).toBe(5);
+      expect(header.objectId).toBe(0); // ZERO_OBJECT_ID means objectId = 0
+      expect(header.publisherPriority).toBe(128);
+      expect(bytesConsumed).toBe(4);
     });
   });
 

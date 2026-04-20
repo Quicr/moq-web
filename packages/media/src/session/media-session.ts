@@ -970,12 +970,54 @@ export class MediaSession {
   // =========================================================================
 
   /**
+   * Stop all active pipelines (called on session error)
+   */
+  private async stopAllPipelines(): Promise<void> {
+    log.info('Stopping all pipelines due to session error', {
+      publications: this.publications.size,
+      subscriptions: this.subscriptions.size,
+    });
+
+    // Stop all publish pipelines
+    for (const [trackAlias, publication] of this.publications) {
+      try {
+        await publication.pipeline.stop();
+        for (const cleanup of publication.cleanupHandlers) {
+          cleanup();
+        }
+        log.info('Stopped publish pipeline', { trackAlias });
+      } catch (err) {
+        log.error('Error stopping publish pipeline', err as Error);
+      }
+    }
+    this.publications.clear();
+
+    // Stop all subscribe pipelines
+    for (const [subscriptionId, subscription] of this.subscriptions) {
+      try {
+        await subscription.pipeline.stop();
+        this.pipelineToSubscriptionId.delete(subscription.pipeline);
+        log.info('Stopped subscribe pipeline', { subscriptionId });
+      } catch (err) {
+        log.error('Error stopping subscribe pipeline', err as Error);
+      }
+    }
+    this.subscriptions.clear();
+  }
+
+  /**
    * Set up session event forwarding
    */
   private setupSessionEvents(): void {
-    // Forward state changes
+    // Forward state changes and handle error state cleanup
     const stateCleanup = this.session.on('state-change', (state: SessionState) => {
       this.emit('state-change', state);
+      // Stop all pipelines when session enters error state
+      if (state === 'error') {
+        this.stopAllPipelines().catch((err) => {
+          log.error('Error stopping pipelines on session error', err as Error);
+        });
+      }
     });
     this.sessionCleanup.push(stateCleanup);
 
