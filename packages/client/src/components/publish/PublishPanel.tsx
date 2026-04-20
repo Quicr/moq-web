@@ -225,12 +225,10 @@ export const PublishPanel: React.FC = () => {
       const videoEnabled = config.mediaType === 'video';
       const audioEnabled = config.mediaType === 'audio';
 
-      let stream: MediaStream;
-
       // Always create a fresh stream for each track
       // This ensures each track has its own independent stream that won't be stopped
       // when other operations happen (device changes, other tracks starting, etc.)
-      stream = await createCaptureStream(
+      const stream = await createCaptureStream(
         videoEnabled ? selectedVideoDevice : undefined,
         audioEnabled ? selectedAudioDevice : undefined,
         { videoEnabled, audioEnabled }
