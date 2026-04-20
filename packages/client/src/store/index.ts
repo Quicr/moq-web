@@ -175,25 +175,26 @@ interface ConnectionSlice {
   setServerUrl: (url: string) => void;
 
   // Publish/Subscribe methods that delegate to session
-  startPublishing: (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean) => Promise<bigint>;
+  startPublishing: (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean, stream?: MediaStream) => Promise<bigint>;
   stopPublishing: (trackAlias: bigint | string) => Promise<void>;
   // Announce flow methods
   announceNamespace: (namespace: string) => Promise<void>;
   cancelAnnounce: (namespace: string) => Promise<void>;
   /** Status for announce flow UI */
   announceStatus: 'idle' | 'announcing' | 'waiting' | 'active';
-  /** Pending stream for announce flow (waiting for subscribers) */
-  pendingAnnounceStream: MediaStream | null;
-  pendingAnnounceConfig: {
+  /** Map of namespace/trackName -> pending config + stream for announce flow tracks */
+  pendingAnnounceTracks: Map<string, {
     namespace: string;
     trackName: string;
+    stream: MediaStream;
     deliveryTimeout?: number;
     priority?: number;
     deliveryMode?: 'stream' | 'datagram';
-    /** Track type enabled from panel - overrides stream track detection */
     videoEnabled?: boolean;
     audioEnabled?: boolean;
-  } | null;
+  }>;
+  /** Map of namespace/trackName -> actual trackAlias for announce flow tracks */
+  announceTrackAliases: Map<string, bigint>;
   startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => Promise<number>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
@@ -434,8 +435,8 @@ export const useStore = create<AppStore>()(
       decodeErrors: [],
       // Announce flow state
       announceStatus: 'idle',
-      pendingAnnounceStream: null,
-      pendingAnnounceConfig: null,
+      pendingAnnounceTracks: new Map(),
+      announceTrackAliases: new Map(),
 
       connect: async (url: string) => {
         const { transport: existingTransport, session: existingSession, localDevelopment, useWorkers } = get();
@@ -509,9 +510,30 @@ export const useStore = create<AppStore>()(
 
           session.on('state-change', (sessionState) => {
             set({ sessionState });
-            // When session state changes to 'error', update transport state to trigger UI transition
+            // When session state changes to 'error', clean up all state
             if (sessionState === 'error') {
-              set({ state: 'disconnected' });
+              const { localStream, pendingAnnounceTracks } = get();
+              // Stop camera/microphone capture
+              if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+              }
+              // Stop any pending announce track streams
+              for (const track of pendingAnnounceTracks.values()) {
+                track.stream.getTracks().forEach(t => t.stop());
+              }
+              // Reset all UX state
+              set({
+                state: 'disconnected',
+                localStream: null,
+                pendingAnnounceTracks: new Map(),
+                announceTrackAliases: new Map(),
+                announceStatus: 'idle',
+                publishedTracks: [],
+                subscribedTracks: [],
+                namespaceSubscriptions: [],
+                isPublishing: false,
+              });
+              log.info('Session error: cleaned up all state');
             }
           });
 
@@ -557,26 +579,27 @@ export const useStore = create<AppStore>()(
 
           // Listen for incoming subscriptions (announce flow)
           session.on('incoming-subscribe', async (event) => {
+            const trackKey = `${event.namespace.join('/')}/${event.trackName}`;
             log.info('Incoming subscription (announce flow)', {
               requestId: event.requestId,
               namespace: event.namespace.join('/'),
               trackName: event.trackName,
               trackAlias: event.trackAlias.toString(),
+              trackKey,
             });
 
-            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
+            const { pendingAnnounceTracks, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
+            const pendingTrack = pendingAnnounceTracks.get(trackKey);
 
-            if (pendingAnnounceStream && pendingAnnounceConfig) {
+            if (pendingTrack) {
               try {
                 // Check what tracks the stream actually has
-                const hasVideoTracks = pendingAnnounceStream.getVideoTracks().length > 0;
-                const hasAudioTracks = pendingAnnounceStream.getAudioTracks().length > 0;
+                const hasVideoTracks = pendingTrack.stream.getVideoTracks().length > 0;
+                const hasAudioTracks = pendingTrack.stream.getAudioTracks().length > 0;
 
-                // Use the panel's explicit track type config, but only if the stream has those tracks
-                // This respects the panel's intent (e.g., user selected "video" track type)
-                // rather than using global settings which may not match the panel's configuration
-                const videoEnabled = (pendingAnnounceConfig.videoEnabled ?? hasVideoTracks) && hasVideoTracks;
-                const audioEnabled = (pendingAnnounceConfig.audioEnabled ?? hasAudioTracks) && hasAudioTracks;
+                // Use the track's explicit config for video/audio enabled
+                const videoEnabled = (pendingTrack.videoEnabled ?? false) && hasVideoTracks;
+                const audioEnabled = (pendingTrack.audioEnabled ?? false) && hasAudioTracks;
 
                 // Start publishing on this track
                 const config = {
@@ -584,9 +607,9 @@ export const useStore = create<AppStore>()(
                   audioBitrate,
                   videoResolution,
                   keyframeInterval,
-                  deliveryTimeout: pendingAnnounceConfig.deliveryTimeout ?? 5000,
-                  priority: pendingAnnounceConfig.priority ?? 128,
-                  deliveryMode: pendingAnnounceConfig.deliveryMode ?? 'stream',
+                  deliveryTimeout: pendingTrack.deliveryTimeout ?? 5000,
+                  priority: pendingTrack.priority ?? 128,
+                  deliveryMode: pendingTrack.deliveryMode ?? 'stream',
                   audioDeliveryMode,
                   videoEnabled,
                   audioEnabled,
@@ -599,11 +622,20 @@ export const useStore = create<AppStore>()(
                   quicrParticipantId,
                 };
 
+                log.info('Starting announce publish with config', {
+                  trackKey,
+                  videoEnabled: config.videoEnabled,
+                  audioEnabled: config.audioEnabled,
+                  hasVideoTracks,
+                  hasAudioTracks,
+                  deliveryMode: config.deliveryMode,
+                });
+
                 await session.startAnnouncePublish(
                   event.trackAlias,
                   event.namespace,
                   event.trackName,
-                  pendingAnnounceStream,
+                  pendingTrack.stream,
                   config
                 );
 
@@ -618,18 +650,22 @@ export const useStore = create<AppStore>()(
                   stats: { groupId: 0, objectId: 0, bytesTransferred: 0 },
                 });
 
-                set({ announceStatus: 'active' });
+                // Store the trackAlias mapping for this namespace/trackName
+                const newMap = new Map(get().announceTrackAliases);
+                newMap.set(trackKey, event.trackAlias);
+                set({ announceStatus: 'active', announceTrackAliases: newMap });
                 log.info('Started publishing for subscriber (announce flow)', {
                   trackAlias: event.trackAlias.toString(),
+                  trackKey,
                 });
               } catch (err) {
                 log.error('Failed to start announce publish', err);
                 set({ error: (err as Error).message });
               }
             } else {
-              log.warn('Incoming subscription but no pending stream', {
-                hasPendingStream: !!pendingAnnounceStream,
-                hasPendingConfig: !!pendingAnnounceConfig,
+              log.warn('Incoming subscription but no pending track config', {
+                trackKey,
+                availableTracks: Array.from(pendingAnnounceTracks.keys()),
               });
             }
           });
@@ -694,7 +730,7 @@ export const useStore = create<AppStore>()(
       },
 
       disconnect: async () => {
-        const { transport, session, localStream, pendingAnnounceStream } = get();
+        const { transport, session, localStream, pendingAnnounceTracks } = get();
         if (session) {
           await session.close();
         }
@@ -705,10 +741,11 @@ export const useStore = create<AppStore>()(
         if (localStream) {
           localStream.getTracks().forEach(track => track.stop());
         }
-        if (pendingAnnounceStream) {
-          pendingAnnounceStream.getTracks().forEach(track => track.stop());
+        // Stop any pending announce track streams
+        for (const track of pendingAnnounceTracks.values()) {
+          track.stream.getTracks().forEach(t => t.stop());
         }
-        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceStream: null, publishedTracks: [], subscribedTracks: [], namespaceSubscriptions: [] });
+        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceTracks: new Map(), announceTrackAliases: new Map(), announceStatus: 'idle', publishedTracks: [], subscribedTracks: [], namespaceSubscriptions: [] });
       },
 
       setServerUrl: (url: string) => set({ serverUrl: url }),
@@ -728,13 +765,15 @@ export const useStore = create<AppStore>()(
 
       clearDecodeErrors: () => set({ decodeErrors: [] }),
 
-      startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean) => {
+      startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean, stream?: MediaStream) => {
         const { session, localStream, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled: globalVideoEnabled, audioEnabled: globalAudioEnabled, useAnnounceFlow, audioDeliveryMode } = get();
         if (!session) {
           throw new Error('No session');
         }
-        if (!localStream) {
-          throw new Error('No local stream');
+        // Use provided stream or fall back to localStream
+        const effectiveStream = stream ?? localStream;
+        if (!effectiveStream) {
+          throw new Error('No stream provided');
         }
 
         // Use passed parameters if provided, otherwise fall back to global state
@@ -742,8 +781,8 @@ export const useStore = create<AppStore>()(
         const effectiveAudioEnabled = audioEnabled ?? globalAudioEnabled;
 
         // Check what tracks the stream actually has
-        const hasVideoTracks = localStream.getVideoTracks().length > 0;
-        const hasAudioTracks = localStream.getAudioTracks().length > 0;
+        const hasVideoTracks = effectiveStream.getVideoTracks().length > 0;
+        const hasAudioTracks = effectiveStream.getAudioTracks().length > 0;
 
         const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
         const config: MediaConfig = {
@@ -769,21 +808,25 @@ export const useStore = create<AppStore>()(
 
         // Use announce flow if enabled
         if (useAnnounceFlow) {
-          log.info('Using announce flow for publishing', { namespace, trackName });
+          const trackKey = `${namespace}/${trackName}`;
+          log.info('Using announce flow for publishing', { namespace, trackName, trackKey, videoEnabled: effectiveVideoEnabled, audioEnabled: effectiveAudioEnabled, hasVideoTracks, hasAudioTracks });
+
+          // Add this track's config + stream to the pending tracks map
+          const newTracks = new Map(get().pendingAnnounceTracks);
+          newTracks.set(trackKey, {
+            namespace,
+            trackName,
+            stream: effectiveStream,
+            deliveryTimeout: deliveryTimeout ?? 5000,
+            priority: priority ?? 128,
+            deliveryMode: deliveryMode ?? 'stream',
+            videoEnabled: effectiveVideoEnabled,
+            audioEnabled: effectiveAudioEnabled,
+          });
 
           set({
             announceStatus: 'announcing',
-            pendingAnnounceStream: localStream,
-            pendingAnnounceConfig: {
-              namespace,
-              trackName,
-              deliveryTimeout: deliveryTimeout ?? 5000,
-              priority: priority ?? 128,
-              deliveryMode: deliveryMode ?? 'stream',
-              // Store the panel's explicit track type intent
-              videoEnabled: effectiveVideoEnabled,
-              audioEnabled: effectiveAudioEnabled,
-            },
+            pendingAnnounceTracks: newTracks,
           });
 
           try {
@@ -794,16 +837,18 @@ export const useStore = create<AppStore>()(
             });
 
             set({ announceStatus: 'waiting' });
-            log.info('Namespace announced, waiting for subscribers', { namespace });
+            log.info('Namespace announced, waiting for subscribers', { namespace, trackKey });
 
             // Return a placeholder track alias - actual publishing happens when subscribers connect
             return BigInt(0);
           } catch (err) {
             log.error('Failed to announce namespace', err);
+            // Remove this track's config on error
+            const errorTracks = new Map(get().pendingAnnounceTracks);
+            errorTracks.delete(trackKey);
             set({
-              announceStatus: 'idle',
-              pendingAnnounceStream: null,
-              pendingAnnounceConfig: null,
+              announceStatus: errorTracks.size > 0 ? 'waiting' : 'idle',
+              pendingAnnounceTracks: errorTracks,
               error: (err as Error).message,
             });
             throw err;
@@ -814,7 +859,7 @@ export const useStore = create<AppStore>()(
         const trackAlias = await session.publish(
           namespace.split('/'),
           trackName,
-          localStream,
+          effectiveStream,
           config
         );
 
@@ -850,11 +895,6 @@ export const useStore = create<AppStore>()(
 
         set({
           announceStatus: 'announcing',
-          pendingAnnounceStream: localStream,
-          pendingAnnounceConfig: {
-            namespace,
-            trackName: '', // Will be determined by subscriber
-          },
         });
 
         try {
@@ -870,8 +910,7 @@ export const useStore = create<AppStore>()(
           log.error('Failed to announce namespace', err);
           set({
             announceStatus: 'idle',
-            pendingAnnounceStream: null,
-            pendingAnnounceConfig: null,
+            pendingAnnounceTracks: new Map(),
             error: (err as Error).message,
           });
           throw err;
@@ -885,8 +924,8 @@ export const useStore = create<AppStore>()(
         await session.cancelAnnounce(namespace.split('/'));
         set({
           announceStatus: 'idle',
-          pendingAnnounceStream: null,
-          pendingAnnounceConfig: null,
+          pendingAnnounceTracks: new Map(),
+          announceTrackAliases: new Map(),
         });
         log.info('Namespace announcement cancelled', { namespace });
       },

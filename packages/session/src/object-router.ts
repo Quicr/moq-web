@@ -395,14 +395,6 @@ export class ObjectRouter {
     }
     this.lastDelivered.set(subscription.subscriptionId, { groupId, objectId });
 
-    // Log every object at info level for debugging
-    log.info('Delivering object', {
-      subscriptionId: subscription.subscriptionId,
-      groupId,
-      objectId,
-      dataSize: data.length,
-    });
-
     // Call subscription's object handler if set
     if (subscription.onObject) {
       subscription.onObject(data, groupId, objectId, timestamp);

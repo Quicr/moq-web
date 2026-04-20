@@ -27,7 +27,9 @@ export type SessionEventType =
   | 'subscribe-stats'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
-  | 'incoming-publish';
+  | 'incoming-publish'
+  | 'forward-paused'
+  | 'forward-resumed';
 
 /**
  * Options for subscribing to a track

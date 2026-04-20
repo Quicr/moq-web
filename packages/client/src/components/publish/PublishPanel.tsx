@@ -48,6 +48,7 @@ export const PublishPanel: React.FC = () => {
     setKeyframeInterval,
     useAnnounceFlow,
     announceStatus,
+    announceTrackAliases,
     cancelAnnounce,
     secureObjectsEnabled,
   } = useStore();
@@ -129,16 +130,26 @@ export const PublishPanel: React.FC = () => {
     }
   }, [localStream]);
 
-  const createCaptureStream = async (videoDeviceId?: string, audioDeviceId?: string) => {
+  const createCaptureStream = async (
+    videoDeviceId?: string,
+    audioDeviceId?: string,
+    options?: { videoEnabled?: boolean; audioEnabled?: boolean }
+  ) => {
     const { width, height } = getResolutionConfig(videoResolution);
+    const videoEnabled = options?.videoEnabled ?? true;
+    const audioEnabled = options?.audioEnabled ?? true;
 
     return navigator.mediaDevices.getUserMedia({
-      video: videoDeviceId
-        ? { deviceId: { exact: videoDeviceId }, width, height }
-        : { width, height },
-      audio: audioDeviceId
-        ? { deviceId: { exact: audioDeviceId } }
-        : true,
+      video: videoEnabled
+        ? (videoDeviceId
+            ? { deviceId: { exact: videoDeviceId }, width, height }
+            : { width, height })
+        : false,
+      audio: audioEnabled
+        ? (audioDeviceId
+            ? { deviceId: { exact: audioDeviceId } }
+            : true)
+        : false,
     });
   };
 
@@ -210,10 +221,22 @@ export const PublishPanel: React.FC = () => {
     setPublishError(null);
 
     try {
-      let stream = localStream;
-      if (!stream) {
-        await startCapture();
-        stream = useStore.getState().localStream;
+      // Each track gets its own video/audio enabled based on its media type
+      const videoEnabled = config.mediaType === 'video';
+      const audioEnabled = config.mediaType === 'audio';
+
+      // Always create a fresh stream for each track
+      // This ensures each track has its own independent stream that won't be stopped
+      // when other operations happen (device changes, other tracks starting, etc.)
+      const stream = await createCaptureStream(
+        videoEnabled ? selectedVideoDevice : undefined,
+        audioEnabled ? selectedAudioDevice : undefined,
+        { videoEnabled, audioEnabled }
+      );
+
+      // Update localStream for preview (don't stop the old one if tracks are still publishing)
+      if (!localStream) {
+        setLocalStream(stream);
       }
 
       if (!stream) {
@@ -221,11 +244,7 @@ export const PublishPanel: React.FC = () => {
         return;
       }
 
-      // Each track gets its own video/audio enabled based on its media type
-      // These are passed directly to startPublishing, not set globally
-      const videoEnabled = config.mediaType === 'video';
-      const audioEnabled = config.mediaType === 'audio';
-
+      // Pass the stream directly to startPublishing
       const trackAlias = await storeStartPublishing(
         config.namespace,
         config.trackName,
@@ -233,7 +252,8 @@ export const PublishPanel: React.FC = () => {
         config.priority,
         config.deliveryMode,
         videoEnabled,
-        audioEnabled
+        audioEnabled,
+        stream
       );
 
       setTrackConfigs(trackConfigs.map(t =>
@@ -247,9 +267,17 @@ export const PublishPanel: React.FC = () => {
   };
 
   const stopPublishingTrack = async (config: TrackConfig) => {
+    // In announce flow, look up the actual trackAlias from the map using namespace/trackName
+    // because config.trackAlias is just a placeholder (0n) returned from startPublishing
+    const trackKey = `${config.namespace}/${config.trackName}`;
+    const announceAlias = announceTrackAliases.get(trackKey);
+    const effectiveTrackAlias = useAnnounceFlow && announceAlias !== undefined
+      ? announceAlias
+      : config.trackAlias;
+
     try {
-      if (config.trackAlias !== undefined) {
-        await storeStopPublishing(config.trackAlias);
+      if (effectiveTrackAlias !== undefined) {
+        await storeStopPublishing(effectiveTrackAlias);
       }
       setTrackConfigs(trackConfigs.map(t =>
         t.id === config.id ? { ...t, isPublishing: false, trackAlias: undefined } : t

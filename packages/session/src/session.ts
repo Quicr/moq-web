@@ -1642,7 +1642,17 @@ export class MOQTSession {
     data: Uint8Array,
     metadata: ObjectMetadata
   ): Promise<void> {
+    // Skip sending if session is not ready (connection lost, error state, etc.)
+    if (!this.isReady) {
+      return;
+    }
+
     const publication = this.publicationManager.get(trackAlias);
+    // Skip if publication was removed (unpublished)
+    if (!publication) {
+      log.debug('Skipping sendObject - publication not found (unpublished?)', { trackAlias: trackAlias.toString() });
+      return;
+    }
     const priority = publication?.priority ?? 128;
     const deliveryMode = publication?.deliveryMode ?? 'stream';
     const audioDeliveryMode = publication?.audioDeliveryMode ?? 'datagram';
@@ -2096,6 +2106,8 @@ export class MOQTSession {
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
+  on(event: 'forward-paused', handler: (data: { subscriptionRequestId: number }) => void): () => void;
+  on(event: 'forward-resumed', handler: (data: { subscriptionRequestId: number }) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -2341,6 +2353,12 @@ export class MOQTSession {
             pendingCount: this.publicationManager.pendingForwardCount,
           });
           this.publicationManager.resolveAllForward();
+        } else if (subscribeUpdate.forward === 0) {
+          // No more subscribers - emit event so publisher can pause
+          log.info('Forward disabled (no subscribers), emitting forward-paused event', {
+            subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
+          });
+          this.emit('forward-paused', { subscriptionRequestId: subscribeUpdate.subscriptionRequestId });
         }
         break;
       }

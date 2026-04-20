@@ -2306,20 +2306,32 @@ export class ObjectCodec {
    */
   static encodeDatagramHeader(header: ObjectHeader): Uint8Array {
     const writer = new BufferWriter();
-    writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
-    writer.writeVarInt(header.trackAlias);
-    writer.writeVarInt(header.groupId);
-    if (!IS_DRAFT_16) {
-      // Draft-14 includes subgroupId; draft-16 datagrams don't belong to subgroups
-      writer.writeVarInt(header.subgroupId);
-    }
-    writer.writeVarInt(header.objectId);
+
     if (IS_DRAFT_16) {
-      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
-      writer.writeVarInt(0); // No extensions for now
+      // Draft-16 datagram type is a bitmask (0b00X0XXXX):
+      // Bit 0 (0x01): EXTENSIONS - Extensions field present
+      // Bit 1 (0x02): END_OF_GROUP
+      // Bit 2 (0x04): ZERO_OBJECT_ID - Object ID omitted (always 0)
+      // Bit 3 (0x08): DEFAULT_PRIORITY - Priority field omitted
+      // Bit 5 (0x20): STATUS - Object Status instead of payload
+      //
+      // We use 0x00: Object ID present, Priority present, no extensions
+      const datagramType = 0x00;
+      writer.writeVarInt(datagramType);
+      writer.writeVarInt(header.trackAlias);
+      writer.writeVarInt(header.groupId);
+      writer.writeVarInt(header.objectId);
+      writer.writeByte(header.publisherPriority);
+      // No extensions field when EXTENSIONS bit (0x01) is not set
+      // Payload follows directly
     } else {
-      // Draft-14 includes publisherPriority and objectStatus in datagram header
-      writer.writeByte(header.publisherPriority); // 1 byte, not varint
+      // Draft-14 format
+      writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
+      writer.writeVarInt(header.trackAlias);
+      writer.writeVarInt(header.groupId);
+      writer.writeVarInt(header.subgroupId);
+      writer.writeVarInt(header.objectId);
+      writer.writeByte(header.publisherPriority);
       writer.writeVarInt(header.objectStatus);
     }
     return writer.toUint8Array();
@@ -2333,56 +2345,97 @@ export class ObjectCodec {
    */
   static decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
     const reader = new BufferReader(buffer);
-    const streamType = reader.readVarIntNumber();
-
-    if (streamType !== DataStreamType.OBJECT_DATAGRAM) {
-      throw new MessageCodecError(
-        `Expected OBJECT_DATAGRAM (${DataStreamType.OBJECT_DATAGRAM}), got ${streamType}`,
-        streamType
-      );
-    }
-
-    // trackAlias can be a 62-bit hash - keep as bigint to preserve full value
-    const trackAliasBigInt = reader.readVarInt();
-    const groupId = reader.readVarIntNumber();
-    // Draft-16 datagrams don't have subgroupId; draft-14 does
-    const subgroupId = IS_DRAFT_16 ? 0 : reader.readVarIntNumber();
-    const objectId = reader.readVarIntNumber();
+    const datagramType = reader.readVarIntNumber();
 
     let publisherPriority: number;
     let objectStatus: ObjectStatus;
+    let objectId: number;
+    let subgroupId = 0;
 
     if (IS_DRAFT_16) {
-      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
-      const extensionLength = reader.readVarIntNumber();
-      if (extensionLength > 0) {
-        // Skip extension bytes
-        reader.readBytes(extensionLength);
+      // Draft-16 datagram type is a bitmask (0b00X0XXXX):
+      // Bit 0 (0x01): EXTENSIONS - Extensions field present
+      // Bit 1 (0x02): END_OF_GROUP
+      // Bit 2 (0x04): ZERO_OBJECT_ID - Object ID omitted (always 0)
+      // Bit 3 (0x08): DEFAULT_PRIORITY - Priority field omitted
+      // Bit 5 (0x20): STATUS - Object Status instead of payload
+
+      // Validate type is in valid datagram range
+      if ((datagramType & 0x10) !== 0 || (datagramType > 0x0F && datagramType < 0x20) || datagramType > 0x2F) {
+        throw new MessageCodecError(
+          `Invalid datagram type 0x${datagramType.toString(16)}`,
+          datagramType
+        );
       }
-      publisherPriority = 128; // default priority
+
+      const hasExtensions = (datagramType & 0x01) !== 0;
+      const zeroObjectId = (datagramType & 0x04) !== 0;
+      const defaultPriority = (datagramType & 0x08) !== 0;
+
+      const trackAliasBigInt = reader.readVarInt();
+      const groupId = reader.readVarIntNumber();
+      objectId = zeroObjectId ? 0 : reader.readVarIntNumber();
+      publisherPriority = defaultPriority ? 128 : reader.readByte();
+
+      if (hasExtensions) {
+        const extensionLength = reader.readVarIntNumber();
+        if (extensionLength > 0) {
+          reader.readBytes(extensionLength);
+        }
+      }
+
       objectStatus = ObjectStatus.NORMAL;
+
+      const header: ObjectHeader = {
+        trackAlias: trackAliasBigInt,
+        groupId,
+        subgroupId,
+        objectId,
+        publisherPriority,
+        objectStatus,
+      };
+
+      log.trace('Decoded datagram header (draft-16)', {
+        trackAlias: trackAliasBigInt.toString(),
+        groupId: header.groupId,
+        objectId: header.objectId,
+        type: `0x${datagramType.toString(16)}`,
+      });
+
+      return [header, reader.offset];
     } else {
-      // Draft-14 includes publisherPriority (1 byte) and objectStatus (varint)
+      // Draft-14 format
+      if (datagramType !== DataStreamType.OBJECT_DATAGRAM) {
+        throw new MessageCodecError(
+          `Expected OBJECT_DATAGRAM (${DataStreamType.OBJECT_DATAGRAM}), got ${datagramType}`,
+          datagramType
+        );
+      }
+
+      const trackAliasBigInt = reader.readVarInt();
+      const groupId = reader.readVarIntNumber();
+      subgroupId = reader.readVarIntNumber();
+      objectId = reader.readVarIntNumber();
       publisherPriority = reader.readByte();
       objectStatus = reader.readVarIntNumber() as ObjectStatus;
+
+      const header: ObjectHeader = {
+        trackAlias: trackAliasBigInt,
+        groupId,
+        subgroupId,
+        objectId,
+        publisherPriority,
+        objectStatus,
+      };
+
+      log.trace('Decoded datagram header (draft-14)', {
+        trackAlias: trackAliasBigInt.toString(),
+        groupId: header.groupId,
+        objectId: header.objectId,
+      });
+
+      return [header, reader.offset];
     }
-
-    const header: ObjectHeader = {
-      trackAlias: trackAliasBigInt,
-      groupId,
-      subgroupId,
-      objectId,
-      publisherPriority,
-      objectStatus,
-    };
-
-    log.trace('Decoded datagram header', {
-      trackAlias: trackAliasBigInt.toString(),
-      groupId: header.groupId,
-      objectId: header.objectId
-    });
-
-    return [header, reader.offset];
   }
 
   /**
