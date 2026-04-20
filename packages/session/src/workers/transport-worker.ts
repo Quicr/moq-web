@@ -431,7 +431,8 @@ async function writeStream(
 ): Promise<void> {
   const streamInfo = outgoingStreams.get(streamId);
   if (!streamInfo) {
-    respond({ type: 'error', message: `Stream ${streamId} not found` });
+    // Stream already closed/cleaned up - not a fatal error, just a race condition
+    log('Stream not found (already closed)', { streamId });
     return;
   }
 
@@ -463,7 +464,8 @@ async function writeStream(
 async function closeStream(streamId: number): Promise<void> {
   const streamInfo = outgoingStreams.get(streamId);
   if (!streamInfo) {
-    respond({ type: 'error', message: `Stream ${streamId} not found` });
+    // Stream already closed/cleaned up - not a fatal error, just a race condition
+    log('Stream not found for close (already closed)', { streamId });
     return;
   }
 

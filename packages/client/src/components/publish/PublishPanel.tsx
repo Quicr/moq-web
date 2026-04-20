@@ -227,32 +227,18 @@ export const PublishPanel: React.FC = () => {
 
       let stream: MediaStream;
 
-      if (useAnnounceFlow) {
-        // In announce flow, ALWAYS create a fresh stream for each track
-        // This ensures each track has its own independent stream that won't be stopped
-        // when other operations happen (device changes, other tracks starting, etc.)
-        stream = await createCaptureStream(
-          videoEnabled ? selectedVideoDevice : undefined,
-          audioEnabled ? selectedAudioDevice : undefined,
-          { videoEnabled, audioEnabled }
-        );
-      } else {
-        // Standard flow: reuse localStream if it has the required tracks
-        let existingStream = localStream;
-        const hasRequiredVideo = !videoEnabled || (existingStream?.getVideoTracks().length ?? 0) > 0;
-        const hasRequiredAudio = !audioEnabled || (existingStream?.getAudioTracks().length ?? 0) > 0;
+      // Always create a fresh stream for each track
+      // This ensures each track has its own independent stream that won't be stopped
+      // when other operations happen (device changes, other tracks starting, etc.)
+      stream = await createCaptureStream(
+        videoEnabled ? selectedVideoDevice : undefined,
+        audioEnabled ? selectedAudioDevice : undefined,
+        { videoEnabled, audioEnabled }
+      );
 
-        if (!existingStream || !hasRequiredVideo || !hasRequiredAudio) {
-          const newStream = await createCaptureStream(
-            videoEnabled ? selectedVideoDevice : undefined,
-            audioEnabled ? selectedAudioDevice : undefined,
-            { videoEnabled, audioEnabled }
-          );
-          replaceLocalStream(newStream);
-          stream = newStream;
-        } else {
-          stream = existingStream;
-        }
+      // Update localStream for preview (don't stop the old one if tracks are still publishing)
+      if (!localStream) {
+        setLocalStream(stream);
       }
 
       if (!stream) {
