@@ -82,7 +82,11 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
     jitterBufferDelay,
     maxLatency,
     policyType,
+    vodFetchStats,
   } = useStore();
+
+  // Get VOD fetch stats for this subscription
+  const fetchStats = vodFetchStats.get(subscriptionId);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(true);
@@ -476,6 +480,41 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* VOD Fetch Stats Card */}
+            {fetchStats && (
+              <div className="backdrop-blur-md bg-white/10 border border-white/20 rounded-xl px-3 py-2 shadow-lg">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className={`w-2 h-2 rounded-full ${
+                    fetchStats.state === 'playing' ? 'bg-emerald-400' :
+                    fetchStats.state === 'rebuffering' ? 'bg-red-400 animate-pulse' :
+                    fetchStats.state === 'initial-buffering' ? 'bg-amber-400 animate-pulse' :
+                    'bg-white/40'
+                  }`} />
+                  <span className="text-white/90 text-xs font-semibold uppercase tracking-wide">
+                    {fetchStats.strategy === 'legacy' ? 'Fetch' : fetchStats.strategy.toUpperCase()}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+                  <div className="text-white/50">Buffer</div>
+                  <div className={`font-medium ${
+                    fetchStats.bufferedSeconds < 2 ? 'text-red-400' :
+                    fetchStats.bufferedSeconds < 5 ? 'text-amber-400' :
+                    'text-emerald-400'
+                  }`}>{fetchStats.bufferedSeconds.toFixed(1)}s</div>
+                  <div className="text-white/50">State</div>
+                  <div className="text-white/80 font-medium capitalize">{fetchStats.state}</div>
+                  <div className="text-white/50">Group</div>
+                  <div className="text-white/80 font-medium">{fetchStats.playbackGroup}/{fetchStats.fetchedUpToGroup}</div>
+                  <div className="text-white/50">DL Speed</div>
+                  <div className="text-white/80 font-medium">
+                    {fetchStats.avgMsPerGop > 0 ? `${Math.round(fetchStats.avgMsPerGop)}ms/gop` : '-'}
+                  </div>
+                  <div className="text-white/50">Fetches</div>
+                  <div className="text-sky-400 font-medium">{fetchStats.activeFetches}</div>
+                </div>
+              </div>
+            )}
 
             {/* Log Controls Card */}
             <div className="backdrop-blur-md bg-white/10 border border-white/20 rounded-xl px-3 py-2 shadow-lg pointer-events-auto">

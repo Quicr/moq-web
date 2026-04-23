@@ -23,7 +23,19 @@ export function isDebugMode(): boolean {
 }
 
 export const DevSettingsPanel: React.FC = () => {
-  const { logLevel, setLogLevel, useAnnounceFlow, setUseAnnounceFlow, enableStats, setEnableStats, varIntType, setVarIntType } = useStore();
+  const {
+    logLevel, setLogLevel,
+    useAnnounceFlow, setUseAnnounceFlow,
+    enableStats, setEnableStats,
+    varIntType, setVarIntType,
+    vodFetchStrategy, setVodFetchStrategy,
+    sbrTargetBufferSec, setSbrTargetBufferSec,
+    sbrLowBufferSec, setSbrLowBufferSec,
+    sbrHighBufferSec, setSbrHighBufferSec,
+    abrSwitchingBufferSec, setAbrSwitchingBufferSec,
+    abrIntermediateBufferSec, setAbrIntermediateBufferSec,
+    abrTopBufferSec, setAbrTopBufferSec,
+  } = useStore();
   const [isExpanded, setIsExpanded] = React.useState(true);
 
   // Don't render if not in debug mode
@@ -154,6 +166,117 @@ export const DevSettingsPanel: React.FC = () => {
                 {varIntType === VarIntType.MOQT ? 'Using MOQT varint (1.4.1)' : 'Using QUIC varint (RFC 9000)'}
               </p>
             </div>
+
+            {/* VOD Fetch Strategy */}
+            <div>
+              <label className="block text-xs font-medium text-yellow-800 dark:text-yellow-200 mb-1">
+                VOD Fetch Strategy
+              </label>
+              <select
+                value={vodFetchStrategy}
+                onChange={(e) => setVodFetchStrategy(e.target.value as 'legacy' | 'sbr' | 'abr')}
+                className="input w-full py-1.5 text-sm border-yellow-300 dark:border-yellow-600 focus:ring-yellow-500"
+              >
+                <option value="legacy">Legacy (adaptive fetch-ahead)</option>
+                <option value="sbr">SBR (sawtooth buffer)</option>
+                <option value="abr">ABR (multi-bitrate)</option>
+              </select>
+              <p className="mt-1 text-xs text-yellow-600 dark:text-yellow-400">
+                {vodFetchStrategy === 'sbr' ? 'Deep buffer with sawtooth pattern' :
+                 vodFetchStrategy === 'abr' ? 'Progressive quality ramp-up' :
+                 'Original adaptive buffering'}
+              </p>
+            </div>
+
+            {/* SBR Buffer Settings */}
+            {vodFetchStrategy === 'sbr' && (
+              <div className="space-y-2 pl-2 border-l-2 border-yellow-300 dark:border-yellow-600">
+                <div>
+                  <label className="block text-xs text-yellow-700 dark:text-yellow-300">
+                    Target Buffer: {sbrTargetBufferSec}s
+                  </label>
+                  <input
+                    type="range"
+                    min={5}
+                    max={60}
+                    value={sbrTargetBufferSec}
+                    onChange={(e) => setSbrTargetBufferSec(Number(e.target.value))}
+                    className="w-full h-1.5 bg-yellow-200 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-yellow-700 dark:text-yellow-300">
+                    Low Threshold: {sbrLowBufferSec}s
+                  </label>
+                  <input
+                    type="range"
+                    min={2}
+                    max={sbrTargetBufferSec}
+                    value={sbrLowBufferSec}
+                    onChange={(e) => setSbrLowBufferSec(Number(e.target.value))}
+                    className="w-full h-1.5 bg-yellow-200 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-yellow-700 dark:text-yellow-300">
+                    High Threshold: {sbrHighBufferSec}s
+                  </label>
+                  <input
+                    type="range"
+                    min={sbrTargetBufferSec}
+                    max={120}
+                    value={sbrHighBufferSec}
+                    onChange={(e) => setSbrHighBufferSec(Number(e.target.value))}
+                    className="w-full h-1.5 bg-yellow-200 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ABR Buffer Settings */}
+            {vodFetchStrategy === 'abr' && (
+              <div className="space-y-2 pl-2 border-l-2 border-yellow-300 dark:border-yellow-600">
+                <div>
+                  <label className="block text-xs text-yellow-700 dark:text-yellow-300">
+                    Switching Buffer: {abrSwitchingBufferSec}s
+                  </label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    value={abrSwitchingBufferSec}
+                    onChange={(e) => setAbrSwitchingBufferSec(Number(e.target.value))}
+                    className="w-full h-1.5 bg-yellow-200 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-yellow-700 dark:text-yellow-300">
+                    Intermediate Buffer: {abrIntermediateBufferSec}s
+                  </label>
+                  <input
+                    type="range"
+                    min={10}
+                    max={60}
+                    value={abrIntermediateBufferSec}
+                    onChange={(e) => setAbrIntermediateBufferSec(Number(e.target.value))}
+                    className="w-full h-1.5 bg-yellow-200 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-yellow-700 dark:text-yellow-300">
+                    Top Quality Buffer: {abrTopBufferSec}s
+                  </label>
+                  <input
+                    type="range"
+                    min={30}
+                    max={120}
+                    value={abrTopBufferSec}
+                    onChange={(e) => setAbrTopBufferSec(Number(e.target.value))}
+                    className="w-full h-1.5 bg-yellow-200 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Debug Info */}
             <div className="pt-2 border-t border-yellow-200 dark:border-yellow-700">

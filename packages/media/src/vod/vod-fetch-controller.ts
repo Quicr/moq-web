@@ -4,18 +4,19 @@
 /**
  * @fileoverview VOD Fetch Controller
  *
- * Manages smooth VOD playback using FETCH requests. Implements a buffer-aware
- * fetching strategy that:
+ * Manages smooth VOD playback using FETCH requests. Delegates fetch
+ * decision-making to a pluggable FetchStrategy:
  *
- * 1. Pre-fills buffer before starting playback
- * 2. Continuously fetches ahead during playback to maintain buffer
- * 3. Uses catalog metadata (GOP duration, framerate) for optimal fetch sizing
+ * - LegacyFetchStrategy (default): Adaptive fetch-ahead based on network speed
+ * - SbrFetchStrategy: Sawtooth buffer pattern for single-bitrate content
+ * - AbrFetchStrategy: Progressive quality ramp-up for multi-bitrate content
  *
- * This approach avoids the parallel stream delivery issue of SUBSCRIBE,
- * ensuring groups arrive in order for smooth sequential playback.
+ * The controller owns state management, event emission, and fetch tracking.
+ * Strategies only decide what to fetch and when.
  */
 
 import { Logger } from '@web-moq/core';
+import { type FetchStrategy, type FetchStrategyContext } from './fetch-strategy';
 
 const log = Logger.create('moqt:media:vod-fetch-controller');
 
@@ -43,6 +44,9 @@ export interface VodFetchConfig {
 
   /** Maximum concurrent fetch requests (default: 1 for sequential) */
   maxConcurrentFetches?: number;
+
+  /** Fetch strategy to use (default: LegacyFetchStrategy) */
+  strategy?: FetchStrategy;
 }
 
 /**
@@ -74,7 +78,7 @@ type ControllerState =
  */
 export interface VodFetchEvents {
   /** Request to fetch a range of groups */
-  'fetch-request': { startGroup: number; endGroup: number; requestId: number };
+  'fetch-request': { startGroup: number; endGroup: number; requestId: number; trackName?: string };
   /** Playback can start (initial buffer filled) */
   'ready-to-play': { bufferedGroups: number; bufferedFrames: number };
   /** Buffer is running low */
@@ -89,19 +93,25 @@ export interface VodFetchEvents {
   'state-change': { from: ControllerState; to: ControllerState };
   /** Network speed update */
   'speed-update': { avgMsPerGop: number; adaptiveFetchAhead: number };
+  /** Strategy-specific update (for UI/debugging) */
+  'strategy-update': { strategy: string; phase?: string; bufferTarget?: number; qualityTier?: string };
 }
 
 /**
  * VOD Fetch Controller
  *
  * Coordinates FETCH requests to maintain smooth VOD playback.
+ * Delegates fetch decisions to a pluggable FetchStrategy.
  *
  * @example
  * ```typescript
+ * import { SbrFetchStrategy } from './sbr-fetch-strategy';
+ *
  * const controller = new VodFetchController({
  *   framerate: 60,
  *   gopDurationMs: 500,
  *   totalGroups: 100,
+ *   strategy: new SbrFetchStrategy({ targetBufferSec: 30, lowBufferSec: 20, highBufferSec: 40 }),
  * });
  *
  * controller.on('fetch-request', async ({ startGroup, endGroup }) => {
@@ -109,7 +119,7 @@ export interface VodFetchEvents {
  *     startGroup,
  *     startObject: 0,
  *     endGroup,
- *     endObject: 0, // 0 = entire group
+ *     endObject: 0,
  *   });
  * });
  *
@@ -121,7 +131,8 @@ export interface VodFetchEvents {
  * ```
  */
 export class VodFetchController {
-  private config: Required<VodFetchConfig>;
+  private config: Required<Omit<VodFetchConfig, 'strategy'>>;
+  private strategy: FetchStrategy;
   private state: ControllerState = 'idle';
   private handlers = new Map<keyof VodFetchEvents, Set<(data: unknown) => void>>();
 
@@ -142,12 +153,20 @@ export class VodFetchController {
   private gopsForMinBuffer: number;
   private gopsPerFetch: number;
 
-  // Adaptive fetch-ahead tracking
+  // Adaptive fetch-ahead tracking (used by LegacyFetchStrategy and for stats)
   private downloadHistory: { durationMs: number; groupCount: number; bytesReceived: number }[] = [];
-  private avgGroupDownloadMs = 0;  // Rolling average time to download one GOP
-  private adaptiveFetchAhead: number;  // Dynamic fetch-ahead in GOPs
+  private avgGroupDownloadMs = 0;
+  private adaptiveFetchAhead: number;
 
   constructor(config: VodFetchConfig) {
+    // Extract strategy before applying defaults
+    this.strategy = config.strategy ?? new LegacyFetchStrategy({
+      initialBufferSec: config.initialBufferSec,
+      minBufferSec: config.minBufferSec,
+      fetchBatchSec: config.fetchBatchSec,
+      gopDurationSec: config.gopDurationMs ? config.gopDurationMs / 1000 : undefined,
+    });
+
     // Apply defaults
     this.config = {
       framerate: config.framerate,
@@ -166,10 +185,11 @@ export class VodFetchController {
     this.gopsForMinBuffer = Math.ceil(this.config.minBufferSec / gopDurationSec);
     this.gopsPerFetch = Math.ceil(this.config.fetchBatchSec / gopDurationSec);
 
-    // Start adaptive fetch-ahead at initial buffer size, will adjust based on network
+    // Start adaptive fetch-ahead at initial buffer size
     this.adaptiveFetchAhead = this.gopsForInitialBuffer;
 
     log.info('VodFetchController created', {
+      strategy: this.strategy.name,
       framerate: this.config.framerate,
       gopDurationMs: this.config.gopDurationMs,
       totalGroups: this.config.totalGroups,
@@ -181,6 +201,13 @@ export class VodFetchController {
       minBufferFrames: this.gopsForMinBuffer * this.framesPerGop,
       adaptiveFetchAhead: this.adaptiveFetchAhead,
     });
+  }
+
+  /**
+   * Get the active fetch strategy
+   */
+  getStrategy(): FetchStrategy {
+    return this.strategy;
   }
 
   /**
@@ -199,9 +226,10 @@ export class VodFetchController {
     this.fetchedUpToGroup = startGroup - 1;
     this.bufferedUpToGroup = startGroup - 1;
 
-    log.info('Starting fetch controller', { startGroup, totalGroups: this.config.totalGroups });
+    log.info('Starting fetch controller', { startGroup, totalGroups: this.config.totalGroups, strategy: this.strategy.name });
     console.log('[VodFetchController] START called', {
       startGroup,
+      strategy: this.strategy.name,
       playbackGroup: this.playbackGroup,
       fetchedUpToGroup: this.fetchedUpToGroup,
       totalGroups: this.config.totalGroups,
@@ -260,7 +288,6 @@ export class VodFetchController {
       const groupCount = receivedEndGroup - fetch.startGroup + 1;
 
       // Update fetchedUpToGroup based on what was actually received
-      // (we no longer set this optimistically when issuing the fetch)
       if (actualLastGroup !== undefined && actualLastGroup < fetch.endGroup) {
         log.warn('Fetch received fewer groups than requested', {
           requestId,
@@ -283,7 +310,7 @@ export class VodFetchController {
       }
 
       // Update average download time per GOP
-      this.updateAdaptiveFetchAhead();
+      this.updateAvgGroupDownloadMs();
 
       log.info('Fetch completed', {
         requestId,
@@ -292,7 +319,7 @@ export class VodFetchController {
         durationMs: Math.round(durationMs),
         bytesReceived: fetch.bytesReceived,
         msPerGop: Math.round(durationMs / groupCount),
-        adaptiveFetchAhead: this.adaptiveFetchAhead,
+        strategy: this.strategy.name,
       });
 
       this.activeFetches.delete(requestId);
@@ -303,16 +330,16 @@ export class VodFetchController {
   }
 
   /**
-   * Update adaptive fetch-ahead based on download performance
+   * Update rolling average download time per GOP
    */
-  private updateAdaptiveFetchAhead(): void {
+  private updateAvgGroupDownloadMs(): void {
     if (this.downloadHistory.length === 0) return;
 
     // Calculate weighted average (recent samples weighted more)
     let totalWeight = 0;
     let weightedSum = 0;
     this.downloadHistory.forEach((sample, i) => {
-      const weight = i + 1; // Later samples have higher weight
+      const weight = i + 1;
       const msPerGop = sample.durationMs / sample.groupCount;
       weightedSum += msPerGop * weight;
       totalWeight += weight;
@@ -320,32 +347,37 @@ export class VodFetchController {
 
     this.avgGroupDownloadMs = weightedSum / totalWeight;
 
-    // Calculate how many GOPs we need to fetch ahead to maintain buffer
-    // If GOP duration is 500ms and download takes 200ms/GOP, we're OK
-    // If download takes 800ms/GOP, we're falling behind and need more prefetch
+    // For legacy strategy, also update adaptiveFetchAhead
+    if (this.strategy.name === 'legacy') {
+      this.updateAdaptiveFetchAhead();
+    }
+
+    this.emit('speed-update', {
+      avgMsPerGop: this.avgGroupDownloadMs,
+      adaptiveFetchAhead: this.adaptiveFetchAhead,
+    });
+  }
+
+  /**
+   * Update adaptive fetch-ahead (used by LegacyFetchStrategy)
+   */
+  private updateAdaptiveFetchAhead(): void {
     const gopDurationMs = this.config.gopDurationMs;
     const downloadToPlayRatio = this.avgGroupDownloadMs / gopDurationMs;
 
-    // Adaptive fetch-ahead:
-    // - Ratio < 1: Downloads faster than playback, keep initial buffer
-    // - Ratio > 1: Downloads slower, need to fetch further ahead
-    // - Add safety margin of 1.5x
     const safetyMargin = 1.5;
     const minFetchAhead = this.gopsForInitialBuffer;
     const maxFetchAhead = Math.min(
-      this.gopsForInitialBuffer * 4,  // Cap at 4x initial buffer
+      this.gopsForInitialBuffer * 4,
       this.config.totalGroups - this.playbackGroup
     );
 
-    // If slow network, increase fetch-ahead proportionally
     if (downloadToPlayRatio > 1) {
-      // E.g., if download is 2x slower than playback, fetch 2x more ahead
       this.adaptiveFetchAhead = Math.min(
         Math.ceil(minFetchAhead * downloadToPlayRatio * safetyMargin),
         maxFetchAhead
       );
     } else {
-      // Fast network - can reduce fetch-ahead (but keep minimum)
       this.adaptiveFetchAhead = minFetchAhead;
     }
 
@@ -355,11 +387,6 @@ export class VodFetchController {
       downloadToPlayRatio: downloadToPlayRatio.toFixed(2),
       adaptiveFetchAhead: this.adaptiveFetchAhead,
       sampleCount: this.downloadHistory.length,
-    });
-
-    this.emit('speed-update', {
-      avgMsPerGop: this.avgGroupDownloadMs,
-      adaptiveFetchAhead: this.adaptiveFetchAhead,
     });
   }
 
@@ -426,6 +453,7 @@ export class VodFetchController {
    */
   getStats(): {
     state: ControllerState;
+    strategy: string;
     playbackGroup: number;
     playbackObject: number;
     bufferedUpToGroup: number;
@@ -440,6 +468,7 @@ export class VodFetchController {
     const bufferedSeconds = this.bufferedFrames / this.config.framerate;
     return {
       state: this.state,
+      strategy: this.strategy.name,
       playbackGroup: this.playbackGroup,
       playbackObject: this.playbackObject,
       bufferedUpToGroup: this.bufferedUpToGroup,
@@ -497,25 +526,57 @@ export class VodFetchController {
     }
   }
 
+  /**
+   * Build context snapshot for the fetch strategy
+   */
+  private buildContext(): FetchStrategyContext {
+    // Find highest in-flight group
+    let highestInFlightGroup = this.fetchedUpToGroup;
+    for (const fetch of this.activeFetches.values()) {
+      if (!fetch.completed) {
+        highestInFlightGroup = Math.max(highestInFlightGroup, fetch.endGroup);
+      }
+    }
+
+    return {
+      playbackGroup: this.playbackGroup,
+      fetchedUpToGroup: this.fetchedUpToGroup,
+      bufferedSeconds: this.bufferedFrames / this.config.framerate,
+      bufferedFrames: this.bufferedFrames,
+      totalGroups: this.config.totalGroups,
+      gopDurationSec: this.config.gopDurationMs / 1000,
+      activeFetchCount: this.activeFetches.size,
+      maxConcurrentFetches: this.config.maxConcurrentFetches,
+      highestInFlightGroup,
+      avgGroupDownloadMs: this.avgGroupDownloadMs,
+      downloadHistory: this.downloadHistory,
+    };
+  }
+
   private fetchInitialBuffer(): void {
-    // Fetch enough groups for initial buffer
+    const ctx = this.buildContext();
+    const gopsToFetch = this.strategy.getInitialFetchSize(ctx);
+    const startGroup = this.playbackGroup;
     const endGroup = Math.min(
-      this.gopsForInitialBuffer - 1,
+      startGroup + gopsToFetch - 1,
       this.config.totalGroups - 1
     );
 
     log.info('Fetching initial buffer', {
-      startGroup: 0,
+      strategy: this.strategy.name,
+      startGroup,
       endGroup,
-      gopsForInitialBuffer: this.gopsForInitialBuffer,
+      gopsToFetch,
     });
 
-    this.issueFetch(0, endGroup);
+    this.issueFetch(startGroup, endGroup);
   }
 
   private fetchFromPosition(startGroup: number): void {
+    const ctx = this.buildContext();
+    const gopsToFetch = this.strategy.getInitialFetchSize(ctx);
     const endGroup = Math.min(
-      startGroup + this.gopsForInitialBuffer - 1,
+      startGroup + gopsToFetch - 1,
       this.config.totalGroups - 1
     );
 
@@ -524,46 +585,15 @@ export class VodFetchController {
   }
 
   private maybeIssueFetch(): void {
-    // Don't fetch if we're already fetching enough
-    if (this.activeFetches.size >= this.config.maxConcurrentFetches) {
-      return;
-    }
+    const ctx = this.buildContext();
+    const decision = this.strategy.getNextFetch(ctx);
 
-    // Don't fetch if we've fetched everything
-    if (this.fetchedUpToGroup >= this.config.totalGroups - 1) {
-      return;
-    }
-
-    // Find the highest endGroup among active (in-flight) fetches
-    let highestInFlightGroup = this.fetchedUpToGroup;
-    for (const fetch of this.activeFetches.values()) {
-      if (!fetch.completed) {
-        highestInFlightGroup = Math.max(highestInFlightGroup, fetch.endGroup);
-      }
-    }
-
-    // Calculate how far ahead we should be (use adaptive value)
-    const targetFetchGroup = this.playbackGroup + this.adaptiveFetchAhead;
-
-    // If we haven't fetched (or have in-flight) up to target, issue fetch
-    if (highestInFlightGroup < targetFetchGroup) {
-      const startGroup = highestInFlightGroup + 1;
-      // Fetch more groups at once if network is slow
-      const fetchBatch = this.avgGroupDownloadMs > this.config.gopDurationMs
-        ? Math.min(this.gopsPerFetch * 2, 8)  // Double batch size, cap at 8 GOPs
-        : this.gopsPerFetch;
-      const endGroup = Math.min(
-        startGroup + fetchBatch - 1,
-        this.config.totalGroups - 1
-      );
-
-      if (startGroup <= endGroup) {
-        this.issueFetch(startGroup, endGroup);
-      }
+    if (decision.shouldFetch) {
+      this.issueFetch(decision.startGroup, decision.endGroup, decision.trackName);
     }
   }
 
-  private issueFetch(startGroup: number, endGroup: number): void {
+  private issueFetch(startGroup: number, endGroup: number, trackName?: string): void {
     const requestId = this.nextRequestId++;
 
     const fetchRequest: FetchRequest = {
@@ -577,8 +607,6 @@ export class VodFetchController {
     };
 
     this.activeFetches.set(requestId, fetchRequest);
-    // Don't optimistically set fetchedUpToGroup here - wait for onFetchComplete
-    // to know what was actually received (relay may deliver fewer groups)
 
     log.info('Issuing FETCH', {
       requestId,
@@ -586,27 +614,30 @@ export class VodFetchController {
       endGroup,
       groupCount: endGroup - startGroup + 1,
       activeFetches: this.activeFetches.size,
-      adaptiveFetchAhead: this.adaptiveFetchAhead,
+      strategy: this.strategy.name,
+      trackName,
     });
     console.log('[VodFetchController] ISSUE FETCH', {
       requestId,
       startGroup,
       endGroup,
+      trackName,
       playbackGroup: this.playbackGroup,
       fetchedUpToGroup: this.fetchedUpToGroup,
     });
 
-    this.emit('fetch-request', { startGroup, endGroup, requestId });
+    this.emit('fetch-request', { startGroup, endGroup, requestId, trackName });
   }
 
   private checkInitialBufferReady(): void {
-    const requiredFrames = this.gopsForInitialBuffer * this.framesPerGop;
+    const requiredFrames = this.strategy.getMinFramesForPlayback(this.framesPerGop);
 
     if (this.bufferedFrames >= requiredFrames) {
       log.info('Initial buffer ready', {
         bufferedFrames: this.bufferedFrames,
         requiredFrames,
         bufferedGroups: this.bufferedUpToGroup + 1,
+        strategy: this.strategy.name,
       });
 
       this.setState('playing');
@@ -634,17 +665,112 @@ export class VodFetchController {
   }
 }
 
+// ============================================================
+// Legacy Fetch Strategy (preserves original behavior)
+// ============================================================
+
 /**
- * Create a VOD fetch controller from catalog track info
+ * Legacy fetch strategy that preserves the original VodFetchController behavior.
+ * Uses adaptive fetch-ahead based on download-to-play ratio.
+ *
+ * This is the default strategy when no explicit strategy is provided.
  */
+export class LegacyFetchStrategy implements FetchStrategy {
+  readonly name = 'legacy';
+
+  private initialBufferSec: number;
+  private fetchBatchSec: number;
+  private gopDurationSec: number;
+
+  constructor(options?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number; gopDurationSec?: number }) {
+    this.initialBufferSec = options?.initialBufferSec ?? 2;
+    this.fetchBatchSec = options?.fetchBatchSec ?? 1;
+    this.gopDurationSec = options?.gopDurationSec ?? 2;
+  }
+
+  getInitialFetchSize(ctx: FetchStrategyContext): number {
+    return Math.ceil(this.initialBufferSec / ctx.gopDurationSec);
+  }
+
+  getMinFramesForPlayback(framesPerGop: number): number {
+    // Original behavior: wait for the full initial buffer
+    const gopsForInitialBuffer = Math.ceil(this.initialBufferSec / this.gopDurationSec);
+    return gopsForInitialBuffer * framesPerGop;
+  }
+
+  getNextFetch(ctx: FetchStrategyContext): { shouldFetch: boolean; startGroup: number; endGroup: number } {
+    const noFetch = { shouldFetch: false, startGroup: 0, endGroup: 0 };
+
+    if (ctx.activeFetchCount >= ctx.maxConcurrentFetches) {
+      return noFetch;
+    }
+
+    if (ctx.highestInFlightGroup >= ctx.totalGroups - 1) {
+      return noFetch;
+    }
+
+    // Calculate adaptive fetch-ahead from download history
+    const adaptiveFetchAhead = this.calculateAdaptiveFetchAhead(ctx);
+    const targetFetchGroup = ctx.playbackGroup + adaptiveFetchAhead;
+
+    if (ctx.highestInFlightGroup < targetFetchGroup) {
+      const startGroup = ctx.highestInFlightGroup + 1;
+      const fetchBatchGops = Math.ceil(this.fetchBatchSec / ctx.gopDurationSec);
+      const fetchBatch = ctx.avgGroupDownloadMs > (ctx.gopDurationSec * 1000)
+        ? Math.min(fetchBatchGops * 2, 8)
+        : fetchBatchGops;
+      const endGroup = Math.min(
+        startGroup + fetchBatch - 1,
+        ctx.totalGroups - 1
+      );
+
+      if (startGroup <= endGroup) {
+        return { shouldFetch: true, startGroup, endGroup };
+      }
+    }
+
+    return noFetch;
+  }
+
+  private calculateAdaptiveFetchAhead(ctx: FetchStrategyContext): number {
+    const gopsForInitialBuffer = Math.ceil(this.initialBufferSec / ctx.gopDurationSec);
+
+    if (ctx.downloadHistory.length === 0) {
+      return gopsForInitialBuffer;
+    }
+
+    const gopDurationMs = ctx.gopDurationSec * 1000;
+    const downloadToPlayRatio = ctx.avgGroupDownloadMs / gopDurationMs;
+
+    const safetyMargin = 1.5;
+    const minFetchAhead = gopsForInitialBuffer;
+    const maxFetchAhead = Math.min(
+      gopsForInitialBuffer * 4,
+      ctx.totalGroups - ctx.playbackGroup
+    );
+
+    if (downloadToPlayRatio > 1) {
+      return Math.min(
+        Math.ceil(minFetchAhead * downloadToPlayRatio * safetyMargin),
+        maxFetchAhead
+      );
+    }
+
+    return minFetchAhead;
+  }
+}
+
+// ============================================================
+// Factory
+// ============================================================
+
 /**
  * Create a VOD fetch controller from catalog track info
  *
  * @param trackInfo - Track info from catalog (framerate, gopDuration, totalGroups)
- * @param options - Override default buffer settings
+ * @param options - Override default buffer settings and choose fetch strategy
  *
  * Note: Default gopDuration is 2000ms (2 seconds) which is typical for H.264 VOD content.
- * For low-latency live, use explicit gopDuration from catalog (e.g., 500ms).
  */
 export function createVodFetchController(
   trackInfo: {
@@ -656,11 +782,11 @@ export function createVodFetchController(
     initialBufferSec?: number;
     minBufferSec?: number;
     fetchBatchSec?: number;
+    /** Fetch strategy to use. If not provided, uses LegacyFetchStrategy. */
+    strategy?: FetchStrategy;
   }
 ): VodFetchController {
   const framerate = trackInfo.framerate ?? 30;
-  // Default to 2 seconds GOP for typical H.264 VOD (Big Buck Bunny, etc.)
-  // Most encoders use 2-second keyframe intervals by default
   const gopDurationMs = trackInfo.gopDuration ?? 2000;
   const totalGroups = trackInfo.totalGroups ?? 100;
 

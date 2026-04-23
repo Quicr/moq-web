@@ -268,8 +268,15 @@ export { VODLoader } from './vod/vod-loader.js';
 export type { VODLoadProgress, VODLoaderOptions, VODPreloadMetadata } from './vod/vod-loader.js';
 
 // VOD Fetch Controller - Adaptive buffer-aware fetching for smooth VOD playback
-export { VodFetchController, createVodFetchController } from './vod/vod-fetch-controller.js';
+export { VodFetchController, LegacyFetchStrategy, createVodFetchController } from './vod/vod-fetch-controller.js';
 export type { VodFetchConfig, VodFetchEvents } from './vod/vod-fetch-controller.js';
+
+// VOD Fetch Strategies
+export type { FetchStrategy, FetchDecision, FetchStrategyContext } from './vod/fetch-strategy.js';
+export { SbrFetchStrategy, DEFAULT_SBR_CONFIG } from './vod/sbr-fetch-strategy.js';
+export type { SbrConfig } from './vod/sbr-fetch-strategy.js';
+export { AbrFetchStrategy, DEFAULT_ABR_FETCH_CONFIG } from './vod/abr-fetch-strategy.js';
+export type { AbrFetchConfig } from './vod/abr-fetch-strategy.js';
 
 // MP4 Parser (for advanced use - VODLoader uses this internally)
 export { MP4Parser } from './vod/mp4-parser.js';

@@ -321,6 +321,29 @@ export class ABRController {
   }
 
   /**
+   * Get the currently active track for an altGroup
+   */
+  getCurrentTrack(altGroup: number): ABRTrack | undefined {
+    return this.activeTrack.get(altGroup);
+  }
+
+  /**
+   * Get the quality tier of the current track within its altGroup.
+   * Returns 'lowest' if at the bottom, 'highest' if at the top,
+   * 'intermediate' if in between.
+   */
+  getQualityTier(altGroup: number): 'lowest' | 'intermediate' | 'highest' {
+    const groupTracks = this.tracks.get(altGroup);
+    const current = this.activeTrack.get(altGroup);
+    if (!groupTracks || !current) return 'lowest';
+
+    const idx = groupTracks.findIndex(t => t.name === current.name);
+    if (idx <= 0) return 'lowest';
+    if (idx >= groupTracks.length - 1) return 'highest';
+    return 'intermediate';
+  }
+
+  /**
    * Reset ABR state
    */
   reset(): void {

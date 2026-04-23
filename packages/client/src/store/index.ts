@@ -22,6 +22,8 @@ import {
   detectCurrentProfile,
   createVodFetchController,
   type VodFetchController,
+  SbrFetchStrategy,
+  type FetchStrategy,
 } from '@web-moq/media';
 import { TransportState, LogLevel } from '../types';
 import { isDebugMode } from '../components/common/DevSettingsPanel';
@@ -255,14 +257,31 @@ interface PublishSlice {
 // Subscribe Slice
 // ============================================================================
 
+/** VOD fetch stats exposed for the diagnostics overlay */
+export interface VodFetchStatsSnapshot {
+  strategy: string;
+  state: string;
+  bufferedSeconds: number;
+  bufferedFrames: number;
+  playbackGroup: number;
+  fetchedUpToGroup: number;
+  activeFetches: number;
+  avgMsPerGop: number;
+  adaptiveFetchAhead: number;
+  downloadSamples: number;
+}
+
 interface SubscribeSlice {
   subscribedTracks: MediaTrack[];
   availableTracks: Array<{ namespace: string[]; trackName: string }>;
+  /** Live VOD fetch stats per subscription (updated periodically) */
+  vodFetchStats: Map<number, VodFetchStatsSnapshot>;
 
   addSubscribedTrack: (track: MediaTrack) => void;
   removeSubscribedTrack: (id: string) => void;
   setAvailableTracks: (tracks: Array<{ namespace: string[]; trackName: string }>) => void;
   updateSubscribedTrackStats: (id: string, stats: MediaTrack['stats']) => void;
+  updateVodFetchStats: (subscriptionId: number, stats: VodFetchStatsSnapshot) => void;
 }
 
 // ============================================================================
@@ -404,6 +423,20 @@ interface SettingsSlice {
   quicrParticipantId: number;
   /** Enable VOD publishing mode (load video from URL) */
   vodPublishEnabled: boolean;
+  /** VOD fetch strategy: legacy (adaptive), sbr (sawtooth buffer), abr (multi-bitrate) */
+  vodFetchStrategy: 'legacy' | 'sbr' | 'abr';
+  /** SBR: target buffer in seconds */
+  sbrTargetBufferSec: number;
+  /** SBR: low buffer threshold in seconds (triggers fetch) */
+  sbrLowBufferSec: number;
+  /** SBR: high buffer threshold in seconds (fetch fills to this) */
+  sbrHighBufferSec: number;
+  /** ABR: buffer target while switching quality (seconds) */
+  abrSwitchingBufferSec: number;
+  /** ABR: buffer target at intermediate quality (seconds) */
+  abrIntermediateBufferSec: number;
+  /** ABR: buffer target at highest quality (seconds) */
+  abrTopBufferSec: number;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -439,6 +472,13 @@ interface SettingsSlice {
   setQuicrInteropEnabled: (value: boolean) => void;
   setQuicrParticipantId: (value: number) => void;
   setVodPublishEnabled: (value: boolean) => void;
+  setVodFetchStrategy: (value: 'legacy' | 'sbr' | 'abr') => void;
+  setSbrTargetBufferSec: (value: number) => void;
+  setSbrLowBufferSec: (value: number) => void;
+  setSbrHighBufferSec: (value: number) => void;
+  setAbrSwitchingBufferSec: (value: number) => void;
+  setAbrIntermediateBufferSec: (value: number) => void;
+  setAbrTopBufferSec: (value: number) => void;
   /** Apply an experience profile (sets all related settings) */
   applyExperienceProfile: (profile: ExperienceProfileName) => void;
   /** Update detected profile based on current settings */
@@ -992,7 +1032,7 @@ export const useStore = create<AppStore>()(
 
       // VOD subscription using FETCH with adaptive buffer management
       startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -1012,8 +1052,23 @@ export const useStore = create<AppStore>()(
           bufferConfig: effectiveBufferConfig,
         });
 
+        // Build fetch strategy based on user settings
+        let strategy: FetchStrategy | undefined;
+        if (vodFetchStrategy === 'sbr') {
+          strategy = new SbrFetchStrategy({
+            targetBufferSec: sbrTargetBufferSec,
+            lowBufferSec: sbrLowBufferSec,
+            highBufferSec: sbrHighBufferSec,
+          });
+        }
+        // Note: ABR strategy requires an ABRController with registered tracks,
+        // which is set up separately when multi-bitrate tracks are available
+
         // Create VodFetchController for adaptive buffer management
-        const controller = createVodFetchController(trackInfo, effectiveBufferConfig);
+        const controller = createVodFetchController(trackInfo, {
+          ...effectiveBufferConfig,
+          strategy,
+        });
 
         // Track groups received per fetch request for controller notification
         const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
@@ -1270,9 +1325,22 @@ export const useStore = create<AppStore>()(
           log.info('VOD rebuffer ended', { bufferedFrames });
         });
 
-        // Handle adaptive speed updates
+        // Handle adaptive speed updates and push stats to store
         controller.on('speed-update', ({ avgMsPerGop, adaptiveFetchAhead }: { avgMsPerGop: number; adaptiveFetchAhead: number }) => {
           log.info('VOD adaptive update', { avgMsPerGop: Math.round(avgMsPerGop), adaptiveFetchAhead });
+          // Update reactive stats for the diagnostics overlay
+          const stats = controller.getStats();
+          get().updateVodFetchStats(subscriptionId, stats);
+        });
+
+        // Also update stats on group received and state changes for live overlay
+        controller.on('state-change', () => {
+          const stats = controller.getStats();
+          get().updateVodFetchStats(subscriptionId, stats);
+        });
+        controller.on('ready-to-play', () => {
+          const stats = controller.getStats();
+          get().updateVodFetchStats(subscriptionId, stats);
         });
 
         // Start the fetch controller (begins initial buffering from startGroup)
@@ -1487,6 +1555,7 @@ export const useStore = create<AppStore>()(
       // ========================================
       subscribedTracks: [],
       availableTracks: [],
+      vodFetchStats: new Map(),
 
       addSubscribedTrack: (track) =>
         set((state) => ({
@@ -1506,6 +1575,13 @@ export const useStore = create<AppStore>()(
             t.id === id ? { ...t, stats } : t
           ),
         })),
+
+      updateVodFetchStats: (subscriptionId, stats) =>
+        set((state) => {
+          const newMap = new Map(state.vodFetchStats);
+          newMap.set(subscriptionId, stats);
+          return { vodFetchStats: newMap };
+        }),
 
       // ========================================
       // Namespace Subscribe State
@@ -1688,6 +1764,13 @@ export const useStore = create<AppStore>()(
       quicrInteropEnabled: false, // Default: standard LOC packaging
       quicrParticipantId: 0, // Default: 0 (should be set by user)
       vodPublishEnabled: false, // Default: VOD publishing off
+      vodFetchStrategy: 'legacy', // Default: adaptive fetch-ahead (original behavior)
+      sbrTargetBufferSec: 30,
+      sbrLowBufferSec: 20,
+      sbrHighBufferSec: 40,
+      abrSwitchingBufferSec: 4,
+      abrIntermediateBufferSec: 30,
+      abrTopBufferSec: 60,
 
       setTheme: (theme) => {
         set({ theme });
@@ -1741,6 +1824,13 @@ export const useStore = create<AppStore>()(
       setQuicrInteropEnabled: (value) => set({ quicrInteropEnabled: value }),
       setQuicrParticipantId: (value) => set({ quicrParticipantId: value }),
       setVodPublishEnabled: (value) => set({ vodPublishEnabled: value }),
+      setVodFetchStrategy: (value) => set({ vodFetchStrategy: value }),
+      setSbrTargetBufferSec: (value) => set({ sbrTargetBufferSec: value }),
+      setSbrLowBufferSec: (value) => set({ sbrLowBufferSec: value }),
+      setSbrHighBufferSec: (value) => set({ sbrHighBufferSec: value }),
+      setAbrSwitchingBufferSec: (value) => set({ abrSwitchingBufferSec: value }),
+      setAbrIntermediateBufferSec: (value) => set({ abrIntermediateBufferSec: value }),
+      setAbrTopBufferSec: (value) => set({ abrTopBufferSec: value }),
 
       applyExperienceProfile: (profileName) => {
         if (profileName === 'custom') {
@@ -1821,6 +1911,13 @@ export const useStore = create<AppStore>()(
         quicrInteropEnabled: state.quicrInteropEnabled,
         quicrParticipantId: state.quicrParticipantId,
         vodPublishEnabled: state.vodPublishEnabled,
+        vodFetchStrategy: state.vodFetchStrategy,
+        sbrTargetBufferSec: state.sbrTargetBufferSec,
+        sbrLowBufferSec: state.sbrLowBufferSec,
+        sbrHighBufferSec: state.sbrHighBufferSec,
+        abrSwitchingBufferSec: state.abrSwitchingBufferSec,
+        abrIntermediateBufferSec: state.abrIntermediateBufferSec,
+        abrTopBufferSec: state.abrTopBufferSec,
       }),
     }
   )
