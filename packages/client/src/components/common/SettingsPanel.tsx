@@ -314,6 +314,20 @@ export const SettingsPanel: React.FC = () => {
     setQuicrParticipantId,
     vodPublishEnabled,
     setVodPublishEnabled,
+    vodFetchStrategy,
+    setVodFetchStrategy,
+    sbrTargetBufferSec,
+    setSbrTargetBufferSec,
+    sbrLowBufferSec,
+    setSbrLowBufferSec,
+    sbrHighBufferSec,
+    setSbrHighBufferSec,
+    abrSwitchingBufferSec,
+    setAbrSwitchingBufferSec,
+    abrIntermediateBufferSec,
+    setAbrIntermediateBufferSec,
+    abrTopBufferSec,
+    setAbrTopBufferSec,
   } = useStore();
 
   // Check if current settings differ from the selected profile
@@ -703,6 +717,74 @@ export const SettingsPanel: React.FC = () => {
                 <SettingRow label="Enable VOD Publishing" description="Publish video from URL for DVR/rewind playback">
                   <Toggle enabled={vodPublishEnabled} onChange={() => setVodPublishEnabled(!vodPublishEnabled)} color="bg-cyan-500" />
                 </SettingRow>
+              </div>
+            </div>
+
+            {/* VOD Fetch Strategy */}
+            <div className="p-4 rounded-xl bg-gradient-to-br from-teal-50 to-white dark:from-teal-900/20 dark:to-gray-900 border border-teal-100 dark:border-teal-900/30">
+              <SectionHeader icon={Icons.playback} title="VOD Fetch Strategy" description="Buffer management for VOD playback via FETCH" colorScheme={{ icon: 'text-teal-500', bg: 'bg-teal-100 dark:bg-teal-900/30' }} />
+              <div className="space-y-3">
+                <SettingRow label="Strategy" description={
+                  vodFetchStrategy === 'sbr' ? 'Sawtooth buffer with large batch fetches' :
+                  vodFetchStrategy === 'abr' ? 'Progressive quality ramp-up for multi-bitrate' :
+                  'Adaptive fetch-ahead based on network speed'
+                }>
+                  <select
+                    value={vodFetchStrategy}
+                    onChange={(e) => setVodFetchStrategy(e.target.value as 'legacy' | 'sbr' | 'abr')}
+                    className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm font-medium text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  >
+                    <option value="legacy">Legacy (Adaptive)</option>
+                    <option value="sbr">SBR (Sawtooth Buffer)</option>
+                    <option value="abr">ABR (Multi-Bitrate)</option>
+                  </select>
+                </SettingRow>
+
+                {vodFetchStrategy === 'sbr' && (
+                  <div className="ml-2 pl-3 border-l-2 border-teal-200 dark:border-teal-700 space-y-2">
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Target Buffer: {sbrTargetBufferSec}s</label>
+                      <input type="range" min={5} max={60} value={sbrTargetBufferSec}
+                        onChange={(e) => setSbrTargetBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Low Threshold: {sbrLowBufferSec}s</label>
+                      <input type="range" min={2} max={sbrTargetBufferSec} value={sbrLowBufferSec}
+                        onChange={(e) => setSbrLowBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">High Threshold: {sbrHighBufferSec}s</label>
+                      <input type="range" min={sbrTargetBufferSec} max={120} value={sbrHighBufferSec}
+                        onChange={(e) => setSbrHighBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                  </div>
+                )}
+
+                {vodFetchStrategy === 'abr' && (
+                  <div className="ml-2 pl-3 border-l-2 border-teal-200 dark:border-teal-700 space-y-2">
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Switching Buffer: {abrSwitchingBufferSec}s</label>
+                      <input type="range" min={1} max={10} value={abrSwitchingBufferSec}
+                        onChange={(e) => setAbrSwitchingBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Intermediate Buffer: {abrIntermediateBufferSec}s</label>
+                      <input type="range" min={10} max={60} value={abrIntermediateBufferSec}
+                        onChange={(e) => setAbrIntermediateBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Top Quality Buffer: {abrTopBufferSec}s</label>
+                      <input type="range" min={30} max={120} value={abrTopBufferSec}
+                        onChange={(e) => setAbrTopBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

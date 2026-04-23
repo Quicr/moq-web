@@ -76,7 +76,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   namespace,
   onNamespaceChange,
 }) => {
-  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame, onSubscribeStats } = useStore();
+  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame, onSubscribeStats, vodFetchStrategy } = useStore();
 
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
@@ -530,6 +530,11 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
         fromParam: startGroup,
         fromState: fetchPlaybackState.get(trackName)?.currentGroup,
       });
+      // Build ABR options if strategy is ABR and we have an ABR controller with altGroup tracks
+      const abrOptions = (vodFetchStrategy === 'abr' && abrControllerRef.current && track.altGroup !== undefined)
+        ? { abrController: abrControllerRef.current, altGroup: track.altGroup }
+        : undefined;
+
       const subscriptionId = await startVodSubscription(
         trackNamespace.join('/'),
         trackName,
@@ -545,7 +550,8 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
           minBufferSec: Math.max(1, bufferSeconds / 2),
           fetchBatchSec: Math.max(1, bufferSeconds / 3),
         },
-        startGroup
+        startGroup,
+        abrOptions
       );
 
       // Map subscription ID for video frame routing - mark as FETCH

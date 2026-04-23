@@ -23,6 +23,8 @@ import {
   createVodFetchController,
   type VodFetchController,
   SbrFetchStrategy,
+  AbrFetchStrategy,
+  ABRController,
   type FetchStrategy,
 } from '@web-moq/media';
 import { TransportState, LogLevel } from '../types';
@@ -204,7 +206,7 @@ interface ConnectionSlice {
   } | null;
   startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => Promise<number>;
   /** Start VOD subscription using FETCH with adaptive buffer management */
-  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number) => Promise<number>;
+  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number, abrOptions?: { abrController: import('@web-moq/media').ABRController; altGroup: number }) => Promise<number>;
   /** Standalone FETCH for previously published content (no media pipeline) */
   fetchTrack: (
     namespace: string,
@@ -1031,8 +1033,8 @@ export const useStore = create<AppStore>()(
       },
 
       // VOD subscription using FETCH with adaptive buffer management
-      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec } = get();
+      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0, abrOptions?: { abrController: ABRController; altGroup: number }) => {
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -1060,9 +1062,15 @@ export const useStore = create<AppStore>()(
             lowBufferSec: sbrLowBufferSec,
             highBufferSec: sbrHighBufferSec,
           });
+        } else if (vodFetchStrategy === 'abr' && abrOptions) {
+          strategy = new AbrFetchStrategy({
+            abrController: abrOptions.abrController,
+            altGroup: abrOptions.altGroup,
+            switchingBufferSec: abrSwitchingBufferSec,
+            intermediateBufferSec: abrIntermediateBufferSec,
+            topBufferSec: abrTopBufferSec,
+          });
         }
-        // Note: ABR strategy requires an ABRController with registered tracks,
-        // which is set up separately when multi-bitrate tracks are available
 
         // Create VodFetchController for adaptive buffer management
         const controller = createVodFetchController(trackInfo, {
