@@ -553,6 +553,9 @@ function reconfigureVideoDecoder(channel: DecodeChannel, config: VideoDecoderWor
     decoderConfig.description = config.description;
   }
 
+  // Reset before reconfigure to ensure clean state transition
+  // (e.g., switching from no-description/Annex B to AVCC with description)
+  channel.videoDecoder.reset();
   channel.videoDecoder.configure(decoderConfig);
   log(`Video decoder reconfigured (channel ${channel.channelId})`, config);
 }
