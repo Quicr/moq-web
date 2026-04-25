@@ -76,10 +76,26 @@ export class SbrFetchStrategy implements FetchStrategy {
     if (!this.initialFetchDone) {
       if (ctx.bufferedSeconds >= this.config.targetBufferSec * 0.9) {
         this.initialFetchDone = true;
+      } else if (ctx.activeFetchCount === 0) {
+        // Initial fetch completed but didn't fill buffer (relay had limited data).
+        // Continue fetching from where we left off rather than deadlocking.
+        const startGroup = ctx.highestInFlightGroup + 1;
+        const gopsNeeded = Math.ceil(this.config.targetBufferSec / ctx.gopDurationSec);
+        const endGroup = Math.min(
+          startGroup + gopsNeeded - 1,
+          ctx.totalGroups - 1
+        );
+
+        if (startGroup > endGroup) {
+          this.initialFetchDone = true;
+          return noFetch;
+        }
+
+        return { shouldFetch: true, startGroup, endGroup };
+      } else {
+        // Initial fetch still in flight, wait for it
+        return noFetch;
       }
-      // During initial fill, don't issue additional fetches beyond the initial one
-      // (the controller handles the initial fetch via getInitialFetchSize)
-      return noFetch;
     }
 
     // Sawtooth: only fetch when buffer drops to low threshold
