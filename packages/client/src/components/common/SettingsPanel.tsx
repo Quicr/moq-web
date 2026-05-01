@@ -697,6 +697,30 @@ export const SettingsPanel: React.FC = () => {
             <div className="p-4 rounded-xl bg-gradient-to-br from-sky-50 to-white dark:from-sky-900/20 dark:to-gray-900 border border-sky-100 dark:border-sky-900/30">
               <SectionHeader icon={Icons.profile} title="Experience Profile" description="Playback latency and buffer settings" colorScheme={sectionColors.profile} />
 
+              {/* Current Profile Indicator */}
+              {(() => {
+                const currentProfile = experienceProfile === 'custom'
+                  ? { displayName: 'Custom', targetLatency: maxLatency }
+                  : EXPERIENCE_PROFILES[experienceProfile];
+                const colors = profileColors[experienceProfile];
+                return (
+                  <div className={`mb-4 p-3 rounded-lg border-l-4 ${colors.border} ${colors.bg}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-3 h-3 rounded-full ${colors.dot}`} />
+                        <span className={`font-semibold text-sm ${colors.text}`}>
+                          {currentProfile.displayName}
+                          {isModified && <span className="ml-1.5 text-xs font-normal text-amber-600 dark:text-amber-400">(modified)</span>}
+                        </span>
+                      </div>
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-mono font-medium ${colors.badge}`}>
+                        {currentProfile.targetLatency}ms
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="mb-4 p-3 bg-white/50 dark:bg-gray-900/30 rounded-lg border border-sky-200 dark:border-sky-800/50">
                 <SettingRow label="Enable GroupArbiter" description="Required for profile settings to take effect">
                   <Toggle enabled={useGroupArbiter} onChange={() => setUseGroupArbiter(!useGroupArbiter)} color="bg-sky-500" />
