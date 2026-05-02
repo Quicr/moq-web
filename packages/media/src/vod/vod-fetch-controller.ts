@@ -423,6 +423,48 @@ export class VodFetchController {
   }
 
   /**
+   * Notify controller that a frame was consumed/rendered (simpler version without position tracking)
+   * Use this when you don't have groupId/objectId but need to decrement buffer count
+   */
+  onFrameConsumed(): void {
+    const prevBufferedFrames = this.bufferedFrames;
+    this.bufferedFrames = Math.max(0, this.bufferedFrames - 1);
+
+    // Log every 30 frames (roughly once per second at 30fps)
+    if (this.bufferedFrames % 30 === 0) {
+      log.info('Frame consumed (periodic)', {
+        bufferedFrames: this.bufferedFrames,
+        state: this.state,
+        bufferedUpToGroup: this.bufferedUpToGroup,
+        fetchedUpToGroup: this.fetchedUpToGroup,
+      });
+    }
+
+    // Check for buffer underrun
+    const minBufferFrames = this.gopsForMinBuffer * this.framesPerGop;
+    if (this.bufferedFrames < minBufferFrames / 2 && this.state === 'playing') {
+      this.emit('buffer-low', {
+        bufferedFrames: this.bufferedFrames,
+        threshold: minBufferFrames
+      });
+    }
+
+    // Check if we need to rebuffer
+    if (this.bufferedFrames <= 0 && this.state === 'playing') {
+      if (this.playbackGroup < this.config.totalGroups - 1) {
+        this.setState('rebuffering');
+        this.emit('rebuffering', { currentGroup: this.playbackGroup });
+      } else {
+        this.setState('completed');
+        this.emit('completed', undefined);
+      }
+    }
+
+    // Check if we need to fetch more
+    this.maybeIssueFetch();
+  }
+
+  /**
    * Seek to a specific position
    */
   seek(groupId: number, objectId: number = 0): void {
@@ -587,6 +629,21 @@ export class VodFetchController {
   private maybeIssueFetch(): void {
     const ctx = this.buildContext();
     const decision = this.strategy.getNextFetch(ctx);
+
+    // Log occasionally to see fetch decision state
+    if (this.bufferedFrames % 30 === 0 || decision.shouldFetch) {
+      log.info('maybeIssueFetch decision', {
+        shouldFetch: decision.shouldFetch,
+        bufferedSeconds: ctx.bufferedSeconds.toFixed(1),
+        bufferedFrames: ctx.bufferedFrames,
+        activeFetchCount: ctx.activeFetchCount,
+        highestInFlightGroup: ctx.highestInFlightGroup,
+        fetchedUpToGroup: ctx.fetchedUpToGroup,
+        totalGroups: ctx.totalGroups,
+        startGroup: decision.startGroup,
+        endGroup: decision.endGroup,
+      });
+    }
 
     if (decision.shouldFetch) {
       this.issueFetch(decision.startGroup, decision.endGroup, decision.trackName);

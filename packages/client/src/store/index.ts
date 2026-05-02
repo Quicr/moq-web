@@ -1243,7 +1243,8 @@ export const useStore = create<AppStore>()(
 
                 // Use idle detection to handle incomplete FETCH streams
                 // Relay may not deliver all requested groups, or stream may not close properly
-                // Reset timer on every object; complete after 300ms of silence
+                // Reset timer on every object; complete after 10s of silence
+                // (4K content has ~1MB keyframes which take significant time to transfer)
                 if (fetchIdleTimer) {
                   clearTimeout(fetchIdleTimer);
                 }
@@ -1266,7 +1267,7 @@ export const useStore = create<AppStore>()(
                       groupsReceived: Array.from(fetchGroups).sort((a, b) => a - b),
                     });
                   }
-                }, 300);
+                }, 10000);
 
                 // Push data to decode pipeline (created above)
                 const timestamp = performance.now() * 1000; // microseconds
@@ -1287,6 +1288,7 @@ export const useStore = create<AppStore>()(
 
             // Start initial idle timer in case no data arrives at all
             // (relay may not send data stream even after FETCH_OK)
+            // Use longer timeout for 4K content which has large keyframes
             fetchIdleTimer = setTimeout(() => {
               if (listenerActive) {
                 listenerActive = false;
@@ -1302,7 +1304,7 @@ export const useStore = create<AppStore>()(
                 fetchGroupCounts.delete(controllerRequestId);
                 if (unsubscribeFetchComplete) unsubscribeFetchComplete();
               }
-            }, 1000); // 1 second timeout for initial data
+            }, 15000); // 15 second timeout for initial data (4K keyframes are large)
 
             // Process any events that arrived while we were waiting for fetch() to return
             for (const event of pendingEvents) {
@@ -1467,7 +1469,16 @@ export const useStore = create<AppStore>()(
         if (isDebugMode()) {
           console.log('[Store] Registering video-frame handler on session');
         }
-        return session.on('video-frame', handler);
+        // Wrap handler to notify VOD fetch controller when frames are consumed
+        return session.on('video-frame', (event) => {
+          // Notify VOD fetch controller if this is a VOD subscription
+          const controller = vodFetchControllers.get(event.subscriptionId);
+          if (controller) {
+            controller.onFrameConsumed();
+          }
+          // Call the original handler
+          handler(event);
+        });
       },
 
       onAudioData: (handler) => {
