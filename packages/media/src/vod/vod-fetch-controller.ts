@@ -427,7 +427,6 @@ export class VodFetchController {
    * Use this when you don't have groupId/objectId but need to decrement buffer count
    */
   onFrameConsumed(): void {
-    const prevBufferedFrames = this.bufferedFrames;
     this.bufferedFrames = Math.max(0, this.bufferedFrames - 1);
 
     // Log every 30 frames (roughly once per second at 30fps)
