@@ -54,9 +54,11 @@ export class SbrFetchStrategy implements FetchStrategy {
     return Math.ceil(this.config.targetBufferSec / ctx.gopDurationSec);
   }
 
-  getMinFramesForPlayback(framesPerGop: number): number {
-    // Fast start: begin playback after just 1 GOP
-    return framesPerGop;
+  getMinFramesForPlayback(framesPerGop: number, gopDurationSec: number): number {
+    // Wait for target buffer before starting playback
+    // This ensures smooth playback even with large keyframes (4K content)
+    const targetGops = Math.ceil(this.config.targetBufferSec / gopDurationSec);
+    return targetGops * framesPerGop;
   }
 
   getNextFetch(ctx: FetchStrategyContext): FetchDecision {

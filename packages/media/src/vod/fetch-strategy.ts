@@ -81,6 +81,8 @@ export interface FetchStrategy {
   /**
    * Minimum number of buffered frames before playback can start.
    * Lower values = faster start (e.g., 1 GOP for fast start).
+   * @param framesPerGop - Number of frames per GOP
+   * @param gopDurationSec - GOP duration in seconds (optional, for buffer-based strategies)
    */
-  getMinFramesForPlayback(framesPerGop: number): number;
+  getMinFramesForPlayback(framesPerGop: number, gopDurationSec?: number): number;
 }

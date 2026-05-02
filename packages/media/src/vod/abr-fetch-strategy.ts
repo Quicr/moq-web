@@ -64,7 +64,7 @@ export class AbrFetchStrategy implements FetchStrategy {
     return this.config.probeGroupCount;
   }
 
-  getMinFramesForPlayback(framesPerGop: number): number {
+  getMinFramesForPlayback(framesPerGop: number, _gopDurationSec?: number): number {
     // Fast start: begin playback after 1 GOP
     return framesPerGop;
   }

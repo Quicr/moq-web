@@ -686,7 +686,8 @@ export class VodFetchController {
   }
 
   private checkInitialBufferReady(): void {
-    const requiredFrames = this.strategy.getMinFramesForPlayback(this.framesPerGop);
+    const gopDurationSec = this.config.gopDurationMs / 1000;
+    const requiredFrames = this.strategy.getMinFramesForPlayback(this.framesPerGop, gopDurationSec);
 
     if (this.bufferedFrames >= requiredFrames) {
       log.info('Initial buffer ready', {
@@ -748,7 +749,7 @@ export class LegacyFetchStrategy implements FetchStrategy {
     return Math.ceil(this.initialBufferSec / ctx.gopDurationSec);
   }
 
-  getMinFramesForPlayback(framesPerGop: number): number {
+  getMinFramesForPlayback(framesPerGop: number, _gopDurationSec?: number): number {
     // Original behavior: wait for the full initial buffer
     const gopsForInitialBuffer = Math.ceil(this.initialBufferSec / this.gopDurationSec);
     return gopsForInitialBuffer * framesPerGop;

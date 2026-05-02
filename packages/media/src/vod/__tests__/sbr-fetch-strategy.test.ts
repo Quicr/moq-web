@@ -38,10 +38,19 @@ describe('SbrFetchStrategy', () => {
   });
 
   describe('getMinFramesForPlayback', () => {
-    it('returns 1 GOP worth of frames for fast start', () => {
+    it('returns target buffer worth of frames', () => {
+      // Default targetBufferSec is 30, with 2s GOP = 15 GOPs
       const strategy = new SbrFetchStrategy();
-      expect(strategy.getMinFramesForPlayback(60)).toBe(60); // 1 GOP = 60 frames
-      expect(strategy.getMinFramesForPlayback(30)).toBe(30);
+      // 15 GOPs * 60 frames/GOP = 900 frames
+      expect(strategy.getMinFramesForPlayback(60, 2)).toBe(900);
+      // 15 GOPs * 30 frames/GOP = 450 frames
+      expect(strategy.getMinFramesForPlayback(30, 2)).toBe(450);
+    });
+
+    it('respects custom targetBufferSec', () => {
+      const strategy = new SbrFetchStrategy({ targetBufferSec: 5 });
+      // 5s / 0.5s = 10 GOPs, 10 * 30 = 300 frames
+      expect(strategy.getMinFramesForPlayback(30, 0.5)).toBe(300);
     });
   });
 
@@ -60,10 +69,11 @@ describe('SbrFetchStrategy', () => {
       expect(decision.shouldFetch).toBe(false);
     });
 
-    it('does not fetch during initial fill phase', () => {
+    it('does not fetch during initial fill phase when fetch is in flight', () => {
       const strategy = new SbrFetchStrategy({ targetBufferSec: 30, lowBufferSec: 20, highBufferSec: 40 });
       // Buffer is partially filled but below 90% of target - still in initial fill
-      const ctx = createContext({ bufferedSeconds: 15, highestInFlightGroup: 14 });
+      // activeFetchCount: 1 means the initial fetch is still in progress
+      const ctx = createContext({ bufferedSeconds: 15, highestInFlightGroup: 14, activeFetchCount: 1 });
       const decision = strategy.getNextFetch(ctx);
       expect(decision.shouldFetch).toBe(false);
     });
