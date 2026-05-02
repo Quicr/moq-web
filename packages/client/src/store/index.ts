@@ -1243,11 +1243,14 @@ export const useStore = create<AppStore>()(
 
                 // Use idle detection to handle incomplete FETCH streams
                 // Relay may not deliver all requested groups, or stream may not close properly
-                // Reset timer on every object; complete after 10s of silence
-                // (4K content has ~1MB keyframes which take significant time to transfer)
+                // Reset timer on every object
                 if (fetchIdleTimer) {
                   clearTimeout(fetchIdleTimer);
                 }
+                // Use shorter timeout once we've received data from the last requested group
+                // This indicates the fetch is nearly complete
+                const reachedEndGroup = groupId >= endGroup;
+                const idleTimeoutMs = reachedEndGroup ? 500 : 5000;
                 fetchIdleTimer = setTimeout(() => {
                   // Only complete if we haven't already (via fetch-stream-complete)
                   if (listenerActive) {
@@ -1265,9 +1268,10 @@ export const useStore = create<AppStore>()(
                       actualLastGroup: highestGroup,
                       lastObjectId: lastObjectIdByGroup.get(highestGroup),
                       groupsReceived: Array.from(fetchGroups).sort((a, b) => a - b),
+                      reachedEndGroup,
                     });
                   }
-                }, 10000);
+                }, idleTimeoutMs);
 
                 // Push data to decode pipeline (created above)
                 const timestamp = performance.now() * 1000; // microseconds
