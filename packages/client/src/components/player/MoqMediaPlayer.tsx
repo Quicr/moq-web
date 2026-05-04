@@ -26,8 +26,10 @@ import { useStore } from '../../store';
 import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@web-moq/media';
 
 export interface MoqMediaPlayerProps {
-  /** The VideoFrame to render */
-  frame: VideoFrame | null;
+  /** The VideoFrame to render (legacy prop-based mode) */
+  frame?: VideoFrame | null;
+  /** Frame getter for high-frequency 60fps updates (preferred) */
+  getFrame?: () => VideoFrame | null;
   /** Subscription ID for controlling playback */
   subscriptionId: number;
   /** Whether content is live (from catalog or explicit) */
@@ -61,6 +63,7 @@ export interface MoqMediaPlayerProps {
  */
 export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   frame,
+  getFrame,
   subscriptionId,
   isLive,
   duration = 0,
@@ -369,6 +372,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
       <div className="relative">
         <VideoRenderer
           frame={frame}
+          getFrame={getFrame}
           enableDiagnostics={enableDiagnostics}
           onMetricsUpdate={handleMetricsUpdate}
           framerate={framerate}

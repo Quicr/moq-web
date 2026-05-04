@@ -14,6 +14,7 @@ import { createMSFSession, type MSFSession, type FullCatalog, type Track } from 
 import { ABRController, type ABRTrack } from '@web-moq/media';
 import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
 import { MoqMediaPlayer } from '../player/MoqMediaPlayer';
+import { useVideoFrameQueue } from '../../hooks/useVideoFrameQueue';
 
 // FETCH playback state per track
 interface FetchPlaybackState {
@@ -99,14 +100,21 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const [fetchPlaybackState, setFetchPlaybackState] = useState<Map<string, FetchPlaybackState>>(new Map());
   const [showFetchPanel, setShowFetchPanel] = useState<Map<string, boolean>>(new Map());
 
-  // Video frames for rendering (SUBSCRIBE)
+  // High-frequency frame queue for 60fps rendering (bypasses React state batching)
+  const fetchFrameQueue = useVideoFrameQueue();
+  const subscribeFrameQueue = useVideoFrameQueue();
+
+  // Video frames for rendering (SUBSCRIBE) - used to trigger re-render when first frame arrives
   const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
-  // Video frames for FETCH playback (separate from SUBSCRIBE)
-  const [fetchVideoFrames, setFetchVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
+  // Video frames for FETCH playback - used to trigger re-render when first frame arrives
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_fetchVideoFrames, setFetchVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
   const subscriptionToTrackRef = useRef<Map<number, string>>(new Map());
   const trackToSubscriptionRef = useRef<Map<string, number>>(new Map()); // Reverse map for VOD controls
   // Track which subscriptions are FETCH vs SUBSCRIBE
   const fetchSubscriptionIds = useRef<Set<number>>(new Set());
+  // Map track name to subscription ID for frame queue getters
+  const trackNameToSubIdRef = useRef<Map<string, number>>(new Map());
 
   // ABR state
   const abrControllerRef = useRef<ABRController | null>(null);
@@ -253,20 +261,24 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     return unsubscribe;
   }, [onSubscribeStats, startingDelivery]);
 
-  // Handle incoming video frames - route to correct map based on FETCH vs SUBSCRIBE
+  // Handle incoming video frames - use high-frequency frame queue for 60fps
   useEffect(() => {
     const unsubscribe = onVideoFrame(({ subscriptionId, frame }) => {
       const trackName = subscriptionToTrackRef.current.get(subscriptionId);
       if (trackName) {
-        // Route to FETCH or SUBSCRIBE video frames map
-        const isFetch = fetchSubscriptionIds.current.has(subscriptionId);
-        const setFrames = isFetch ? setFetchVideoFrames : setVideoFrames;
+        // Update track name to subscription ID mapping
+        trackNameToSubIdRef.current.set(trackName, subscriptionId);
 
+        // Route to FETCH or SUBSCRIBE frame queue (bypasses React state for 60fps)
+        const isFetch = fetchSubscriptionIds.current.has(subscriptionId);
+        const frameQueue = isFetch ? fetchFrameQueue : subscribeFrameQueue;
+        frameQueue.pushFrame(subscriptionId, frame);
+
+        // Also update legacy state for any components that still need it
+        // This is throttled by React anyway, so won't cause extra frame drops
+        const setFrames = isFetch ? setFetchVideoFrames : setVideoFrames;
         setFrames(prev => {
           const newMap = new Map(prev);
-          // Don't close previous frame here - VideoRenderer manages frame lifecycle
-          // via its queue. Closing here causes black frames when the renderer
-          // tries to draw a frame that was already closed.
           newMap.set(trackName, frame);
           return newMap;
         });
@@ -1083,7 +1095,10 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                       <div className="mt-4">
                         <p className="text-xs text-gray-400 mb-1">SUBSCRIBE Playback:</p>
                         <MoqMediaPlayer
-                          frame={videoFrames.get(track.name) ?? null}
+                          getFrame={() => {
+                            const subId = trackNameToSubIdRef.current.get(track.name);
+                            return subId !== undefined ? subscribeFrameQueue.getFrame(subId) : null;
+                          }}
                           subscriptionId={trackToSubscriptionRef.current.get(track.name) ?? 0}
                           isLive={track.isLive ?? true}
                           duration={track.trackDuration}
@@ -1102,7 +1117,10 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                       <div className="mt-4">
                         <p className="text-xs text-emerald-400 mb-1">FETCH Playback (buffered):</p>
                         <MoqMediaPlayer
-                          frame={fetchVideoFrames.get(track.name) ?? null}
+                          getFrame={() => {
+                            const subId = trackNameToSubIdRef.current.get(track.name);
+                            return subId !== undefined ? fetchFrameQueue.getFrame(subId) : null;
+                          }}
                           subscriptionId={fetchPlaybackState.get(track.name)?.subscriptionId ?? 0}
                           isLive={false}
                           duration={track.trackDuration}

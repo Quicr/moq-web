@@ -9,7 +9,7 @@
  * for ordering and pacing.
  */
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 /** Diagnostic metrics for frame rendering */
 export interface VideoRendererMetrics {
@@ -27,8 +27,12 @@ export interface VideoRendererMetrics {
 }
 
 interface VideoRendererProps {
-  /** The VideoFrame to render */
-  frame: VideoFrame | null;
+  /** The VideoFrame to render (legacy prop-based mode) */
+  frame?: VideoFrame | null;
+  /** Frame getter function for high-frequency updates (preferred for 60fps) */
+  getFrame?: () => VideoFrame | null;
+  /** Subscription ID for frame queue (used with useVideoFrameQueue) */
+  subscriptionId?: number;
   /** Optional width override */
   width?: number;
   /** Optional height override */
@@ -50,7 +54,9 @@ interface VideoRendererProps {
  * Upstream PlayoutBuffer handles ordering and pacing.
  */
 export const VideoRenderer: React.FC<VideoRendererProps> = ({
-  frame,
+  frame: frameProp,
+  getFrame,
+  subscriptionId: _subscriptionId,
   width,
   height: _height,
   className = '',
@@ -63,6 +69,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const lastRenderedFrameRef = useRef<VideoFrame | null>(null);
   const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 1280, height: 720 });
+  const rafRef = useRef<number | null>(null);
+  const isRafModeRef = useRef(false);
 
   // Diagnostic metrics refs
   const metricsRef = useRef<VideoRendererMetrics>({
@@ -84,20 +92,18 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds
 
-  // Render frame immediately when it arrives
-  useEffect(() => {
-    if (!frame) return;
-
+  // Shared render function for both modes
+  const renderFrame = useCallback((frame: VideoFrame): boolean => {
     const canvas = canvasRef.current;
     if (!canvas) {
       try { frame.close(); } catch { /* ignore */ }
-      return;
+      return false;
     }
 
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       try { frame.close(); } catch { /* ignore */ }
-      return;
+      return false;
     }
 
     // Check if frame is valid
@@ -105,7 +111,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       void frame.codedWidth;
     } catch {
       metricsRef.current.framesDropped++;
-      return;
+      return false;
     }
 
     // Update canvas size to match frame if needed
@@ -170,15 +176,63 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       if (onMetricsUpdate) {
         onMetricsUpdate({ ...metricsRef.current });
       }
+
+      return true;
     } catch (err) {
       console.error('[VideoRenderer] Error drawing frame', err);
       try { frame.close(); } catch { /* ignore */ }
+      return false;
     }
-  }, [frame, onMetricsUpdate, framerate, hasReceivedFrame]);
+  }, [framerate, hasReceivedFrame, onMetricsUpdate]);
+
+  // RAF-based render loop for getFrame mode (high-frequency 60fps)
+  useEffect(() => {
+    if (!getFrame) {
+      isRafModeRef.current = false;
+      return;
+    }
+
+    isRafModeRef.current = true;
+    let running = true;
+
+    const tick = () => {
+      if (!running) return;
+
+      const frame = getFrame();
+      if (frame && frame !== lastRenderedFrameRef.current) {
+        renderFrame(frame);
+      }
+
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    // Start the RAF loop
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      running = false;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [getFrame, renderFrame]);
+
+  // Legacy prop-based mode - render frame when it changes via React state
+  useEffect(() => {
+    // Skip if using RAF mode
+    if (isRafModeRef.current || !frameProp) return;
+
+    renderFrame(frameProp);
+  }, [frameProp, renderFrame]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
       if (lastRenderedFrameRef.current) {
         try { lastRenderedFrameRef.current.close(); } catch { /* ignore */ }
       }
