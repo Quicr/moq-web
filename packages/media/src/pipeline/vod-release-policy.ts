@@ -150,13 +150,10 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     super();
     this.config = { ...DEFAULT_VOD_POLICY_CONFIG, ...config };
 
-    // Auto-scale rebufferThreshold if not explicitly set and minBufferFrames is high
-    // For 60fps with 180 minBufferFrames, default rebufferThreshold of 5 is too aggressive (only 83ms)
-    // Scale to ~1/6 of minBufferFrames (1 GOP worth) but at least 1 GOP at target framerate
-    if (config.rebufferThreshold === undefined && this.config.minBufferFrames > 30) {
-      const framesPerGop = Math.ceil(this.config.targetFramerate * 0.5); // Assume ~500ms GOPs for VOD
-      this.config.rebufferThreshold = Math.max(framesPerGop, Math.ceil(this.config.minBufferFrames / 6));
-    }
+    // NOTE: rebufferThreshold defaults to 0 (disabled)
+    // When using VOD fetch strategies (SBR, ABR), the fetch controller manages buffer levels
+    // and rebuffering in VodReleasePolicy would cause duplicate pauses and timestamp jumps.
+    // Only enable rebufferThreshold if explicitly set in config.
 
     // Enable debug by default for VOD to trace issues
     this.debug = this.config.debug || true;
