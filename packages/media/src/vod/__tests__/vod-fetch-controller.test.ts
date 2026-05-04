@@ -89,7 +89,7 @@ describe('VodFetchController', () => {
       expect(fetchRequests[0].endGroup).toBe(14);
     });
 
-    it('starts playback after 1 GOP with SBR (fast start)', () => {
+    it('starts playback after lowBufferSec worth of frames with SBR', () => {
       const controller = new VodFetchController({
         framerate: 30,
         gopDurationMs: 2000,
@@ -101,8 +101,16 @@ describe('VodFetchController', () => {
       controller.on('ready-to-play', () => { readyToPlay = true; });
       controller.start();
 
-      // SBR fast start: ready after 1 GOP (60 frames at 30fps, 2s GOP)
-      controller.onGroupReceived(0, 60);
+      // SBR waits for lowBufferSec (20s) = 10 GOPs = 600 frames
+      // With 30fps and 2s GOP = 60 frames per GOP
+      // Simulate receiving 9 GOPs (540 frames) - should not be ready
+      for (let i = 0; i < 9; i++) {
+        controller.onGroupReceived(i, 60);
+      }
+      expect(readyToPlay).toBe(false);
+
+      // Receive the 10th GOP - should now be ready (600 frames >= 600 required)
+      controller.onGroupReceived(9, 60);
       expect(readyToPlay).toBe(true);
     });
 

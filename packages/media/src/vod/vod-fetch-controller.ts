@@ -273,6 +273,20 @@ export class VodFetchController {
   }
 
   /**
+   * Update the total number of groups (useful when relay reports fewer groups available)
+   * @param newTotalGroups - The new total groups count
+   */
+  updateTotalGroups(newTotalGroups: number): void {
+    if (newTotalGroups < this.config.totalGroups) {
+      log.info('Total groups updated (content shorter than expected)', {
+        oldTotal: this.config.totalGroups,
+        newTotal: newTotalGroups,
+      });
+      this.config.totalGroups = newTotalGroups;
+    }
+  }
+
+  /**
    * Notify controller that a fetch request completed
    * @param requestId - The fetch request ID
    * @param actualLastGroup - The actual last group received (may be less than requested endGroup)
