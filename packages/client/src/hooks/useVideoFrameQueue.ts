@@ -8,6 +8,9 @@
  * frame drops when receiving 60fps content. This hook decouples frame reception
  * from React rendering using refs and requestAnimationFrame.
  *
+ * Uses a FIFO queue (not just latest frame) to handle timing jitter where
+ * multiple frames may arrive between RAF callbacks.
+ *
  * Usage:
  * ```tsx
  * const { getFrame, pushFrame, cleanup } = useVideoFrameQueue();
@@ -27,12 +30,15 @@ interface FrameQueueEntry {
   timestamp: number;
 }
 
+// Maximum frames to buffer per subscription to prevent memory issues
+const MAX_QUEUE_SIZE = 10;
+
 /**
  * Hook for managing high-frequency video frame updates without React state
  */
 export function useVideoFrameQueue() {
-  // Frame queues per subscription - holds latest frame only (no accumulation)
-  const frameQueuesRef = useRef<Map<number, FrameQueueEntry>>(new Map());
+  // Frame queues per subscription - FIFO queue to handle timing jitter
+  const frameQueuesRef = useRef<Map<number, FrameQueueEntry[]>>(new Map());
   // Track which frames have been consumed to avoid double-close
   const consumedFramesRef = useRef<WeakSet<VideoFrame>>(new WeakSet());
   // Callback registry for frame updates (triggers re-render via RAF)
@@ -44,25 +50,32 @@ export function useVideoFrameQueue() {
 
   /**
    * Push a new frame for a subscription
-   * Closes the previous frame if it wasn't consumed
+   * Uses FIFO queue to handle timing jitter
    */
   const pushFrame = useCallback((subscriptionId: number, frame: VideoFrame) => {
-    const existing = frameQueuesRef.current.get(subscriptionId);
-
-    // Close previous frame if it wasn't consumed
-    if (existing && !consumedFramesRef.current.has(existing.frame)) {
-      try {
-        existing.frame.close();
-      } catch {
-        // Already closed
-      }
+    let queue = frameQueuesRef.current.get(subscriptionId);
+    if (!queue) {
+      queue = [];
+      frameQueuesRef.current.set(subscriptionId, queue);
     }
 
-    // Store new frame
-    frameQueuesRef.current.set(subscriptionId, {
+    // Add to queue
+    queue.push({
       frame,
       timestamp: performance.now(),
     });
+
+    // If queue is too large, drop oldest unconsumed frames
+    while (queue.length > MAX_QUEUE_SIZE) {
+      const oldest = queue.shift();
+      if (oldest && !consumedFramesRef.current.has(oldest.frame)) {
+        try {
+          oldest.frame.close();
+        } catch {
+          // Already closed
+        }
+      }
+    }
 
     // Mark as pending update
     pendingUpdateRef.current.add(subscriptionId);
@@ -85,12 +98,15 @@ export function useVideoFrameQueue() {
   }, []);
 
   /**
-   * Get the latest frame for a subscription
-   * Marks the frame as consumed (won't be auto-closed on next push)
+   * Get the next frame for a subscription (FIFO order)
+   * Marks the frame as consumed (caller is responsible for closing after render)
    */
   const getFrame = useCallback((subscriptionId: number): VideoFrame | null => {
-    const entry = frameQueuesRef.current.get(subscriptionId);
-    if (!entry) return null;
+    const queue = frameQueuesRef.current.get(subscriptionId);
+    if (!queue || queue.length === 0) return null;
+
+    // Get oldest frame (FIFO)
+    const entry = queue.shift()!;
 
     // Mark as consumed - caller is responsible for closing after render
     consumedFramesRef.current.add(entry.frame);
@@ -109,15 +125,19 @@ export function useVideoFrameQueue() {
   }, []);
 
   /**
-   * Remove a subscription and close its frame
+   * Remove a subscription and close its frames
    */
   const removeSubscription = useCallback((subscriptionId: number) => {
-    const entry = frameQueuesRef.current.get(subscriptionId);
-    if (entry && !consumedFramesRef.current.has(entry.frame)) {
-      try {
-        entry.frame.close();
-      } catch {
-        // Already closed
+    const queue = frameQueuesRef.current.get(subscriptionId);
+    if (queue) {
+      for (const entry of queue) {
+        if (!consumedFramesRef.current.has(entry.frame)) {
+          try {
+            entry.frame.close();
+          } catch {
+            // Already closed
+          }
+        }
       }
     }
     frameQueuesRef.current.delete(subscriptionId);
@@ -135,12 +155,14 @@ export function useVideoFrameQueue() {
     }
 
     // Close all unconsumed frames
-    for (const [, entry] of frameQueuesRef.current) {
-      if (!consumedFramesRef.current.has(entry.frame)) {
-        try {
-          entry.frame.close();
-        } catch {
-          // Already closed
+    for (const [, queue] of frameQueuesRef.current) {
+      for (const entry of queue) {
+        if (!consumedFramesRef.current.has(entry.frame)) {
+          try {
+            entry.frame.close();
+          } catch {
+            // Already closed
+          }
         }
       }
     }
@@ -167,8 +189,9 @@ export function useVideoFrameQueue() {
     if (!getter) {
       // Create a stable getter function that closes over the subscriptionId
       getter = () => {
-        const entry = frameQueuesRef.current.get(subscriptionId);
-        if (!entry) return null;
+        const queue = frameQueuesRef.current.get(subscriptionId);
+        if (!queue || queue.length === 0) return null;
+        const entry = queue.shift()!;
         consumedFramesRef.current.add(entry.frame);
         return entry.frame;
       };
@@ -177,10 +200,19 @@ export function useVideoFrameQueue() {
     return getter;
   }, []);
 
+  /**
+   * Get the current queue depth for a subscription (for diagnostics)
+   */
+  const getQueueDepth = useCallback((subscriptionId: number): number => {
+    const queue = frameQueuesRef.current.get(subscriptionId);
+    return queue?.length ?? 0;
+  }, []);
+
   return {
     pushFrame,
     getFrame,
     getFrameGetter,
+    getQueueDepth,
     onFrameUpdate,
     removeSubscription,
     cleanup,

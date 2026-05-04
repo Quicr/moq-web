@@ -208,9 +208,15 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       // Use ref to always get latest getFrame without restarting RAF loop
       const currentGetFrame = getFrameRef.current;
       if (currentGetFrame) {
-        const frame = currentGetFrame();
-        if (frame && frame !== lastRenderedFrameRef.current) {
-          renderFrame(frame);
+        // Drain all available frames from the queue (handles timing jitter)
+        // Only the last frame actually gets rendered, but we need to consume
+        // all frames to keep the queue from backing up
+        let frame = currentGetFrame();
+        while (frame) {
+          if (frame !== lastRenderedFrameRef.current) {
+            renderFrame(frame);
+          }
+          frame = currentGetFrame();
         }
       }
 
