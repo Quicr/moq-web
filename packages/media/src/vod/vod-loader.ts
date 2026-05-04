@@ -132,6 +132,9 @@ export class VODLoader {
   /** Number of groups in the original video (for loop calculations) */
   private originalTotalGroups = 0;
 
+  /** Actual maximum objects per group (from remuxing, may differ from framesPerGroup) */
+  private actualObjectsPerGroup = 0;
+
   private videoData: Uint8Array | null = null;
   private mimeType: string = 'video/mp4';
 
@@ -517,9 +520,11 @@ export class VODLoader {
 
     log.info('Organized into GOPs', { gopCount: gops.length, totalSamples: samples.length });
 
-    // Calculate average GOP size for metadata
+    // Calculate average and max GOP size for metadata
     const avgGopSize = samples.length / gops.length;
+    const maxGopSize = Math.max(...gops.map(g => g.samples.length));
     this.originalTotalGroups = gops.length;
+    this.actualObjectsPerGroup = maxGopSize;
 
     this.metadata = {
       duration: this.options.loop ? Number.MAX_SAFE_INTEGER : durationMs,
@@ -641,6 +646,8 @@ export class VODLoader {
       const totalFrames = Math.ceil(duration / frameDuration);
       const totalGroups = Math.ceil(totalFrames / this.options.framesPerGroup);
       this.originalTotalGroups = totalGroups;
+      // Transcode path uses fixed framesPerGroup
+      this.actualObjectsPerGroup = this.options.framesPerGroup;
 
       this.metadata = {
         duration: this.options.loop ? Number.MAX_SAFE_INTEGER : duration,
@@ -850,7 +857,8 @@ export class VODLoader {
         const wrappedGroupId = wrapGroupId(groupId);
         return this.isKeyframe(wrappedGroupId, objectId);
       },
-      objectsPerGroup: this.options.framesPerGroup,
+      // Use actual max GOP size from remuxing if available, otherwise fall back to configured framesPerGroup
+      objectsPerGroup: this.actualObjectsPerGroup > 0 ? this.actualObjectsPerGroup : this.options.framesPerGroup,
     };
   }
 
