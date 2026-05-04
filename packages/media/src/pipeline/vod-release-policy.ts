@@ -137,6 +137,10 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private frameDurationMs = 33.33; // Default 30fps = 33.33ms per frame
   private accumulatedTimeMs = 0; // Accumulated time for fractional frame tracking
 
+  // FPS tracking for diagnostics
+  private fpsWindowStart = 0;
+  private fpsWindowFrames = 0;
+
   // Rebuffering state - pause output when buffer runs low
   private isRebuffering = false;
   private playbackStarted = false;
@@ -316,6 +320,18 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         this.accumulatedTimeMs -= result.length * this.frameDurationMs;
         this.stats.framesOutput += result.length;
         this.stats.currentGopId = this.buffer.getActiveGroupId();
+
+        // Track actual FPS over 1-second windows
+        this.fpsWindowFrames += result.length;
+        if (this.fpsWindowStart === 0) {
+          this.fpsWindowStart = now;
+        } else if (now - this.fpsWindowStart >= 1000) {
+          const actualFps = (this.fpsWindowFrames * 1000) / (now - this.fpsWindowStart);
+          console.log(`[VodReleasePolicy] FPS: ${actualFps.toFixed(1)} (target: ${this.config.targetFramerate}, frameDuration: ${this.frameDurationMs.toFixed(2)}ms)`);
+          this.fpsWindowStart = now;
+          this.fpsWindowFrames = 0;
+        }
+
         this.log('OUTPUT FRAMES (paced)', {
           count: result.length,
           groupId: this.buffer.getActiveGroupId(),
