@@ -38,19 +38,19 @@ describe('SbrFetchStrategy', () => {
   });
 
   describe('getMinFramesForPlayback', () => {
-    it('returns target buffer worth of frames', () => {
-      // Default targetBufferSec is 30, with 2s GOP = 15 GOPs
+    it('returns lowBufferSec worth of frames', () => {
+      // Default lowBufferSec is 20, with 2s GOP = 10 GOPs
       const strategy = new SbrFetchStrategy();
-      // 15 GOPs * 60 frames/GOP = 900 frames
-      expect(strategy.getMinFramesForPlayback(60, 2)).toBe(900);
-      // 15 GOPs * 30 frames/GOP = 450 frames
-      expect(strategy.getMinFramesForPlayback(30, 2)).toBe(450);
+      // 10 GOPs * 60 frames/GOP = 600 frames
+      expect(strategy.getMinFramesForPlayback(60, 2)).toBe(600);
+      // 10 GOPs * 30 frames/GOP = 300 frames
+      expect(strategy.getMinFramesForPlayback(30, 2)).toBe(300);
     });
 
-    it('respects custom targetBufferSec', () => {
-      const strategy = new SbrFetchStrategy({ targetBufferSec: 5 });
-      // 5s / 0.5s = 10 GOPs, 10 * 30 = 300 frames
-      expect(strategy.getMinFramesForPlayback(30, 0.5)).toBe(300);
+    it('respects custom lowBufferSec', () => {
+      const strategy = new SbrFetchStrategy({ lowBufferSec: 2 });
+      // 2s / 0.5s = 4 GOPs, 4 * 30 = 120 frames
+      expect(strategy.getMinFramesForPlayback(30, 0.5)).toBe(120);
     });
   });
 

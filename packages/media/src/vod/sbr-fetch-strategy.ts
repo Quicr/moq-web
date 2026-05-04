@@ -55,10 +55,11 @@ export class SbrFetchStrategy implements FetchStrategy {
   }
 
   getMinFramesForPlayback(framesPerGop: number, gopDurationSec: number): number {
-    // Wait for target buffer before starting playback
-    // This ensures smooth playback even with large keyframes (4K content)
-    const targetGops = Math.ceil(this.config.targetBufferSec / gopDurationSec);
-    return targetGops * framesPerGop;
+    // Wait for lowBufferSec worth of frames before starting playback
+    // This ensures enough buffer to absorb network jitter without requiring
+    // the full target buffer (which may not be available if relay has limited data)
+    const minGops = Math.ceil(this.config.lowBufferSec / gopDurationSec);
+    return minGops * framesPerGop;
   }
 
   getNextFetch(ctx: FetchStrategyContext): FetchDecision {
