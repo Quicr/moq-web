@@ -155,9 +155,32 @@ export function useVideoFrameQueue() {
     return cleanup;
   }, [cleanup]);
 
+  /**
+   * Get a stable frame getter function for a subscription
+   * Unlike getFrame(id), this returns a memoized callback that can be passed to children
+   * without causing re-renders or RAF loop restarts
+   */
+  const getFrameGetterRef = useRef<Map<number, () => VideoFrame | null>>(new Map());
+
+  const getFrameGetter = useCallback((subscriptionId: number): () => VideoFrame | null => {
+    let getter = getFrameGetterRef.current.get(subscriptionId);
+    if (!getter) {
+      // Create a stable getter function that closes over the subscriptionId
+      getter = () => {
+        const entry = frameQueuesRef.current.get(subscriptionId);
+        if (!entry) return null;
+        consumedFramesRef.current.add(entry.frame);
+        return entry.frame;
+      };
+      getFrameGetterRef.current.set(subscriptionId, getter);
+    }
+    return getter;
+  }, []);
+
   return {
     pushFrame,
     getFrame,
+    getFrameGetter,
     onFrameUpdate,
     removeSubscription,
     cleanup,

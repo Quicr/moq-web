@@ -185,7 +185,14 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     }
   }, [framerate, hasReceivedFrame, onMetricsUpdate]);
 
+  // Store getFrame in a ref so RAF loop doesn't restart when parent re-renders
+  const getFrameRef = useRef(getFrame);
+  useEffect(() => {
+    getFrameRef.current = getFrame;
+  }, [getFrame]);
+
   // RAF-based render loop for getFrame mode (high-frequency 60fps)
+  // Uses ref for getFrame to avoid restarting the loop on parent re-renders
   useEffect(() => {
     if (!getFrame) {
       isRafModeRef.current = false;
@@ -198,9 +205,13 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     const tick = () => {
       if (!running) return;
 
-      const frame = getFrame();
-      if (frame && frame !== lastRenderedFrameRef.current) {
-        renderFrame(frame);
+      // Use ref to always get latest getFrame without restarting RAF loop
+      const currentGetFrame = getFrameRef.current;
+      if (currentGetFrame) {
+        const frame = currentGetFrame();
+        if (frame && frame !== lastRenderedFrameRef.current) {
+          renderFrame(frame);
+        }
       }
 
       rafRef.current = requestAnimationFrame(tick);
@@ -216,7 +227,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
         rafRef.current = null;
       }
     };
-  }, [getFrame, renderFrame]);
+  // Only restart RAF loop if getFrame changes from defined to undefined or vice versa
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!getFrame, renderFrame]);
 
   // Legacy prop-based mode - render frame when it changes via React state
   useEffect(() => {
