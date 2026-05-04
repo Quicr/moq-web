@@ -380,7 +380,7 @@ export class VODLoader {
    * Try to parse video container to extract actual framerate and codec
    * Returns null values if parsing fails (e.g., non-MP4 format)
    */
-  private parseVideoMetadata(): { framerate?: number; codec?: string; sampleCount?: number } {
+  private parseVideoMetadata(): { framerate?: number; codec?: string; sampleCount?: number; keyframeCount?: number } {
     if (!this.videoData) {
       return {};
     }
@@ -393,16 +393,20 @@ export class VODLoader {
         const track = result.videoTrack;
         // Calculate actual framerate from sample count and duration
         const framerate = track.samples.length / (track.durationMs / 1000);
+        // Count keyframes to get accurate GOP count
+        const keyframeCount = track.samples.filter(s => s.isKeyframe).length;
         log.info('Extracted video metadata from MP4', {
           codec: track.codec,
           framerate: framerate.toFixed(2),
           sampleCount: track.samples.length,
+          keyframeCount,
           durationMs: track.durationMs,
         });
         return {
           framerate: Math.round(framerate * 100) / 100, // Round to 2 decimal places
           codec: track.codec,
           sampleCount: track.samples.length,
+          keyframeCount,
         };
       }
     } catch (err) {
@@ -418,17 +422,26 @@ export class VODLoader {
    */
   private extendMetadata(
     basic: { duration: number; width: number; height: number },
-    parsed: { framerate?: number; codec?: string; sampleCount?: number } = {}
+    parsed: { framerate?: number; codec?: string; sampleCount?: number; keyframeCount?: number } = {}
   ): VODPreloadMetadata {
     // Use actual framerate from video if available, otherwise use configured
     const framerate = parsed.framerate ?? this.options.framerate;
     const framesPerGroup = this.options.framesPerGroup;
 
-    // Calculate GOP duration from frames per group and framerate
-    const gopDurationMs = (framesPerGroup / framerate) * 1000;
+    // Calculate GOP duration - use actual keyframe count if available for accurate calculation
+    let gopDurationMs: number;
+    let totalGroups: number;
 
-    // Estimate total number of groups
-    const totalGroups = Math.ceil(basic.duration / gopDurationMs);
+    if (parsed.keyframeCount && parsed.keyframeCount > 0) {
+      // For remux path: use actual keyframe count
+      totalGroups = parsed.keyframeCount;
+      // Calculate average GOP duration from actual keyframes
+      gopDurationMs = basic.duration / totalGroups;
+    } else {
+      // For transcode path: estimate from configured framesPerGroup
+      gopDurationMs = (framesPerGroup / framerate) * 1000;
+      totalGroups = Math.ceil(basic.duration / gopDurationMs);
+    }
 
     // Use milliseconds as timescale (standard for media)
     const timescale = 1000;
