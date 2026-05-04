@@ -1081,12 +1081,16 @@ export const useStore = create<AppStore>()(
         // Track groups received per fetch request for controller notification
         const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
 
-        // Calculate minBufferFrames from track info
-        // Keep initial buffer small (5 frames) for quick start - FETCH provides data fast
+        // Calculate minBufferFrames from strategy
         const framerate = trackInfo.framerate ?? 30;
         const gopDurationMs = trackInfo.gopDuration ?? 2000;
-        const framesPerGop = Math.round(framerate * (gopDurationMs / 1000));
-        const minBufferFrames = 5; // Small buffer - FETCH delivers data quickly
+        const gopDurationSec = gopDurationMs / 1000;
+        const framesPerGop = Math.round(framerate * gopDurationSec);
+        // Get minBufferFrames from strategy - this ensures VOD release policy
+        // waits for the same buffer level as the fetch controller
+        const minBufferFrames = strategy
+          ? strategy.getMinFramesForPlayback(framesPerGop, gopDurationSec)
+          : framesPerGop; // Default to 1 GOP if no strategy
 
         log.info('VOD buffer config', {
           framerate,
@@ -1094,6 +1098,7 @@ export const useStore = create<AppStore>()(
           framesPerGop,
           minBufferFrames,
           totalGroups: trackInfo.totalGroups,
+          strategy: strategy?.name ?? 'none',
         });
 
         // Create VOD pipeline (FETCH-only, no SUBSCRIBE message sent to server)
