@@ -302,12 +302,14 @@ export class VodFetchController {
       const receivedEndGroup = actualLastGroup ?? fetch.endGroup;
       const groupCount = receivedEndGroup - fetch.startGroup + 1;
 
-      // Update fetchedUpToGroup based on what was actually received
-      if (actualLastGroup !== undefined && actualLastGroup < fetch.endGroup) {
+      // Detect gap: relay delivered fewer groups than requested
+      const hasMissingGroups = actualLastGroup !== undefined && actualLastGroup < fetch.endGroup;
+      if (hasMissingGroups) {
         log.warn('Fetch received fewer groups than requested', {
           requestId,
           requestedEndGroup: fetch.endGroup,
           actualLastGroup,
+          missingRange: `${actualLastGroup + 1}-${fetch.endGroup}`,
         });
       }
       this.fetchedUpToGroup = Math.max(this.fetchedUpToGroup, receivedEndGroup);
@@ -338,6 +340,21 @@ export class VodFetchController {
       });
 
       this.activeFetches.delete(requestId);
+
+      // Re-fetch missing groups immediately to prevent gaps in sequential playback.
+      // The relay may return fewer groups than requested (e.g., request 0-3, get 0-2),
+      // and concurrent fetches will have already advanced past the gap.
+      if (hasMissingGroups) {
+        const gapStart = actualLastGroup! + 1;
+        const gapEnd = fetch.endGroup;
+        log.info('Re-fetching gap left by incomplete fetch', {
+          requestId,
+          gapStart,
+          gapEnd,
+        });
+        this.issueFetch(gapStart, gapEnd);
+        return; // skip maybeIssueFetch — we just issued a targeted fill
+      }
     }
 
     // Issue next fetch if needed
