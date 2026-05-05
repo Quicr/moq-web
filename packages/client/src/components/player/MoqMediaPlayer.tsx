@@ -206,7 +206,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   // Calculate if we have duration info for progress bar
   const hasDuration = duration > 0;
 
-  // Estimate current position from frame count
+  // Estimate current position from frame count (legacy prop-based mode)
   useEffect(() => {
     if (frame && isPlaying && !isSeeking) {
       frameCountRef.current++;
@@ -215,6 +215,16 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
       lastFrameTimeRef.current = performance.now();
     }
   }, [frame, isPlaying, isSeeking, framerate]);
+
+  // Update time from renderer metrics for getFrame mode (where frame prop is unused)
+  // The metrics callback fires ~1Hz with lastFrameTimestamp in microseconds
+  useEffect(() => {
+    if (getFrame && rendererMetrics && rendererMetrics.lastFrameTimestamp > 0 && !isSeeking) {
+      const timeMs = rendererMetrics.lastFrameTimestamp / 1000; // microseconds to ms
+      setCurrentTime(timeMs);
+      frameCountRef.current = Math.round((timeMs / 1000) * framerate);
+    }
+  }, [getFrame, rendererMetrics, isSeeking, framerate]);
 
   // Sync with subscription pause state
   useEffect(() => {

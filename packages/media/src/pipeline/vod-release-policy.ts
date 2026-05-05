@@ -306,8 +306,10 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         return [];
       }
 
-      // Limit actual release to available frames and maxFrames
-      const actualFramesToRelease = Math.min(maxFrames, framesToRelease);
+      // Cap to 1 frame per poll to match the downstream RAF loop which consumes
+      // exactly 1 frame per tick. Releasing multiple frames causes queue buildup
+      // and visible jitter (one frame displays for 2 vsyncs, next for 0).
+      const actualFramesToRelease = 1;
 
       // Output sequential frames (paced)
       const result = this.outputSequentialFrames(group, actualFramesToRelease);
@@ -340,11 +342,9 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         });
       } else {
         // No frames available - DON'T consume time, but cap to prevent runaway
-        // This ensures smooth pacing when frames arrive (no burst after starvation)
-        // Cap at ~2 frames worth to allow small catch-up but prevent large bursts
-        const maxAccumulated = this.frameDurationMs * 2;
-        if (this.accumulatedTimeMs > maxAccumulated) {
-          this.accumulatedTimeMs = maxAccumulated;
+        // Cap at 1 frame duration so next poll releases exactly 1 frame (no burst)
+        if (this.accumulatedTimeMs > this.frameDurationMs) {
+          this.accumulatedTimeMs = this.frameDurationMs;
         }
       }
 
