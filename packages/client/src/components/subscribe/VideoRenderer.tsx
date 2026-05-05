@@ -45,6 +45,8 @@ interface VideoRendererProps {
   onMetricsUpdate?: (metrics: VideoRendererMetrics) => void;
   /** Framerate from catalog for diagnostics (default: 30) */
   framerate?: number;
+  /** Whether content is live (affects frame drain strategy) */
+  isLive?: boolean;
 }
 
 /**
@@ -63,6 +65,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   enableDiagnostics: _enableDiagnostics = false,
   onMetricsUpdate,
   framerate = 30,
+  isLive = true,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -71,6 +74,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 1280, height: 720 });
   const rafRef = useRef<number | null>(null);
   const isRafModeRef = useRef(false);
+  const isLiveRef = useRef(isLive);
 
   // Diagnostic metrics refs
   const metricsRef = useRef<VideoRendererMetrics>({
@@ -185,11 +189,14 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     }
   }, [framerate, hasReceivedFrame, onMetricsUpdate]);
 
-  // Store getFrame in a ref so RAF loop doesn't restart when parent re-renders
+  // Store getFrame and isLive in refs so RAF loop doesn't restart when parent re-renders
   const getFrameRef = useRef(getFrame);
   useEffect(() => {
     getFrameRef.current = getFrame;
   }, [getFrame]);
+  useEffect(() => {
+    isLiveRef.current = isLive;
+  }, [isLive]);
 
   // RAF-based render loop for getFrame mode (high-frequency 60fps)
   // Uses ref for getFrame to avoid restarting the loop on parent re-renders
@@ -208,28 +215,35 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       // Use ref to always get latest getFrame without restarting RAF loop
       const currentGetFrame = getFrameRef.current;
       if (currentGetFrame) {
-        // Drain all frames from queue but only render the last one
-        // This prevents queue backup while ensuring smooth display
-        let frame = currentGetFrame();
-        let frameToRender: VideoFrame | null = null;
+        if (isLiveRef.current) {
+          // Live: drain all frames and render the latest (minimize latency)
+          let frame = currentGetFrame();
+          let frameToRender: VideoFrame | null = null;
 
-        while (frame) {
-          // Close previous frame if we have a newer one
-          if (frameToRender && frameToRender !== lastRenderedFrameRef.current) {
-            try {
-              frameToRender.close();
-            } catch {
-              // Already closed
+          while (frame) {
+            if (frameToRender && frameToRender !== lastRenderedFrameRef.current) {
+              try {
+                frameToRender.close();
+              } catch {
+                // Already closed
+              }
+              metricsRef.current.framesDropped++;
             }
-            metricsRef.current.framesDropped++;
+            frameToRender = frame;
+            frame = currentGetFrame();
           }
-          frameToRender = frame;
-          frame = currentGetFrame();
-        }
 
-        // Render only the most recent frame
-        if (frameToRender && frameToRender !== lastRenderedFrameRef.current) {
-          renderFrame(frameToRender);
+          if (frameToRender && frameToRender !== lastRenderedFrameRef.current) {
+            renderFrame(frameToRender);
+          }
+        } else {
+          // VOD: take exactly one frame per RAF tick for smooth sequential playback.
+          // The upstream release policy and frame queue handle pacing; draining
+          // multiple frames here causes skips and visible jitter.
+          const frame = currentGetFrame();
+          if (frame && frame !== lastRenderedFrameRef.current) {
+            renderFrame(frame);
+          }
         }
       }
 
