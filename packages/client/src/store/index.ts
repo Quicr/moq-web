@@ -1155,7 +1155,9 @@ export const useStore = create<AppStore>()(
 
         // Handle fetch requests from controller
         controller.on('fetch-request', async ({ startGroup, endGroup, requestId: controllerRequestId }: { startGroup: number; endGroup: number; requestId: number }) => {
-          const maxObjectId = Math.max(framesPerGop - 1, 255);
+          // Use endObject=0 which the relay interprets as "all objects in group"
+          // Using larger values (like 255) causes relay parsing issues
+          const maxObjectId = 0;
           log.info('VOD fetch request', { controllerRequestId, startGroup, endGroup, framesPerGop, maxObjectId });
           console.log('[Store] FETCH request from controller', { controllerRequestId, startGroup, endGroup, framesPerGop, maxObjectId, namespace, trackName });
 
