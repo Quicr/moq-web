@@ -153,9 +153,16 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
     }
   }, [frame, enableDiagnostics]);
 
-  // Handle metrics update from renderer
+  // Handle metrics update from renderer — throttle React state updates to ~1Hz
+  // to avoid re-rendering the diagnostics overlay at 60fps (which causes jank from
+  // backdrop-blur recomposition and DOM updates on every frame)
+  const lastMetricsUpdateRef = useRef<number>(0);
   const handleMetricsUpdate = useCallback((metrics: VideoRendererMetrics) => {
-    setRendererMetrics(metrics);
+    const now = performance.now();
+    if (now - lastMetricsUpdateRef.current > 1000) {
+      lastMetricsUpdateRef.current = now;
+      setRendererMetrics(metrics);
+    }
 
     // Log metrics periodically (every 30 frames)
     if (enableDiagnostics && metrics.framesRendered % 30 === 0 && logStartTimeRef.current > 0) {

@@ -118,19 +118,29 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       return false;
     }
 
-    // Update canvas size to match frame if needed
+    // Use the container's display size for the canvas resolution to avoid
+    // painting at full 4K (3840x2160) which is far too expensive for 60fps.
+    // The browser composites the CSS-scaled canvas efficiently.
     const frameWidth = frame.displayWidth || frame.codedWidth;
     const frameHeight = frame.displayHeight || frame.codedHeight;
+    const aspectRatio = frameWidth / frameHeight;
 
-    if (canvas.width !== frameWidth || canvas.height !== frameHeight) {
-      canvas.width = frameWidth;
-      canvas.height = frameHeight;
+    // Determine target canvas pixel size from container or cap at 1920px wide
+    const container = containerRef.current;
+    const displayWidth = container
+      ? Math.min(container.clientWidth * (window.devicePixelRatio || 1), 1920)
+      : Math.min(frameWidth, 1920);
+    const displayHeight = Math.round(displayWidth / aspectRatio);
+
+    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
       setCanvasDimensions({ width: frameWidth, height: frameHeight });
     }
 
-    // Draw the frame
+    // Draw the frame scaled to canvas size (much faster than full 4K)
     try {
-      ctx.drawImage(frame, 0, 0);
+      ctx.drawImage(frame, 0, 0, displayWidth, displayHeight);
       metricsRef.current.framesRendered++;
 
       // Track render intervals for diagnostics
@@ -176,8 +186,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       }
       lastRenderedFrameRef.current = frame;
 
-      // Report metrics
-      if (onMetricsUpdate) {
+      // Report metrics at ~1fps to avoid per-frame callback overhead
+      if (onMetricsUpdate && metricsRef.current.framesRendered % 60 === 0) {
         onMetricsUpdate({ ...metricsRef.current });
       }
 
