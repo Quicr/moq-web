@@ -167,7 +167,8 @@ export class VodFetchController {
       gopDurationSec: config.gopDurationMs ? config.gopDurationMs / 1000 : undefined,
     });
 
-    // Apply defaults
+    // Apply defaults - use strategy's maxConcurrentFetches if available
+    const strategyMaxFetches = this.strategy.getMaxConcurrentFetches?.() ?? config.maxConcurrentFetches ?? 1;
     this.config = {
       framerate: config.framerate,
       gopDurationMs: config.gopDurationMs,
@@ -175,7 +176,7 @@ export class VodFetchController {
       initialBufferSec: config.initialBufferSec ?? 2,
       minBufferSec: config.minBufferSec ?? 1.5,
       fetchBatchSec: config.fetchBatchSec ?? 1,
-      maxConcurrentFetches: config.maxConcurrentFetches ?? 1,
+      maxConcurrentFetches: strategyMaxFetches,
     };
 
     // Calculate derived values

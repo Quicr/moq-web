@@ -85,4 +85,10 @@ export interface FetchStrategy {
    * @param gopDurationSec - GOP duration in seconds (optional, for buffer-based strategies)
    */
   getMinFramesForPlayback(framesPerGop: number, gopDurationSec?: number): number;
+
+  /**
+   * Maximum concurrent fetch requests allowed.
+   * Optional - if not provided, defaults to controller's config.
+   */
+  getMaxConcurrentFetches?(): number;
 }

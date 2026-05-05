@@ -34,6 +34,8 @@ export interface SbrConfig {
   highBufferSec: number;
   /** Initial buffer before starting playback in seconds (default: 3) */
   initialBufferSec: number;
+  /** Maximum concurrent fetch requests (default: 2) */
+  maxConcurrentFetches: number;
 }
 
 export const DEFAULT_SBR_CONFIG: SbrConfig = {
@@ -41,6 +43,7 @@ export const DEFAULT_SBR_CONFIG: SbrConfig = {
   lowBufferSec: 20,
   highBufferSec: 40,
   initialBufferSec: 3,
+  maxConcurrentFetches: 2,
 };
 
 export class SbrFetchStrategy implements FetchStrategy {
@@ -62,6 +65,10 @@ export class SbrFetchStrategy implements FetchStrategy {
     // The fetch controller will keep fetching to maintain lowBufferSec during playback
     const minGops = Math.ceil(this.config.initialBufferSec / gopDurationSec);
     return minGops * framesPerGop;
+  }
+
+  getMaxConcurrentFetches(): number {
+    return this.config.maxConcurrentFetches;
   }
 
   getNextFetch(ctx: FetchStrategyContext): FetchDecision {
