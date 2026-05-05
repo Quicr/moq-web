@@ -132,10 +132,8 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private nextExpectedGroup = -1;
   private initialized = false;
 
-  // Frame pacing state - uses accumulated time for smooth pacing
-  private lastFrameReleaseTime = 0;
+  // Frame duration for FPS tracking
   private frameDurationMs = 33.33; // Default 30fps = 33.33ms per frame
-  private accumulatedTimeMs = 0; // Accumulated time for fractional frame tracking
 
   // FPS tracking for diagnostics
   private fpsWindowStart = 0;
@@ -267,9 +265,6 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         // Buffer recovered
         this.isRebuffering = false;
         this.log('REBUFFER COMPLETE', { bufferedFrames: totalBufferedFrames });
-        // Reset pacing to avoid frame burst after rebuffer
-        this.lastFrameReleaseTime = 0;
-        this.accumulatedTimeMs = 0;
       } else if (totalBufferedFrames <= this.config.rebufferThreshold) {
         // Buffer running low - start rebuffering
         this.isRebuffering = true;
@@ -360,20 +355,15 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     this.waitStartTime.clear();
     this.nextExpectedGroup = -1;
     this.initialized = false;
-    this.lastFrameReleaseTime = 0;
-    this.accumulatedTimeMs = 0;
     this.isRebuffering = false;
     this.playbackStarted = false;
   }
 
   /**
-   * Resume from pause - reset timing state to avoid accumulated time issues
+   * Resume from pause
    */
   override resume(): void {
     super.resume();
-    // Reset pacing state so we don't have stale timing from before pause
-    this.lastFrameReleaseTime = 0;
-    this.accumulatedTimeMs = 0;
   }
 
   // ============================================================
