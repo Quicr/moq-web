@@ -56,8 +56,10 @@ export class SbrFetchStrategy implements FetchStrategy {
   }
 
   getInitialFetchSize(ctx: FetchStrategyContext): number {
-    // Fetch enough GOPs to fill to target buffer
-    return Math.ceil(this.config.targetBufferSec / ctx.gopDurationSec);
+    // Fetch enough GOPs to fill to target buffer, but cap at 4 GOPs per request
+    // Smaller batches are more reliable over congested networks and relays
+    const idealGops = Math.ceil(this.config.targetBufferSec / ctx.gopDurationSec);
+    return Math.min(idealGops, 4);
   }
 
   getMinFramesForPlayback(framesPerGop: number, gopDurationSec: number): number {
@@ -109,7 +111,10 @@ export class SbrFetchStrategy implements FetchStrategy {
         // This handles slow networks where the initial fetch can't keep up with playback
         const startGroup = ctx.highestInFlightGroup + 1;
         if (startGroup < ctx.totalGroups) {
-          const gopsToFetch = Math.ceil((this.config.highBufferSec - ctx.bufferedSeconds) / ctx.gopDurationSec);
+          const gopsToFetch = Math.min(
+            Math.ceil((this.config.highBufferSec - ctx.bufferedSeconds) / ctx.gopDurationSec),
+            4 // Cap at 4 GOPs per request for reliability
+          );
           const endGroup = Math.min(startGroup + gopsToFetch - 1, ctx.totalGroups - 1);
           if (startGroup <= endGroup) {
             return { shouldFetch: true, startGroup, endGroup };
@@ -129,7 +134,10 @@ export class SbrFetchStrategy implements FetchStrategy {
 
     // Calculate how many GOPs to fetch to reach high buffer mark
     const secondsToFetch = this.config.highBufferSec - ctx.bufferedSeconds;
-    const gopsToFetch = Math.ceil(secondsToFetch / ctx.gopDurationSec);
+    const gopsToFetch = Math.min(
+      Math.ceil(secondsToFetch / ctx.gopDurationSec),
+      4 // Cap at 4 GOPs per request for reliability
+    );
 
     const startGroup = ctx.highestInFlightGroup + 1;
     const endGroup = Math.min(
