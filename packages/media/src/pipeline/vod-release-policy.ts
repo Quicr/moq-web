@@ -132,8 +132,9 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private nextExpectedGroup = -1;
   private initialized = false;
 
-  // Frame duration for FPS tracking
+  // Frame pacing
   private frameDurationMs = 33.33; // Default 30fps = 33.33ms per frame
+  private lastFrameReleaseTime = 0;
 
   // FPS tracking for diagnostics
   private fpsWindowStart = 0;
@@ -280,14 +281,26 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     // The downstream RAF loop (vsync-locked at 60Hz) consumes 1 frame per tick,
     // providing the actual display pacing. The frame queue between worker and
     // renderer absorbs any jitter from the setInterval-based poll.
-    // No time-gating needed — the poll interval (~16ms) naturally limits throughput.
+    // Simple rate-limiting: don't release faster than the content framerate.
+    // The downstream RAF (vsync at 60Hz) is the display clock; we just need to
+    // avoid feeding it frames faster than the content was produced.
     if (this.config.enablePacing) {
       const now = performance.now();
+
+      // Skip this poll if not enough time has passed for the next frame
+      if (this.lastFrameReleaseTime > 0) {
+        const elapsed = now - this.lastFrameReleaseTime;
+        if (elapsed < this.frameDurationMs * 0.9) {
+          // Not time for a frame yet (0.9x allows small tolerance for timer jitter)
+          return [];
+        }
+      }
 
       // Output exactly 1 sequential frame
       const result = this.outputSequentialFrames(group, 1);
 
       if (result.length > 0) {
+        this.lastFrameReleaseTime = now;
         this.stats.framesOutput += result.length;
         this.stats.currentGopId = this.buffer.getActiveGroupId();
 
