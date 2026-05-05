@@ -287,20 +287,20 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     if (this.config.enablePacing) {
       const now = performance.now();
 
-      // Skip this poll if not enough time has passed for the next frame
-      if (this.lastFrameReleaseTime > 0) {
-        const elapsed = now - this.lastFrameReleaseTime;
-        if (elapsed < this.frameDurationMs * 0.9) {
-          // Not time for a frame yet (0.9x allows small tolerance for timer jitter)
-          return [];
-        }
+      // Skip this poll if not enough time has passed for the next frame.
+      // Use ideal timestamps (lastRelease += frameDuration) instead of wall clock
+      // to avoid drift between the 16ms setInterval and 16.67ms frame cadence.
+      if (this.lastFrameReleaseTime > 0 && now < this.lastFrameReleaseTime) {
+        return [];
       }
 
       // Output exactly 1 sequential frame
       const result = this.outputSequentialFrames(group, 1);
 
       if (result.length > 0) {
-        this.lastFrameReleaseTime = now;
+        // Advance by exactly one frame duration from the last ideal release time
+        // (not from `now`) to maintain a steady cadence without drift
+        this.lastFrameReleaseTime = (this.lastFrameReleaseTime || now) + this.frameDurationMs;
         this.stats.framesOutput += result.length;
         this.stats.currentGopId = this.buffer.getActiveGroupId();
 
