@@ -323,6 +323,30 @@ export class PlayoutBuffer<T> {
   }
 
   /**
+   * Skip a group that is unavailable (e.g., relay doesn't have it).
+   * Creates a dummy group entry and immediately marks it complete so the
+   * sequential release policy advances past it.
+   */
+  skipGroup(groupId: number): void {
+    if (!this.groups.has(groupId)) {
+      // Create a minimal group entry
+      this.groups.set(groupId, {
+        groupId,
+        frames: new Map(),
+        firstFrameReceivedAt: performance.now(),
+        hasKeyframe: true, // pretend it has a keyframe so policy can activate it
+        highestObjectId: -1,
+        outputObjectId: 0,
+        frameCount: 0,
+        endOfGroupReceived: true,
+        status: 'receiving',
+      });
+    }
+    // Mark it complete immediately
+    this.markGroupComplete(groupId);
+  }
+
+  /**
    * Get frames ready for output
    *
    * Delegates to the release policy to determine which frames are ready.

@@ -1129,7 +1129,7 @@ export const useStore = create<AppStore>()(
         };
 
         // Create decode pipeline without subscribing - we'll use FETCH instead
-        const { subscriptionId, pushData, markGroupComplete } = await session.createVodPipeline(
+        const { subscriptionId, pushData, markGroupComplete, skipGroup } = await session.createVodPipeline(
           namespace.split('/'),
           trackName,
           config,
@@ -1380,6 +1380,14 @@ export const useStore = create<AppStore>()(
         controller.on('ready-to-play', () => {
           const stats = controller.getStats();
           get().updateVodFetchStats(subscriptionId, stats);
+        });
+
+        // Handle groups that are unavailable on the relay — skip them for continued playback
+        controller.on('group-unavailable', ({ startGroup: gapStart, endGroup: gapEnd }: { startGroup: number; endGroup: number }) => {
+          log.warn('Skipping unavailable groups for continued playback', { gapStart, gapEnd });
+          for (let g = gapStart; g <= gapEnd; g++) {
+            skipGroup(g);
+          }
         });
 
         // Start the fetch controller (begins initial buffering from startGroup)

@@ -246,6 +246,14 @@ export class CodecDecodeWorkerClient {
   }
 
   /**
+   * Skip a group that is unavailable on the relay.
+   * Advances the sequential release policy past this group.
+   */
+  skipGroup(groupId: number): void {
+    this.post({ type: 'skip-group', channelId: this.channelId, groupId });
+  }
+
+  /**
    * Pause frame output on this channel
    * The playout buffer stops releasing frames while paused
    */

@@ -95,6 +95,8 @@ export interface VodFetchEvents {
   'speed-update': { avgMsPerGop: number; adaptiveFetchAhead: number };
   /** Strategy-specific update (for UI/debugging) */
   'strategy-update': { strategy: string; phase?: string; bufferTarget?: number; qualityTier?: string };
+  /** Group(s) unavailable on relay — playback should skip past them */
+  'group-unavailable': { startGroup: number; endGroup: number };
 }
 
 /**
@@ -341,19 +343,32 @@ export class VodFetchController {
 
       this.activeFetches.delete(requestId);
 
-      // Re-fetch missing groups immediately to prevent gaps in sequential playback.
-      // The relay may return fewer groups than requested (e.g., request 0-3, get 0-2),
-      // and concurrent fetches will have already advanced past the gap.
+      // Handle missing groups: relay delivered fewer groups than requested.
       if (hasMissingGroups) {
         const gapStart = actualLastGroup! + 1;
         const gapEnd = fetch.endGroup;
-        log.info('Re-fetching gap left by incomplete fetch', {
-          requestId,
-          gapStart,
-          gapEnd,
-        });
-        this.issueFetch(gapStart, gapEnd);
-        return; // skip maybeIssueFetch — we just issued a targeted fill
+
+        // If the fetch received NO data at all (actualLastGroup < startGroup),
+        // the group(s) don't exist on the relay. Skip them and continue playback.
+        if (actualLastGroup! < fetch.startGroup) {
+          log.warn('Gap-fill received no data — groups unavailable on relay, skipping', {
+            requestId,
+            gapStart: fetch.startGroup,
+            gapEnd: fetch.endGroup,
+          });
+          // Advance past the gap so playback can continue
+          this.fetchedUpToGroup = Math.max(this.fetchedUpToGroup, fetch.endGroup);
+          this.emit('group-unavailable', { startGroup: fetch.startGroup, endGroup: fetch.endGroup });
+        } else {
+          // Partial delivery — re-fetch the remaining groups
+          log.info('Re-fetching gap left by incomplete fetch', {
+            requestId,
+            gapStart,
+            gapEnd,
+          });
+          this.issueFetch(gapStart, gapEnd);
+          return; // skip maybeIssueFetch — we just issued a targeted fill
+        }
       }
     }
 

@@ -1320,6 +1320,19 @@ self.onmessage = (event: MessageEvent<CodecDecodeWorkerRequest>): void => {
       break;
     }
 
+    case 'skip-group': {
+      const channel = channels.get(msg.channelId);
+      if (!channel) {
+        log(`Channel ${msg.channelId} not found for skip-group`);
+        return;
+      }
+      // Skip unavailable group so sequential playback advances past it
+      channel.videoPlayoutBuffer?.skipGroup(msg.groupId);
+      channel.audioPlayoutBuffer?.skipGroup(msg.groupId);
+      log(`Group ${msg.groupId} skipped (channel ${msg.channelId})`);
+      break;
+    }
+
     case 'pause': {
       const channel = channels.get(msg.channelId);
       if (!channel) {

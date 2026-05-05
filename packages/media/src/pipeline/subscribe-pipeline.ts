@@ -1043,6 +1043,21 @@ export class SubscribePipeline {
   }
 
   /**
+   * Skip a group that is unavailable on the relay.
+   * Advances the sequential release policy past this group.
+   */
+  skipGroup(groupId: number): void {
+    log.info('Skipping unavailable group', { groupId, channelId: this.channelId });
+
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.skipGroup(groupId);
+      return;
+    }
+
+    // Main thread mode: not supported (playout buffer is in worker for VOD)
+  }
+
+  /**
    * Pause frame output
    * Frames continue to buffer but are not released for decoding
    */
