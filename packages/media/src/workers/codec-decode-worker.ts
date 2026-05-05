@@ -31,7 +31,7 @@ import type {
 
 // Global debug flag - disabled by default for performance
 // Enable via init message config.debug or set to true here for debugging
-let debug = true;
+let debug = false;
 
 // Jitter buffer data types
 interface VideoBufferData {

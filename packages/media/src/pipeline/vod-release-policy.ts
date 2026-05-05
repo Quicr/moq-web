@@ -154,7 +154,7 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     // Only enable rebufferThreshold if explicitly set in config.
 
     // Enable debug by default for VOD to trace issues
-    this.debug = this.config.debug || true;
+    this.debug = this.config.debug ?? false;
     this.stats = this.createInitialStats();
     // Calculate frame duration from framerate
     this.frameDurationMs = 1000 / this.config.targetFramerate;

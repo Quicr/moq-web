@@ -1310,7 +1310,7 @@ export const useStore = create<AppStore>()(
                 const timestamp = performance.now() * 1000; // microseconds
                 pushData(data, groupId, objectId, timestamp);
 
-                log.info('VOD fetch received object', {
+                log.trace('VOD fetch received object', {
                   controllerRequestId,
                   sessionRequestId,
                   groupId,
