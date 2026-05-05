@@ -104,8 +104,20 @@ export class SbrFetchStrategy implements FetchStrategy {
         }
 
         return { shouldFetch: true, startGroup, endGroup };
+      } else if (ctx.activeFetchCount < ctx.maxConcurrentFetches && ctx.bufferedSeconds < this.config.initialBufferSec * 2) {
+        // Buffer is critically low during initial fetch - issue concurrent fetch to avoid starvation
+        // This handles slow networks where the initial fetch can't keep up with playback
+        const startGroup = ctx.highestInFlightGroup + 1;
+        if (startGroup < ctx.totalGroups) {
+          const gopsToFetch = Math.ceil((this.config.highBufferSec - ctx.bufferedSeconds) / ctx.gopDurationSec);
+          const endGroup = Math.min(startGroup + gopsToFetch - 1, ctx.totalGroups - 1);
+          if (startGroup <= endGroup) {
+            return { shouldFetch: true, startGroup, endGroup };
+          }
+        }
+        return noFetch;
       } else {
-        // Initial fetch still in flight, wait for it
+        // Initial fetch still in flight and buffer is healthy, wait for it
         return noFetch;
       }
     }

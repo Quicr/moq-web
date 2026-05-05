@@ -1155,8 +1155,9 @@ export const useStore = create<AppStore>()(
 
         // Handle fetch requests from controller
         controller.on('fetch-request', async ({ startGroup, endGroup, requestId: controllerRequestId }: { startGroup: number; endGroup: number; requestId: number }) => {
-          log.info('VOD fetch request', { controllerRequestId, startGroup, endGroup });
-          console.log('[Store] FETCH request from controller', { controllerRequestId, startGroup, endGroup, namespace, trackName });
+          const maxObjectId = Math.max(framesPerGop - 1, 255);
+          log.info('VOD fetch request', { controllerRequestId, startGroup, endGroup, framesPerGop, maxObjectId });
+          console.log('[Store] FETCH request from controller', { controllerRequestId, startGroup, endGroup, framesPerGop, maxObjectId, namespace, trackName });
 
           // Initialize tracking for this fetch using controller's requestId
           fetchGroupCounts.set(controllerRequestId, {
@@ -1224,6 +1225,8 @@ export const useStore = create<AppStore>()(
             unsubscribeFetchComplete = session.getMOQTSession().on('fetch-stream-complete', handleFetchStreamComplete);
 
             // Issue fetch and capture the session's requestId
+            // endObject must be large enough to cover all objects in the group
+            // maxObjectId calculated at handler start using framesPerGop
             sessionRequestId = await moqtSession.fetch(
               namespace.split('/'),
               trackName,
@@ -1231,7 +1234,7 @@ export const useStore = create<AppStore>()(
                 startGroup,
                 startObject: 0,
                 endGroup,
-                endObject: 0, // 0 = entire group (publisher uses objectsPerGroup)
+                endObject: maxObjectId,
               },
               {},
               (data: Uint8Array, groupId: number, objectId: number) => {
