@@ -1278,10 +1278,12 @@ export const useStore = create<AppStore>()(
                 if (fetchIdleTimer) {
                   clearTimeout(fetchIdleTimer);
                 }
-                // Use shorter timeout once we've received data from the last requested group
-                // This indicates the fetch is nearly complete
+                // Idle timeout strategy:
+                // - 500ms if we've received data from the last requested group (nearly done)
+                // - 1500ms if we've received multiple groups (data was flowing, gap likely)
+                // - 5000ms for first group (4K keyframes can be very large/slow)
                 const reachedEndGroup = groupId >= endGroup;
-                const idleTimeoutMs = reachedEndGroup ? 500 : 5000;
+                const idleTimeoutMs = reachedEndGroup ? 500 : fetchGroups.size > 1 ? 1500 : 5000;
                 fetchIdleTimer = setTimeout(() => {
                   // Only complete if we haven't already (via fetch-stream-complete)
                   if (listenerActive) {
