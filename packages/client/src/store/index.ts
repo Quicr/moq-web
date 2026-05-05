@@ -62,9 +62,9 @@ function getWorkers(): WorkerConfig {
   return workers;
 }
 
-// Simple logger for now - will use moqt-core Logger when built
+// Simple logger that only outputs warn/error by default
 const log = {
-  info: (msg: string, data?: unknown) => console.log(`[moqt:client:store] ${msg}`, data),
+  info: (_msg: string, _data?: unknown) => { /* silent unless debugging */ },
   warn: (msg: string, data?: unknown) => console.warn(`[moqt:client:store] ${msg}`, data),
   error: (msg: string, data?: unknown) => console.error(`[moqt:client:store] ${msg}`, data),
 };
