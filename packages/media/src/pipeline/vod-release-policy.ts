@@ -281,42 +281,18 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       }
     }
 
-    // Frame pacing: only release frames at the target framerate
-    // Uses accumulated time to handle fractional frame timing correctly
-    // (e.g., 60fps = 16.67ms/frame with 16ms poll interval)
+    // VOD frame release: output exactly 1 frame per poll call.
+    // The downstream RAF loop (vsync-locked at 60Hz) consumes 1 frame per tick,
+    // providing the actual display pacing. The frame queue between worker and
+    // renderer absorbs any jitter from the setInterval-based poll.
+    // No time-gating needed — the poll interval (~16ms) naturally limits throughput.
     if (this.config.enablePacing) {
       const now = performance.now();
 
-      // First frame - initialize timing
-      if (this.lastFrameReleaseTime === 0) {
-        this.lastFrameReleaseTime = now;
-        this.accumulatedTimeMs = this.frameDurationMs; // Allow first frame immediately
-      }
-
-      // Accumulate elapsed time since last poll
-      const elapsedMs = now - this.lastFrameReleaseTime;
-      this.accumulatedTimeMs += elapsedMs;
-      this.lastFrameReleaseTime = now;
-
-      // Calculate how many whole frames we can release
-      const framesToRelease = Math.floor(this.accumulatedTimeMs / this.frameDurationMs);
-
-      if (framesToRelease === 0) {
-        // Not enough accumulated time for a frame yet
-        return [];
-      }
-
-      // Cap to 1 frame per poll to match the downstream RAF loop which consumes
-      // exactly 1 frame per tick. Releasing multiple frames causes queue buildup
-      // and visible jitter (one frame displays for 2 vsyncs, next for 0).
-      const actualFramesToRelease = 1;
-
-      // Output sequential frames (paced)
-      const result = this.outputSequentialFrames(group, actualFramesToRelease);
+      // Output exactly 1 sequential frame
+      const result = this.outputSequentialFrames(group, 1);
 
       if (result.length > 0) {
-        // Only consume time for frames actually released
-        this.accumulatedTimeMs -= result.length * this.frameDurationMs;
         this.stats.framesOutput += result.length;
         this.stats.currentGopId = this.buffer.getActiveGroupId();
 
@@ -329,22 +305,6 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
           console.log(`[VodReleasePolicy] FPS: ${actualFps.toFixed(1)} (target: ${this.config.targetFramerate}, frameDuration: ${this.frameDurationMs.toFixed(2)}ms)`);
           this.fpsWindowStart = now;
           this.fpsWindowFrames = 0;
-        }
-
-        this.log('OUTPUT FRAMES (paced)', {
-          count: result.length,
-          groupId: this.buffer.getActiveGroupId(),
-          objectIds: result.map(f => f.objectId),
-          totalOutput: this.stats.framesOutput,
-          elapsedMs: elapsedMs.toFixed(1),
-          accumulatedMs: this.accumulatedTimeMs.toFixed(1),
-          frameDurationMs: this.frameDurationMs.toFixed(2),
-        });
-      } else {
-        // No frames available - DON'T consume time, but cap to prevent runaway
-        // Cap at 1 frame duration so next poll releases exactly 1 frame (no burst)
-        if (this.accumulatedTimeMs > this.frameDurationMs) {
-          this.accumulatedTimeMs = this.frameDurationMs;
         }
       }
 
