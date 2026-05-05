@@ -32,12 +32,15 @@ export interface SbrConfig {
   lowBufferSec: number;
   /** Upper buffer bound - fetch aims to fill buffer to this level (default: 40) */
   highBufferSec: number;
+  /** Initial buffer before starting playback in seconds (default: 3) */
+  initialBufferSec: number;
 }
 
 export const DEFAULT_SBR_CONFIG: SbrConfig = {
   targetBufferSec: 30,
   lowBufferSec: 20,
   highBufferSec: 40,
+  initialBufferSec: 3,
 };
 
 export class SbrFetchStrategy implements FetchStrategy {
@@ -55,11 +58,9 @@ export class SbrFetchStrategy implements FetchStrategy {
   }
 
   getMinFramesForPlayback(framesPerGop: number, gopDurationSec: number): number {
-    // Use a small initial buffer (~2-3 GOPs) to start playback quickly
+    // Use configured initial buffer (default 3 seconds) to start playback quickly
     // The fetch controller will keep fetching to maintain lowBufferSec during playback
-    // but we don't need to wait for the full lowBufferSec before starting
-    const initialBufferSec = Math.min(gopDurationSec * 3, 5); // ~3 GOPs or 5 seconds max
-    const minGops = Math.ceil(initialBufferSec / gopDurationSec);
+    const minGops = Math.ceil(this.config.initialBufferSec / gopDurationSec);
     return minGops * framesPerGop;
   }
 

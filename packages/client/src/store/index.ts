@@ -427,6 +427,8 @@ interface SettingsSlice {
   vodPublishEnabled: boolean;
   /** VOD fetch strategy: legacy (adaptive), sbr (sawtooth buffer), abr (multi-bitrate) */
   vodFetchStrategy: 'legacy' | 'sbr' | 'abr';
+  /** SBR: initial buffer before playback starts in seconds */
+  sbrInitialBufferSec: number;
   /** SBR: target buffer in seconds */
   sbrTargetBufferSec: number;
   /** SBR: low buffer threshold in seconds (triggers fetch) */
@@ -475,6 +477,7 @@ interface SettingsSlice {
   setQuicrParticipantId: (value: number) => void;
   setVodPublishEnabled: (value: boolean) => void;
   setVodFetchStrategy: (value: 'legacy' | 'sbr' | 'abr') => void;
+  setSbrInitialBufferSec: (value: number) => void;
   setSbrTargetBufferSec: (value: number) => void;
   setSbrLowBufferSec: (value: number) => void;
   setSbrHighBufferSec: (value: number) => void;
@@ -1034,7 +1037,7 @@ export const useStore = create<AppStore>()(
 
       // VOD subscription using FETCH with adaptive buffer management
       startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0, abrOptions?: { abrController: ABRController; altGroup: number }) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrInitialBufferSec, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -1058,6 +1061,7 @@ export const useStore = create<AppStore>()(
         let strategy: FetchStrategy | undefined;
         if (vodFetchStrategy === 'sbr') {
           strategy = new SbrFetchStrategy({
+            initialBufferSec: sbrInitialBufferSec,
             targetBufferSec: sbrTargetBufferSec,
             lowBufferSec: sbrLowBufferSec,
             highBufferSec: sbrHighBufferSec,
@@ -1810,6 +1814,7 @@ export const useStore = create<AppStore>()(
       quicrParticipantId: 0, // Default: 0 (should be set by user)
       vodPublishEnabled: false, // Default: VOD publishing off
       vodFetchStrategy: 'legacy', // Default: adaptive fetch-ahead (original behavior)
+      sbrInitialBufferSec: 3, // Default: 3 seconds before playback starts
       sbrTargetBufferSec: 30,
       sbrLowBufferSec: 20,
       sbrHighBufferSec: 40,
@@ -1870,6 +1875,7 @@ export const useStore = create<AppStore>()(
       setQuicrParticipantId: (value) => set({ quicrParticipantId: value }),
       setVodPublishEnabled: (value) => set({ vodPublishEnabled: value }),
       setVodFetchStrategy: (value) => set({ vodFetchStrategy: value }),
+      setSbrInitialBufferSec: (value) => set({ sbrInitialBufferSec: value }),
       setSbrTargetBufferSec: (value) => set({ sbrTargetBufferSec: value }),
       setSbrLowBufferSec: (value) => set({ sbrLowBufferSec: value }),
       setSbrHighBufferSec: (value) => set({ sbrHighBufferSec: value }),
@@ -1957,6 +1963,7 @@ export const useStore = create<AppStore>()(
         quicrParticipantId: state.quicrParticipantId,
         vodPublishEnabled: state.vodPublishEnabled,
         vodFetchStrategy: state.vodFetchStrategy,
+        sbrInitialBufferSec: state.sbrInitialBufferSec,
         sbrTargetBufferSec: state.sbrTargetBufferSec,
         sbrLowBufferSec: state.sbrLowBufferSec,
         sbrHighBufferSec: state.sbrHighBufferSec,

@@ -316,6 +316,8 @@ export const SettingsPanel: React.FC = () => {
     setVodPublishEnabled,
     vodFetchStrategy,
     setVodFetchStrategy,
+    sbrInitialBufferSec,
+    setSbrInitialBufferSec,
     sbrTargetBufferSec,
     setSbrTargetBufferSec,
     sbrLowBufferSec,
@@ -741,24 +743,34 @@ export const SettingsPanel: React.FC = () => {
                 </SettingRow>
 
                 {vodFetchStrategy === 'sbr' && (
-                  <div className="ml-2 pl-3 border-l-2 border-teal-200 dark:border-teal-700 space-y-2">
+                  <div className="ml-2 pl-3 border-l-2 border-teal-200 dark:border-teal-700 space-y-3">
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Initial Buffer: {sbrInitialBufferSec}s</label>
+                      <input type="range" min={1} max={10} value={sbrInitialBufferSec}
+                        onChange={(e) => setSbrInitialBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                      <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-0.5">Buffer before playback starts. Lower = faster start, higher = smoother playback.</p>
+                    </div>
                     <div>
                       <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Target Buffer: {sbrTargetBufferSec}s</label>
                       <input type="range" min={5} max={60} value={sbrTargetBufferSec}
                         onChange={(e) => setSbrTargetBufferSec(Number(e.target.value))}
                         className="w-full h-1.5 accent-teal-500" />
+                      <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-0.5">Initial fetch fills buffer to this level.</p>
                     </div>
                     <div>
                       <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Low Threshold: {sbrLowBufferSec}s</label>
                       <input type="range" min={2} max={sbrTargetBufferSec} value={sbrLowBufferSec}
                         onChange={(e) => setSbrLowBufferSec(Number(e.target.value))}
                         className="w-full h-1.5 accent-teal-500" />
+                      <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-0.5">Triggers new fetch when buffer drops to this level.</p>
                     </div>
                     <div>
                       <label className="text-xs font-medium text-gray-600 dark:text-gray-400">High Threshold: {sbrHighBufferSec}s</label>
                       <input type="range" min={sbrTargetBufferSec} max={120} value={sbrHighBufferSec}
                         onChange={(e) => setSbrHighBufferSec(Number(e.target.value))}
                         className="w-full h-1.5 accent-teal-500" />
+                      <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-0.5">Fetch refills buffer up to this level (sawtooth pattern).</p>
                     </div>
                   </div>
                 )}
