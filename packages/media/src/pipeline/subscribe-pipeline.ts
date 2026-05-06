@@ -377,7 +377,14 @@ export class SubscribePipeline {
       log.info('Creating presentation reorder buffer for VOD B-frame handling');
       this.reorderBuffer = new PresentationReorderBuffer(
         (frame) => this.emit('video-frame', frame),
-        { bufferDepth: 4, maxHoldTimeMs: 200, debug: false }
+        {
+          // H.264 High Profile can have deep B-frame reordering (up to 16 frames).
+          // The SPS max_num_reorder_frames indicates the minimum, but actual
+          // PTS-DTS gaps in content like BBB can span 15+ frames.
+          bufferDepth: 16,
+          maxHoldTimeMs: 500,
+          debug: false,
+        }
       );
     }
 
