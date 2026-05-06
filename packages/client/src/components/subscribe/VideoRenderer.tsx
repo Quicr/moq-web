@@ -96,9 +96,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds
 
-  // Canvas context ref — cached to avoid getContext() per frame
-  const ctxRef = useRef<CanvasRenderingContext2D | ImageBitmapRenderingContext | null>(null);
-  const useBitmapRenderer = useRef(false);
+  // Canvas 2D context ref — cached to avoid getContext() per frame
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   // Shared render function for both modes
   const renderFrame = useCallback((frame: VideoFrame): boolean => {
@@ -119,26 +118,23 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     const frameWidth = frame.displayWidth || frame.codedWidth;
     const frameHeight = frame.displayHeight || frame.codedHeight;
 
-    // Set canvas to native frame size — CSS handles display scaling.
-    // With bitmaprenderer, the GPU composites directly without CPU involvement.
-    if (canvas.width !== frameWidth || canvas.height !== frameHeight) {
-      canvas.width = frameWidth;
-      canvas.height = frameHeight;
+    // Use display-scaled canvas size for performance. CSS handles final scaling.
+    const container = containerRef.current;
+    const displayWidth = container
+      ? Math.min(Math.round(container.clientWidth * (window.devicePixelRatio || 1)), frameWidth)
+      : frameWidth;
+    const aspectRatio = frameWidth / frameHeight;
+    const displayHeight = Math.round(displayWidth / aspectRatio);
+
+    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
       setCanvasDimensions({ width: frameWidth, height: frameHeight });
-      // Reset context ref on resize
       ctxRef.current = null;
     }
 
-    // Initialize context (prefer bitmaprenderer for zero-copy GPU path)
     if (!ctxRef.current) {
-      const bitmapCtx = canvas.getContext('bitmaprenderer');
-      if (bitmapCtx) {
-        ctxRef.current = bitmapCtx;
-        useBitmapRenderer.current = true;
-      } else {
-        ctxRef.current = canvas.getContext('2d');
-        useBitmapRenderer.current = false;
-      }
+      ctxRef.current = canvas.getContext('2d');
     }
 
     if (!ctxRef.current) {
@@ -147,21 +143,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     }
 
     try {
-      if (useBitmapRenderer.current) {
-        // Hardware-accelerated path: VideoFrame → ImageBitmap → GPU composite
-        // createImageBitmap with a VideoFrame is a zero-copy GPU operation in
-        // Chrome/Edge when the frame is hardware-decoded.
-        createImageBitmap(frame).then((bitmap) => {
-          const ctx = ctxRef.current as ImageBitmapRenderingContext;
-          if (ctx) {
-            ctx.transferFromImageBitmap(bitmap);
-          }
-        });
-      } else {
-        // Fallback: 2D canvas drawImage
-        const ctx = ctxRef.current as CanvasRenderingContext2D;
-        ctx.drawImage(frame, 0, 0);
-      }
+      // Synchronous drawImage — frame displays on this vsync, no async jitter
+      ctxRef.current.drawImage(frame, 0, 0, displayWidth, displayHeight);
 
       metricsRef.current.framesRendered++;
 
