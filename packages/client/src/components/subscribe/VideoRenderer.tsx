@@ -96,16 +96,14 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
   const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds
 
+  // Canvas context ref — cached to avoid getContext() per frame
+  const ctxRef = useRef<CanvasRenderingContext2D | ImageBitmapRenderingContext | null>(null);
+  const useBitmapRenderer = useRef(false);
+
   // Shared render function for both modes
   const renderFrame = useCallback((frame: VideoFrame): boolean => {
     const canvas = canvasRef.current;
     if (!canvas) {
-      try { frame.close(); } catch { /* ignore */ }
-      return false;
-    }
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
       try { frame.close(); } catch { /* ignore */ }
       return false;
     }
@@ -118,29 +116,53 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       return false;
     }
 
-    // Use the container's display size for the canvas resolution to avoid
-    // painting at full 4K (3840x2160) which is far too expensive for 60fps.
-    // The browser composites the CSS-scaled canvas efficiently.
     const frameWidth = frame.displayWidth || frame.codedWidth;
     const frameHeight = frame.displayHeight || frame.codedHeight;
-    const aspectRatio = frameWidth / frameHeight;
 
-    // Determine target canvas pixel size from container or cap at 1920px wide
-    const container = containerRef.current;
-    const displayWidth = container
-      ? Math.min(container.clientWidth * (window.devicePixelRatio || 1), 1920)
-      : Math.min(frameWidth, 1920);
-    const displayHeight = Math.round(displayWidth / aspectRatio);
-
-    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
-      canvas.width = displayWidth;
-      canvas.height = displayHeight;
+    // Set canvas to native frame size — CSS handles display scaling.
+    // With bitmaprenderer, the GPU composites directly without CPU involvement.
+    if (canvas.width !== frameWidth || canvas.height !== frameHeight) {
+      canvas.width = frameWidth;
+      canvas.height = frameHeight;
       setCanvasDimensions({ width: frameWidth, height: frameHeight });
+      // Reset context ref on resize
+      ctxRef.current = null;
     }
 
-    // Draw the frame scaled to canvas size (much faster than full 4K)
+    // Initialize context (prefer bitmaprenderer for zero-copy GPU path)
+    if (!ctxRef.current) {
+      const bitmapCtx = canvas.getContext('bitmaprenderer');
+      if (bitmapCtx) {
+        ctxRef.current = bitmapCtx;
+        useBitmapRenderer.current = true;
+      } else {
+        ctxRef.current = canvas.getContext('2d');
+        useBitmapRenderer.current = false;
+      }
+    }
+
+    if (!ctxRef.current) {
+      try { frame.close(); } catch { /* ignore */ }
+      return false;
+    }
+
     try {
-      ctx.drawImage(frame, 0, 0, displayWidth, displayHeight);
+      if (useBitmapRenderer.current) {
+        // Hardware-accelerated path: VideoFrame → ImageBitmap → GPU composite
+        // createImageBitmap with a VideoFrame is a zero-copy GPU operation in
+        // Chrome/Edge when the frame is hardware-decoded.
+        createImageBitmap(frame).then((bitmap) => {
+          const ctx = ctxRef.current as ImageBitmapRenderingContext;
+          if (ctx) {
+            ctx.transferFromImageBitmap(bitmap);
+          }
+        });
+      } else {
+        // Fallback: 2D canvas drawImage
+        const ctx = ctxRef.current as CanvasRenderingContext2D;
+        ctx.drawImage(frame, 0, 0);
+      }
+
       metricsRef.current.framesRendered++;
 
       // Track render intervals for diagnostics

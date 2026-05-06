@@ -63,9 +63,9 @@ export class SbrFetchStrategy implements FetchStrategy {
   }
 
   getMinFramesForPlayback(framesPerGop: number, gopDurationSec: number): number {
-    // Use configured initial buffer (default 3 seconds) to start playback quickly
-    // The fetch controller will keep fetching to maintain lowBufferSec during playback
-    const minGops = Math.ceil(this.config.initialBufferSec / gopDurationSec);
+    // Buffer at least 2 GOPs before starting playback to absorb decode stalls
+    // during high-motion scenes (4K frames can take 20-30ms to decode)
+    const minGops = Math.max(2, Math.ceil(this.config.initialBufferSec / gopDurationSec));
     return minGops * framesPerGop;
   }
 
