@@ -68,6 +68,13 @@ export class PresentationReorderBuffer {
   }
 
   /**
+   * Update the buffer depth dynamically (e.g., from parsed SPS max_num_reorder_frames)
+   */
+  setBufferDepth(depth: number): void {
+    this.config.bufferDepth = depth;
+  }
+
+  /**
    * Add a decoded frame to the buffer
    */
   push(frame: VideoFrame): void {

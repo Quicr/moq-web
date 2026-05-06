@@ -13,6 +13,7 @@
  */
 
 import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
+import { parseH264SPS } from '../webcodecs/h264-sps-parser.js';
 import { JitterBuffer } from '../pipeline/jitter-buffer.js';
 import { GroupArbiter } from '../pipeline/group-arbiter.js';
 import { PlayoutBuffer } from '../pipeline/playout-buffer.js';
@@ -786,6 +787,28 @@ function decodeVideoFrame(
         ...channel.videoConfig,
         description: frameData.codecDescription,
       });
+
+      // Parse SPS for max_num_reorder_frames and notify main thread
+      try {
+        const spsInfo = parseH264SPS(new Uint8Array(frameData.codecDescription));
+        if (spsInfo) {
+          log(`SPS parsed (channel ${channel.channelId})`, {
+            profileIdc: spsInfo.profileIdc,
+            levelIdc: spsInfo.levelIdc,
+            maxNumReorderFrames: spsInfo.maxNumReorderFrames,
+            maxNumRefFrames: spsInfo.maxNumRefFrames,
+          });
+          respond({
+            type: 'sps-info',
+            channelId: channel.channelId,
+            maxNumReorderFrames: spsInfo.maxNumReorderFrames,
+            profileIdc: spsInfo.profileIdc,
+            levelIdc: spsInfo.levelIdc,
+          });
+        }
+      } catch {
+        // SPS parsing failure is non-fatal — reorder buffer keeps its default
+      }
     }
   }
 

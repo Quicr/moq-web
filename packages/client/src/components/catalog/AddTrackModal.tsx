@@ -68,6 +68,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
   const [useFileInput, setUseFileInput] = useState(!!((existingTrack as VODTrackConfig)?.videoFile));
   const [enableDvr, setEnableDvr] = useState((existingTrack as VODTrackConfig)?.enableDvr ?? true);
   const [loopPlayback, setLoopPlayback] = useState((existingTrack as VODTrackConfig)?.loopPlayback ?? false);
+  const [isRemuxable, setIsRemuxable] = useState(false);
 
   // Video fields (VOD & Live)
   const [codec, setCodec] = useState(
@@ -322,7 +323,21 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                       <input
                         type="file"
                         accept="video/mp4,video/webm,video/*"
-                        onChange={(e) => setVideoFile(e.target.files?.[0])}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          setVideoFile(file);
+                          setIsRemuxable(false);
+                          // Read first bytes to detect H.264 MP4 (ftyp box + avc codec)
+                          if (file) {
+                            file.slice(0, 32).arrayBuffer().then((buf) => {
+                              const bytes = new Uint8Array(buf);
+                              // Check for 'ftyp' box (MP4 container) at offset 4
+                              const isMp4 = bytes[4] === 0x66 && bytes[5] === 0x74 &&
+                                            bytes[6] === 0x79 && bytes[7] === 0x70; // 'ftyp'
+                              setIsRemuxable(isMp4);
+                            });
+                          }
+                        }}
                         className="hidden"
                       />
                     </label>
@@ -364,7 +379,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
           {/* Video fields (VOD & Live) */}
           {(type === 'video-vod' || type === 'video-live') && (
             <>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4" style={{ opacity: isRemuxable ? 0.4 : 1, pointerEvents: isRemuxable ? 'none' : 'auto' }}>
                 <div>
                   <label className="label">Resolution</label>
                   <select
@@ -375,6 +390,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                       setHeight(h);
                     }}
                     className="input"
+                    disabled={isRemuxable}
                   >
                     <option value="3840x2160">4K UHD (3840x2160)</option>
                     <option value="2560x1440">1440p QHD (2560x1440)</option>
@@ -390,6 +406,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                     value={framerate}
                     onChange={(e) => setFramerate(Number(e.target.value))}
                     className="input"
+                    disabled={isRemuxable}
                   >
                     <option value={60}>60 fps</option>
                     <option value={30}>30 fps</option>
@@ -399,13 +416,20 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              {isRemuxable && (
+                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-400">
+                  H.264 MP4 detected — using fast remux (no re-encoding). Codec, resolution, bitrate, and framerate are preserved from the source file.
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4" style={{ opacity: isRemuxable ? 0.4 : 1, pointerEvents: isRemuxable ? 'none' : 'auto' }}>
                 <div>
                   <label className="label">Codec</label>
                   <select
                     value={codec}
                     onChange={(e) => setCodec(e.target.value)}
                     className="input"
+                    disabled={isRemuxable}
                   >
                     <option value="avc1.42E01F">H.264 Baseline</option>
                     <option value="avc1.4D401E">H.264 Main</option>
@@ -420,6 +444,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
                     value={bitrate}
                     onChange={(e) => setBitrate(Number(e.target.value))}
                     className="input"
+                    disabled={isRemuxable}
                   >
                     <option value={25_000_000}>25 Mbps (4K)</option>
                     <option value={15_000_000}>15 Mbps (4K/1440p)</option>

@@ -55,6 +55,10 @@ export type {
   AudioEncoderEvent,
 } from './webcodecs/audio-encoder.js';
 
+// H.264 SPS parser
+export { parseH264SPS } from './webcodecs/h264-sps-parser.js';
+export type { H264SPSInfo } from './webcodecs/h264-sps-parser.js';
+
 // WebCodecs decoders
 export { H264Decoder } from './webcodecs/video-decoder.js';
 export type {

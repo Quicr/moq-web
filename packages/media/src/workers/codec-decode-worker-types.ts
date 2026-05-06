@@ -207,4 +207,5 @@ export type CodecDecodeWorkerResponse =
   | { type: 'destroyed'; channelId: number }
   | { type: 'error'; channelId?: number; message: string; diagnostics?: DecodeErrorDiagnostics }
   | { type: 'arbiter-debug'; channelId: number; message: string; data?: Record<string, unknown> }
+  | { type: 'sps-info'; channelId: number; maxNumReorderFrames: number; profileIdc: number; levelIdc: number }
   | { type: 'closed' };

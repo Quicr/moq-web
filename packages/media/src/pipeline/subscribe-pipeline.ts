@@ -404,6 +404,21 @@ export class SubscribePipeline {
       }
     });
 
+    // Handle SPS info from decoder — dynamically configure reorder buffer depth
+    this.decodeWorkerClient.on('sps-info', (response: { maxNumReorderFrames: number; profileIdc: number; levelIdc: number }) => {
+      if (this.reorderBuffer) {
+        // Use max_num_reorder_frames from SPS + margin for safety
+        const depth = Math.max(response.maxNumReorderFrames + 2, 4);
+        log.info('Configuring reorder buffer from SPS', {
+          maxNumReorderFrames: response.maxNumReorderFrames,
+          bufferDepth: depth,
+          profile: response.profileIdc,
+          level: response.levelIdc,
+        });
+        this.reorderBuffer.setBufferDepth(depth);
+      }
+    });
+
     this.decodeWorkerClient.on('audio-data', (response) => {
       this.emit('audio-data', response.result.data);
     });
