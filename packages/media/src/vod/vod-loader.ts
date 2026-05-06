@@ -552,8 +552,11 @@ export class VODLoader {
         // Extract raw NAL data (length-prefixed avc format) - WebCodecs expects this when avcC description is provided
         const nalData = parser.extractSampleRaw(sample);
 
-        // Package with LOC container
-        const timestamp = (sample.dts / timescale) * 1000;
+        // Package with LOC container — use PTS (presentation timestamp) not DTS
+        // PTS = DTS + composition time offset (ctOffset from ctts box)
+        // This is critical for B-frame content where decode order != display order
+        const pts = sample.dts + (sample.ctOffset || 0);
+        const timestamp = (pts / timescale) * 1000;
         const duration = (sample.duration / timescale) * 1000;
 
         const packedData = this.packager.packageVideo(nalData, {

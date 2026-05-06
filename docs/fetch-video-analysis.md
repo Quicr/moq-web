@@ -150,9 +150,11 @@ This is the root cause of the "shaking" during high-motion scenes:
 - Low-motion scenes: B-frames are small, DTS≈PTS, reorder depth is shallow → smooth
 - High-motion scenes: Large P-frames have deep reorder requirements → buffer overflow → wrong display order → visible jitter
 
-### Fix Required
+### Fixes Applied
 
-The `PresentationReorderBuffer.bufferDepth` should be derived from the source file's `max_num_reorder_frames` SPS field (or a safe default like 16 for High Profile H.264). Currently hardcoded to 4 at `subscribe-pipeline.ts` line 380.
+1. **Buffer depth**: Now derived dynamically from SPS `max_num_reorder_frames` via H.264 SPS parser (`h264-sps-parser.ts`). Default is 16 until SPS is parsed. The decode worker sends `sps-info` message to main thread when codec description arrives.
+
+2. **PTS vs DTS bug (CRITICAL)**: The publisher was storing **DTS** as `captureTimestamp` in the LOC container (`vod-loader.ts:556`). On the subscriber side, this DTS was passed to the WebCodecs decoder as the frame timestamp. The `PresentationReorderBuffer` sorted by `frame.timestamp` — but since that was DTS (already in decode order), **no actual reordering happened**. Fixed by computing PTS = DTS + ctOffset on the publisher side.
 
 ---
 
