@@ -89,7 +89,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
   );
   const [bitrate, setBitrate] = useState(
     (existingTrack as VODTrackConfig | LiveTrackConfig | AudioTrackConfig)?.bitrate ||
-    (defaults as { bitrate?: number }).bitrate || 2_000_000
+    (defaults as { bitrate?: number }).bitrate || 8_000_000
   );
 
   // Audio-specific fields
