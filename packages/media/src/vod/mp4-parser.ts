@@ -616,6 +616,26 @@ export class MP4Parser {
           const objectType = (aacConfig[0] >> 3) & 0x1f;
           codec = `mp4a.40.${objectType}`;
         }
+      } else if (subBox.type === 'wave' && isAAC) {
+        // QuickTime .mov files nest esds inside a 'wave' container box
+        // Structure: mp4a -> wave -> esds
+        let waveOffset = subOffset + 8;
+        const waveEnd = subOffset + subBox.size;
+        while (waveOffset < waveEnd) {
+          const waveChild = this.readBoxHeader(waveOffset);
+          if (!waveChild) break;
+          console.warn('[MP4Parser] Found wave child box:', { type: waveChild.type, size: waveChild.size });
+          if (waveChild.type === 'esds') {
+            const esdsResult = this.parseEsds(waveOffset + 8, waveChild.size - 8);
+            if (esdsResult.audioSpecificConfig) {
+              aacConfig = esdsResult.audioSpecificConfig;
+              const objectType = (aacConfig[0] >> 3) & 0x1f;
+              codec = `mp4a.40.${objectType}`;
+            }
+            break;
+          }
+          waveOffset += waveChild.size;
+        }
       } else if (subBox.type === 'dac3' && isAC3) {
         // Parse dac3 box for AC-3 sample rate
         // dac3 structure (3 bytes):
