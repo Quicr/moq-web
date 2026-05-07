@@ -478,6 +478,8 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
  * Initialize audio decoder for a channel
  */
 function initAudioDecoder(channel: DecodeChannel, config: AudioDecoderWorkerConfig): void {
+  const isAAC = config.codec.startsWith('mp4a.');
+
   channel.audioDecoder = new AudioDecoder({
     output: (data) => {
       // Store decoded audio with metadata
@@ -507,13 +509,14 @@ function initAudioDecoder(channel: DecodeChannel, config: AudioDecoderWorkerConf
         dataSize: channel.lastAudioFrameInfo?.dataSize,
         sequence: channel.lastAudioFrameInfo?.sequence,
         framesDecodedBefore: channel.audioFramesDecoded,
-        keyframesReceived: 0, // Opus is always key
+        keyframesReceived: 0, // Opus/AAC are always key
         hadKeyframe: true,
         timestamp: Date.now(),
       };
 
       console.error(`[CodecDecodeWorker] AUDIO DECODE ERROR (channel ${channel.channelId}):`, {
         error: err.message,
+        codec: config.codec,
         ...diagnostics,
       });
 
@@ -521,13 +524,32 @@ function initAudioDecoder(channel: DecodeChannel, config: AudioDecoderWorkerConf
     },
   });
 
-  channel.audioDecoder.configure({
+  // Configure audio decoder - AAC requires description (AudioSpecificConfig)
+  const audioDecoderConfig: AudioDecoderConfig = {
     codec: config.codec,
     sampleRate: config.sampleRate,
     numberOfChannels: config.numberOfChannels,
-  });
+  };
 
-  log(`Audio decoder configured (channel ${channel.channelId})`, config);
+  if (config.description) {
+    audioDecoderConfig.description = config.description;
+  }
+
+  // Validate AAC has description
+  if (isAAC && !config.description) {
+    log(`WARNING: AAC decoder initialized without AudioSpecificConfig (channel ${channel.channelId})`);
+  }
+
+  channel.audioDecoder.configure(audioDecoderConfig);
+
+  log(`Audio decoder configured (channel ${channel.channelId})`, {
+    codec: config.codec,
+    sampleRate: config.sampleRate,
+    numberOfChannels: config.numberOfChannels,
+    hasDescription: !!config.description,
+    descriptionSize: config.description?.byteLength,
+    isAAC,
+  });
   respond({ type: 'audio-ready', channelId: channel.channelId });
 }
 
@@ -1332,12 +1354,21 @@ self.onmessage = (event: MessageEvent<CodecDecodeWorkerRequest>): void => {
         return;
       }
       if (channel.audioDecoder) {
-        channel.audioDecoder.configure({
+        const audioDecoderConfig: AudioDecoderConfig = {
           codec: msg.config.codec,
           sampleRate: msg.config.sampleRate,
           numberOfChannels: msg.config.numberOfChannels,
+        };
+        if (msg.config.description) {
+          audioDecoderConfig.description = msg.config.description;
+        }
+        channel.audioDecoder.configure(audioDecoderConfig);
+        log(`Audio decoder reconfigured (channel ${msg.channelId})`, {
+          codec: msg.config.codec,
+          sampleRate: msg.config.sampleRate,
+          numberOfChannels: msg.config.numberOfChannels,
+          hasDescription: !!msg.config.description,
         });
-        log(`Audio decoder reconfigured (channel ${msg.channelId})`, msg.config);
       }
       break;
     }

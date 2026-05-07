@@ -204,9 +204,9 @@ interface ConnectionSlice {
     videoEnabled?: boolean;
     audioEnabled?: boolean;
   } | null;
-  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => Promise<number>;
+  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
   /** Start VOD subscription using FETCH with adaptive buffer management */
-  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number, abrOptions?: { abrController: import('@web-moq/media').ABRController; altGroup: number }) => Promise<number>;
+  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number, abrOptions?: { abrController: import('@web-moq/media').ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
   /** Standalone FETCH for previously published content (no media pipeline) */
   fetchTrack: (
     namespace: string,
@@ -968,14 +968,14 @@ export const useStore = create<AppStore>()(
         log.info('Namespace announcement cancelled', { namespace });
       },
 
-      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number) => {
+      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
         const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
         }
 
         // For VOD with FETCH, use small initial buffer - data arrives quickly
-        let minBufferFrames: number | undefined = 5;
+        const minBufferFrames: number | undefined = 5;
         if (catalogFramerate && catalogGopDuration) {
           const framesPerGop = catalogFramerate * (catalogGopDuration / 1000);
           log.info('VOD catalog info', { catalogFramerate, catalogGopDuration, framesPerGop, minBufferFrames });
@@ -1013,6 +1013,13 @@ export const useStore = create<AppStore>()(
             codedWidth: videoConfig.width,
             codedHeight: videoConfig.height,
           } : undefined,
+          // Override audio decoder config (for AAC from VOD)
+          audioDecoderConfig: audioConfig ? {
+            codec: audioConfig.codec,
+            sampleRate: audioConfig.sampleRate,
+            numberOfChannels: audioConfig.numberOfChannels,
+            description: audioConfig.description,
+          } : undefined,
         };
 
         const subscriptionId = await session.subscribe(
@@ -1036,7 +1043,7 @@ export const useStore = create<AppStore>()(
       },
 
       // VOD subscription using FETCH with adaptive buffer management
-      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0, abrOptions?: { abrController: ABRController; altGroup: number }) => {
+      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0, abrOptions?: { abrController: ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
         const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrInitialBufferSec, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
         if (!session) {
           throw new Error('No session');
@@ -1126,6 +1133,12 @@ export const useStore = create<AppStore>()(
             codedWidth: videoConfig.width,
             codedHeight: videoConfig.height,
           } : undefined,
+          audioDecoderConfig: audioConfig ? {
+            codec: audioConfig.codec,
+            sampleRate: audioConfig.sampleRate,
+            numberOfChannels: audioConfig.numberOfChannels,
+            description: audioConfig.description,
+          } : undefined,
         };
 
         // Create decode pipeline without subscribing - we'll use FETCH instead
@@ -1178,7 +1191,7 @@ export const useStore = create<AppStore>()(
 
             // Track groups received in this specific fetch for marking complete
             const fetchGroups = new Set<number>();
-            let lastObjectIdByGroup = new Map<number, number>();
+            const lastObjectIdByGroup = new Map<number, number>();
 
             // Variable to store the session's requestId (set after fetch() returns)
             let sessionRequestId: number | null = null;

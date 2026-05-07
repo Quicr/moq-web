@@ -30,6 +30,8 @@ export const AudioFieldsSchema = z.object({
   channelConfig: ChannelConfigEnum.optional(),
   /** Bitrate in bits per second */
   bitrate: z.number().int().positive().optional(),
+  /** AudioSpecificConfig for AAC (base64 encoded) */
+  audioSpecificConfig: z.string().optional(),
 });
 
 export type ChannelConfig = z.infer<typeof ChannelConfigEnum>;

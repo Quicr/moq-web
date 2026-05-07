@@ -38,6 +38,22 @@ export interface BaseTrackConfig {
 }
 
 /**
+ * Audio metadata for VOD tracks (extracted from MP4)
+ */
+export interface VODAudioInfo {
+  /** Audio codec (e.g., 'mp4a.40.2' for AAC-LC) */
+  codec: string;
+  /** Sample rate in Hz */
+  sampleRate: number;
+  /** Number of channels (1=mono, 2=stereo) */
+  channelCount: number;
+  /** Audio bitrate (estimated from file) */
+  bitrate?: number;
+  /** AudioSpecificConfig for AAC (raw Uint8Array from MP4 esds box) */
+  audioSpecificConfig?: Uint8Array;
+}
+
+/**
  * VOD video track configuration
  */
 export interface VODTrackConfig extends BaseTrackConfig {
@@ -65,6 +81,8 @@ export interface VODTrackConfig extends BaseTrackConfig {
    * Default: true (recommended for smooth VOD playback)
    */
   fetchOnly?: boolean;
+  /** Audio track info (if present in VOD file) */
+  audio?: VODAudioInfo;
 }
 
 /**

@@ -72,6 +72,12 @@ export type {
   AudioDecoderEvent,
 } from './webcodecs/audio-decoder.js';
 
+export { AACDecoder } from './webcodecs/aac-decoder.js';
+export type {
+  AACDecoderConfig,
+  AACDecoderEvent,
+} from './webcodecs/aac-decoder.js';
+
 // LOC container
 export {
   LOCPackager,
@@ -269,7 +275,7 @@ export type {
 
 // VOD Loader
 export { VODLoader } from './vod/vod-loader.js';
-export type { VODLoadProgress, VODLoaderOptions, VODPreloadMetadata } from './vod/vod-loader.js';
+export type { VODLoadProgress, VODLoaderOptions, VODPreloadMetadata, VODAudioMetadata } from './vod/vod-loader.js';
 
 // VOD Fetch Controller - Adaptive buffer-aware fetching for smooth VOD playback
 export { VodFetchController, LegacyFetchStrategy, createVodFetchController } from './vod/vod-fetch-controller.js';
@@ -284,7 +290,7 @@ export type { AbrFetchConfig } from './vod/abr-fetch-strategy.js';
 
 // MP4 Parser (for advanced use - VODLoader uses this internally)
 export { MP4Parser } from './vod/mp4-parser.js';
-export type { VideoTrackInfo, SampleEntry, MP4ParseResult } from './vod/mp4-parser.js';
+export type { VideoTrackInfo, AudioTrackInfo, SampleEntry, MP4ParseResult } from './vod/mp4-parser.js';
 
 // ABR (Adaptive Bitrate) Controller
 export { ABRController, DEFAULT_ABR_CONFIG } from './abr/index.js';

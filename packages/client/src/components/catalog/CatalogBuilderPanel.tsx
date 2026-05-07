@@ -214,6 +214,16 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
           totalGroups: metadata.totalGroups,
           gopDuration: metadata.gopDuration,
           loadProgress: { phase: 'complete', progress: 100 },
+          // Audio metadata if present
+          audio: metadata.audio ? {
+            codec: metadata.audio.codec,
+            sampleRate: metadata.audio.sampleRate,
+            channelCount: metadata.audio.channelCount,
+            bitrate: metadata.audio.totalSamples > 0
+              ? Math.round((metadata.audio.totalSamples * 1024 * 8) / (metadata.audio.duration / 1000))
+              : undefined,
+            audioSpecificConfig: metadata.audio.aacConfig,
+          } : undefined,
         } as VODTrackConfig;
       }));
     } catch (err) {
@@ -246,6 +256,26 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
             totalGroups: t.totalGroups,
             gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
           });
+          // Add audio track if VOD has audio
+          if (t.audio) {
+            // Convert AudioSpecificConfig to base64 for catalog storage
+            const audioSpecificConfigBase64 = t.audio.audioSpecificConfig
+              ? btoa(String.fromCharCode(...t.audio.audioSpecificConfig))
+              : undefined;
+
+            builder.addAudioTrack({
+              name: `${t.name}-audio`,
+              codec: t.audio.codec,
+              samplerate: t.audio.sampleRate,
+              channelConfig: t.audio.channelCount === 1 ? 'mono' : 'stereo',
+              bitrate: t.audio.bitrate,
+              isLive: false,
+              audioSpecificConfig: audioSpecificConfigBase64,
+              // VOD metadata for audio track (same grouping as video)
+              totalGroups: t.totalGroups,
+              gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
+            });
+          }
           break;
         }
         case 'video-live': {

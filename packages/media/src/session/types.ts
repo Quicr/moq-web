@@ -173,6 +173,15 @@ export interface MediaConfig {
     codedWidth?: number;
     codedHeight?: number;
   };
+
+  // Audio decoder config override (for AAC from VOD)
+  /** Override audio decoder configuration (e.g., AAC codec and AudioSpecificConfig) */
+  audioDecoderConfig?: {
+    codec?: string;
+    sampleRate?: number;
+    numberOfChannels?: number;
+    description?: Uint8Array;
+  };
 }
 
 /**
