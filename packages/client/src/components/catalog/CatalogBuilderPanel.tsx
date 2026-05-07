@@ -256,8 +256,17 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
             totalGroups: t.totalGroups,
             gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
           });
-          // Add audio track if VOD has audio with valid sample rate
-          if (t.audio && t.audio.sampleRate > 0) {
+          // Add audio track if VOD has audio with supported codec (AAC or Opus)
+          // WebCodecs only supports these codecs for decoding
+          const isAudioSupported = t.audio &&
+            t.audio.sampleRate > 0 &&
+            (t.audio.codec.startsWith('mp4a.') || t.audio.codec === 'opus');
+
+          if (t.audio && !isAudioSupported) {
+            console.warn(`[CatalogBuilder] Unsupported audio codec "${t.audio.codec}" - audio track not added to catalog. Only AAC (mp4a.*) and Opus are supported.`);
+          }
+
+          if (isAudioSupported && t.audio) {
             // Convert AudioSpecificConfig to base64 for catalog storage
             const audioSpecificConfigBase64 = t.audio.audioSpecificConfig
               ? btoa(String.fromCharCode(...t.audio.audioSpecificConfig))
