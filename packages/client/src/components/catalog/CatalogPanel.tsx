@@ -145,6 +145,7 @@ export const CatalogPanel: React.FC = () => {
             vodTrackOptions.set(vodTrack.name, loader.getPublishOptions());
 
             // If VOD has audio, collect audio publish options too
+            console.log('[CatalogPanel] Checking audio:', { hasAudio: loader.hasAudio, vodTrackAudio: vodTrack.audio });
             if (loader.hasAudio && vodTrack.audio) {
               const audioOptions = loader.getAudioPublishOptions();
               if (audioOptions) {
