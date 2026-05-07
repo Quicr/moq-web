@@ -104,8 +104,6 @@ interface DecodeChannel {
   frameReorderBuffer: Array<{ frame: VideoFrame; groupId: number; objectId: number; timestamp: number; arrivedAt: number }>;
   /** Last emitted timestamp for reorder buffer */
   lastEmittedTimestamp: number;
-  /** Last configured codec description (to avoid unnecessary reconfigures) */
-  lastCodecDescription: Uint8Array | null;
 }
 
 // Map of channel ID to decode context
@@ -177,7 +175,6 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     quicrInteropEnabled: config.quicrInteropEnabled ?? false,
     frameReorderBuffer: [],
     lastEmittedTimestamp: -1,
-    lastCodecDescription: null,
   };
 
   const jitterDelay = config.jitterBufferDelay ?? 100;
@@ -770,65 +767,47 @@ function decodeVideoFrame(
       droppedBeforeKeyframe: channel.droppedFramesBeforeKeyframe,
     });
 
-    // Reconfigure decoder if this keyframe has a codec description that differs from current
+    // Reconfigure decoder if this keyframe has a codec description
     // This MUST happen at decode time (not push time) because the arbiter may buffer
     // the keyframe while still outputting delta frames from the previous group
-    // IMPORTANT: Only reconfigure if description actually changed to avoid resetting
-    // the decoder's reference frame buffer (which breaks B-frame decoding)
     if (frameData.codecDescription && channel.videoConfig) {
       const desc = frameData.codecDescription;
-      const needsReconfigure = !channel.lastCodecDescription ||
-        desc.length !== channel.lastCodecDescription.length ||
-        !desc.every((byte, i) => byte === channel.lastCodecDescription![i]);
+      const firstBytes = Array.from(desc.slice(0, Math.min(16, desc.length)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(' ');
+      log(`Reconfiguring decoder with codec description (channel ${channel.channelId})`, {
+        size: desc.length,
+        firstBytes,
+        isAvcC: desc[0] === 1,
+        groupId,
+        objectId,
+      });
 
-      if (needsReconfigure) {
-        const firstBytes = Array.from(desc.slice(0, Math.min(16, desc.length)))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join(' ');
-        log(`Reconfiguring decoder with NEW codec description (channel ${channel.channelId})`, {
-          size: desc.length,
-          firstBytes,
-          isAvcC: desc[0] === 1,
-          groupId,
-          objectId,
-          hadPreviousDescription: !!channel.lastCodecDescription,
-        });
+      reconfigureVideoDecoder(channel, {
+        ...channel.videoConfig,
+        description: frameData.codecDescription,
+      });
 
-        reconfigureVideoDecoder(channel, {
-          ...channel.videoConfig,
-          description: frameData.codecDescription,
-        });
-
-        // Store the new description for future comparison
-        channel.lastCodecDescription = new Uint8Array(desc);
-
-        // Parse SPS for max_num_reorder_frames and notify main thread
-        try {
-          const spsInfo = parseH264SPS(new Uint8Array(frameData.codecDescription));
-          if (spsInfo) {
-            log(`SPS parsed (channel ${channel.channelId})`, {
-              profileIdc: spsInfo.profileIdc,
-              levelIdc: spsInfo.levelIdc,
-              maxNumReorderFrames: spsInfo.maxNumReorderFrames,
-              maxNumRefFrames: spsInfo.maxNumRefFrames,
-            });
-            respond({
-              type: 'sps-info',
-              channelId: channel.channelId,
-              maxNumReorderFrames: spsInfo.maxNumReorderFrames,
-              profileIdc: spsInfo.profileIdc,
-              levelIdc: spsInfo.levelIdc,
-            });
-          }
-        } catch {
-          // SPS parsing failure is non-fatal — reorder buffer keeps its default
+      // Parse SPS for max_num_reorder_frames and notify main thread
+      try {
+        const spsInfo = parseH264SPS(new Uint8Array(frameData.codecDescription));
+        if (spsInfo) {
+          log(`SPS parsed (channel ${channel.channelId})`, {
+            profileIdc: spsInfo.profileIdc,
+            levelIdc: spsInfo.levelIdc,
+            maxNumReorderFrames: spsInfo.maxNumReorderFrames,
+            maxNumRefFrames: spsInfo.maxNumRefFrames,
+          });
+          respond({
+            type: 'sps-info',
+            channelId: channel.channelId,
+            maxNumReorderFrames: spsInfo.maxNumReorderFrames,
+            profileIdc: spsInfo.profileIdc,
+            levelIdc: spsInfo.levelIdc,
+          });
         }
-      } else {
-        log(`Skipping decoder reconfigure - codec description unchanged (channel ${channel.channelId})`, {
-          groupId,
-          objectId,
-          descSize: desc.length,
-        });
+      } catch {
+        // SPS parsing failure is non-fatal — reorder buffer keeps its default
       }
     }
   }
@@ -1180,8 +1159,6 @@ function resetChannel(channel: DecodeChannel): void {
   channel.audioFramesDecoded = 0;
   channel.lastVideoFrameInfo = null;
   channel.lastAudioFrameInfo = null;
-  // Reset codec description to force reconfigure on next keyframe after reset
-  channel.lastCodecDescription = null;
 
   // Close any pending frames
   for (const { frame } of channel.pendingVideoFrames) {
