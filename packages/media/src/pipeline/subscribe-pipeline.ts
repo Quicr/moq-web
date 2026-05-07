@@ -37,6 +37,7 @@
 import { Logger } from '@web-moq/core';
 import { H264Decoder, VideoDecoderConfig } from '../webcodecs/video-decoder.js';
 import { OpusDecoder, AudioDecoderConfig } from '../webcodecs/audio-decoder.js';
+import { AACDecoder } from '../webcodecs/aac-decoder.js';
 import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
 import { JitterBuffer } from './jitter-buffer.js';
 import { GroupArbiter } from './group-arbiter.js';
@@ -241,8 +242,8 @@ export class SubscribePipeline {
   private channelId: number;
   /** Video decoder (main thread mode) */
   private videoDecoder?: H264Decoder;
-  /** Audio decoder (main thread mode) */
-  private audioDecoder?: OpusDecoder;
+  /** Audio decoder (main thread mode) - can be OpusDecoder or AACDecoder */
+  private audioDecoder?: OpusDecoder | AACDecoder;
   /** LOC unpackager (main thread mode) */
   private unpackager = new LOCUnpackager();
   /** Video jitter buffer (main thread mode, legacy) */
@@ -462,9 +463,10 @@ export class SubscribePipeline {
         : undefined,
       audio: this.config.audio && (mediaType === 'audio' || !mediaType)
         ? {
-            codec: 'opus',
+            codec: this.config.audio.codec ?? 'opus',
             sampleRate: this.config.audio.sampleRate,
             numberOfChannels: this.config.audio.numberOfChannels,
+            description: this.config.audio.description,
           }
         : undefined,
       jitterBufferDelay: this.config.jitterBufferDelay ?? 100,
@@ -582,16 +584,47 @@ export class SubscribePipeline {
     // Set up audio decoding (only if mediaType is 'audio' or not specified)
     const shouldCreateAudioDecoder = this.config.audio && (mediaType === 'audio' || !mediaType);
     if (shouldCreateAudioDecoder) {
-      this.audioDecoder = new OpusDecoder();
-      this.audioDecoder.on('frame', (audioData) => {
-        this.emit('audio-data', audioData);
-      });
-      this.audioDecoder.on('error', (error) => {
-        log.error('Audio decoder error', error);
-        this.emit('error', error);
-      });
+      const audioCodec = this.config.audio!.codec ?? 'opus';
+      const isAAC = audioCodec.startsWith('mp4a.');
 
-      await this.audioDecoder.start(this.config.audio!);
+      if (isAAC) {
+        log.info('Creating AAC decoder for audio', {
+          codec: audioCodec,
+          sampleRate: this.config.audio!.sampleRate,
+          channels: this.config.audio!.numberOfChannels,
+          hasDescription: !!this.config.audio!.description,
+        });
+        const aacDecoder = new AACDecoder();
+        aacDecoder.on('frame', (audioData) => {
+          this.emit('audio-data', audioData);
+        });
+        aacDecoder.on('error', (error) => {
+          log.error('AAC decoder error', error);
+          this.emit('error', error);
+        });
+        await aacDecoder.start({
+          sampleRate: this.config.audio!.sampleRate,
+          numberOfChannels: this.config.audio!.numberOfChannels,
+          description: this.config.audio!.description!,
+        });
+        this.audioDecoder = aacDecoder;
+      } else {
+        log.info('Creating Opus decoder for audio', {
+          codec: audioCodec,
+          sampleRate: this.config.audio!.sampleRate,
+          channels: this.config.audio!.numberOfChannels,
+        });
+        const opusDecoder = new OpusDecoder();
+        opusDecoder.on('frame', (audioData) => {
+          this.emit('audio-data', audioData);
+        });
+        opusDecoder.on('error', (error) => {
+          log.error('Opus decoder error', error);
+          this.emit('error', error);
+        });
+        await opusDecoder.start(this.config.audio!);
+        this.audioDecoder = opusDecoder;
+      }
 
       // Create buffer based on configuration
       if (this.useGroupArbiter) {

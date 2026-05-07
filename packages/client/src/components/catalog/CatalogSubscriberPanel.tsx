@@ -15,6 +15,7 @@ import { ABRController, type ABRTrack } from '@web-moq/media';
 import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
 import { MoqMediaPlayer } from '../player/MoqMediaPlayer';
 import { useVideoFrameQueue } from '../../hooks/useVideoFrameQueue';
+import { AudioPlayer } from '../subscribe/AudioPlayer';
 
 // FETCH playback state per track
 interface FetchPlaybackState {
@@ -26,6 +27,7 @@ interface FetchPlaybackState {
   totalGroups: number;
   bufferedGroups: number;
   subscriptionId?: number;
+  audioSubscriptionId?: number;
   error?: string;
 }
 
@@ -77,7 +79,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   namespace,
   onNamespaceChange,
 }) => {
-  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame, onSubscribeStats, vodFetchStrategy } = useStore();
+  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame, onAudioData, onSubscribeStats, vodFetchStrategy } = useStore();
 
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
@@ -570,19 +572,116 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       subscriptionToTrackRef.current.set(subscriptionId, trackName);
       fetchSubscriptionIds.current.add(subscriptionId); // Mark as FETCH subscription
 
-      // Update state to show we're buffering
-      setFetchPlaybackState(prev => {
-        const newMap = new Map(prev);
-        const state = newMap.get(trackName);
-        if (state) {
-          newMap.set(trackName, {
-            ...state,
-            subscriptionId,
-            isFetching: false,
+      // Look for associated audio track (naming convention: {video-name}-audio)
+      const audioTrackName = `${trackName}-audio`;
+      const audioTrack = receivedCatalog.tracks.find((t: Track) => t.name === audioTrackName);
+
+      if (audioTrack) {
+        console.log('[CatalogSubscriber] Found associated audio track:', audioTrackName, {
+          codec: audioTrack.codec,
+          samplerate: audioTrack.samplerate,
+          channelConfig: audioTrack.channelConfig,
+          hasAudioSpecificConfig: !!audioTrack.audioSpecificConfig,
+        });
+
+        // Decode base64 AudioSpecificConfig from catalog to Uint8Array
+        let audioSpecificConfig: Uint8Array | undefined;
+        if (audioTrack.audioSpecificConfig) {
+          try {
+            const binaryString = atob(audioTrack.audioSpecificConfig);
+            audioSpecificConfig = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              audioSpecificConfig[i] = binaryString.charCodeAt(i);
+            }
+            console.log('[CatalogSubscriber] Decoded AudioSpecificConfig:', audioSpecificConfig.length, 'bytes');
+          } catch (err) {
+            console.warn('[CatalogSubscriber] Failed to decode AudioSpecificConfig:', err);
+          }
+        }
+
+        // Build audio config from catalog track info
+        const audioConfig = {
+          codec: audioTrack.codec,
+          sampleRate: audioTrack.samplerate,
+          numberOfChannels: audioTrack.channelConfig === 'stereo' ? 2 : audioTrack.channelConfig === 'mono' ? 1 : undefined,
+          description: audioSpecificConfig,
+        };
+
+        // Start audio VOD subscription in parallel
+        const audioNamespace = audioTrack.namespace ?? namespace.split('/');
+        try {
+          const audioSubscriptionId = await startVodSubscription(
+            audioNamespace.join('/'),
+            audioTrackName,
+            'audio',
+            undefined, // no video config for audio
+            {
+              framerate: audioTrack.framerate,
+              gopDuration: audioTrack.gopDuration ?? track.gopDuration, // Use video's GOP if audio doesn't specify
+              totalGroups: audioTrack.totalGroups ?? track.totalGroups,
+            },
+            {
+              initialBufferSec: bufferSeconds,
+              minBufferSec: Math.max(1, bufferSeconds / 2),
+              fetchBatchSec: Math.max(1, bufferSeconds / 3),
+            },
+            startGroup,
+            undefined, // no ABR for audio
+            audioConfig
+          );
+
+          // Map audio subscription
+          subscriptionToTrackRef.current.set(audioSubscriptionId, audioTrackName);
+          fetchSubscriptionIds.current.add(audioSubscriptionId);
+          setSubscribedTracks(prev => new Set([...prev, audioTrackName]));
+          console.log('[CatalogSubscriber] Audio FETCH started:', audioTrackName, { audioSubscriptionId });
+
+          // Update state with audio subscription ID
+          setFetchPlaybackState(prev => {
+            const newMap = new Map(prev);
+            const state = newMap.get(trackName);
+            if (state) {
+              newMap.set(trackName, {
+                ...state,
+                subscriptionId,
+                audioSubscriptionId,
+                isFetching: false,
+              });
+            }
+            return newMap;
+          });
+        } catch (audioErr) {
+          console.warn('[CatalogSubscriber] Failed to start audio FETCH (video will continue):', audioErr);
+          // Update state without audio subscription
+          setFetchPlaybackState(prev => {
+            const newMap = new Map(prev);
+            const state = newMap.get(trackName);
+            if (state) {
+              newMap.set(trackName, {
+                ...state,
+                subscriptionId,
+                isFetching: false,
+              });
+            }
+            return newMap;
           });
         }
-        return newMap;
-      });
+      } else {
+        console.log('[CatalogSubscriber] No associated audio track found for:', trackName);
+        // Update state without audio subscription
+        setFetchPlaybackState(prev => {
+          const newMap = new Map(prev);
+          const state = newMap.get(trackName);
+          if (state) {
+            newMap.set(trackName, {
+              ...state,
+              subscriptionId,
+              isFetching: false,
+            });
+          }
+          return newMap;
+        });
+      }
 
       setSubscribedTracks(prev => new Set([...prev, trackName]));
       console.log('[CatalogSubscriber] FETCH playback started:', trackName);
@@ -1120,6 +1219,15 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                           showControls={true}
                           enableDiagnostics={false}
                         />
+                        {/* Audio Player for FETCH playback (if audio track exists) */}
+                        {fetchPlaybackState.get(track.name)?.audioSubscriptionId && (
+                          <div className="mt-2">
+                            <AudioPlayer
+                              subscriptionId={fetchPlaybackState.get(track.name)!.audioSubscriptionId!}
+                              onAudioData={onAudioData}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

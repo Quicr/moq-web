@@ -11,7 +11,7 @@
 import { Logger } from '@web-moq/core';
 import { LOCPackager } from '../loc/loc-container.js';
 import type { VODPublishOptions, VODMetadata } from '@web-moq/session';
-import { MP4Parser, type VideoTrackInfo } from './mp4-parser.js';
+import { MP4Parser, type VideoTrackInfo, type AudioTrackInfo } from './mp4-parser.js';
 
 const log = Logger.create('moqt:media:vod-loader');
 
@@ -21,6 +21,15 @@ const log = Logger.create('moqt:media:vod-loader');
 interface StoredFrame {
   data: Uint8Array;
   isKeyframe: boolean;
+  timestamp: number;
+  duration: number;
+}
+
+/**
+ * Audio sample data stored for VOD playback
+ */
+interface StoredAudioSample {
+  data: Uint8Array;
   timestamp: number;
   duration: number;
 }
@@ -61,6 +70,26 @@ export interface VODPreloadMetadata {
   trackDuration: number;
   /** Codec string extracted from video (e.g., 'avc1.64001f') */
   codec?: string;
+  /** Audio metadata (if audio track exists) */
+  audio?: VODAudioMetadata;
+}
+
+/**
+ * Audio metadata for catalog building
+ */
+export interface VODAudioMetadata {
+  /** Audio codec string (e.g., 'mp4a.40.2' for AAC-LC) */
+  codec: string;
+  /** Sample rate in Hz (e.g., 48000, 44100) */
+  sampleRate: number;
+  /** Number of channels (1=mono, 2=stereo) */
+  channelCount: number;
+  /** Duration in milliseconds */
+  duration: number;
+  /** Total number of samples */
+  totalSamples: number;
+  /** AudioSpecificConfig for decoder initialization */
+  aacConfig?: Uint8Array;
 }
 
 /**
@@ -111,7 +140,9 @@ export interface VODLoaderOptions {
  */
 export class VODLoader {
   private frames = new Map<string, StoredFrame>(); // "groupId:objectId" -> frame
+  private audioSamples = new Map<string, StoredAudioSample>(); // "groupId:objectId" -> audio sample
   private metadata: VODMetadata | null = null;
+  private audioMetadata: VODAudioMetadata | null = null;
   private options: Required<VODLoaderOptions>;
   private packager: LOCPackager | null = null;
   private loaded = false;
@@ -134,6 +165,9 @@ export class VODLoader {
 
   /** Actual maximum objects per group (from remuxing, may differ from framesPerGroup) */
   private actualObjectsPerGroup = 0;
+
+  /** Actual maximum audio objects per group */
+  private actualAudioObjectsPerGroup = 0;
 
   private videoData: Uint8Array | null = null;
   private mimeType: string = 'video/mp4';
@@ -383,7 +417,13 @@ export class VODLoader {
    * Try to parse video container to extract actual framerate and codec
    * Returns null values if parsing fails (e.g., non-MP4 format)
    */
-  private parseVideoMetadata(): { framerate?: number; codec?: string; sampleCount?: number; keyframeCount?: number } {
+  private parseVideoMetadata(): {
+    framerate?: number;
+    codec?: string;
+    sampleCount?: number;
+    keyframeCount?: number;
+    audio?: VODAudioMetadata;
+  } {
     if (!this.videoData) {
       return {};
     }
@@ -391,6 +431,28 @@ export class VODLoader {
     try {
       const parser = new MP4Parser(this.videoData);
       const result = parser.parse();
+
+      let audioMeta: VODAudioMetadata | undefined;
+
+      // Extract audio metadata if present
+      if (result.audioTrack) {
+        const atrack = result.audioTrack;
+        audioMeta = {
+          codec: atrack.codec,
+          sampleRate: atrack.sampleRate,
+          channelCount: atrack.channelCount,
+          duration: atrack.durationMs,
+          totalSamples: atrack.samples.length,
+          aacConfig: atrack.aacConfig,
+        };
+        log.info('Extracted audio metadata from MP4', {
+          codec: atrack.codec,
+          sampleRate: atrack.sampleRate,
+          channelCount: atrack.channelCount,
+          sampleCount: atrack.samples.length,
+          durationMs: atrack.durationMs,
+        });
+      }
 
       if (result.videoTrack) {
         const track = result.videoTrack;
@@ -404,12 +466,14 @@ export class VODLoader {
           sampleCount: track.samples.length,
           keyframeCount,
           durationMs: track.durationMs,
+          hasAudio: !!audioMeta,
         });
         return {
           framerate: Math.round(framerate * 100) / 100, // Round to 2 decimal places
           codec: track.codec,
           sampleCount: track.samples.length,
           keyframeCount,
+          audio: audioMeta,
         };
       }
     } catch (err) {
@@ -425,7 +489,7 @@ export class VODLoader {
    */
   private extendMetadata(
     basic: { duration: number; width: number; height: number },
-    parsed: { framerate?: number; codec?: string; sampleCount?: number; keyframeCount?: number } = {}
+    parsed: { framerate?: number; codec?: string; sampleCount?: number; keyframeCount?: number; audio?: VODAudioMetadata } = {}
   ): VODPreloadMetadata {
     // Use actual framerate from video if available, otherwise use configured
     const framerate = parsed.framerate ?? this.options.framerate;
@@ -449,6 +513,11 @@ export class VODLoader {
     // Use milliseconds as timescale (standard for media)
     const timescale = 1000;
 
+    // Store audio metadata for later use
+    if (parsed.audio) {
+      this.audioMetadata = parsed.audio;
+    }
+
     return {
       ...basic,
       framerate,
@@ -457,6 +526,7 @@ export class VODLoader {
       timescale,
       trackDuration: Math.round(basic.duration), // Already in ms, round to integer
       codec: parsed.codec,
+      audio: parsed.audio,
     };
   }
 
@@ -474,8 +544,14 @@ export class VODLoader {
       log.info('Using fast remux path (H.264 source)', {
         codec: parseResult.videoTrack.codec,
         samples: parseResult.videoTrack.samples.length,
+        hasAudio: !!parseResult.audioTrack,
       });
       await this.remuxVideo(videoData, parseResult.videoTrack, parser);
+
+      // Also remux audio if present
+      if (parseResult.audioTrack) {
+        await this.remuxAudio(videoData, parseResult.audioTrack, parseResult.videoTrack, parser);
+      }
     } else {
       log.info('Using transcode path', { reason: parseResult.remuxReason });
       await this.transcodeVideo(videoData);
@@ -594,6 +670,110 @@ export class VODLoader {
       framesProcessed: processedSamples,
       groups: gops.length,
       avgGopSize: Math.round(avgGopSize),
+    });
+  }
+
+  /**
+   * Remux audio track - align audio samples to video GOPs
+   * Audio samples are grouped to match video GOP timestamps
+   */
+  private async remuxAudio(
+    _videoData: Uint8Array,
+    audioTrack: AudioTrackInfo,
+    videoTrack: VideoTrackInfo,
+    parser: MP4Parser
+  ): Promise<void> {
+    const { samples: audioSamples, timescale: audioTimescale, sampleRate, channelCount, aacConfig } = audioTrack;
+    const { samples: videoSamples, timescale: videoTimescale } = videoTrack;
+
+    log.info('Remuxing audio', {
+      audioSamples: audioSamples.length,
+      sampleRate,
+      channelCount,
+      hasAacConfig: !!aacConfig,
+    });
+
+    // Build video GOP time ranges (in milliseconds)
+    const gopRanges: Array<{ startMs: number; endMs: number; groupId: number }> = [];
+    let currentGopStart = 0;
+    let groupId = 0;
+
+    for (let i = 0; i < videoSamples.length; i++) {
+      const sample = videoSamples[i];
+      if (sample.isKeyframe && i > 0) {
+        // End the previous GOP
+        const endMs = ((sample.dts + sample.ctOffset) / videoTimescale) * 1000;
+        gopRanges.push({ startMs: currentGopStart, endMs, groupId });
+        groupId++;
+        currentGopStart = endMs;
+      }
+    }
+    // Add the last GOP
+    if (videoSamples.length > 0) {
+      const lastSample = videoSamples[videoSamples.length - 1];
+      const endMs = ((lastSample.dts + lastSample.ctOffset + lastSample.duration) / videoTimescale) * 1000;
+      gopRanges.push({ startMs: currentGopStart, endMs, groupId });
+    }
+
+    // Create LOC packager for audio
+    const audioPackager = new LOCPackager();
+
+    // Group audio samples by video GOP
+    const audioByGroup = new Map<number, Array<{ sample: typeof audioSamples[0]; pts: number }>>();
+
+    for (const sample of audioSamples) {
+      const pts = ((sample.dts + sample.ctOffset) / audioTimescale) * 1000; // Convert to ms
+
+      // Find which GOP this audio sample belongs to
+      const gop = gopRanges.find(r => pts >= r.startMs && pts < r.endMs);
+      if (gop) {
+        if (!audioByGroup.has(gop.groupId)) {
+          audioByGroup.set(gop.groupId, []);
+        }
+        audioByGroup.get(gop.groupId)!.push({ sample, pts });
+      }
+    }
+
+    // Track max audio objects per group
+    let maxAudioObjectsPerGroup = 0;
+
+    // Package audio samples per group
+    for (const [gid, samples] of audioByGroup.entries()) {
+      maxAudioObjectsPerGroup = Math.max(maxAudioObjectsPerGroup, samples.length);
+
+      for (let objId = 0; objId < samples.length; objId++) {
+        const { sample, pts } = samples[objId];
+
+        // Extract raw audio sample data
+        const audioData = parser.extractSampleRaw(sample);
+        const durationMs = (sample.duration / audioTimescale) * 1000;
+
+        // Package with LOC container
+        const packedAudio = audioPackager.packageAudio(audioData, {
+          captureTimestamp: Math.round(pts),
+        });
+
+        // Store the audio sample
+        const key = `${gid}:${objId}`;
+        this.audioSamples.set(key, {
+          data: packedAudio,
+          timestamp: pts,
+          duration: durationMs,
+        });
+      }
+    }
+
+    this.actualAudioObjectsPerGroup = maxAudioObjectsPerGroup;
+
+    // Update audio metadata with actual values
+    if (this.audioMetadata) {
+      this.audioMetadata.totalSamples = audioSamples.length;
+    }
+
+    log.info('Audio remuxed', {
+      totalSamples: audioSamples.length,
+      groupsWithAudio: audioByGroup.size,
+      maxAudioObjectsPerGroup,
     });
   }
 
@@ -866,6 +1046,67 @@ export class VODLoader {
   }
 
   /**
+   * Get audio sample by group and object ID
+   * Returns a copy of the data to prevent ArrayBuffer detachment issues
+   */
+  getAudioSample(groupId: number, objectId: number): Uint8Array | null {
+    const key = `${groupId}:${objectId}`;
+    const sample = this.audioSamples.get(key);
+    if (!sample?.data) return null;
+    return sample.data.slice();
+  }
+
+  /**
+   * Check if audio track exists
+   */
+  get hasAudio(): boolean {
+    return this.audioSamples.size > 0;
+  }
+
+  /**
+   * Get audio metadata (if audio track exists)
+   */
+  getAudioMetadata(): VODAudioMetadata | null {
+    return this.audioMetadata;
+  }
+
+  /**
+   * Get audio publish options for use with publishVOD
+   * Returns null if no audio track exists
+   */
+  getAudioPublishOptions(): Omit<VODPublishOptions, 'priority' | 'groupOrder' | 'deliveryTimeout' | 'deliveryMode' | 'audioDeliveryMode'> | null {
+    if (!this.audioMetadata || this.audioSamples.size === 0) {
+      return null;
+    }
+
+    // When looping, wrap the group ID to loop through content
+    const wrapGroupId = (groupId: number): number => {
+      if (this.options.loop && this.originalTotalGroups > 0) {
+        return groupId % this.originalTotalGroups;
+      }
+      return groupId;
+    };
+
+    return {
+      metadata: {
+        duration: this.audioMetadata.duration,
+        totalGroups: this.metadata?.totalGroups ?? 0,
+        gopDuration: this.metadata?.gopDuration ?? 0,
+        framerate: this.audioMetadata.sampleRate / 1024, // AAC frames are typically 1024 samples
+      },
+      getObject: async (groupId: number, objectId: number) => {
+        const wrappedGroupId = wrapGroupId(groupId);
+        return this.getAudioSample(wrappedGroupId, objectId);
+      },
+      isKeyframe: (_groupId: number, objectId: number) => {
+        // First audio sample in each group is considered a "keyframe" for seeking
+        return objectId === 0;
+      },
+      objectsPerGroup: this.actualAudioObjectsPerGroup > 0 ? this.actualAudioObjectsPerGroup : 50,
+    };
+  }
+
+  /**
    * Get total number of stored frames
    */
   get frameCount(): number {
@@ -873,11 +1114,20 @@ export class VODLoader {
   }
 
   /**
+   * Get total number of stored audio samples
+   */
+  get audioSampleCount(): number {
+    return this.audioSamples.size;
+  }
+
+  /**
    * Clear all stored frames to free memory
    */
   clear(): void {
     this.frames.clear();
+    this.audioSamples.clear();
     this.metadata = null;
+    this.audioMetadata = null;
     this.videoData = null;
     this.loaded = false;
     log.info('VOD loader cleared');

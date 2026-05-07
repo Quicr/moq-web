@@ -143,6 +143,17 @@ export const CatalogPanel: React.FC = () => {
 
             // Collect publish options
             vodTrackOptions.set(vodTrack.name, loader.getPublishOptions());
+
+            // If VOD has audio, collect audio publish options too
+            if (loader.hasAudio && vodTrack.audio) {
+              const audioOptions = loader.getAudioPublishOptions();
+              if (audioOptions) {
+                // Audio track name follows the convention: "{video-name}-audio"
+                const audioTrackName = `${vodTrack.name}-audio`;
+                vodTrackOptions.set(audioTrackName, audioOptions);
+                console.log('[CatalogPanel] Added audio track publish options:', audioTrackName);
+              }
+            }
           }
         }
       }

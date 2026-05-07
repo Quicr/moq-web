@@ -30,12 +30,14 @@ export interface VideoDecoderWorkerConfig {
  * Audio decoder configuration
  */
 export interface AudioDecoderWorkerConfig {
-  /** Codec string (e.g., 'opus') */
+  /** Codec string (e.g., 'opus', 'mp4a.40.2' for AAC-LC) */
   codec: string;
   /** Sample rate */
   sampleRate: number;
   /** Number of channels */
   numberOfChannels: number;
+  /** Codec description (required for AAC - AudioSpecificConfig from esds box) */
+  description?: Uint8Array;
 }
 
 /**

@@ -93,6 +93,14 @@ export interface AudioTrackInput {
   targetLatency?: number;
   label?: string;
   lang?: string;
+  /** AudioSpecificConfig for AAC (base64 encoded) */
+  audioSpecificConfig?: string;
+  /** Track duration in milliseconds (for VOD) */
+  trackDuration?: number;
+  /** Total number of groups (for VOD) */
+  totalGroups?: number;
+  /** GOP duration in milliseconds (for VOD) */
+  gopDuration?: number;
 }
 
 /**

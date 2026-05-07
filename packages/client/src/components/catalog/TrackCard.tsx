@@ -70,12 +70,31 @@ const TrackDetails: React.FC<{ track: CatalogTrackConfig }> = ({ track }) => {
             {t.videoFile ? `${t.videoFile.name} (${(t.videoFile.size / 1024 / 1024).toFixed(1)} MB)` : (t.videoUrl || 'Not set')}
           </div>
           <div>
+            <span className="text-hint">Video:</span>{' '}
+            <span className="text-tertiary">{t.codec}</span>
+            <span className="text-hint"> | </span>
             <span className="text-tertiary">{t.width}x{t.height}</span>
             <span className="text-hint"> @ </span>
             <span className="text-tertiary">{t.framerate}fps</span>
             <span className="text-hint"> | </span>
             <span className="text-tertiary">{formatBitrate(t.bitrate)}</span>
           </div>
+          {t.audio && (
+            <div>
+              <span className="text-hint">Audio:</span>{' '}
+              <span className="text-tertiary">{t.audio.codec}</span>
+              <span className="text-hint"> | </span>
+              <span className="text-tertiary">{t.audio.sampleRate}Hz</span>
+              <span className="text-hint"> | </span>
+              <span className="text-tertiary">{t.audio.channelCount === 1 ? 'mono' : 'stereo'}</span>
+              {t.audio.bitrate && (
+                <>
+                  <span className="text-hint"> | </span>
+                  <span className="text-tertiary">{formatBitrate(t.audio.bitrate)}</span>
+                </>
+              )}
+            </div>
+          )}
           <div>
             <span className="text-hint">Duration:</span> {formatDuration(t.duration)}
             <span className="text-hint"> | DVR:</span> {t.enableDvr ? 'Yes' : 'No'}

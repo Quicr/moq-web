@@ -70,11 +70,39 @@ export interface VideoTrackInfo {
 }
 
 /**
+ * Audio track information
+ */
+export interface AudioTrackInfo {
+  /** Track ID */
+  trackId: number;
+  /** Codec string (e.g., 'mp4a.40.2' for AAC-LC) */
+  codec: string;
+  /** Is AAC? */
+  isAAC: boolean;
+  /** Sample rate in Hz (e.g., 48000, 44100) */
+  sampleRate: number;
+  /** Number of channels (1=mono, 2=stereo) */
+  channelCount: number;
+  /** Timescale (units per second) */
+  timescale: number;
+  /** Duration in timescale units */
+  duration: number;
+  /** Duration in milliseconds */
+  durationMs: number;
+  /** AAC decoder config (AudioSpecificConfig from esds) */
+  aacConfig?: Uint8Array;
+  /** Sample entries */
+  samples: SampleEntry[];
+}
+
+/**
  * MP4 Parser Result
  */
 export interface MP4ParseResult {
   /** Video track info (if found) */
   videoTrack?: VideoTrackInfo;
+  /** Audio track info (if found) */
+  audioTrack?: AudioTrackInfo;
   /** Whether we can remux (H.264 source) */
   canRemux: boolean;
   /** Reason if we can't remux */
@@ -103,10 +131,11 @@ export class MP4Parser {
     log.info('Parsing MP4 file', { size: this.data.length });
 
     try {
-      const videoTrack = this.findVideoTrack();
+      const { videoTrack, audioTrack } = this.findTracks();
 
       if (!videoTrack) {
         return {
+          audioTrack,
           canRemux: false,
           remuxReason: 'No video track found',
         };
@@ -115,6 +144,7 @@ export class MP4Parser {
       if (!videoTrack.isH264) {
         return {
           videoTrack,
+          audioTrack,
           canRemux: false,
           remuxReason: `Codec ${videoTrack.codec} is not H.264, re-encoding required`,
         };
@@ -123,21 +153,26 @@ export class MP4Parser {
       if (!videoTrack.avcConfig) {
         return {
           videoTrack,
+          audioTrack,
           canRemux: false,
           remuxReason: 'No AVC decoder config found',
         };
       }
 
       log.info('MP4 parsed successfully', {
-        codec: videoTrack.codec,
+        videoCodec: videoTrack.codec,
         resolution: `${videoTrack.width}x${videoTrack.height}`,
         duration: `${(videoTrack.durationMs / 1000).toFixed(1)}s`,
-        samples: videoTrack.samples.length,
+        videoSamples: videoTrack.samples.length,
         keyframes: videoTrack.samples.filter(s => s.isKeyframe).length,
+        hasAudio: !!audioTrack,
+        audioCodec: audioTrack?.codec,
+        audioSamples: audioTrack?.samples.length,
       });
 
       return {
         videoTrack,
+        audioTrack,
         canRemux: true,
       };
     } catch (err) {
@@ -150,14 +185,17 @@ export class MP4Parser {
   }
 
   /**
-   * Find and parse the video track
+   * Find and parse all tracks (video and audio)
    */
-  private findVideoTrack(): VideoTrackInfo | undefined {
+  private findTracks(): { videoTrack?: VideoTrackInfo; audioTrack?: AudioTrackInfo } {
     // Find moov box
     const moov = this.findBox(0, this.data.length, 'moov');
     if (!moov) {
       throw new Error('No moov box found');
     }
+
+    let videoTrack: VideoTrackInfo | undefined;
+    let audioTrack: AudioTrackInfo | undefined;
 
     // Find trak boxes within moov
     let offset = moov.offset + moov.headerSize;
@@ -168,22 +206,26 @@ export class MP4Parser {
       if (!box) break;
 
       if (box.type === 'trak') {
-        const track = this.parseTrack(offset, box.size);
-        if (track && track.codec) {
-          return track;
+        const result = this.parseTrack(offset, box.size);
+        if (result) {
+          if (result.type === 'video' && result.video) {
+            videoTrack = result.video;
+          } else if (result.type === 'audio' && result.audio) {
+            audioTrack = result.audio;
+          }
         }
       }
 
       offset += box.size;
     }
 
-    return undefined;
+    return { videoTrack, audioTrack };
   }
 
   /**
-   * Parse a trak box
+   * Track parsing result
    */
-  private parseTrack(trakOffset: number, trakSize: number): VideoTrackInfo | undefined {
+  private parseTrack(trakOffset: number, trakSize: number): { type: 'video'; video: VideoTrackInfo } | { type: 'audio'; audio: AudioTrackInfo } | undefined {
     const trakEnd = trakOffset + trakSize;
     const trakHeader = this.readBoxHeader(trakOffset);
     if (!trakHeader) return undefined;
@@ -195,10 +237,20 @@ export class MP4Parser {
     let duration = 0;
     let width = 0;
     let height = 0;
-    let codec = '';
+    let handlerType = '';
+
+    // Video-specific
+    let videoCodec = '';
     let isH264 = false;
     let avcConfig: Uint8Array | undefined;
     let nalLengthSize = 4;
+
+    // Audio-specific
+    let audioCodec = '';
+    let isAAC = false;
+    let sampleRate = 0;
+    let channelCount = 0;
+    let aacConfig: Uint8Array | undefined;
 
     // Sample table data
     let sampleSizes: number[] = [];
@@ -241,11 +293,8 @@ export class MP4Parser {
               duration = this.view.getUint32(mdiaOffset + 24, false);
             }
           } else if (mdiaBox.type === 'hdlr') {
-            // Handler - check if this is video
-            const handlerType = this.readString(mdiaOffset + 16, 4);
-            if (handlerType !== 'vide') {
-              return undefined; // Not a video track
-            }
+            // Handler - identify track type (vide or soun)
+            handlerType = this.readString(mdiaOffset + 16, 4);
           } else if (mdiaBox.type === 'minf') {
             // Media info - contains stbl
             let minfOffset = mdiaOffset + mdiaBox.headerSize;
@@ -266,13 +315,22 @@ export class MP4Parser {
 
                   if (stblBox.type === 'stsd') {
                     // Sample description - get codec info
-                    const result = this.parseStsd(stblOffset, stblBox.size);
-                    codec = result.codec;
-                    isH264 = result.isH264;
-                    avcConfig = result.avcConfig;
-                    nalLengthSize = result.nalLengthSize;
-                    if (result.width) width = result.width;
-                    if (result.height) height = result.height;
+                    if (handlerType === 'vide') {
+                      const result = this.parseVideoStsd(stblOffset, stblBox.size);
+                      videoCodec = result.codec;
+                      isH264 = result.isH264;
+                      avcConfig = result.avcConfig;
+                      nalLengthSize = result.nalLengthSize;
+                      if (result.width) width = result.width;
+                      if (result.height) height = result.height;
+                    } else if (handlerType === 'soun') {
+                      const result = this.parseAudioStsd(stblOffset, stblBox.size);
+                      audioCodec = result.codec;
+                      isAAC = result.isAAC;
+                      sampleRate = result.sampleRate;
+                      channelCount = result.channelCount;
+                      aacConfig = result.aacConfig;
+                    }
                   } else if (stblBox.type === 'stsz' || stblBox.type === 'stz2') {
                     // Sample sizes
                     sampleSizes = this.parseStsz(stblOffset, stblBox.size);
@@ -311,10 +369,6 @@ export class MP4Parser {
       offset += box.size;
     }
 
-    if (!codec) {
-      return undefined;
-    }
-
     // Build sample table
     const samples = this.buildSampleTable(
       sampleSizes,
@@ -325,25 +379,52 @@ export class MP4Parser {
       compositionOffsets
     );
 
-    return {
-      trackId,
-      codec,
-      isH264,
-      width,
-      height,
-      timescale,
-      duration,
-      durationMs: (duration / timescale) * 1000,
-      avcConfig,
-      nalLengthSize,
-      samples,
-    };
+    // Return video track
+    if (handlerType === 'vide' && videoCodec) {
+      return {
+        type: 'video',
+        video: {
+          trackId,
+          codec: videoCodec,
+          isH264,
+          width,
+          height,
+          timescale,
+          duration,
+          durationMs: (duration / timescale) * 1000,
+          avcConfig,
+          nalLengthSize,
+          samples,
+        },
+      };
+    }
+
+    // Return audio track
+    if (handlerType === 'soun' && audioCodec) {
+      return {
+        type: 'audio',
+        audio: {
+          trackId,
+          codec: audioCodec,
+          isAAC,
+          sampleRate,
+          channelCount,
+          timescale,
+          duration,
+          durationMs: (duration / timescale) * 1000,
+          aacConfig,
+          samples,
+        },
+      };
+    }
+
+    return undefined;
   }
 
   /**
-   * Parse stsd (sample description) box
+   * Parse stsd (sample description) box for video
    */
-  private parseStsd(offset: number, _size: number): {
+  private parseVideoStsd(offset: number, _size: number): {
     codec: string;
     isH264: boolean;
     avcConfig?: Uint8Array;
@@ -406,6 +487,211 @@ export class MP4Parser {
     }
 
     return { codec, isH264, avcConfig, nalLengthSize, width, height };
+  }
+
+  /**
+   * Parse stsd (sample description) box for audio
+   */
+  private parseAudioStsd(offset: number, _size: number): {
+    codec: string;
+    isAAC: boolean;
+    sampleRate: number;
+    channelCount: number;
+    aacConfig?: Uint8Array;
+  } {
+    const entryCount = this.view.getUint32(offset + 12, false);
+    if (entryCount === 0) {
+      return { codec: '', isAAC: false, sampleRate: 0, channelCount: 0 };
+    }
+
+    // First entry starts at offset + 16
+    const entryOffset = offset + 16;
+    const entrySize = this.view.getUint32(entryOffset, false);
+    const entryType = this.readString(entryOffset + 4, 4);
+
+    // Check for AAC (mp4a)
+    const isAAC = entryType === 'mp4a';
+
+    // Audio sample entry structure (ISO 14496-12):
+    // 8 bytes: size + type
+    // 6 bytes: reserved
+    // 2 bytes: data reference index
+    // For mp4a in ISO base media file format (not QuickTime):
+    // 8 bytes: reserved (all zeros in ISO, version/revision/vendor in QT)
+    // 2 bytes: channel count
+    // 2 bytes: sample size
+    // 2 bytes: pre_defined (compression ID in QT)
+    // 2 bytes: reserved (packet size in QT)
+    // 4 bytes: sample rate as 16.16 fixed point
+
+    // Check if this is QuickTime style (version field) or ISO style
+    // In ISO format, bytes at offset +16 are reserved (usually 0)
+    // In QuickTime, offset +16 is version (0, 1, or 2)
+    const possibleVersion = this.view.getUint16(entryOffset + 16, false);
+
+    let channelCount = 0;
+    let sampleRate = 0;
+    let extendedOffset = 0;
+
+    // ISO 14496-12 style: always at fixed offsets, no version field
+    // Channel count at +16+8 = +24, sample rate at +16+16 = +32
+    // But first check if there's a non-zero value at the expected sampleRate position
+    // Use >>> (unsigned right shift) to avoid sign extension issues
+    const sampleRateFixed = this.view.getUint32(entryOffset + 28, false);
+    const sampleRateISO = sampleRateFixed >>> 16;
+
+    // Also check QuickTime v0/v1 position
+    const sampleRateQT = this.view.getUint32(entryOffset + 32, false) >>> 16;
+
+    // Debug: log what we find
+    console.warn('[MP4Parser] Audio stsd entry:', {
+      entryType,
+      entrySize,
+      possibleVersion,
+      channelCountAt24: this.view.getUint16(entryOffset + 24, false),
+      sampleRateAt28: sampleRateISO,
+      sampleRateAt32: sampleRateQT,
+      bytes16to36: Array.from(this.data.slice(entryOffset + 16, entryOffset + 36)).map(b => b.toString(16).padStart(2, '0')).join(' '),
+    });
+
+    // Use whichever position has a valid sample rate (> 0 and < 200000)
+    if (sampleRateQT > 0 && sampleRateQT < 200000) {
+      // QuickTime style at offset +32
+      channelCount = this.view.getUint16(entryOffset + 24, false);
+      sampleRate = sampleRateQT;
+      extendedOffset = entryOffset + 36;
+
+      if (possibleVersion === 1) {
+        extendedOffset = entryOffset + 36 + 16;
+      } else if (possibleVersion === 2) {
+        const sampleRateFloat = this.view.getFloat64(entryOffset + 40, false);
+        sampleRate = Math.round(sampleRateFloat);
+        channelCount = this.view.getUint32(entryOffset + 48, false);
+        extendedOffset = entryOffset + 72;
+      }
+    } else if (sampleRateISO > 0 && sampleRateISO < 200000) {
+      // ISO style at offset +28
+      channelCount = this.view.getUint16(entryOffset + 24, false);
+      sampleRate = sampleRateISO;
+      extendedOffset = entryOffset + 36;
+    } else {
+      // Fallback: try to find sample rate in AudioSpecificConfig later
+      channelCount = this.view.getUint16(entryOffset + 24, false);
+      extendedOffset = entryOffset + 36;
+    }
+
+    let codec = entryType;
+    let aacConfig: Uint8Array | undefined;
+    const isAC3 = entryType === 'ac-3' || entryType === 'ec-3';
+
+    // Find codec-specific boxes within the entry
+    let subOffset = extendedOffset;
+    const entryEnd = entryOffset + entrySize;
+
+    console.warn('[MP4Parser] Searching for child boxes:', {
+      entryType,
+      entryOffset,
+      entrySize,
+      extendedOffset,
+      entryEnd,
+      searchRange: entryEnd - extendedOffset,
+    });
+
+    while (subOffset < entryEnd) {
+      const subBox = this.readBoxHeader(subOffset);
+      if (!subBox) {
+        console.warn('[MP4Parser] No valid box at offset', subOffset);
+        break;
+      }
+
+      console.warn('[MP4Parser] Found child box:', { type: subBox.type, size: subBox.size, offset: subOffset });
+
+      if (subBox.type === 'esds' && isAAC) {
+        // Parse esds to extract AudioSpecificConfig for AAC
+        const esdsResult = this.parseEsds(subOffset + 8, subBox.size - 8);
+        if (esdsResult.audioSpecificConfig) {
+          aacConfig = esdsResult.audioSpecificConfig;
+          // Build codec string: mp4a.40.{objectType}
+          // ObjectType is in first 5 bits of AudioSpecificConfig
+          const objectType = (aacConfig[0] >> 3) & 0x1f;
+          codec = `mp4a.40.${objectType}`;
+        }
+      } else if (subBox.type === 'dac3' && isAC3) {
+        // Parse dac3 box for AC-3 sample rate
+        // dac3 structure (3 bytes):
+        // - 2 bits: fscod (sample rate code)
+        // - 5 bits: bsid
+        // - 3 bits: bsmod
+        // - 3 bits: acmod (channel config)
+        // - 1 bit: lfeon
+        // - 5 bits: bit_rate_code
+        // - 5 bits: reserved
+        const dac3Data = this.view.getUint8(subOffset + 8);
+        const fscod = (dac3Data >> 6) & 0x03;
+        // AC-3 sample rates: 0=48kHz, 1=44.1kHz, 2=32kHz
+        const ac3SampleRates = [48000, 44100, 32000];
+        if (fscod < 3) {
+          sampleRate = ac3SampleRates[fscod];
+        }
+        codec = 'ac-3';
+      } else if (subBox.type === 'dec3' && entryType === 'ec-3') {
+        // Parse dec3 box for E-AC-3 (Enhanced AC-3)
+        // E-AC-3 is more complex, but we can assume 48kHz for most content
+        sampleRate = 48000;
+        codec = 'ec-3';
+      }
+
+      subOffset += subBox.size;
+    }
+
+    return { codec, isAAC, sampleRate, channelCount, aacConfig };
+  }
+
+  /**
+   * Parse esds box to extract AudioSpecificConfig
+   */
+  private parseEsds(offset: number, size: number): { audioSpecificConfig?: Uint8Array } {
+    // esds structure:
+    // 4 bytes: version/flags
+    // ES_Descriptor (tag 0x03)
+    //   DecoderConfigDescriptor (tag 0x04)
+    //     DecoderSpecificInfo (tag 0x05) - contains AudioSpecificConfig
+
+    let pos = offset + 4; // Skip version/flags
+    const endPos = offset + size;
+
+    // Find ES_Descriptor (tag 0x03)
+    while (pos < endPos) {
+      const tag = this.data[pos];
+      pos++;
+
+      // Read descriptor length (variable size, up to 4 bytes with high bit continuation)
+      let descLen = 0;
+      for (let i = 0; i < 4; i++) {
+        const b = this.data[pos++];
+        descLen = (descLen << 7) | (b & 0x7f);
+        if ((b & 0x80) === 0) break;
+      }
+
+      if (tag === 0x03) {
+        // ES_Descriptor: skip ES_ID (2 bytes) and flags (1 byte)
+        pos += 3;
+        continue;
+      } else if (tag === 0x04) {
+        // DecoderConfigDescriptor: skip objectTypeIndication (1), streamType (1),
+        // bufferSizeDB (3), maxBitrate (4), avgBitrate (4) = 13 bytes
+        pos += 13;
+        continue;
+      } else if (tag === 0x05) {
+        // DecoderSpecificInfo - this is the AudioSpecificConfig
+        return { audioSpecificConfig: this.data.slice(pos, pos + descLen) };
+      } else {
+        // Skip unknown descriptors
+        pos += descLen;
+      }
+    }
+
+    return {};
   }
 
   /**

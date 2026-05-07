@@ -111,6 +111,11 @@ export class CatalogBuilder {
       targetLatency: input.targetLatency,
       label: input.label,
       lang: input.lang,
+      audioSpecificConfig: input.audioSpecificConfig,
+      // VOD metadata
+      trackDuration: input.trackDuration,
+      totalGroups: input.totalGroups,
+      gopDuration: input.gopDuration,
     };
     this.tracks.push(this.removeUndefined(track));
     return this;

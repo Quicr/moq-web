@@ -602,15 +602,34 @@ export class MediaSession {
       height: videoDecoderConfig.codedHeight,
     });
 
+    // Build audio decoder config - use explicit config if provided (e.g., AAC from VOD),
+    // otherwise default to Opus
+    const audioDecoderConfig = config.audioDecoderConfig && config.audioDecoderConfig.codec ? {
+      codec: config.audioDecoderConfig.codec,
+      sampleRate: config.audioDecoderConfig.sampleRate ?? 48000,
+      numberOfChannels: config.audioDecoderConfig.numberOfChannels ?? 2,
+      description: config.audioDecoderConfig.description,
+    } : {
+      codec: 'opus',
+      sampleRate: 48000,
+      numberOfChannels: 2,
+    };
+
+    if (config.audioDecoderConfig?.codec) {
+      log.info('Audio decoder config (from catalog)', {
+        codec: audioDecoderConfig.codec,
+        sampleRate: audioDecoderConfig.sampleRate,
+        numberOfChannels: audioDecoderConfig.numberOfChannels,
+        hasDescription: !!audioDecoderConfig.description,
+      });
+    }
+
     // Create subscribe pipeline with shared decode worker
     // The worker supports multiplexing via channelId - each pipeline gets its own channel
     const pipeline = new SubscribePipeline({
       mediaType,
       video: mediaType !== 'audio' ? videoDecoderConfig : undefined,
-      audio: mediaType !== 'video' ? {
-        sampleRate: 48000,
-        numberOfChannels: 2,
-      } : undefined,
+      audio: mediaType !== 'video' ? audioDecoderConfig : undefined,
       jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
@@ -799,22 +818,33 @@ export class MediaSession {
       codedHeight: resolution.height,
     };
 
+    // Build audio decoder config - use explicit config if provided (e.g., AAC from VOD)
+    const audioDecoderConfig = config.audioDecoderConfig && config.audioDecoderConfig.codec ? {
+      codec: config.audioDecoderConfig.codec,
+      sampleRate: config.audioDecoderConfig.sampleRate ?? 48000,
+      numberOfChannels: config.audioDecoderConfig.numberOfChannels ?? 2,
+      description: config.audioDecoderConfig.description,
+    } : {
+      codec: 'opus',
+      sampleRate: 48000,
+      numberOfChannels: 2,
+    };
+
     log.info('Creating VOD pipeline (FETCH-only)', {
       namespace: namespace.join('/'),
       trackName,
-      codec: videoDecoderConfig.codec,
+      videoCodec: videoDecoderConfig.codec,
       width: videoDecoderConfig.codedWidth,
       height: videoDecoderConfig.codedHeight,
+      audioCodec: audioDecoderConfig.codec,
+      hasAudioDescription: !!audioDecoderConfig.description,
     });
 
     // Create subscribe pipeline for decoding
     const pipeline = new SubscribePipeline({
       mediaType,
       video: mediaType !== 'audio' ? videoDecoderConfig : undefined,
-      audio: mediaType !== 'video' ? {
-        sampleRate: 48000,
-        numberOfChannels: 2,
-      } : undefined,
+      audio: mediaType !== 'video' ? audioDecoderConfig : undefined,
       jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,

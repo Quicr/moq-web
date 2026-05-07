@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * @fileoverview Opus Audio Decoder using WebCodecs
+ * @fileoverview AAC Audio Decoder using WebCodecs
  *
  * Provides a high-level wrapper around the WebCodecs AudioDecoder API
- * for decoding Opus audio frames received via MOQT.
+ * for decoding AAC audio frames from MP4 containers.
  *
  * @example
  * ```typescript
- * import { OpusDecoder } from '@web-moq/media';
+ * import { AACDecoder } from '@web-moq/media';
  *
- * const decoder = new OpusDecoder();
+ * const decoder = new AACDecoder();
  *
  * decoder.on('frame', (audioData) => {
  *   // Process audio data
@@ -22,6 +22,7 @@
  * await decoder.start({
  *   sampleRate: 48000,
  *   numberOfChannels: 2,
+ *   description: aacConfig, // AudioSpecificConfig from esds box
  * });
  *
  * // Decode received frames
@@ -31,37 +32,38 @@
 
 import { Logger } from '@web-moq/core';
 
-const log = Logger.create('moqt:media:audio-decoder');
+const log = Logger.create('moqt:media:aac-decoder');
 
 /**
- * Audio decoder configuration
+ * AAC decoder configuration
  */
-export interface AudioDecoderConfig {
-  /** Audio codec (e.g., 'opus', 'mp4a.40.2' for AAC-LC). Defaults to 'opus'. */
-  codec?: string;
+export interface AACDecoderConfig {
   /** Sample rate in Hz */
   sampleRate: number;
   /** Number of audio channels */
   numberOfChannels: number;
-  /** Codec description (optional for Opus, required for AAC - AudioSpecificConfig) */
-  description?: Uint8Array;
+  /** AudioSpecificConfig from MP4 esds box (required for AAC) */
+  description: Uint8Array;
 }
 
 /**
  * Decoder event types
  */
-export type AudioDecoderEvent = 'frame' | 'error' | 'closed';
+export type AACDecoderEvent = 'frame' | 'error' | 'closed';
 
 /**
- * Opus Audio Decoder
+ * AAC Audio Decoder
  *
  * @remarks
- * Wraps the WebCodecs AudioDecoder API to decode Opus audio frames.
+ * Wraps the WebCodecs AudioDecoder API to decode AAC audio frames.
  * Outputs AudioData objects that can be played back or processed.
+ *
+ * AAC requires an AudioSpecificConfig (from MP4 esds box) to be provided
+ * in the `description` field of the config.
  *
  * @example
  * ```typescript
- * const decoder = new OpusDecoder();
+ * const decoder = new AACDecoder();
  *
  * // Listen for decoded audio
  * decoder.on('frame', (audioData) => {
@@ -75,10 +77,11 @@ export type AudioDecoderEvent = 'frame' | 'error' | 'closed';
  *   audioData.close();
  * });
  *
- * // Configure and start
+ * // Configure and start (description is required for AAC)
  * await decoder.start({
  *   sampleRate: 48000,
  *   numberOfChannels: 2,
+ *   description: audioSpecificConfig,
  * });
  *
  * // Decode frames as they arrive
@@ -87,13 +90,13 @@ export type AudioDecoderEvent = 'frame' | 'error' | 'closed';
  * });
  * ```
  */
-export class OpusDecoder {
+export class AACDecoder {
   /** Underlying WebCodecs decoder */
   private decoder?: AudioDecoder;
   /** Current configuration */
-  private config?: AudioDecoderConfig;
+  private config?: AACDecoderConfig;
   /** Event handlers */
-  private handlers = new Map<AudioDecoderEvent, Set<(data: unknown) => void>>();
+  private handlers = new Map<AACDecoderEvent, Set<(data: unknown) => void>>();
   /** Decoder state */
   private _state: 'idle' | 'running' | 'closed' = 'idle';
   /** Statistics */
@@ -103,10 +106,10 @@ export class OpusDecoder {
   };
 
   /**
-   * Create a new OpusDecoder
+   * Create a new AACDecoder
    */
   constructor() {
-    log.debug('OpusDecoder created');
+    log.debug('AACDecoder created');
   }
 
   /**
@@ -124,15 +127,15 @@ export class OpusDecoder {
   }
 
   /**
-   * Check if Opus decoding is supported
+   * Check if AAC decoding is supported
    *
    * @param config - Configuration to check
    * @returns Support status
    */
-  static async isSupported(config: AudioDecoderConfig): Promise<boolean> {
+  static async isSupported(config: AACDecoderConfig): Promise<boolean> {
     try {
       const result = await AudioDecoder.isConfigSupported({
-        codec: 'opus',
+        codec: 'mp4a.40.2', // AAC-LC
         sampleRate: config.sampleRate,
         numberOfChannels: config.numberOfChannels,
         description: config.description,
@@ -146,9 +149,9 @@ export class OpusDecoder {
   /**
    * Start the decoder
    *
-   * @param config - Decoder configuration
+   * @param config - Decoder configuration (description is required for AAC)
    */
-  async start(config: AudioDecoderConfig): Promise<void> {
+  async start(config: AACDecoderConfig): Promise<void> {
     if (this._state === 'running') {
       throw new Error('Decoder already running');
     }
@@ -161,17 +164,22 @@ export class OpusDecoder {
       throw new Error('WebCodecs AudioDecoder not supported');
     }
 
+    if (!config.description || config.description.byteLength === 0) {
+      throw new Error('AAC decoder requires AudioSpecificConfig in description');
+    }
+
     this.config = config;
 
-    log.info('Starting Opus decoder', {
+    log.info('Starting AAC decoder', {
       sampleRate: config.sampleRate,
       channels: config.numberOfChannels,
+      descriptionSize: config.description.byteLength,
     });
 
     // Check support
-    const supported = await OpusDecoder.isSupported(config);
+    const supported = await AACDecoder.isSupported(config);
     if (!supported) {
-      throw new Error('Opus decoding configuration not supported');
+      throw new Error('AAC decoding configuration not supported');
     }
 
     // Create decoder
@@ -182,26 +190,26 @@ export class OpusDecoder {
 
     // Configure decoder
     this.decoder.configure({
-      codec: 'opus',
+      codec: 'mp4a.40.2', // AAC-LC
       sampleRate: config.sampleRate,
       numberOfChannels: config.numberOfChannels,
       description: config.description,
     });
 
     this._state = 'running';
-    log.info('Opus decoder started');
+    log.info('AAC decoder started');
   }
 
   /**
    * Decode an encoded audio frame
    *
-   * @param data - Encoded frame data
+   * @param data - Encoded frame data (raw AAC frame, no ADTS header)
    * @param timestamp - Presentation timestamp in microseconds
    * @param duration - Duration in microseconds (optional)
    *
    * @example
    * ```typescript
-   * decoder.decode(opusFrame, timestamp);
+   * decoder.decode(aacFrame, timestamp);
    * ```
    */
   decode(data: Uint8Array, timestamp: number, duration?: number): void {
@@ -211,7 +219,7 @@ export class OpusDecoder {
 
     // Check if the underlying WebCodecs decoder was closed unexpectedly
     if (this.decoder.state === 'closed') {
-      log.warn('Audio decoder was closed unexpectedly, attempting to recreate');
+      log.warn('AAC decoder was closed unexpectedly, attempting to recreate');
 
       if (this.config) {
         try {
@@ -221,32 +229,32 @@ export class OpusDecoder {
           });
 
           this.decoder.configure({
-            codec: 'opus',
+            codec: 'mp4a.40.2',
             sampleRate: this.config.sampleRate,
             numberOfChannels: this.config.numberOfChannels,
             description: this.config.description,
           });
 
-          log.info('Audio decoder recreated successfully');
+          log.info('AAC decoder recreated successfully');
         } catch (err) {
-          log.error('Failed to recreate audio decoder', err as Error);
+          log.error('Failed to recreate AAC decoder', err as Error);
           this._state = 'closed';
-          throw new Error('Audio decoder closed and could not be recreated');
+          throw new Error('AAC decoder closed and could not be recreated');
         }
       } else {
         this._state = 'closed';
-        throw new Error('Audio decoder closed and no config available for recreation');
+        throw new Error('AAC decoder closed and no config available for recreation');
       }
     }
 
-    log.info('Decoding audio frame', {
+    log.debug('Decoding AAC frame', {
       size: data.byteLength,
       timestamp,
       duration,
     });
 
     const chunk = new EncodedAudioChunk({
-      type: 'key', // Opus frames are always key frames
+      type: 'key', // AAC frames are always key frames (like Opus)
       data,
       timestamp,
       duration,
@@ -263,7 +271,7 @@ export class OpusDecoder {
       return;
     }
 
-    log.debug('Flushing audio decoder');
+    log.debug('Flushing AAC decoder');
     await this.decoder.flush();
   }
 
@@ -275,13 +283,13 @@ export class OpusDecoder {
       return;
     }
 
-    log.debug('Resetting audio decoder');
+    log.debug('Resetting AAC decoder');
     this.decoder.reset();
 
     // Reconfigure
     if (this.config) {
       this.decoder.configure({
-        codec: 'opus',
+        codec: 'mp4a.40.2',
         sampleRate: this.config.sampleRate,
         numberOfChannels: this.config.numberOfChannels,
         description: this.config.description,
@@ -297,7 +305,7 @@ export class OpusDecoder {
       return;
     }
 
-    log.info('Closing Opus decoder');
+    log.info('Closing AAC decoder');
 
     if (this.decoder) {
       try {
@@ -320,7 +328,7 @@ export class OpusDecoder {
   private handleOutput(audioData: AudioData): void {
     this.stats.framesDecoded++;
 
-    log.info('Audio frame decoded', {
+    log.debug('AAC frame decoded', {
       numberOfFrames: audioData.numberOfFrames,
       numberOfChannels: audioData.numberOfChannels,
       sampleRate: audioData.sampleRate,
@@ -336,7 +344,7 @@ export class OpusDecoder {
    * Handle decoder error
    */
   private handleError(error: DOMException): void {
-    log.error('Audio decoder error', error);
+    log.error('AAC decoder error', error);
     this.stats.errors++;
     this.emit('error', error);
   }
@@ -348,7 +356,7 @@ export class OpusDecoder {
   on(event: 'error', handler: (error: Error) => void): () => void;
   on(event: 'closed', handler: () => void): () => void;
   on(
-    event: AudioDecoderEvent,
+    event: AACDecoderEvent,
     handler: ((audioData: AudioData) => void) | ((error: Error) => void) | (() => void)
   ): () => void {
     if (!this.handlers.has(event)) {
@@ -364,7 +372,7 @@ export class OpusDecoder {
   /**
    * Emit an event
    */
-  private emit(event: AudioDecoderEvent, data: unknown): void {
+  private emit(event: AACDecoderEvent, data: unknown): void {
     const handlers = this.handlers.get(event);
     if (!handlers) return;
 

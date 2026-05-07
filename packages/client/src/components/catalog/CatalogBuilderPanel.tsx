@@ -214,6 +214,16 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
           totalGroups: metadata.totalGroups,
           gopDuration: metadata.gopDuration,
           loadProgress: { phase: 'complete', progress: 100 },
+          // Audio metadata if present
+          audio: metadata.audio ? {
+            codec: metadata.audio.codec,
+            sampleRate: metadata.audio.sampleRate,
+            channelCount: metadata.audio.channelCount,
+            bitrate: metadata.audio.totalSamples > 0
+              ? Math.round((metadata.audio.totalSamples * 1024 * 8) / (metadata.audio.duration / 1000))
+              : undefined,
+            audioSpecificConfig: metadata.audio.aacConfig,
+          } : undefined,
         } as VODTrackConfig;
       }));
     } catch (err) {
@@ -246,6 +256,43 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
             totalGroups: t.totalGroups,
             gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
           });
+          // Add audio track if VOD has audio with supported codec (AAC or Opus)
+          // WebCodecs requires full codec string like "mp4a.40.2", not just "mp4a"
+          // Only add if we have AudioSpecificConfig (needed for AAC decoding)
+          const hasFullAACCodec = t.audio?.codec.startsWith('mp4a.40.');
+          const hasAACConfig = t.audio?.audioSpecificConfig && t.audio.audioSpecificConfig.length > 0;
+          const isOpus = t.audio?.codec === 'opus';
+
+          const isAudioSupported = t.audio &&
+            t.audio.sampleRate > 0 &&
+            (isOpus || (hasFullAACCodec && hasAACConfig));
+
+          if (t.audio && !isAudioSupported) {
+            const reason = !t.audio.sampleRate ? 'sampleRate is 0' :
+              !hasFullAACCodec && !isOpus ? `codec "${t.audio.codec}" not fully parsed (need mp4a.40.X)` :
+              !hasAACConfig ? 'missing AudioSpecificConfig' : 'unknown';
+            console.warn(`[CatalogBuilder] Audio track not added: ${reason}. Only AAC with AudioSpecificConfig and Opus are supported.`);
+          }
+
+          if (isAudioSupported && t.audio) {
+            // Convert AudioSpecificConfig to base64 for catalog storage
+            const audioSpecificConfigBase64 = t.audio.audioSpecificConfig
+              ? btoa(String.fromCharCode(...t.audio.audioSpecificConfig))
+              : undefined;
+
+            builder.addAudioTrack({
+              name: `${t.name}-audio`,
+              codec: t.audio.codec,
+              samplerate: t.audio.sampleRate,
+              channelConfig: t.audio.channelCount === 1 ? 'mono' : 'stereo',
+              bitrate: t.audio.bitrate || undefined, // Don't include 0 bitrate
+              isLive: false,
+              audioSpecificConfig: audioSpecificConfigBase64,
+              // VOD metadata for audio track (same grouping as video)
+              totalGroups: t.totalGroups,
+              gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
+            });
+          }
           break;
         }
         case 'video-live': {
