@@ -256,8 +256,8 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
             totalGroups: t.totalGroups,
             gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
           });
-          // Add audio track if VOD has audio
-          if (t.audio) {
+          // Add audio track if VOD has audio with valid sample rate
+          if (t.audio && t.audio.sampleRate > 0) {
             // Convert AudioSpecificConfig to base64 for catalog storage
             const audioSpecificConfigBase64 = t.audio.audioSpecificConfig
               ? btoa(String.fromCharCode(...t.audio.audioSpecificConfig))
@@ -268,7 +268,7 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
               codec: t.audio.codec,
               samplerate: t.audio.sampleRate,
               channelConfig: t.audio.channelCount === 1 ? 'mono' : 'stereo',
-              bitrate: t.audio.bitrate,
+              bitrate: t.audio.bitrate || undefined, // Don't include 0 bitrate
               isLive: false,
               audioSpecificConfig: audioSpecificConfigBase64,
               // VOD metadata for audio track (same grouping as video)
