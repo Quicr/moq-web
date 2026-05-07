@@ -512,24 +512,61 @@ export class MP4Parser {
     // Check for AAC (mp4a)
     const isAAC = entryType === 'mp4a';
 
-    // Audio sample entry structure:
+    // Audio sample entry structure (QuickTime/MP4):
     // 8 bytes: size + type
     // 6 bytes: reserved
     // 2 bytes: data reference index
-    // 8 bytes: reserved (version, revision, vendor)
-    // 2 bytes: channel count
-    // 2 bytes: sample size (bits)
-    // 4 bytes: reserved
-    // 4 bytes: sample rate (16.16 fixed point, only upper 16 bits matter)
-    const channelCount = this.view.getUint16(entryOffset + 24, false);
-    const sampleRate = this.view.getUint32(entryOffset + 32, false) >> 16;
+    // 2 bytes: version (0, 1, or 2)
+    // 2 bytes: revision
+    // 4 bytes: vendor
+    // Then version-dependent fields...
+    const version = this.view.getUint16(entryOffset + 16, false);
+
+    let channelCount = 0;
+    let sampleRate = 0;
+    let extendedOffset = 0; // Offset to child boxes (esds, etc.)
+
+    if (version === 0 || version === 1) {
+      // Version 0/1: Standard layout
+      // 2 bytes: channel count (offset +24)
+      // 2 bytes: sample size (offset +26)
+      // 2 bytes: compression ID (offset +28)
+      // 2 bytes: packet size (offset +30)
+      // 4 bytes: sample rate as 16.16 fixed point (offset +32)
+      channelCount = this.view.getUint16(entryOffset + 24, false);
+      sampleRate = this.view.getUint32(entryOffset + 32, false) >> 16;
+      extendedOffset = entryOffset + 36;
+
+      if (version === 1) {
+        // Version 1 has 16 extra bytes after the base fields
+        // samples per packet (4), bytes per packet (4), bytes per frame (4), bytes per sample (4)
+        extendedOffset = entryOffset + 36 + 16;
+      }
+    } else if (version === 2) {
+      // Version 2: Extended audio sample entry (used by some modern encoders)
+      // After version/revision/vendor:
+      // 2 bytes: always 3 (offset +24)
+      // 2 bytes: always 16 (offset +26)
+      // 2 bytes: always -2 (0xFFFE) (offset +28)
+      // 2 bytes: always 0 (offset +30)
+      // 4 bytes: always 0x00010000 (offset +32)
+      // 4 bytes: sizeOfStructOnly (offset +36)
+      // 8 bytes: audioSampleRate as 64-bit float (offset +40)
+      // 4 bytes: numAudioChannels (offset +48)
+      // ... more fields
+      const sampleRateFloat = this.view.getFloat64(entryOffset + 40, false);
+      sampleRate = Math.round(sampleRateFloat);
+      channelCount = this.view.getUint32(entryOffset + 48, false);
+      extendedOffset = entryOffset + 72; // Version 2 has a longer header
+    }
 
     let codec = entryType;
     let aacConfig: Uint8Array | undefined;
 
     if (isAAC) {
       // Find esds box within the entry (contains AudioSpecificConfig)
-      let subOffset = entryOffset + 36; // After audio sample entry fixed fields
+      // Use extendedOffset which accounts for version-specific header size
+      let subOffset = extendedOffset;
       const entryEnd = entryOffset + entrySize;
 
       while (subOffset < entryEnd) {
