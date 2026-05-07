@@ -581,32 +581,52 @@ export class MP4Parser {
 
     let codec = entryType;
     let aacConfig: Uint8Array | undefined;
+    const isAC3 = entryType === 'ac-3' || entryType === 'ec-3';
 
-    if (isAAC) {
-      // Find esds box within the entry (contains AudioSpecificConfig)
-      // Use extendedOffset which accounts for version-specific header size
-      let subOffset = extendedOffset;
-      const entryEnd = entryOffset + entrySize;
+    // Find codec-specific boxes within the entry
+    let subOffset = extendedOffset;
+    const entryEnd = entryOffset + entrySize;
 
-      while (subOffset < entryEnd) {
-        const subBox = this.readBoxHeader(subOffset);
-        if (!subBox) break;
+    while (subOffset < entryEnd) {
+      const subBox = this.readBoxHeader(subOffset);
+      if (!subBox) break;
 
-        if (subBox.type === 'esds') {
-          // Parse esds to extract AudioSpecificConfig
-          const esdsResult = this.parseEsds(subOffset + 8, subBox.size - 8);
-          if (esdsResult.audioSpecificConfig) {
-            aacConfig = esdsResult.audioSpecificConfig;
-            // Build codec string: mp4a.40.{objectType}
-            // ObjectType is in first 5 bits of AudioSpecificConfig
-            const objectType = (aacConfig[0] >> 3) & 0x1f;
-            codec = `mp4a.40.${objectType}`;
-          }
-          break;
+      if (subBox.type === 'esds' && isAAC) {
+        // Parse esds to extract AudioSpecificConfig for AAC
+        const esdsResult = this.parseEsds(subOffset + 8, subBox.size - 8);
+        if (esdsResult.audioSpecificConfig) {
+          aacConfig = esdsResult.audioSpecificConfig;
+          // Build codec string: mp4a.40.{objectType}
+          // ObjectType is in first 5 bits of AudioSpecificConfig
+          const objectType = (aacConfig[0] >> 3) & 0x1f;
+          codec = `mp4a.40.${objectType}`;
         }
-
-        subOffset += subBox.size;
+      } else if (subBox.type === 'dac3' && isAC3) {
+        // Parse dac3 box for AC-3 sample rate
+        // dac3 structure (3 bytes):
+        // - 2 bits: fscod (sample rate code)
+        // - 5 bits: bsid
+        // - 3 bits: bsmod
+        // - 3 bits: acmod (channel config)
+        // - 1 bit: lfeon
+        // - 5 bits: bit_rate_code
+        // - 5 bits: reserved
+        const dac3Data = this.view.getUint8(subOffset + 8);
+        const fscod = (dac3Data >> 6) & 0x03;
+        // AC-3 sample rates: 0=48kHz, 1=44.1kHz, 2=32kHz
+        const ac3SampleRates = [48000, 44100, 32000];
+        if (fscod < 3) {
+          sampleRate = ac3SampleRates[fscod];
+        }
+        codec = 'ac-3';
+      } else if (subBox.type === 'dec3' && entryType === 'ec-3') {
+        // Parse dec3 box for E-AC-3 (Enhanced AC-3)
+        // E-AC-3 is more complex, but we can assume 48kHz for most content
+        sampleRate = 48000;
+        codec = 'ec-3';
       }
+
+      subOffset += subBox.size;
     }
 
     return { codec, isAAC, sampleRate, channelCount, aacConfig };
