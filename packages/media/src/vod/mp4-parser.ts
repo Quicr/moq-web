@@ -536,11 +536,12 @@ export class MP4Parser {
     // ISO 14496-12 style: always at fixed offsets, no version field
     // Channel count at +16+8 = +24, sample rate at +16+16 = +32
     // But first check if there's a non-zero value at the expected sampleRate position
+    // Use >>> (unsigned right shift) to avoid sign extension issues
     const sampleRateFixed = this.view.getUint32(entryOffset + 28, false);
-    const sampleRateISO = sampleRateFixed >> 16;
+    const sampleRateISO = sampleRateFixed >>> 16;
 
     // Also check QuickTime v0/v1 position
-    const sampleRateQT = this.view.getUint32(entryOffset + 32, false) >> 16;
+    const sampleRateQT = this.view.getUint32(entryOffset + 32, false) >>> 16;
 
     // Debug: log what we find
     console.warn('[MP4Parser] Audio stsd entry:', {
