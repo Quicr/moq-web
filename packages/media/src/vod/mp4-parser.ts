@@ -512,52 +512,71 @@ export class MP4Parser {
     // Check for AAC (mp4a)
     const isAAC = entryType === 'mp4a';
 
-    // Audio sample entry structure (QuickTime/MP4):
+    // Audio sample entry structure (ISO 14496-12):
     // 8 bytes: size + type
     // 6 bytes: reserved
     // 2 bytes: data reference index
-    // 2 bytes: version (0, 1, or 2)
-    // 2 bytes: revision
-    // 4 bytes: vendor
-    // Then version-dependent fields...
-    const version = this.view.getUint16(entryOffset + 16, false);
+    // For mp4a in ISO base media file format (not QuickTime):
+    // 8 bytes: reserved (all zeros in ISO, version/revision/vendor in QT)
+    // 2 bytes: channel count
+    // 2 bytes: sample size
+    // 2 bytes: pre_defined (compression ID in QT)
+    // 2 bytes: reserved (packet size in QT)
+    // 4 bytes: sample rate as 16.16 fixed point
+
+    // Check if this is QuickTime style (version field) or ISO style
+    // In ISO format, bytes at offset +16 are reserved (usually 0)
+    // In QuickTime, offset +16 is version (0, 1, or 2)
+    const possibleVersion = this.view.getUint16(entryOffset + 16, false);
 
     let channelCount = 0;
     let sampleRate = 0;
-    let extendedOffset = 0; // Offset to child boxes (esds, etc.)
+    let extendedOffset = 0;
 
-    if (version === 0 || version === 1) {
-      // Version 0/1: Standard layout
-      // 2 bytes: channel count (offset +24)
-      // 2 bytes: sample size (offset +26)
-      // 2 bytes: compression ID (offset +28)
-      // 2 bytes: packet size (offset +30)
-      // 4 bytes: sample rate as 16.16 fixed point (offset +32)
+    // ISO 14496-12 style: always at fixed offsets, no version field
+    // Channel count at +16+8 = +24, sample rate at +16+16 = +32
+    // But first check if there's a non-zero value at the expected sampleRate position
+    const sampleRateFixed = this.view.getUint32(entryOffset + 28, false);
+    const sampleRateISO = sampleRateFixed >> 16;
+
+    // Also check QuickTime v0/v1 position
+    const sampleRateQT = this.view.getUint32(entryOffset + 32, false) >> 16;
+
+    // Debug: log what we find
+    console.warn('[MP4Parser] Audio stsd entry:', {
+      entryType,
+      entrySize,
+      possibleVersion,
+      channelCountAt24: this.view.getUint16(entryOffset + 24, false),
+      sampleRateAt28: sampleRateISO,
+      sampleRateAt32: sampleRateQT,
+      bytes16to36: Array.from(this.data.slice(entryOffset + 16, entryOffset + 36)).map(b => b.toString(16).padStart(2, '0')).join(' '),
+    });
+
+    // Use whichever position has a valid sample rate (> 0 and < 200000)
+    if (sampleRateQT > 0 && sampleRateQT < 200000) {
+      // QuickTime style at offset +32
       channelCount = this.view.getUint16(entryOffset + 24, false);
-      sampleRate = this.view.getUint32(entryOffset + 32, false) >> 16;
+      sampleRate = sampleRateQT;
       extendedOffset = entryOffset + 36;
 
-      if (version === 1) {
-        // Version 1 has 16 extra bytes after the base fields
-        // samples per packet (4), bytes per packet (4), bytes per frame (4), bytes per sample (4)
+      if (possibleVersion === 1) {
         extendedOffset = entryOffset + 36 + 16;
+      } else if (possibleVersion === 2) {
+        const sampleRateFloat = this.view.getFloat64(entryOffset + 40, false);
+        sampleRate = Math.round(sampleRateFloat);
+        channelCount = this.view.getUint32(entryOffset + 48, false);
+        extendedOffset = entryOffset + 72;
       }
-    } else if (version === 2) {
-      // Version 2: Extended audio sample entry (used by some modern encoders)
-      // After version/revision/vendor:
-      // 2 bytes: always 3 (offset +24)
-      // 2 bytes: always 16 (offset +26)
-      // 2 bytes: always -2 (0xFFFE) (offset +28)
-      // 2 bytes: always 0 (offset +30)
-      // 4 bytes: always 0x00010000 (offset +32)
-      // 4 bytes: sizeOfStructOnly (offset +36)
-      // 8 bytes: audioSampleRate as 64-bit float (offset +40)
-      // 4 bytes: numAudioChannels (offset +48)
-      // ... more fields
-      const sampleRateFloat = this.view.getFloat64(entryOffset + 40, false);
-      sampleRate = Math.round(sampleRateFloat);
-      channelCount = this.view.getUint32(entryOffset + 48, false);
-      extendedOffset = entryOffset + 72; // Version 2 has a longer header
+    } else if (sampleRateISO > 0 && sampleRateISO < 200000) {
+      // ISO style at offset +28
+      channelCount = this.view.getUint16(entryOffset + 24, false);
+      sampleRate = sampleRateISO;
+      extendedOffset = entryOffset + 36;
+    } else {
+      // Fallback: try to find sample rate in AudioSpecificConfig later
+      channelCount = this.view.getUint16(entryOffset + 24, false);
+      extendedOffset = entryOffset + 36;
     }
 
     let codec = entryType;
