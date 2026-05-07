@@ -587,9 +587,23 @@ export class MP4Parser {
     let subOffset = extendedOffset;
     const entryEnd = entryOffset + entrySize;
 
+    console.warn('[MP4Parser] Searching for child boxes:', {
+      entryType,
+      entryOffset,
+      entrySize,
+      extendedOffset,
+      entryEnd,
+      searchRange: entryEnd - extendedOffset,
+    });
+
     while (subOffset < entryEnd) {
       const subBox = this.readBoxHeader(subOffset);
-      if (!subBox) break;
+      if (!subBox) {
+        console.warn('[MP4Parser] No valid box at offset', subOffset);
+        break;
+      }
+
+      console.warn('[MP4Parser] Found child box:', { type: subBox.type, size: subBox.size, offset: subOffset });
 
       if (subBox.type === 'esds' && isAAC) {
         // Parse esds to extract AudioSpecificConfig for AAC
