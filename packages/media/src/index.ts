@@ -155,6 +155,10 @@ export type { LiveReleasePolicyConfig, LivePolicyStats } from './pipeline/live-r
 export { AdaptiveReleasePolicy, DEFAULT_ADAPTIVE_POLICY_CONFIG } from './pipeline/adaptive-release-policy.js';
 export type { AdaptiveReleasePolicyConfig, AdaptivePolicyStats } from './pipeline/adaptive-release-policy.js';
 
+// Shared Playback Clock - A/V sync for tracks with same renderGroup
+export { SharedPlaybackClock, PlaybackClockRegistry } from './pipeline/shared-playback-clock.js';
+export type { SharedPlaybackClockConfig, ClockDecision, ClockCheckResult } from './pipeline/shared-playback-clock.js';
+
 // Presentation Reorder Buffer - Sorts decoded frames by PTS for B-frame support
 export { PresentationReorderBuffer } from './pipeline/presentation-reorder-buffer.js';
 export type { PresentationReorderBufferConfig } from './pipeline/presentation-reorder-buffer.js';

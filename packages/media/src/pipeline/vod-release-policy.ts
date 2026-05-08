@@ -18,6 +18,7 @@
 
 import { BaseReleasePolicy, type ReleasePolicyStats } from './release-policy.js';
 import type { FrameEntry, GroupState } from './playout-buffer.js';
+import type { SharedPlaybackClock } from './shared-playback-clock.js';
 
 /**
  * VOD policy configuration
@@ -63,6 +64,12 @@ export interface VodReleasePolicyConfig {
    */
   enablePacing: boolean;
 
+  /**
+   * Whether this policy is the master (drives the clock) or slave (follows the clock)
+   * Default: true (master) - set to false for audio tracks that should follow video
+   */
+  isMaster: boolean;
+
   /** Enable debug logging */
   debug: boolean;
 }
@@ -77,6 +84,7 @@ export const DEFAULT_VOD_POLICY_CONFIG: VodReleasePolicyConfig = {
   maxWaitTimeMs: Infinity,
   targetFramerate: 30,
   enablePacing: true,
+  isMaster: true, // Default to master (video); set false for slave (audio)
   debug: false,
 };
 
@@ -95,6 +103,12 @@ interface VodPolicyStats extends ReleasePolicyStats {
 
   /** Current GOP being output */
   currentGopId: number;
+
+  /** Frames held due to being ahead of sync clock */
+  framesHeld: number;
+
+  /** Frames dropped due to being behind sync clock */
+  framesDroppedSync: number;
 }
 
 /**
@@ -145,6 +159,9 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   private playbackStarted = false;
   private lastRebufferLog = 0;
 
+  // A/V sync clock (optional - for tracks with renderGroup)
+  private syncClock: SharedPlaybackClock | null = null;
+
   constructor(config: Partial<VodReleasePolicyConfig> = {}) {
     super();
     this.config = { ...DEFAULT_VOD_POLICY_CONFIG, ...config };
@@ -160,6 +177,32 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     // Calculate frame duration from framerate
     this.frameDurationMs = 1000 / this.config.targetFramerate;
     console.log('[VodReleasePolicy] Created with config:', this.config, 'frameDurationMs:', this.frameDurationMs);
+  }
+
+  /**
+   * Set the shared playback clock for A/V sync
+   *
+   * When set, this policy will coordinate with other tracks sharing the same clock:
+   * - Master (isMaster=true): Updates clock when releasing frames
+   * - Slave (isMaster=false): Checks clock before releasing, may hold/drop frames
+   *
+   * @param clock - The shared clock, or null to disable sync
+   */
+  setSyncClock(clock: SharedPlaybackClock | null): void {
+    this.syncClock = clock;
+    if (clock) {
+      console.log('[VodReleasePolicy] Sync clock set', {
+        renderGroup: clock.renderGroup,
+        isMaster: this.config.isMaster,
+      });
+    }
+  }
+
+  /**
+   * Get the current sync clock
+   */
+  getSyncClock(): SharedPlaybackClock | null {
+    return this.syncClock;
   }
 
   onFrameAdded(frame: FrameEntry<T>, group: GroupState<T>): void {
@@ -294,7 +337,20 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         return [];
       }
 
-      // Output exactly 1 sequential frame
+      // For slave tracks with sync clock, check if we should hold or drop
+      if (this.syncClock && !this.config.isMaster) {
+        const result = this.outputSequentialFramesWithSync(group, 1);
+        if (result.length > 0) {
+          this.lastFrameReleaseTime = (this.lastFrameReleaseTime || now) + this.frameDurationMs;
+          this.stats.framesOutput += result.length;
+          this.stats.currentGopId = this.buffer.getActiveGroupId();
+          this.updateFpsTracking(now, result.length);
+        }
+        this.checkGroupCompletion(group);
+        return result;
+      }
+
+      // Output exactly 1 sequential frame (master or no sync)
       const result = this.outputSequentialFrames(group, 1);
 
       if (result.length > 0) {
@@ -304,16 +360,19 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         this.stats.framesOutput += result.length;
         this.stats.currentGopId = this.buffer.getActiveGroupId();
 
-        // Track actual FPS over 1-second windows
-        this.fpsWindowFrames += result.length;
-        if (this.fpsWindowStart === 0) {
-          this.fpsWindowStart = now;
-        } else if (now - this.fpsWindowStart >= 1000) {
-          const actualFps = (this.fpsWindowFrames * 1000) / (now - this.fpsWindowStart);
-          console.log(`[VodReleasePolicy] FPS: ${actualFps.toFixed(1)} (target: ${this.config.targetFramerate}, frameDuration: ${this.frameDurationMs.toFixed(2)}ms)`);
-          this.fpsWindowStart = now;
-          this.fpsWindowFrames = 0;
+        // Master: update sync clock with released frame's PTS
+        if (this.syncClock && this.config.isMaster && result[0]) {
+          const frame = result[0];
+          // Frame timestamp is in microseconds, clock expects milliseconds
+          const ptsMs = (frame as FrameEntry<T> & { timestamp?: number }).timestamp
+            ? ((frame as FrameEntry<T> & { timestamp?: number }).timestamp! / 1000)
+            : undefined;
+          if (ptsMs !== undefined) {
+            this.syncClock.updateMasterTime(ptsMs);
+          }
         }
+
+        this.updateFpsTracking(now, result.length);
       }
 
       // Check if we should complete this group and move to next
@@ -467,6 +526,85 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     return total;
   }
 
+  /**
+   * Output sequential frames with sync clock checking (for slave tracks)
+   *
+   * Checks each frame against the sync clock:
+   * - 'release': frame is within sync window, output it
+   * - 'hold': frame is ahead of master, don't release yet
+   * - 'drop': frame is too far behind, discard it
+   */
+  private outputSequentialFramesWithSync(
+    group: GroupState<T>,
+    maxFrames: number
+  ): FrameEntry<T>[] {
+    if (!this.syncClock) {
+      return this.outputSequentialFrames(group, maxFrames);
+    }
+
+    const result: FrameEntry<T>[] = [];
+    const startObjectId = group.outputObjectId < 0 ? 0 : group.outputObjectId;
+
+    for (
+      let objId = startObjectId;
+      objId <= group.highestObjectId && result.length < maxFrames;
+      objId++
+    ) {
+      const frame = group.frames.get(objId);
+
+      if (!frame) {
+        // Gap - stop here
+        break;
+      }
+
+      // Get frame PTS (timestamp is in microseconds)
+      const frameWithTs = frame as FrameEntry<T> & { timestamp?: number };
+      const ptsMs = frameWithTs.timestamp ? frameWithTs.timestamp / 1000 : undefined;
+
+      if (ptsMs !== undefined) {
+        const { decision, deltaMs } = this.syncClock.canRelease(ptsMs);
+
+        if (decision === 'hold') {
+          // Frame is ahead of master - wait
+          this.stats.framesHeld++;
+          this.log('SYNC HOLD', { objId, ptsMs, deltaMs });
+          break; // Stop processing, try again next tick
+        }
+
+        if (decision === 'drop') {
+          // Frame is too far behind - discard
+          this.stats.framesDroppedSync++;
+          this.log('SYNC DROP', { objId, ptsMs, deltaMs });
+          group.frames.delete(objId);
+          group.outputObjectId = objId + 1;
+          continue; // Skip to next frame
+        }
+      }
+
+      // Release this frame
+      result.push(frame);
+      group.frames.delete(objId);
+      group.outputObjectId = objId + 1;
+    }
+
+    return result;
+  }
+
+  /**
+   * Update FPS tracking for diagnostics
+   */
+  private updateFpsTracking(now: number, frameCount: number): void {
+    this.fpsWindowFrames += frameCount;
+    if (this.fpsWindowStart === 0) {
+      this.fpsWindowStart = now;
+    } else if (now - this.fpsWindowStart >= 1000) {
+      const actualFps = (this.fpsWindowFrames * 1000) / (now - this.fpsWindowStart);
+      console.log(`[VodReleasePolicy] FPS: ${actualFps.toFixed(1)} (target: ${this.config.targetFramerate}, frameDuration: ${this.frameDurationMs.toFixed(2)}ms)`);
+      this.fpsWindowStart = now;
+      this.fpsWindowFrames = 0;
+    }
+  }
+
   private createInitialStats(): VodPolicyStats {
     return {
       policyName: this.name,
@@ -474,6 +612,8 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
       waitedForFrames: 0,
       framesOutput: 0,
       currentGopId: -1,
+      framesHeld: 0,
+      framesDroppedSync: 0,
     };
   }
 }
