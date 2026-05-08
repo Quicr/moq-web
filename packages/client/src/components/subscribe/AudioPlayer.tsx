@@ -58,14 +58,25 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
   const analysisDataRef = useRef<AudioAnalysis[]>([]);
   const prevEndTimeRef = useRef<number | null>(null);
 
-  // Initialize AudioContext on first user interaction or when playing starts
-  const initializeAudio = useCallback(() => {
-    if (audioContextRef.current) return;
-
-    if (isDebugMode()) {
-      console.log('[AudioPlayer] Initializing AudioContext');
+  // Initialize AudioContext with the content's sample rate
+  const initializeAudio = useCallback((contentSampleRate: number) => {
+    if (audioContextRef.current) {
+      // If already initialized with different sample rate, close and recreate
+      if (audioContextRef.current.sampleRate !== contentSampleRate) {
+        console.log('[AudioPlayer] Sample rate mismatch, recreating AudioContext', {
+          current: audioContextRef.current.sampleRate,
+          content: contentSampleRate,
+        });
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+        gainNodeRef.current = null;
+      } else {
+        return; // Already initialized with correct sample rate
+      }
     }
-    const audioContext = new AudioContext({ sampleRate: 48000 });
+
+    console.log('[AudioPlayer] Initializing AudioContext with sample rate:', contentSampleRate);
+    const audioContext = new AudioContext({ sampleRate: contentSampleRate });
     audioContextRef.current = audioContext;
 
     const gainNode = audioContext.createGain();
@@ -76,20 +87,17 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
     nextPlayTimeRef.current = audioContext.currentTime;
     isInitializedRef.current = true;
     isFirstFrameRef.current = true; // Reset for fresh start
+    timeOffsetRef.current = null; // Reset time offset for new context
 
-    if (isDebugMode()) {
-      console.log('[AudioPlayer] AudioContext initialized', {
-        sampleRate: audioContext.sampleRate,
-        state: audioContext.state,
-      });
-    }
+    console.log('[AudioPlayer] AudioContext initialized', {
+      sampleRate: audioContext.sampleRate,
+      state: audioContext.state,
+    });
 
     // Resume if suspended (browser autoplay policy)
     if (audioContext.state === 'suspended') {
       audioContext.resume().then(() => {
-        if (isDebugMode()) {
-          console.log('[AudioPlayer] AudioContext resumed');
-        }
+        console.log('[AudioPlayer] AudioContext resumed');
       });
     }
   }, [volume, isMuted]);
@@ -113,10 +121,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
       if (data.subscriptionId !== subscriptionId) return;
 
       const audioData = data.audioData;
+      const sampleRate = audioData.sampleRate;
 
-      // Initialize audio context on first audio data if not already done
-      if (!audioContextRef.current) {
-        initializeAudio();
+      // Initialize audio context with content's sample rate
+      if (!audioContextRef.current || audioContextRef.current.sampleRate !== sampleRate) {
+        initializeAudio(sampleRate);
       }
 
       const audioContext = audioContextRef.current;
@@ -132,7 +141,6 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
         // Create AudioBuffer from AudioData
         const numberOfChannels = audioData.numberOfChannels;
         const numberOfFrames = audioData.numberOfFrames;
-        const sampleRate = audioData.sampleRate;
 
         // Get timestamp from AudioData (microseconds)
         const audioTimestampUs = audioData.timestamp;
@@ -307,10 +315,19 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
           // If we have video time, check A/V sync and adjust if needed
           if (videoTimeSec !== undefined) {
             const audioVsVideo = audioTimestampSec - videoTimeSec;
-            // If audio is more than 200ms behind video, skip ahead
-            // If audio is more than 500ms ahead of video, slow down
+            // If audio is more than 1 second behind video, DROP this frame entirely
+            // Playing stale audio is worse than skipping it
+            if (audioVsVideo < -1.0) {
+              console.log('[AudioPlayer] Audio too far behind video, DROPPING frame', {
+                audioVsVideo,
+                audioTimestampSec,
+                videoTimeSec,
+              });
+              audioData.close();
+              return; // Skip this frame entirely
+            }
+            // If audio is 200ms-1s behind video, play immediately to catch up
             if (audioVsVideo < -0.2) {
-              // Audio is behind video - try to catch up
               playTime = currentTime; // Play immediately
               console.log('[AudioPlayer] Audio behind video, catching up', { audioVsVideo });
             } else if (audioVsVideo > 0.5) {
