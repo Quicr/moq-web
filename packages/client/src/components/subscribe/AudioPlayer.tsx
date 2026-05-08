@@ -32,6 +32,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
   const nextPlayTimeRef = useRef<number>(0);
   const isInitializedRef = useRef(false);
   const isFirstFrameRef = useRef(true);
+  // Track the offset between content time (PTS) and AudioContext time
+  const timeOffsetRef = useRef<number | null>(null);
+  // Track the first PTS we received
+  const firstPtsRef = useRef<number | null>(null);
 
   // Initialize AudioContext on first user interaction or when playing starts
   const initializeAudio = useCallback(() => {
@@ -109,12 +113,18 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
         const numberOfFrames = audioData.numberOfFrames;
         const sampleRate = audioData.sampleRate;
 
+        // Get timestamp from AudioData (microseconds)
+        const audioTimestampUs = audioData.timestamp;
+        const audioTimestampSec = audioTimestampUs / 1_000_000;
+
         if (isDebugMode()) {
           console.log('[AudioPlayer] Creating AudioBuffer', {
             numberOfChannels,
             numberOfFrames,
             sampleRate,
             contextSampleRate: audioContext.sampleRate,
+            audioTimestampUs,
+            audioTimestampSec,
           });
         }
 
@@ -138,37 +148,45 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
         source.buffer = audioBuffer;
         source.connect(gainNode);
 
-        // Schedule playback with improved timing
+        // Schedule playback using PTS-based timing
         const currentTime = audioContext.currentTime;
         let playTime: number;
 
-        if (isFirstFrameRef.current) {
-          // First frame: add initial buffer to let more audio accumulate
+        if (isFirstFrameRef.current || timeOffsetRef.current === null) {
+          // First frame: establish the time offset between PTS and AudioContext time
+          // Add initial buffer to let more audio accumulate
           playTime = currentTime + INITIAL_BUFFER_TIME;
+          timeOffsetRef.current = playTime - audioTimestampSec;
+          firstPtsRef.current = audioTimestampSec;
           isFirstFrameRef.current = false;
           if (isDebugMode()) {
-            console.log('[AudioPlayer] First frame, adding initial buffer', {
+            console.log('[AudioPlayer] First frame, establishing time offset', {
               currentTime,
               playTime,
-              bufferTime: INITIAL_BUFFER_TIME,
+              audioTimestampSec,
+              timeOffset: timeOffsetRef.current,
             });
           }
         } else {
-          // Check if we've fallen too far behind (network delay, etc.)
-          const gap = currentTime - nextPlayTimeRef.current;
-          if (gap > MAX_SCHEDULE_GAP) {
-            // Reset scheduling to current time + small buffer
-            playTime = currentTime + 0.05; // 50ms ahead
+          // Calculate where this frame should play based on its PTS
+          playTime = audioTimestampSec + timeOffsetRef.current;
+
+          // Check if we've fallen too far behind
+          const lag = currentTime - playTime;
+          if (lag > MAX_SCHEDULE_GAP) {
+            // Reset: re-establish time offset from current position
+            playTime = currentTime + 0.02; // 20ms ahead
+            timeOffsetRef.current = playTime - audioTimestampSec;
             if (isDebugMode()) {
-              console.log('[AudioPlayer] Schedule gap detected, resetting', {
-                gap,
-                oldNextTime: nextPlayTimeRef.current,
+              console.log('[AudioPlayer] Too far behind, resetting time offset', {
+                lag,
                 newPlayTime: playTime,
+                newTimeOffset: timeOffsetRef.current,
               });
             }
-          } else {
-            // Normal case: schedule right after previous buffer
-            playTime = Math.max(currentTime, nextPlayTimeRef.current);
+          } else if (playTime < currentTime) {
+            // Frame is slightly late, play immediately
+            playTime = currentTime;
           }
         }
 
@@ -178,12 +196,13 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
           console.log('[AudioPlayer] Scheduled audio playback', {
             currentTime,
             playTime,
+            audioTimestampSec,
             duration: audioBuffer.duration,
             gainValue: gainNode.gain.value,
           });
         }
 
-        // Update next play time
+        // Update next play time (for gap detection, not used for scheduling)
         nextPlayTimeRef.current = playTime + audioBuffer.duration;
 
         // Update stats

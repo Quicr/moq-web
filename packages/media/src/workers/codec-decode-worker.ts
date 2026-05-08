@@ -735,9 +735,13 @@ function pushData(
         log(`Pushed audio to arbiter (channel ${channel.channelId})`, { groupId, objectId });
       } else if (channel.audioBuffer) {
         // Use legacy JitterBuffer
+        // Use LOC captureTimestamp if available, fall back to MOQT timestamp
+        const audioTimestampMs = frame.captureTimestamp !== undefined
+          ? frame.captureTimestamp
+          : timestamp / 1000;
         channel.audioBuffer.push({
           data: audioData,
-          timestamp: timestamp / 1000, // Convert to ms
+          timestamp: audioTimestampMs,
           sequence: channel.audioSequence++,
           groupId,
           objectId,
@@ -1052,10 +1056,14 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
     for (const frame of readyFrames) {
       try {
         const groupId = audioFrameGroupId;
+        // Use locTimestamp (presentation time) if available, fall back to receivedAt
+        const timestampUs = frame.locTimestamp !== undefined
+          ? frame.locTimestamp
+          : Math.floor(frame.receivedAt * 1000);
         channel.currentAudioMeta = {
           groupId,
           objectId: frame.objectId,
-          timestamp: frame.receivedAt * 1000,
+          timestamp: timestampUs,
         };
 
         if (!channel.lastAudioFrameInfo) {
@@ -1065,11 +1073,6 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
         channel.lastAudioFrameInfo.objectId = frame.objectId;
         channel.lastAudioFrameInfo.dataSize = frame.data.data.length;
         channel.lastAudioFrameInfo.sequence = channel.audioSequence++;
-
-        // Use locTimestamp (presentation time) if available, fall back to receivedAt
-        const timestampUs = frame.locTimestamp !== undefined
-          ? frame.locTimestamp
-          : Math.floor(frame.receivedAt * 1000);
 
         const chunk = new EncodedAudioChunk({
           type: 'key',
@@ -1094,10 +1097,14 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
     for (const frame of readyFrames) {
       try {
         const groupId = audioFrameGroupId;
+        // Use locTimestamp (presentation time) if available, fall back to receivedTick
+        const arbiterTimestampUs = frame.locTimestamp !== undefined
+          ? frame.locTimestamp
+          : Math.floor(frame.receivedTick * 1000);
         channel.currentAudioMeta = {
           groupId,
           objectId: frame.objectId,
-          timestamp: frame.receivedTick * 1000,
+          timestamp: arbiterTimestampUs,
         };
 
         if (!channel.lastAudioFrameInfo) {
@@ -1108,14 +1115,9 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
         channel.lastAudioFrameInfo.dataSize = frame.data.data.length;
         channel.lastAudioFrameInfo.sequence = channel.audioSequence++;
 
-        // Use locTimestamp (presentation time) if available, fall back to receivedTick
-        const timestampUs = frame.locTimestamp !== undefined
-          ? frame.locTimestamp
-          : Math.floor(frame.receivedTick * 1000);
-
         const chunk = new EncodedAudioChunk({
           type: 'key',
-          timestamp: timestampUs,
+          timestamp: arbiterTimestampUs,
           data: frame.data.data,
         });
 
