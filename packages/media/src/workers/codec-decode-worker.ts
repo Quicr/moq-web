@@ -22,6 +22,8 @@ import {
   createPlayoutBufferFromTrack,
   type PolicyType,
 } from '../pipeline/playout-buffer-factory.js';
+import { SharedPlaybackClock } from '../pipeline/shared-playback-clock.js';
+import { VodReleasePolicy } from '../pipeline/vod-release-policy.js';
 import type {
   CodecDecodeWorkerRequest,
   CodecDecodeWorkerResponse,
@@ -106,6 +108,8 @@ interface DecodeChannel {
   lastEmittedTimestamp: number;
   /** Last configured codec description (to avoid unnecessary reconfigures) */
   lastCodecDescription: Uint8Array | null;
+  /** Sync clock for A/V synchronization (audio channels follow video's clock) */
+  syncClock: SharedPlaybackClock | null;
 }
 
 // Map of channel ID to decode context
@@ -178,6 +182,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     frameReorderBuffer: [],
     lastEmittedTimestamp: -1,
     lastCodecDescription: null,
+    syncClock: null, // Set externally via update-sync-time message
   };
 
   const jitterDelay = config.jitterBufferDelay ?? 100;
@@ -326,6 +331,21 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
           isMaster: false, // Audio follows video timing
         }
       );
+
+      // For VOD audio, create a sync clock that will be updated by video time messages
+      if (policyType === 'vod') {
+        channel.syncClock = new SharedPlaybackClock(1, { // renderGroup 1 for A/V sync
+          maxAheadMs: 100, // Allow audio 100ms ahead
+          maxBehindMs: 1000, // Drop audio more than 1s behind
+          debug: debug,
+        });
+        // Get the policy and set the sync clock
+        const policy = channel.audioPlayoutBuffer.getPolicy();
+        if (policy && policy instanceof VodReleasePolicy) {
+          (policy as VodReleasePolicy<AudioBufferData>).setSyncClock(channel.syncClock);
+          log(`Channel ${channelId} audio sync clock attached`);
+        }
+      }
       log(`Channel ${channelId} using PlayoutBuffer for audio`, { policyType, audioFramerate, audioSampleRate });
     } else if (useGroupArbiter) {
       // LEGACY: Use GroupArbiter for audio
@@ -1472,6 +1492,15 @@ self.onmessage = (event: MessageEvent<CodecDecodeWorkerRequest>): void => {
     case 'destroy':
       destroyChannel(msg.channelId);
       break;
+
+    case 'update-sync-time': {
+      // Update the sync clock with video's current playback time
+      const channel = channels.get(msg.channelId);
+      if (channel?.syncClock) {
+        channel.syncClock.updateMasterTime(msg.masterTimeMs);
+      }
+      break;
+    }
 
     case 'close':
       closeWorker();

@@ -11,6 +11,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { isDebugMode } from '../common/DevSettingsPanel';
+import { useStore } from '../../store';
 
 interface AudioPlayerProps {
   subscriptionId: number;
@@ -41,6 +42,7 @@ interface AudioAnalysis {
 }
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudioData, getVideoTimeMs }) => {
+  const updateSyncTime = useStore(state => state.updateSyncTime);
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -57,6 +59,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
   // Audio analysis
   const analysisDataRef = useRef<AudioAnalysis[]>([]);
   const prevEndTimeRef = useRef<number | null>(null);
+  // Last sync time sent to worker (avoid flooding)
+  const lastSyncTimeSentRef = useRef<number>(0);
 
   // Initialize AudioContext with the content's sample rate
   const initializeAudio = useCallback((contentSampleRate: number) => {
@@ -400,6 +404,31 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
       gainNodeRef.current.gain.value = isMuted ? 0 : volume;
     }
   }, [volume, isMuted]);
+
+  // Send video time to audio worker for A/V sync (SharedPlaybackClock)
+  // This runs at ~60fps when video is playing, throttled to avoid flooding
+  useEffect(() => {
+    if (!getVideoTimeMs) return;
+
+    let animationFrameId: number;
+
+    const sendSyncUpdate = () => {
+      const videoTimeMs = getVideoTimeMs();
+      // Only send if video time has changed significantly (>10ms)
+      if (videoTimeMs > 0 && Math.abs(videoTimeMs - lastSyncTimeSentRef.current) > 10) {
+        updateSyncTime(subscriptionId, videoTimeMs);
+        lastSyncTimeSentRef.current = videoTimeMs;
+      }
+      animationFrameId = requestAnimationFrame(sendSyncUpdate);
+    };
+
+    // Start the sync loop
+    animationFrameId = requestAnimationFrame(sendSyncUpdate);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [subscriptionId, getVideoTimeMs, updateSyncTime]);
 
   // Cleanup on unmount
   useEffect(() => {

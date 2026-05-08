@@ -1141,6 +1141,17 @@ export class SubscribePipeline {
   }
 
   /**
+   * Update the A/V sync clock with current video playback time
+   * Call this on audio pipelines when video frames are rendered
+   * @param masterTimeMs - Current video playback time in milliseconds (PTS)
+   */
+  updateSyncTime(masterTimeMs: number): void {
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.updateSyncTime(masterTimeMs);
+    }
+  }
+
+  /**
    * Emit jitter sample (called periodically when stats enabled)
    */
   private emitJitterSample(): void {

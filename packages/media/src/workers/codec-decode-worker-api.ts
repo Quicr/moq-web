@@ -269,6 +269,15 @@ export class CodecDecodeWorkerClient {
   }
 
   /**
+   * Update the A/V sync clock with current video playback time
+   * Call this on audio channels when video frames are rendered
+   * @param masterTimeMs - Current video playback time in milliseconds (PTS)
+   */
+  updateSyncTime(masterTimeMs: number): void {
+    this.post({ type: 'update-sync-time', channelId: this.channelId, masterTimeMs });
+  }
+
+  /**
    * Destroy this channel and clean up resources
    * Call this when unsubscribing
    */

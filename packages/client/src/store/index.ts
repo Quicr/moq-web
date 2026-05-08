@@ -220,6 +220,8 @@ interface ConnectionSlice {
   resumeSubscription: (subscriptionId: number) => Promise<void>;
   isSubscriptionPaused: (subscriptionId: number) => boolean;
   seekSubscription: (subscriptionId: number, timeMs: number) => Promise<void>;
+  /** Update A/V sync time for an audio subscription (call when video frame is rendered) */
+  updateSyncTime: (audioSubscriptionId: number, videoTimeMs: number) => void;
 
   // Video frame handler registration
   onVideoFrame: (handler: (data: { subscriptionId: number; frame: VideoFrame }) => void) => () => void;
@@ -1503,6 +1505,13 @@ export const useStore = create<AppStore>()(
         if (!session) return;
 
         await session.seek(subscriptionId, timeMs);
+      },
+
+      updateSyncTime: (audioSubscriptionId: number, videoTimeMs: number) => {
+        const { session } = get();
+        if (!session) return;
+
+        session.updateSyncTime(audioSubscriptionId, videoTimeMs);
       },
 
       onVideoFrame: (handler) => {

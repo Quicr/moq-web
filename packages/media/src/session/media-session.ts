@@ -143,6 +143,8 @@ export class MediaSession {
   private subscriptions = new Map<number, ActiveSubscription>();
   /** Reverse lookup: pipeline to subscription ID for O(1) access */
   private pipelineToSubscriptionId = new Map<SubscribePipeline, number>();
+  /** Forward lookup: subscription ID to pipeline for sync updates */
+  private subscriptionIdToPipeline = new Map<number, SubscribePipeline>();
   /** Namespace subscription configs for auto-creating pipelines */
   private namespaceConfigs = new Map<number, NamespaceSubscriptionConfig>();
   /** Event handlers */
@@ -753,6 +755,7 @@ export class MediaSession {
       secureContext,
     });
     this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
+    this.subscriptionIdToPipeline.set(subscriptionId, pipeline);
 
     log.info('Subscription started', { subscriptionId, namespace, trackName, encrypted: !!secureContext });
     return subscriptionId;
@@ -863,6 +866,7 @@ export class MediaSession {
 
     // Set up reverse mapping for event emission
     this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
+    this.subscriptionIdToPipeline.set(subscriptionId, pipeline);
 
     // Handle video frames
     pipeline.on('video-frame', (frame: VideoFrame) => {
@@ -1215,6 +1219,7 @@ export class MediaSession {
 
     // Remove from subscriptions and reverse map
     this.pipelineToSubscriptionId.delete(subscription.pipeline);
+    this.subscriptionIdToPipeline.delete(subscriptionId);
     this.subscriptions.delete(subscriptionId);
 
     // Unsubscribe from session
@@ -1258,6 +1263,19 @@ export class MediaSession {
    */
   isSubscriptionPaused(subscriptionId: number): boolean {
     return this.session.isSubscriptionPaused(subscriptionId);
+  }
+
+  /**
+   * Update the A/V sync clock for a subscription
+   * Call this on audio subscriptions when video frames are rendered
+   * @param subscriptionId - Audio subscription ID
+   * @param masterTimeMs - Current video playback time in milliseconds (PTS)
+   */
+  updateSyncTime(subscriptionId: number, masterTimeMs: number): void {
+    const pipeline = this.subscriptionIdToPipeline.get(subscriptionId);
+    if (pipeline) {
+      pipeline.updateSyncTime(masterTimeMs);
+    }
   }
 
   // ============================================================================
@@ -1720,6 +1738,7 @@ export class MediaSession {
       secureContext,
     });
     this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
+    this.subscriptionIdToPipeline.set(subscriptionId, pipeline);
 
     // Update the subscription's onObject callback to push to pipeline (with optional decryption)
     this.session.setSubscriptionCallback(subscriptionId, (data, groupId, objectId, timestamp) => {

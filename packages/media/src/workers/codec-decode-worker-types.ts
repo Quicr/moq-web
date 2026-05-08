@@ -118,6 +118,7 @@ export type CodecDecodeWorkerRequest =
   | { type: 'pause'; channelId: number }
   | { type: 'resume'; channelId: number }
   | { type: 'destroy'; channelId: number }
+  | { type: 'update-sync-time'; channelId: number; masterTimeMs: number }
   | { type: 'close' };
 
 /**
