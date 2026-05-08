@@ -1555,7 +1555,16 @@ export const useStore = create<AppStore>()(
         if (isDebugMode()) {
           console.log('[Store] Registering audio-data handler on session');
         }
-        return session.on('audio-data', handler);
+        // Wrap handler to notify VOD fetch controller when audio frames are consumed
+        return session.on('audio-data', (event) => {
+          // Notify VOD fetch controller if this is a VOD subscription
+          const controller = vodFetchControllers.get(event.subscriptionId);
+          if (controller) {
+            controller.onFrameConsumed();
+          }
+          // Call the original handler
+          handler(event);
+        });
       },
 
       onSubscribeStats: (handler) => {
