@@ -107,7 +107,16 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const subscribeFrameQueue = useVideoFrameQueue();
 
   // Track video playback time for A/V sync (keyed by track name)
-  const videoPlaybackTimeRef = useRef<Map<string, number>>(new Map());
+  // These refs are updated on every video frame (60fps) for real-time A/V sync
+  const videoPlaybackTimeRefs = useRef<Map<string, React.MutableRefObject<number>>>(new Map());
+
+  // Get or create a video time ref for a track
+  const getVideoTimeRef = useCallback((trackName: string): React.MutableRefObject<number> => {
+    if (!videoPlaybackTimeRefs.current.has(trackName)) {
+      videoPlaybackTimeRefs.current.set(trackName, { current: 0 });
+    }
+    return videoPlaybackTimeRefs.current.get(trackName)!;
+  }, []);
 
   // Video frames for rendering (SUBSCRIBE) - used to trigger re-render when first frame arrives
   const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
@@ -1232,9 +1241,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                           className="w-full rounded-lg overflow-hidden border border-emerald-500/30"
                           showControls={true}
                           enableDiagnostics={false}
-                          onTimeUpdate={(timeMs) => {
-                            videoPlaybackTimeRef.current.set(track.name, timeMs);
-                          }}
+                          videoTimeRef={getVideoTimeRef(track.name)}
                         />
                         {/* Audio Player for FETCH playback (if audio track exists) */}
                         {fetchPlaybackState.get(track.name)?.audioSubscriptionId && (
@@ -1242,7 +1249,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                             <AudioPlayer
                               subscriptionId={fetchPlaybackState.get(track.name)!.audioSubscriptionId!}
                               onAudioData={onAudioData}
-                              getVideoTimeMs={() => videoPlaybackTimeRef.current.get(track.name) ?? 0}
+                              getVideoTimeMs={() => getVideoTimeRef(track.name).current}
                             />
                           </div>
                         )}

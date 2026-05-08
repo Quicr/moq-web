@@ -21,7 +21,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { VideoRenderer, VideoRendererMetrics } from '../subscribe/VideoRenderer';
+import { VideoRenderer, VideoRendererMetrics, type OnFrameTimestamp } from '../subscribe/VideoRenderer';
 import { useStore } from '../../store';
 import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@web-moq/media';
 
@@ -52,8 +52,10 @@ export interface MoqMediaPlayerProps {
   onPlaybackStateChange?: (playing: boolean) => void;
   /** Callback when seek completes */
   onSeekComplete?: (timeMs: number, success: boolean) => void;
-  /** Callback when playback time updates (for A/V sync) */
+  /** Callback when playback time updates (for A/V sync) - called at ~1Hz for React state */
   onTimeUpdate?: (timeMs: number) => void;
+  /** Ref to receive real-time video time updates (60fps, for A/V sync) */
+  videoTimeRef?: React.MutableRefObject<number>;
   /** Enable diagnostic overlay for debugging playback issues */
   enableDiagnostics?: boolean;
 }
@@ -80,6 +82,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   onPlaybackStateChange,
   onSeekComplete,
   onTimeUpdate,
+  videoTimeRef,
   enableDiagnostics = false,
 }) => {
   const {
@@ -164,6 +167,14 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   // backdrop-blur recomposition and DOM updates on every frame)
   const lastMetricsUpdateRef = useRef<number>(0);
   const handleMetricsUpdate = useCallback((metrics: VideoRendererMetrics) => {
+    // Always update the real-time video time ref for A/V sync (on every frame)
+    if (metrics.lastFrameTimestamp > 0) {
+      const timeMs = metrics.lastFrameTimestamp / 1000; // microseconds to ms
+      if (videoTimeRef) {
+        videoTimeRef.current = timeMs;
+      }
+    }
+
     const now = performance.now();
     if (now - lastMetricsUpdateRef.current > 1000) {
       lastMetricsUpdateRef.current = now;
@@ -178,7 +189,15 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
         data: { ...metrics },
       });
     }
-  }, [enableDiagnostics]);
+  }, [enableDiagnostics, videoTimeRef]);
+
+  // Handle real-time frame timestamps for A/V sync (called on every frame)
+  const handleFrameTimestamp = useCallback<OnFrameTimestamp>((timestampUs) => {
+    const timeMs = timestampUs / 1000; // microseconds to ms
+    if (videoTimeRef) {
+      videoTimeRef.current = timeMs;
+    }
+  }, [videoTimeRef]);
 
   // Download diagnostic logs
   const handleDownloadLogs = useCallback((e: React.MouseEvent) => {
@@ -419,6 +438,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
           getFrame={getFrame}
           enableDiagnostics={enableDiagnostics}
           onMetricsUpdate={handleMetricsUpdate}
+          onFrameTimestamp={handleFrameTimestamp}
           framerate={framerate}
           isLive={isLive}
         />

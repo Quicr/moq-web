@@ -26,6 +26,9 @@ export interface VideoRendererMetrics {
   targetFps: number;
 }
 
+/** Lightweight callback for real-time frame timestamps (called on every frame) */
+export type OnFrameTimestamp = (timestampUs: number) => void;
+
 interface VideoRendererProps {
   /** The VideoFrame to render (legacy prop-based mode) */
   frame?: VideoFrame | null;
@@ -41,8 +44,10 @@ interface VideoRendererProps {
   className?: string;
   /** Enable diagnostic logging */
   enableDiagnostics?: boolean;
-  /** Callback for metrics updates */
+  /** Callback for metrics updates (throttled to ~1Hz) */
   onMetricsUpdate?: (metrics: VideoRendererMetrics) => void;
+  /** Callback for real-time frame timestamps (called on every frame, for A/V sync) */
+  onFrameTimestamp?: OnFrameTimestamp;
   /** Framerate from catalog for diagnostics (default: 30) */
   framerate?: number;
   /** Whether content is live (affects frame drain strategy) */
@@ -64,6 +69,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   className = '',
   enableDiagnostics: _enableDiagnostics = false,
   onMetricsUpdate,
+  onFrameTimestamp,
   framerate = 30,
   isLive = true,
 }) => {
@@ -177,6 +183,11 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       metricsRef.current.lastFrameTimestamp = frameTs;
       metricsRef.current.targetFps = framerate;
 
+      // Call real-time timestamp callback for A/V sync (every frame)
+      if (onFrameTimestamp && frameTs > 0) {
+        onFrameTimestamp(frameTs);
+      }
+
       if (!hasReceivedFrame) {
         setHasReceivedFrame(true);
       }
@@ -202,7 +213,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       try { frame.close(); } catch { /* ignore */ }
       return false;
     }
-  }, [framerate, hasReceivedFrame, onMetricsUpdate]);
+  }, [framerate, hasReceivedFrame, onMetricsUpdate, onFrameTimestamp]);
 
   // Store getFrame and isLive in refs so RAF loop doesn't restart when parent re-renders
   const getFrameRef = useRef(getFrame);

@@ -256,7 +256,18 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
 
         // Get video time for A/V sync (if available)
         const videoTimeMs = getVideoTimeMs?.();
-        const videoTimeSec = videoTimeMs !== undefined ? videoTimeMs / 1000 : undefined;
+        const videoTimeSec = videoTimeMs !== undefined && videoTimeMs > 0 ? videoTimeMs / 1000 : undefined;
+
+        // Log video time periodically for A/V sync debugging
+        if (audioStats.framesPlayed % 50 === 0) {
+          console.log('[AudioPlayer] A/V sync check', {
+            audioFrame: audioStats.framesPlayed,
+            audioTimestampSec,
+            videoTimeMs,
+            videoTimeSec,
+            hasVideoTime: videoTimeSec !== undefined,
+          });
+        }
 
         if (isFirstFrameRef.current || timeOffsetRef.current === null) {
           // First frame: establish the time offset
