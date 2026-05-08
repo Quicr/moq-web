@@ -378,7 +378,7 @@ export class VodFetchController {
             // Re-fetch only the groups that should exist
             const retryEndGroup = Math.min(fetch.endGroup, this.config.totalGroups - 1);
             this.issueFetch(fetch.startGroup, retryEndGroup);
-            return; // skip maybeIssueFetch — we just issued a retry
+            // Don't return - continue to maybeIssueFetch to fetch ahead if possible
           } else {
             // Groups truly don't exist (requested past end of content) or max retries exceeded
             const reason = groupsShouldExist ? 'max retries exceeded' : 'groups beyond end of content';
