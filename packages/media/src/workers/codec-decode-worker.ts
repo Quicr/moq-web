@@ -717,10 +717,11 @@ function pushData(
           groupId,
           objectId,
           data: audioData,
-          isKeyframe: true, // Opus is always key
+          isKeyframe: true, // Opus/AAC frames are all key
+          locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
         });
 
-        log(`Pushed audio to PlayoutBuffer (channel ${channel.channelId})`, { groupId, objectId });
+        log(`Pushed audio to PlayoutBuffer (channel ${channel.channelId})`, { groupId, objectId, locTimestamp: frame.captureTimestamp });
       } else if (channel.audioArbiter) {
         // LEGACY: Use GroupArbiter
         channel.audioArbiter.addFrame({
@@ -1065,9 +1066,14 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
         channel.lastAudioFrameInfo.dataSize = frame.data.data.length;
         channel.lastAudioFrameInfo.sequence = channel.audioSequence++;
 
+        // Use locTimestamp (presentation time) if available, fall back to receivedAt
+        const timestampUs = frame.locTimestamp !== undefined
+          ? frame.locTimestamp
+          : Math.floor(frame.receivedAt * 1000);
+
         const chunk = new EncodedAudioChunk({
           type: 'key',
-          timestamp: frame.receivedAt * 1000,
+          timestamp: timestampUs,
           data: frame.data.data,
         });
 
@@ -1102,9 +1108,14 @@ function pollChannel(channel: DecodeChannel): { videoFrames: number; audioFrames
         channel.lastAudioFrameInfo.dataSize = frame.data.data.length;
         channel.lastAudioFrameInfo.sequence = channel.audioSequence++;
 
+        // Use locTimestamp (presentation time) if available, fall back to receivedTick
+        const timestampUs = frame.locTimestamp !== undefined
+          ? frame.locTimestamp
+          : Math.floor(frame.receivedTick * 1000);
+
         const chunk = new EncodedAudioChunk({
           type: 'key',
-          timestamp: frame.receivedTick * 1000,
+          timestamp: timestampUs,
           data: frame.data.data,
         });
 
