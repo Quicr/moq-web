@@ -106,6 +106,9 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   const fetchFrameQueue = useVideoFrameQueue();
   const subscribeFrameQueue = useVideoFrameQueue();
 
+  // Track video playback time for A/V sync (keyed by track name)
+  const videoPlaybackTimeRef = useRef<Map<string, number>>(new Map());
+
   // Video frames for rendering (SUBSCRIBE) - used to trigger re-render when first frame arrives
   const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
   // Video frames for FETCH playback - used to trigger re-render when first frame arrives
@@ -1219,6 +1222,9 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                           className="w-full rounded-lg overflow-hidden border border-emerald-500/30"
                           showControls={true}
                           enableDiagnostics={false}
+                          onTimeUpdate={(timeMs) => {
+                            videoPlaybackTimeRef.current.set(track.name, timeMs);
+                          }}
                         />
                         {/* Audio Player for FETCH playback (if audio track exists) */}
                         {fetchPlaybackState.get(track.name)?.audioSubscriptionId && (
@@ -1226,6 +1232,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                             <AudioPlayer
                               subscriptionId={fetchPlaybackState.get(track.name)!.audioSubscriptionId!}
                               onAudioData={onAudioData}
+                              getVideoTimeMs={() => videoPlaybackTimeRef.current.get(track.name) ?? 0}
                             />
                           </div>
                         )}

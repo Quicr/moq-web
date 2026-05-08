@@ -15,10 +15,12 @@ import { isDebugMode } from '../common/DevSettingsPanel';
 interface AudioPlayerProps {
   subscriptionId: number;
   onAudioData: (handler: (data: { subscriptionId: number; audioData: AudioData }) => void) => () => void;
+  /** Get current video playback time in milliseconds for A/V sync */
+  getVideoTimeMs?: () => number;
 }
 
 // Buffer time to add at start to allow audio to accumulate (reduces glitches)
-const INITIAL_BUFFER_TIME = 0.05; // 50ms
+const INITIAL_BUFFER_TIME = 0.1; // 100ms
 // Max gap allowed before resetting schedule (handles network delays)
 const MAX_SCHEDULE_GAP = 0.3; // 300ms
 
@@ -38,7 +40,7 @@ interface AudioAnalysis {
   gapFromPrevMs: number | null;
 }
 
-export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudioData }) => {
+export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudioData, getVideoTimeMs }) => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -248,30 +250,66 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
         source.buffer = audioBuffer;
         source.connect(gainNode);
 
-        // Schedule playback using PTS-based timing
+        // Schedule playback - sync with video if available, otherwise use PTS
         const currentTime = audioContext.currentTime;
         let playTime: number;
 
+        // Get video time for A/V sync (if available)
+        const videoTimeMs = getVideoTimeMs?.();
+        const videoTimeSec = videoTimeMs !== undefined ? videoTimeMs / 1000 : undefined;
+
         if (isFirstFrameRef.current || timeOffsetRef.current === null) {
-          // First frame: establish the time offset between PTS and AudioContext time
-          // Add initial buffer to let more audio accumulate
-          playTime = currentTime + INITIAL_BUFFER_TIME;
-          timeOffsetRef.current = playTime - audioTimestampSec;
-          firstPtsRef.current = audioTimestampSec;
-          isFirstFrameRef.current = false;
-          if (isDebugMode()) {
-            console.log('[AudioPlayer] First frame, establishing time offset', {
+          // First frame: establish the time offset
+          if (videoTimeSec !== undefined) {
+            // Sync with video: calculate offset so audio PTS matches video time
+            // Audio should play when video reaches the same PTS
+            const audioAheadOfVideo = audioTimestampSec - videoTimeSec;
+            playTime = currentTime + Math.max(INITIAL_BUFFER_TIME, audioAheadOfVideo);
+            timeOffsetRef.current = playTime - audioTimestampSec;
+            console.log('[AudioPlayer] First frame, syncing with video', {
               currentTime,
               playTime,
               audioTimestampSec,
+              videoTimeSec,
+              audioAheadOfVideo,
               timeOffset: timeOffsetRef.current,
             });
+          } else {
+            // No video sync - use simple buffering
+            playTime = currentTime + INITIAL_BUFFER_TIME;
+            timeOffsetRef.current = playTime - audioTimestampSec;
+            if (isDebugMode()) {
+              console.log('[AudioPlayer] First frame (no video sync)', {
+                currentTime,
+                playTime,
+                audioTimestampSec,
+                timeOffset: timeOffsetRef.current,
+              });
+            }
           }
+          firstPtsRef.current = audioTimestampSec;
+          isFirstFrameRef.current = false;
         } else {
           // Calculate where this frame should play based on its PTS
           playTime = audioTimestampSec + timeOffsetRef.current;
 
-          // Check if we've fallen too far behind
+          // If we have video time, check A/V sync and adjust if needed
+          if (videoTimeSec !== undefined) {
+            const audioVsVideo = audioTimestampSec - videoTimeSec;
+            // If audio is more than 200ms behind video, skip ahead
+            // If audio is more than 500ms ahead of video, slow down
+            if (audioVsVideo < -0.2) {
+              // Audio is behind video - try to catch up
+              playTime = currentTime; // Play immediately
+              console.log('[AudioPlayer] Audio behind video, catching up', { audioVsVideo });
+            } else if (audioVsVideo > 0.5) {
+              // Audio is ahead of video - delay
+              playTime = currentTime + (audioVsVideo - 0.1); // Play when video catches up
+              console.log('[AudioPlayer] Audio ahead of video, delaying', { audioVsVideo, delay: audioVsVideo - 0.1 });
+            }
+          }
+
+          // Check if we've fallen too far behind (audio scheduling, not A/V)
           const lag = currentTime - playTime;
           if (lag > MAX_SCHEDULE_GAP) {
             // Reset: re-establish time offset from current position

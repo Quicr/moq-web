@@ -52,6 +52,8 @@ export interface MoqMediaPlayerProps {
   onPlaybackStateChange?: (playing: boolean) => void;
   /** Callback when seek completes */
   onSeekComplete?: (timeMs: number, success: boolean) => void;
+  /** Callback when playback time updates (for A/V sync) */
+  onTimeUpdate?: (timeMs: number) => void;
   /** Enable diagnostic overlay for debugging playback issues */
   enableDiagnostics?: boolean;
 }
@@ -77,6 +79,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   showControls = true,
   onPlaybackStateChange,
   onSeekComplete,
+  onTimeUpdate,
   enableDiagnostics = false,
 }) => {
   const {
@@ -215,9 +218,10 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
       frameCountRef.current++;
       const estimatedTimeMs = (frameCountRef.current / framerate) * 1000;
       setCurrentTime(estimatedTimeMs);
+      onTimeUpdate?.(estimatedTimeMs);
       lastFrameTimeRef.current = performance.now();
     }
-  }, [frame, isPlaying, isSeeking, framerate]);
+  }, [frame, isPlaying, isSeeking, framerate, onTimeUpdate]);
 
   // Update time from renderer metrics for getFrame mode (where frame prop is unused)
   // The metrics callback fires ~1Hz with lastFrameTimestamp in microseconds
@@ -225,9 +229,10 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
     if (getFrame && rendererMetrics && rendererMetrics.lastFrameTimestamp > 0 && !isSeeking) {
       const timeMs = rendererMetrics.lastFrameTimestamp / 1000; // microseconds to ms
       setCurrentTime(timeMs);
+      onTimeUpdate?.(timeMs);
       frameCountRef.current = Math.round((timeMs / 1000) * framerate);
     }
-  }, [getFrame, rendererMetrics, isSeeking, framerate]);
+  }, [getFrame, rendererMetrics, isSeeking, framerate, onTimeUpdate]);
 
   // Sync with subscription pause state
   useEffect(() => {
