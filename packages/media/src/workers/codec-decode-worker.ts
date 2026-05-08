@@ -676,7 +676,7 @@ function pushData(
           objectId,
           data: videoData,
           isKeyframe,
-          locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
+          locTimestamp: frame.captureTimestamp !== undefined ? Math.floor(frame.captureTimestamp * 1000) : undefined,
         });
 
         log(`Pushed video to arbiter (channel ${channel.channelId})`, {
@@ -729,7 +729,7 @@ function pushData(
           objectId,
           data: audioData,
           isKeyframe: true, // Opus/AAC frames are all key
-          locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
+          locTimestamp: frame.captureTimestamp !== undefined ? Math.floor(frame.captureTimestamp * 1000) : undefined,
         });
 
         log(`Pushed audio to PlayoutBuffer (channel ${channel.channelId})`, { groupId, objectId, locTimestamp: frame.captureTimestamp });
@@ -740,7 +740,7 @@ function pushData(
           objectId,
           data: audioData,
           isKeyframe: true, // Opus is always key
-          locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
+          locTimestamp: frame.captureTimestamp !== undefined ? Math.floor(frame.captureTimestamp * 1000) : undefined,
         });
 
         log(`Pushed audio to arbiter (channel ${channel.channelId})`, { groupId, objectId });
