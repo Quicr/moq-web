@@ -148,6 +148,7 @@ export const CatalogPanel: React.FC = () => {
             console.log('[CatalogPanel] Checking audio:', { hasAudio: loader.hasAudio, vodTrackAudio: vodTrack.audio });
             if (loader.hasAudio && vodTrack.audio) {
               const audioOptions = loader.getAudioPublishOptions();
+              console.log('[CatalogPanel] Audio publish options:', audioOptions);
               if (audioOptions) {
                 // Audio track name follows the convention: "{video-name}-audio"
                 const audioTrackName = `${vodTrack.name}-audio`;
