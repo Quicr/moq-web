@@ -765,10 +765,19 @@ export class VODLoader {
 
     this.actualAudioObjectsPerGroup = maxAudioObjectsPerGroup;
 
-    // Update audio metadata with actual values
-    if (this.audioMetadata) {
-      this.audioMetadata.totalSamples = audioSamples.length;
-    }
+    // Set or update audio metadata
+    const totalDurationMs = audioSamples.length > 0
+      ? ((audioSamples[audioSamples.length - 1].dts + audioSamples[audioSamples.length - 1].duration) / audioTimescale) * 1000
+      : 0;
+
+    this.audioMetadata = {
+      codec: aacConfig ? `mp4a.40.2` : 'mp4a', // Default to AAC-LC if we have config
+      sampleRate,
+      channelCount,
+      duration: totalDurationMs,
+      totalSamples: audioSamples.length,
+      aacConfig,
+    };
 
     log.info('Audio remuxed', {
       totalSamples: audioSamples.length,
