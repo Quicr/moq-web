@@ -32,6 +32,8 @@ export interface MoqMediaPlayerProps {
   getFrame?: () => VideoFrame | null;
   /** Subscription ID for controlling playback */
   subscriptionId: number;
+  /** Audio subscription ID (for synchronized pause/resume) */
+  audioSubscriptionId?: number;
   /** Whether content is live (from catalog or explicit) */
   isLive: boolean;
   /** Total duration in milliseconds (from catalog, optional for live) */
@@ -65,6 +67,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   frame,
   getFrame,
   subscriptionId,
+  audioSubscriptionId,
   isLive,
   duration = 0,
   framerate = 30,
@@ -242,17 +245,25 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
     try {
       if (isPlaying) {
         await pauseSubscription(subscriptionId);
+        // Also pause audio if present
+        if (audioSubscriptionId) {
+          await pauseSubscription(audioSubscriptionId);
+        }
         setIsPlaying(false);
         onPlaybackStateChange?.(false);
       } else {
         await resumeSubscription(subscriptionId);
+        // Also resume audio if present
+        if (audioSubscriptionId) {
+          await resumeSubscription(audioSubscriptionId);
+        }
         setIsPlaying(true);
         onPlaybackStateChange?.(true);
       }
     } catch (err) {
       console.error('[MoqMediaPlayer] Failed to toggle playback:', err);
     }
-  }, [isPlaying, subscriptionId, pauseSubscription, resumeSubscription, onPlaybackStateChange]);
+  }, [isPlaying, subscriptionId, audioSubscriptionId, pauseSubscription, resumeSubscription, onPlaybackStateChange]);
 
   /**
    * Calculate target group from time position
@@ -283,6 +294,9 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
       // Pause during seek
       if (isPlaying) {
         await pauseSubscription(subscriptionId);
+        if (audioSubscriptionId) {
+          await pauseSubscription(audioSubscriptionId);
+        }
       }
 
       // Calculate target group from time
@@ -295,6 +309,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
 
       // FETCH the target position (same for live and VOD)
       await seekSubscription(subscriptionId, timeMs);
+      // TODO: Seek audio subscription too when audio seek is implemented
 
       // Update position
       setCurrentTime(timeMs);
@@ -303,6 +318,9 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
       // Resume if was playing
       if (isPlaying) {
         await resumeSubscription(subscriptionId);
+        if (audioSubscriptionId) {
+          await resumeSubscription(audioSubscriptionId);
+        }
       }
 
       onSeekComplete?.(timeMs, true);
@@ -314,6 +332,9 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
       if (isLive) {
         console.log('[MoqMediaPlayer] Content not available, returning to live edge');
         await resumeSubscription(subscriptionId);
+        if (audioSubscriptionId) {
+          await resumeSubscription(audioSubscriptionId);
+        }
         setIsPlaying(true);
       }
 
@@ -324,6 +345,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   }, [
     isPlaying,
     subscriptionId,
+    audioSubscriptionId,
     pauseSubscription,
     resumeSubscription,
     seekSubscription,

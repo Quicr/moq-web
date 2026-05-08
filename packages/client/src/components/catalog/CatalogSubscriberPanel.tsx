@@ -1210,6 +1210,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
                             return subId !== undefined ? fetchFrameQueue.getFrame(subId) : null;
                           }}
                           subscriptionId={fetchPlaybackState.get(track.name)?.subscriptionId ?? 0}
+                          audioSubscriptionId={fetchPlaybackState.get(track.name)?.audioSubscriptionId}
                           isLive={false}
                           duration={track.trackDuration}
                           framerate={track.framerate}
