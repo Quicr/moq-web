@@ -302,6 +302,12 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     if (policyType) {
       // NEW: Use PlayoutBuffer for audio
       // Audio always uses a simpler policy - no keyframe requirements
+      // Calculate audio frame rate: for AAC, typically 1024 samples per frame
+      // 44100 Hz / 1024 = ~43.07 fps, 48000 Hz / 1024 = ~46.88 fps
+      const audioSampleRate = config.audio.sampleRate ?? 48000;
+      const audioFrameSize = 1024; // AAC frame size
+      const audioFramerate = audioSampleRate / audioFrameSize;
+
       channel.audioPlayoutBuffer = createPlayoutBuffer<AudioBufferData>(
         policyType === 'vod' ? 'vod' : 'live', // Audio uses vod or live, not adaptive
         policyType === 'live' || policyType === 'adaptive' ? {
@@ -316,9 +322,11 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
         } : {
           minBufferFrames: 1,
           waitForCompleteGop: false, // Audio doesn't have GOPs
+          targetFramerate: audioFramerate, // Use audio's native frame rate
+          isMaster: false, // Audio follows video timing
         }
       );
-      log(`Channel ${channelId} using PlayoutBuffer for audio`, { policyType });
+      log(`Channel ${channelId} using PlayoutBuffer for audio`, { policyType, audioFramerate, audioSampleRate });
     } else if (useGroupArbiter) {
       // LEGACY: Use GroupArbiter for audio
       channel.audioArbiter = new GroupArbiter<AudioBufferData>({
