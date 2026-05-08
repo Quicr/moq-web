@@ -60,6 +60,7 @@ interface FetchRequest {
   objectsReceived: number;
   startTime: number;       // When fetch was issued (ms)
   bytesReceived: number;   // Total bytes received
+  retryCount: number;      // Number of retries for this group range
 }
 
 /**
@@ -148,6 +149,8 @@ export class VodFetchController {
   // Fetch tracking
   private activeFetches = new Map<number, FetchRequest>();
   private nextRequestId = 1;
+  private failedGroupRetries = new Map<number, number>(); // startGroup -> retry count
+  private readonly MAX_RETRIES = 2;
 
   // Timing
   private framesPerGop: number;
@@ -343,22 +346,55 @@ export class VodFetchController {
 
       this.activeFetches.delete(requestId);
 
+      // Clear retry tracking for groups that succeeded (received data)
+      if (fetch.bytesReceived > 0) {
+        this.failedGroupRetries.delete(fetch.startGroup);
+      }
+
       // Handle missing groups: relay delivered fewer groups than requested.
       if (hasMissingGroups) {
         const gapStart = actualLastGroup! + 1;
         const gapEnd = fetch.endGroup;
 
         // If the fetch received NO data at all (actualLastGroup < startGroup),
-        // the group(s) don't exist on the relay. Skip them and continue playback.
+        // determine if groups truly don't exist or if we should retry.
         if (actualLastGroup! < fetch.startGroup) {
-          log.warn('Gap-fill received no data — groups unavailable on relay, skipping', {
-            requestId,
-            gapStart: fetch.startGroup,
-            gapEnd: fetch.endGroup,
-          });
-          // Advance past the gap so playback can continue
-          this.fetchedUpToGroup = Math.max(this.fetchedUpToGroup, fetch.endGroup);
-          this.emit('group-unavailable', { startGroup: fetch.startGroup, endGroup: fetch.endGroup });
+          // Check if the requested groups should exist according to totalGroups
+          const groupsShouldExist = fetch.startGroup < this.config.totalGroups;
+          const retryCount = this.failedGroupRetries.get(fetch.startGroup) ?? 0;
+
+          if (groupsShouldExist && retryCount < this.MAX_RETRIES) {
+            // Groups should exist but we got no data - retry the fetch
+            // This handles transient relay issues or network problems
+            this.failedGroupRetries.set(fetch.startGroup, retryCount + 1);
+            log.warn('Fetch received no data for groups that should exist — retrying', {
+              requestId,
+              startGroup: fetch.startGroup,
+              endGroup: fetch.endGroup,
+              totalGroups: this.config.totalGroups,
+              retryCount: retryCount + 1,
+              maxRetries: this.MAX_RETRIES,
+            });
+            // Re-fetch only the groups that should exist
+            const retryEndGroup = Math.min(fetch.endGroup, this.config.totalGroups - 1);
+            this.issueFetch(fetch.startGroup, retryEndGroup);
+            return; // skip maybeIssueFetch — we just issued a retry
+          } else {
+            // Groups truly don't exist (requested past end of content) or max retries exceeded
+            const reason = groupsShouldExist ? 'max retries exceeded' : 'groups beyond end of content';
+            log.warn(`Gap-fill received no data — ${reason}, skipping`, {
+              requestId,
+              gapStart: fetch.startGroup,
+              gapEnd: fetch.endGroup,
+              totalGroups: this.config.totalGroups,
+              retryCount,
+            });
+            // Clean up retry tracking
+            this.failedGroupRetries.delete(fetch.startGroup);
+            // Mark content as complete (don't advance fetchedUpToGroup past what exists)
+            this.fetchedUpToGroup = Math.max(this.fetchedUpToGroup, this.config.totalGroups - 1);
+            this.emit('group-unavailable', { startGroup: fetch.startGroup, endGroup: fetch.endGroup });
+          }
         } else {
           // Partial delivery — re-fetch the remaining groups
           log.info('Re-fetching gap left by incomplete fetch', {
@@ -707,6 +743,7 @@ export class VodFetchController {
       objectsReceived: 0,
       startTime: performance.now(),
       bytesReceived: 0,
+      retryCount: this.failedGroupRetries.get(startGroup) ?? 0,
     };
 
     this.activeFetches.set(requestId, fetchRequest);
