@@ -105,6 +105,12 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   // Canvas 2D context ref — cached to avoid getContext() per frame
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
+  // Store onFrameTimestamp in ref to avoid renderFrame dependency changes
+  const onFrameTimestampRef = useRef(onFrameTimestamp);
+  useEffect(() => {
+    onFrameTimestampRef.current = onFrameTimestamp;
+  }, [onFrameTimestamp]);
+
   // Shared render function for both modes
   const renderFrame = useCallback((frame: VideoFrame): boolean => {
     const canvas = canvasRef.current;
@@ -184,8 +190,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       metricsRef.current.targetFps = framerate;
 
       // Call real-time timestamp callback for A/V sync (every frame)
-      if (onFrameTimestamp && frameTs > 0) {
-        onFrameTimestamp(frameTs);
+      if (onFrameTimestampRef.current && frameTs > 0) {
+        onFrameTimestampRef.current(frameTs);
       }
 
       if (!hasReceivedFrame) {
@@ -213,7 +219,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       try { frame.close(); } catch { /* ignore */ }
       return false;
     }
-  }, [framerate, hasReceivedFrame, onMetricsUpdate, onFrameTimestamp]);
+  }, [framerate, hasReceivedFrame, onMetricsUpdate]);
 
   // Store getFrame and isLive in refs so RAF loop doesn't restart when parent re-renders
   const getFrameRef = useRef(getFrame);

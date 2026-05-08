@@ -548,6 +548,17 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
         startGroup, // Log the startGroup passed from UI
       });
 
+      // Debug: Log all tracks in catalog to help identify audio track naming
+      console.log('[CatalogSubscriber] All tracks in catalog:', receivedCatalog.tracks.map((t: Track) => ({
+        name: t.name,
+        type: getTrackType(t),
+        samplerate: t.samplerate,
+        channelConfig: t.channelConfig,
+        codec: t.codec,
+        renderGroup: t.renderGroup,
+      })));
+      console.log('[CatalogSubscriber] Looking for audio track with name:', `${trackName}-audio`);
+
       // Create VOD pipeline with FETCH and adaptive buffer config
       // Use user-specified buffer seconds for initial buffer, with sensible defaults for min buffer
       // IMPORTANT: Use startGroup directly from function parameter, not from React state
