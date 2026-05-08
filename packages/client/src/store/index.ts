@@ -1152,13 +1152,14 @@ export const useStore = create<AppStore>()(
         );
 
         // Listen for FETCH_OK to update totalGroups if relay has fewer groups than catalog claims
+        // Only trust largestGroupId when endOfTrack is true (relay confirms end of content)
         const moqtSessionForFetchComplete = session.getMOQTSession();
         moqtSessionForFetchComplete.on('fetch-complete', (event: { requestId: number; largestGroupId: number; endOfTrack: boolean }) => {
           // largestGroupId from FETCH_OK indicates the highest group available on the relay
-          // If it's less than our expected totalGroups, update the controller
+          // Only update if endOfTrack is true - otherwise relay may just have partial data
           const actualTotalGroups = event.largestGroupId + 1;
-          if (actualTotalGroups < (trackInfo.totalGroups ?? 100)) {
-            log.info('VOD content has fewer groups than catalog claimed', {
+          if (event.endOfTrack && actualTotalGroups < (trackInfo.totalGroups ?? 100)) {
+            log.info('VOD content has fewer groups than catalog claimed (endOfTrack confirmed)', {
               catalogTotalGroups: trackInfo.totalGroups,
               actualTotalGroups,
               largestGroupId: event.largestGroupId,
