@@ -117,6 +117,18 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
         const audioTimestampUs = audioData.timestamp;
         const audioTimestampSec = audioTimestampUs / 1_000_000;
 
+        // Always log first 10 frames for debugging
+        if (audioStats.framesPlayed < 10) {
+          console.log('[AudioPlayer] DEBUG frame', {
+            frameNum: audioStats.framesPlayed,
+            audioTimestampUs,
+            audioTimestampSec,
+            numberOfFrames: audioData.numberOfFrames,
+            sampleRate: audioData.sampleRate,
+            durationSec: audioData.numberOfFrames / audioData.sampleRate,
+          });
+        }
+
         if (isDebugMode()) {
           console.log('[AudioPlayer] Creating AudioBuffer', {
             numberOfChannels,

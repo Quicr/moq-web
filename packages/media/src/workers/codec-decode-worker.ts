@@ -711,6 +711,17 @@ function pushData(
       const frame = channel.unpackager.unpackage(data, channel.quicrInteropEnabled);
       const audioData: AudioBufferData = { data: frame.payload };
 
+      // Debug: log first 5 audio frames
+      if (channel.audioFramesDecoded < 5) {
+        console.log('[CodecDecodeWorker] AUDIO FRAME DEBUG', {
+          groupId,
+          objectId,
+          payloadSize: frame.payload.length,
+          captureTimestamp: frame.captureTimestamp,
+          captureTimestampMs: frame.captureTimestamp,
+        });
+      }
+
       if (channel.audioPlayoutBuffer) {
         // NEW: Use PlayoutBuffer for audio
         channel.audioPlayoutBuffer.addFrame({
