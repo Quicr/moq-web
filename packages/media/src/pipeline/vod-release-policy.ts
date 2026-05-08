@@ -567,17 +567,14 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         if (decision === 'hold') {
           // Frame is ahead of master - wait
           this.stats.framesHeld++;
-          // Log every 50th hold to avoid flooding
-          if (this.stats.framesHeld % 50 === 1) {
-            console.log('[VodReleasePolicy] SYNC HOLD', { objId, ptsMs, deltaMs, totalHeld: this.stats.framesHeld });
-          }
+          this.log('SYNC HOLD', { objId, ptsMs, deltaMs });
           break; // Stop processing, try again next tick
         }
 
         if (decision === 'drop') {
           // Frame is too far behind - discard
           this.stats.framesDroppedSync++;
-          console.log('[VodReleasePolicy] SYNC DROP', { objId, ptsMs, deltaMs, totalDropped: this.stats.framesDroppedSync });
+          this.log('SYNC DROP', { objId, ptsMs, deltaMs });
           group.frames.delete(objId);
           group.outputObjectId = objId + 1;
           continue; // Skip to next frame

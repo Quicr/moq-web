@@ -335,9 +335,9 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
       // For VOD audio, create a sync clock that will be updated by video time messages
       if (policyType === 'vod') {
         channel.syncClock = new SharedPlaybackClock(1, { // renderGroup 1 for A/V sync
-          maxAheadMs: 500, // Allow audio 500ms ahead (was 100ms - too tight)
+          maxAheadMs: 500, // Allow audio 500ms ahead of video
           maxBehindMs: 1000, // Drop audio more than 1s behind
-          debug: true, // Enable debug to track sync issues
+          debug: false, // Disable debug to reduce log noise
         });
         // Get the policy and set the sync clock
         const policy = channel.audioPlayoutBuffer.getPolicy();
