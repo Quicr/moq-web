@@ -61,6 +61,7 @@ interface FetchRequest {
   startTime: number;       // When fetch was issued (ms)
   bytesReceived: number;   // Total bytes received
   retryCount: number;      // Number of retries for this group range
+  isRetry: boolean;        // Whether this is a retry for a failed group
 }
 
 /**
@@ -376,8 +377,9 @@ export class VodFetchController {
               maxRetries: this.MAX_RETRIES,
             });
             // Re-fetch only the groups that should exist
+            // Mark as retry so it doesn't count against concurrent fetch limit
             const retryEndGroup = Math.min(fetch.endGroup, this.config.totalGroups - 1);
-            this.issueFetch(fetch.startGroup, retryEndGroup);
+            this.issueFetch(fetch.startGroup, retryEndGroup, undefined, true);
             // Don't return - continue to maybeIssueFetch to fetch ahead if possible
           } else {
             // Groups truly don't exist (requested past end of content) or max retries exceeded
@@ -397,12 +399,13 @@ export class VodFetchController {
           }
         } else {
           // Partial delivery — re-fetch the remaining groups
+          // Mark as retry so it doesn't count against concurrent fetch limit
           log.info('Re-fetching gap left by incomplete fetch', {
             requestId,
             gapStart,
             gapEnd,
           });
-          this.issueFetch(gapStart, gapEnd);
+          this.issueFetch(gapStart, gapEnd, undefined, true);
           // Don't return early - still call maybeIssueFetch to continue fetching ahead
         }
       }
@@ -654,11 +657,17 @@ export class VodFetchController {
    * Build context snapshot for the fetch strategy
    */
   private buildContext(): FetchStrategyContext {
-    // Find highest in-flight group
+    // Find highest in-flight group and count non-retry fetches
     let highestInFlightGroup = this.fetchedUpToGroup;
+    let forwardFetchCount = 0;
     for (const fetch of this.activeFetches.values()) {
       if (!fetch.completed) {
         highestInFlightGroup = Math.max(highestInFlightGroup, fetch.endGroup);
+        // Only count non-retry fetches against the concurrent fetch limit
+        // This allows forward-fetching to continue while retrying failed groups
+        if (!fetch.isRetry) {
+          forwardFetchCount++;
+        }
       }
     }
 
@@ -669,7 +678,7 @@ export class VodFetchController {
       bufferedFrames: this.bufferedFrames,
       totalGroups: this.config.totalGroups,
       gopDurationSec: this.config.gopDurationMs / 1000,
-      activeFetchCount: this.activeFetches.size,
+      activeFetchCount: forwardFetchCount,
       maxConcurrentFetches: this.config.maxConcurrentFetches,
       highestInFlightGroup,
       avgGroupDownloadMs: this.avgGroupDownloadMs,
@@ -732,7 +741,7 @@ export class VodFetchController {
     }
   }
 
-  private issueFetch(startGroup: number, endGroup: number, trackName?: string): void {
+  private issueFetch(startGroup: number, endGroup: number, trackName?: string, isRetry: boolean = false): void {
     const requestId = this.nextRequestId++;
 
     const fetchRequest: FetchRequest = {
@@ -744,6 +753,7 @@ export class VodFetchController {
       startTime: performance.now(),
       bytesReceived: 0,
       retryCount: this.failedGroupRetries.get(startGroup) ?? 0,
+      isRetry,
     };
 
     this.activeFetches.set(requestId, fetchRequest);
@@ -756,6 +766,7 @@ export class VodFetchController {
       activeFetches: this.activeFetches.size,
       strategy: this.strategy.name,
       trackName,
+      isRetry,
     });
     console.log('[VodFetchController] ISSUE FETCH', {
       requestId,
@@ -764,6 +775,7 @@ export class VodFetchController {
       trackName,
       playbackGroup: this.playbackGroup,
       fetchedUpToGroup: this.fetchedUpToGroup,
+      isRetry,
     });
 
     this.emit('fetch-request', { startGroup, endGroup, requestId, trackName });
