@@ -22,6 +22,22 @@ const INITIAL_BUFFER_TIME = 0.05; // 50ms
 // Max gap allowed before resetting schedule (handles network delays)
 const MAX_SCHEDULE_GAP = 0.3; // 300ms
 
+// Audio analysis data
+interface AudioAnalysis {
+  frameNum: number;
+  timestampUs: number;
+  timestampSec: number;
+  durationSec: number;
+  sampleRate: number;
+  numberOfFrames: number;
+  numberOfChannels: number;
+  minSample: number;
+  maxSample: number;
+  avgAbsSample: number;
+  hasClipping: boolean;
+  gapFromPrevMs: number | null;
+}
+
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudioData }) => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
@@ -36,6 +52,9 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
   const timeOffsetRef = useRef<number | null>(null);
   // Track the first PTS we received
   const firstPtsRef = useRef<number | null>(null);
+  // Audio analysis
+  const analysisDataRef = useRef<AudioAnalysis[]>([]);
+  const prevEndTimeRef = useRef<number | null>(null);
 
   // Initialize AudioContext on first user interaction or when playing starts
   const initializeAudio = useCallback(() => {
@@ -153,6 +172,75 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
             planeIndex: channel,
             format: 'f32-planar',
           });
+        }
+
+        // Analyze audio for first 50 frames
+        const frameNum = analysisDataRef.current.length;
+        if (frameNum < 50) {
+          const channelData = audioBuffer.getChannelData(0); // Analyze first channel
+          let minSample = Infinity;
+          let maxSample = -Infinity;
+          let sumAbs = 0;
+          for (let i = 0; i < channelData.length; i++) {
+            const sample = channelData[i];
+            minSample = Math.min(minSample, sample);
+            maxSample = Math.max(maxSample, sample);
+            sumAbs += Math.abs(sample);
+          }
+          const avgAbsSample = sumAbs / channelData.length;
+          const hasClipping = maxSample >= 0.99 || minSample <= -0.99;
+
+          // Calculate gap from previous frame
+          const durationSec = numberOfFrames / sampleRate;
+          const expectedEndTime = prevEndTimeRef.current;
+          const gapFromPrevMs = expectedEndTime !== null
+            ? (audioTimestampSec - expectedEndTime) * 1000
+            : null;
+
+          const analysis: AudioAnalysis = {
+            frameNum,
+            timestampUs: audioTimestampUs,
+            timestampSec: audioTimestampSec,
+            durationSec,
+            sampleRate,
+            numberOfFrames,
+            numberOfChannels,
+            minSample,
+            maxSample,
+            avgAbsSample,
+            hasClipping,
+            gapFromPrevMs,
+          };
+          analysisDataRef.current.push(analysis);
+          prevEndTimeRef.current = audioTimestampSec + durationSec;
+
+          // Log every 10th frame or interesting frames
+          if (frameNum % 10 === 0 || hasClipping || (gapFromPrevMs !== null && Math.abs(gapFromPrevMs) > 5)) {
+            console.log('[AudioPlayer] ANALYSIS', analysis);
+          }
+
+          // At frame 49, log summary
+          if (frameNum === 49) {
+            const gaps = analysisDataRef.current
+              .filter(a => a.gapFromPrevMs !== null)
+              .map(a => a.gapFromPrevMs!);
+            const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+            const maxGap = Math.max(...gaps);
+            const minGap = Math.min(...gaps);
+            const clippingCount = analysisDataRef.current.filter(a => a.hasClipping).length;
+            const timestamps = analysisDataRef.current.map(a => a.timestampSec);
+            const timestampDiffs = timestamps.slice(1).map((t, i) => t - timestamps[i]);
+
+            console.log('[AudioPlayer] === ANALYSIS SUMMARY (50 frames) ===');
+            console.log('[AudioPlayer] Gaps: avg=', avgGap.toFixed(2), 'ms, min=', minGap.toFixed(2), 'ms, max=', maxGap.toFixed(2), 'ms');
+            console.log('[AudioPlayer] Clipping frames:', clippingCount);
+            console.log('[AudioPlayer] First timestamp:', timestamps[0].toFixed(3), 's');
+            console.log('[AudioPlayer] Last timestamp:', timestamps[timestamps.length - 1].toFixed(3), 's');
+            console.log('[AudioPlayer] Avg timestamp diff:', (timestampDiffs.reduce((a,b)=>a+b,0)/timestampDiffs.length*1000).toFixed(2), 'ms');
+            console.log('[AudioPlayer] Sample rates:', [...new Set(analysisDataRef.current.map(a => a.sampleRate))]);
+            console.log('[AudioPlayer] Avg sample level:', (analysisDataRef.current.reduce((a,b)=>a+b.avgAbsSample,0)/50).toFixed(4));
+            console.log('[AudioPlayer] Full data:', analysisDataRef.current);
+          }
         }
 
         // Create source and play
