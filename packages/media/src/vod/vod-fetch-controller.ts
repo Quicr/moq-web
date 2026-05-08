@@ -403,7 +403,7 @@ export class VodFetchController {
             gapEnd,
           });
           this.issueFetch(gapStart, gapEnd);
-          return; // skip maybeIssueFetch — we just issued a targeted fill
+          // Don't return early - still call maybeIssueFetch to continue fetching ahead
         }
       }
     }
