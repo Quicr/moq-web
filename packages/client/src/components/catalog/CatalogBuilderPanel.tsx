@@ -241,6 +241,8 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
       switch (track.type) {
         case 'video-vod': {
           const t = track as VODTrackConfig;
+          // Use renderGroup 1 for video+audio sync (per MSF spec)
+          const renderGroup = t.audio ? 1 : undefined;
           builder.addVideoTrack({
             name: t.name,
             codec: t.codec,
@@ -255,6 +257,8 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
             timescale: 1000,
             totalGroups: t.totalGroups,
             gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
+            // Render group for A/V sync
+            renderGroup,
           });
           // Add audio track if VOD has audio with supported codec (AAC or Opus)
           // WebCodecs requires full codec string like "mp4a.40.2", not just "mp4a"
@@ -291,6 +295,8 @@ export const CatalogBuilderPanel: React.FC<CatalogBuilderPanelProps> = ({
               // VOD metadata for audio track (same grouping as video)
               totalGroups: t.totalGroups,
               gopDuration: t.gopDuration ? Math.round(t.gopDuration) : undefined,
+              // Same render group as video for A/V sync (per MSF spec)
+              renderGroup,
             });
           }
           break;

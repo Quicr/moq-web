@@ -580,11 +580,21 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
       const audioTrack = receivedCatalog.tracks.find((t: Track) => t.name === audioTrackName);
 
       if (audioTrack) {
+        // Check if video and audio share same renderGroup (per MSF spec for A/V sync)
+        const videoRenderGroup = track.renderGroup;
+        const audioRenderGroup = audioTrack.renderGroup;
+        const needsSync = videoRenderGroup !== undefined &&
+                         audioRenderGroup !== undefined &&
+                         videoRenderGroup === audioRenderGroup;
+
         console.log('[CatalogSubscriber] Found associated audio track:', audioTrackName, {
           codec: audioTrack.codec,
           samplerate: audioTrack.samplerate,
           channelConfig: audioTrack.channelConfig,
           hasAudioSpecificConfig: !!audioTrack.audioSpecificConfig,
+          videoRenderGroup,
+          audioRenderGroup,
+          needsSync,
         });
 
         // Decode base64 AudioSpecificConfig from catalog to Uint8Array
