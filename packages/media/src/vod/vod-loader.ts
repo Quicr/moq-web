@@ -1075,6 +1075,10 @@ export class VODLoader {
    * Returns null if no audio track exists
    */
   getAudioPublishOptions(): Omit<VODPublishOptions, 'priority' | 'groupOrder' | 'deliveryTimeout' | 'deliveryMode' | 'audioDeliveryMode'> | null {
+    log.info('getAudioPublishOptions called', {
+      hasAudioMetadata: !!this.audioMetadata,
+      audioSamplesSize: this.audioSamples.size,
+    });
     if (!this.audioMetadata || this.audioSamples.size === 0) {
       return null;
     }
