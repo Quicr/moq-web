@@ -106,6 +106,10 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekTarget, setSeekTarget] = useState(0);
   const [seekFailed, setSeekFailed] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Container ref for fullscreen
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Frame counting for time estimation
   const frameCountRef = useRef(0);
@@ -429,10 +433,38 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
    */
   const progress = hasDuration ? (currentTime / duration) * 100 : 0;
 
+  /**
+   * Handle fullscreen toggle
+   */
+  const handleFullscreen = useCallback(async () => {
+    if (!containerRef.current) return;
+
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (err) {
+      console.error('[MoqMediaPlayer] Failed to toggle fullscreen:', err);
+    }
+  }, []);
+
+  // Listen for fullscreen changes (e.g., user presses Escape)
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   return (
-    <div className={`moq-media-player relative group ${className}`}>
+    <div ref={containerRef} className={`moq-media-player relative group ${className} ${isFullscreen ? 'bg-black flex items-center justify-center h-screen' : ''}`}>
       {/* Video Display */}
-      <div className="relative">
+      <div className={`relative ${isFullscreen ? 'w-full h-full flex items-center justify-center' : ''}`}>
         <VideoRenderer
           frame={frame}
           getFrame={getFrame}
@@ -756,6 +788,23 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
                 LIVE
               </button>
             )}
+
+            {/* Fullscreen Button */}
+            <button
+              onClick={handleFullscreen}
+              className="p-1.5 rounded-full hover:bg-white/20 transition-colors"
+              title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+            >
+              {isFullscreen ? (
+                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9L4 4m0 0v5m0-5h5m6 0l5-5m0 0v5m0-5h-5m-6 16l-5 5m0 0v-5m0 5h5m6 0l5 5m0 0v-5m0 5h-5" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5h-4m4 0v-4m0 4l-5-5" />
+                </svg>
+              )}
+            </button>
           </div>
         </div>
       )}

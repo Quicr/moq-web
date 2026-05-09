@@ -44,8 +44,10 @@ export const VODVideoPlayer: React.FC<VODVideoPlayerProps> = ({
   const [currentTime, setCurrentTime] = useState(0);
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekTime, setSeekTime] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const frameCountRef = useRef(0);
   const startTimeRef = useRef<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Calculate if controls should be shown
   const controlsEnabled = showControls ?? (duration > 0);
@@ -123,6 +125,32 @@ export const VODVideoPlayer: React.FC<VODVideoPlayerProps> = ({
     handleSeek(seekTime);
   };
 
+  // Handle fullscreen toggle
+  const handleFullscreen = useCallback(async () => {
+    if (!containerRef.current) return;
+
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (err) {
+      console.error('Failed to toggle fullscreen:', err);
+    }
+  }, []);
+
+  // Listen for fullscreen changes (e.g., user presses Escape)
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   // Format time as MM:SS
   const formatTime = (ms: number) => {
     const totalSeconds = Math.floor(ms / 1000);
@@ -135,7 +163,7 @@ export const VODVideoPlayer: React.FC<VODVideoPlayerProps> = ({
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div className={`vod-video-player relative ${className}`}>
+    <div ref={containerRef} className={`vod-video-player relative ${className} ${isFullscreen ? 'bg-black' : ''}`}>
       {/* Video Display */}
       <VideoRenderer frame={frame} />
 
@@ -202,7 +230,7 @@ export const VODVideoPlayer: React.FC<VODVideoPlayerProps> = ({
             )}
 
             {/* Live/VOD Indicator */}
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
               {duration > 0 ? (
                 <span className="px-2 py-0.5 bg-purple-500/80 text-white text-xs rounded-full">
                   VOD
@@ -213,6 +241,23 @@ export const VODVideoPlayer: React.FC<VODVideoPlayerProps> = ({
                   LIVE
                 </span>
               )}
+
+              {/* Fullscreen Button */}
+              <button
+                onClick={handleFullscreen}
+                className="p-2 rounded-full bg-white/20 hover:bg-white/30 transition-colors"
+                title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+              >
+                {isFullscreen ? (
+                  <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9L4 4m0 0v5m0-5h5m6 0l5-5m0 0v5m0-5h-5m-6 16l-5 5m0 0v-5m0 5h5m6 0l5 5m0 0v-5m0 5h-5" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5h-4m4 0v-4m0 4l-5-5" />
+                  </svg>
+                )}
+              </button>
             </div>
           </div>
         </div>
