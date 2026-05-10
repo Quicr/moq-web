@@ -82,6 +82,9 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   const isRafModeRef = useRef(false);
   const isLiveRef = useRef(isLive);
 
+  // Track if canvas has been initialized with video resolution (only set once)
+  const canvasInitializedRef = useRef(false);
+
   // Diagnostic metrics refs
   const metricsRef = useRef<VideoRendererMetrics>({
     framesRendered: 0,
@@ -130,19 +133,14 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
     const frameWidth = frame.displayWidth || frame.codedWidth;
     const frameHeight = frame.displayHeight || frame.codedHeight;
 
-    // Use display-scaled canvas size for performance. CSS handles final scaling.
-    const container = containerRef.current;
-    const displayWidth = container
-      ? Math.min(Math.round(container.clientWidth * (window.devicePixelRatio || 1)), frameWidth)
-      : frameWidth;
-    const aspectRatio = frameWidth / frameHeight;
-    const displayHeight = Math.round(displayWidth / aspectRatio);
-
-    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
-      canvas.width = displayWidth;
-      canvas.height = displayHeight;
+    // Set canvas size ONCE to match video resolution. CSS handles all scaling.
+    // This prevents decode errors and context recreation during fullscreen/resize.
+    if (!canvasInitializedRef.current || canvas.width === 0) {
+      canvas.width = frameWidth;
+      canvas.height = frameHeight;
       setCanvasDimensions({ width: frameWidth, height: frameHeight });
       ctxRef.current = null;
+      canvasInitializedRef.current = true;
     }
 
     if (!ctxRef.current) {
@@ -156,7 +154,8 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
 
     try {
       // Synchronous drawImage — frame displays on this vsync, no async jitter
-      ctxRef.current.drawImage(frame, 0, 0, displayWidth, displayHeight);
+      // Draw at native resolution; CSS scales to display size
+      ctxRef.current.drawImage(frame, 0, 0, frameWidth, frameHeight);
 
       metricsRef.current.framesRendered++;
 
@@ -339,6 +338,7 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
           left: 0,
           width: '100%',
           height: '100%',
+          objectFit: 'contain',
         }}
       />
       {!hasReceivedFrame && (

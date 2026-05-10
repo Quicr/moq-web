@@ -462,7 +462,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
   }, []);
 
   return (
-    <div ref={containerRef} className={`moq-media-player relative group ${className} ${isFullscreen ? 'bg-black flex items-center justify-center h-screen' : ''}`}>
+    <div ref={containerRef} className={`moq-media-player relative group ${className} ${isFullscreen ? 'bg-black flex items-center justify-center w-screen h-screen' : ''}`}>
       {/* Video Display */}
       <div className={`relative ${isFullscreen ? 'w-full h-full flex items-center justify-center' : ''}`}>
         <VideoRenderer
@@ -473,6 +473,7 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
           onFrameTimestamp={handleFrameTimestamp}
           framerate={framerate}
           isLive={isLive}
+          className={isFullscreen ? 'max-w-full max-h-full' : ''}
         />
 
         {/* Seeking Overlay */}

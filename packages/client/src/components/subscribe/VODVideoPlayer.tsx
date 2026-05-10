@@ -163,9 +163,9 @@ export const VODVideoPlayer: React.FC<VODVideoPlayerProps> = ({
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div ref={containerRef} className={`vod-video-player relative ${className} ${isFullscreen ? 'bg-black' : ''}`}>
+    <div ref={containerRef} className={`vod-video-player relative ${className} ${isFullscreen ? 'bg-black w-screen h-screen flex items-center justify-center' : ''}`}>
       {/* Video Display */}
-      <VideoRenderer frame={frame} />
+      <VideoRenderer frame={frame} className={isFullscreen ? 'max-w-full max-h-full' : ''} />
 
       {/* Playback Controls Overlay */}
       {controlsEnabled && (
