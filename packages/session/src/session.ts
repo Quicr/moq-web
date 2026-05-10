@@ -49,6 +49,9 @@ import {
   type FetchOkMessage,
   type FetchErrorMessage,
   type FetchCancelMessage,
+  type TrackStatusMessage,
+  type TrackStatusOkMessage,
+  type TrackStatusErrorMessage,
 } from '@web-moq/core';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
@@ -196,6 +199,16 @@ export class MOQTSession {
   private activeFetches = new Map<number, FetchInfo>();
   /** Request ID to fetch stream mapping for receiving fetch data */
   private fetchStreamBuffers = new Map<number, Uint8Array[]>();
+
+  // ============================================================================
+  // Track Status State (for live edge tracking)
+  // ============================================================================
+
+  /** Pending TRACK_STATUS request callbacks */
+  private trackStatusCallbacks = new Map<number, {
+    resolve: (status: TrackStatusOkMessage) => void;
+    reject: (error: Error) => void;
+  }>();
 
   // ============================================================================
   // VOD Publishing State
@@ -1059,6 +1072,83 @@ export class MOQTSession {
    */
   getActiveFetches(): FetchInfo[] {
     return Array.from(this.activeFetches.values());
+  }
+
+  // ============================================================================
+  // Track Status (for live edge tracking)
+  // ============================================================================
+
+  /**
+   * Request the current status of a track
+   *
+   * Used to determine the live edge position for DVR/trick play.
+   * Returns the last known group and object IDs if the track is in progress.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param timeoutMs - Timeout in milliseconds (default: 5000)
+   * @returns Track status info including lastGroupId and lastObjectId
+   *
+   * @example
+   * ```typescript
+   * const status = await session.requestTrackStatus(
+   *   ['conference', 'meeting123'],
+   *   'video'
+   * );
+   * if (status.statusCode === TrackStatusCode.IN_PROGRESS) {
+   *   console.log('Live edge:', status.lastGroupId, status.lastObjectId);
+   * }
+   * ```
+   */
+  async requestTrackStatus(
+    namespace: string[],
+    trackName: string,
+    timeoutMs = 5000
+  ): Promise<TrackStatusOkMessage> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+
+    log.info('Requesting track status', {
+      namespace: namespace.join('/'),
+      trackName,
+      requestId,
+    });
+
+    // Build TRACK_STATUS message
+    const trackStatusMessage: TrackStatusMessage = {
+      type: MessageType.TRACK_STATUS,
+      requestId,
+      fullTrackName: { namespace, trackName },
+    };
+
+    const bytes = MessageCodec.encode(trackStatusMessage);
+    await this.doSendControl(bytes);
+
+    log.info('Sent TRACK_STATUS message', { requestId });
+
+    // Wait for TRACK_STATUS_OK or TRACK_STATUS_ERROR
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.trackStatusCallbacks.delete(requestId);
+        reject(new Error(`TRACK_STATUS request ${requestId} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.trackStatusCallbacks.set(requestId, {
+        resolve: (status: TrackStatusOkMessage) => {
+          clearTimeout(timer);
+          this.trackStatusCallbacks.delete(requestId);
+          resolve(status);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timer);
+          this.trackStatusCallbacks.delete(requestId);
+          reject(error);
+        },
+      });
+    });
   }
 
   /**
@@ -3154,6 +3244,44 @@ export class MOQTSession {
             subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
           });
           this.publicationManager.setAllForward(0);
+        }
+        break;
+      }
+
+      // Track Status handlers (for live edge tracking)
+      case MessageType.TRACK_STATUS_OK: {
+        const trackStatusOk = message as TrackStatusOkMessage;
+        log.info('Received TRACK_STATUS_OK', {
+          requestId: trackStatusOk.requestId,
+          statusCode: trackStatusOk.statusCode,
+          lastGroupId: trackStatusOk.lastGroupId,
+          lastObjectId: trackStatusOk.lastObjectId,
+        });
+
+        // Resolve the pending callback
+        const callback = this.trackStatusCallbacks.get(trackStatusOk.requestId);
+        if (callback) {
+          callback.resolve(trackStatusOk);
+        } else {
+          log.warn('TRACK_STATUS_OK for unknown request', { requestId: trackStatusOk.requestId });
+        }
+        break;
+      }
+
+      case MessageType.TRACK_STATUS_ERROR: {
+        const trackStatusError = message as TrackStatusErrorMessage;
+        log.error('Received TRACK_STATUS_ERROR', {
+          requestId: trackStatusError.requestId,
+          errorCode: trackStatusError.errorCode,
+          reasonPhrase: trackStatusError.reasonPhrase,
+        });
+
+        // Reject the pending callback
+        const callback = this.trackStatusCallbacks.get(trackStatusError.requestId);
+        if (callback) {
+          callback.reject(new Error(`Track status error: ${trackStatusError.reasonPhrase} (code: ${trackStatusError.errorCode})`));
+        } else {
+          log.warn('TRACK_STATUS_ERROR for unknown request', { requestId: trackStatusError.requestId });
         }
         break;
       }
