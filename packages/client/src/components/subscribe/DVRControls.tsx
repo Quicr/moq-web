@@ -29,6 +29,12 @@ interface DVRControlsProps {
   onSeekEnd?: () => void;
   /** Optional className for styling */
   className?: string;
+  /** Live edge time in milliseconds (if this is a live stream with DVR) */
+  liveEdgeTime?: number;
+  /** Whether playback is at the live edge */
+  isAtLiveEdge?: boolean;
+  /** Callback to jump to live edge (for live streams) */
+  onJumpToLive?: () => void;
 }
 
 /**
@@ -62,7 +68,11 @@ export const DVRControls: React.FC<DVRControlsProps> = ({
   onSeekStart,
   onSeekEnd,
   className = '',
+  liveEdgeTime,
+  isAtLiveEdge = false,
+  onJumpToLive,
 }) => {
+  const isLiveStream = liveEdgeTime !== undefined && liveEdgeTime > 0;
   const [isDragging, setIsDragging] = useState(false);
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [dragTime, setDragTime] = useState<number | null>(null);
@@ -198,6 +208,17 @@ export const DVRControls: React.FC<DVRControlsProps> = ({
             />
           </div>
 
+          {/* Live edge indicator (for live streams with DVR) */}
+          {isLiveStream && duration > 0 && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-1 h-4 bg-red-500 transform -translate-x-1/2 z-10"
+              style={{
+                left: `${Math.min((liveEdgeTime / duration) * 100, 100)}%`,
+              }}
+              title={`Live edge: ${formatTime(liveEdgeTime)}`}
+            />
+          )}
+
           {/* Scrubber handle */}
           <div
             className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-primary-500 rounded-full shadow-md transform -translate-x-1/2 transition-transform ${
@@ -272,21 +293,41 @@ export const DVRControls: React.FC<DVRControlsProps> = ({
             </svg>
           </button>
 
-          {/* Go to end / Live */}
-          <button
-            onClick={() => onSeek(duration)}
-            className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded"
-            title="Go to live"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-            </svg>
-          </button>
+          {/* Go to end (VOD) or Jump to Live (live streams) */}
+          {isLiveStream && onJumpToLive ? (
+            <button
+              onClick={onJumpToLive}
+              className={`px-2 py-1 rounded flex items-center gap-1 transition-colors ${
+                isAtLiveEdge
+                  ? 'bg-red-500 text-white'
+                  : 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50'
+              }`}
+              title="Jump to live"
+              disabled={isAtLiveEdge}
+            >
+              <span className={`w-2 h-2 rounded-full ${isAtLiveEdge ? 'bg-white animate-pulse' : 'bg-red-500'}`} />
+              <span className="text-xs font-medium">LIVE</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => onSeek(duration)}
+              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded"
+              title="Go to end"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              </svg>
+            </button>
+          )}
         </div>
 
-        {/* DVR badge */}
-        <span className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded text-xs">
-          DVR
+        {/* DVR badge or Live DVR badge */}
+        <span className={`px-2 py-0.5 rounded text-xs ${
+          isLiveStream
+            ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400'
+            : 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+        }`}>
+          {isLiveStream ? 'LIVE DVR' : 'DVR'}
         </span>
       </div>
     </div>
