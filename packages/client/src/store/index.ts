@@ -1343,29 +1343,24 @@ export const useStore = create<AppStore>()(
 
             // Start initial idle timer in case no data arrives at all
             // (relay may not send data stream even after FETCH_OK)
-            // Workaround for relay caching bug: relay may return FETCH_OK but not
-            // forward the request upstream when requested groups aren't cached.
-            // Use shorter timeout (3s) for subsequent fetches, longer (8s) for initial fetch.
-            const isInitialFetch = startGroup === 0;
-            const initialIdleTimeoutMs = isInitialFetch ? 8000 : 3000;
+            // Use longer timeout for 4K content which has large keyframes
             fetchIdleTimer = setTimeout(() => {
               if (listenerActive) {
                 listenerActive = false;
                 // No data received at all - report failure with startGroup-1 as last group
                 const lastKnownGroup = startGroup > 0 ? startGroup - 1 : -1;
-                log.warn('VOD fetch timeout - no data received (relay may have caching bug)', {
+                log.warn('VOD fetch timeout - no data received', {
                   controllerRequestId,
                   sessionRequestId,
                   startGroup,
                   endGroup,
-                  timeoutMs: initialIdleTimeoutMs,
                 });
                 controller.onFetchComplete(controllerRequestId, lastKnownGroup);
                 fetchGroupCounts.delete(controllerRequestId);
                 controllerToSessionRequestId.delete(controllerRequestId);
                 if (unsubscribeFetchComplete) unsubscribeFetchComplete();
               }
-            }, initialIdleTimeoutMs);
+            }, 15000); // 15 second timeout for initial data (4K keyframes are large)
 
             // Process any events that arrived while we were waiting for fetch() to return
             for (const event of pendingEvents) {
