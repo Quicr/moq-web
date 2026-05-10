@@ -157,7 +157,8 @@ export class VodFetchController {
   private activeFetches = new Map<number, FetchRequest>();
   private nextRequestId = 1;
   private failedGroupRetries = new Map<number, number>(); // startGroup -> retry count
-  private readonly MAX_RETRIES = 2;
+  // Increased from 2 to 3 to handle relay caching bugs that may require extra retries
+  private readonly MAX_RETRIES = 3;
 
   // Timing
   private framesPerGop: number;
