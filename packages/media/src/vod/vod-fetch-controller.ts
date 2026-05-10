@@ -81,6 +81,8 @@ type ControllerState =
 export interface VodFetchEvents {
   /** Request to fetch a range of groups */
   'fetch-request': { startGroup: number; endGroup: number; requestId: number; trackName?: string };
+  /** Request to cancel a fetch */
+  'fetch-cancel': { requestId: number };
   /** Playback can start (initial buffer filled) */
   'ready-to-play': { bufferedGroups: number; bufferedFrames: number };
   /** Buffer is running low */
@@ -99,6 +101,10 @@ export interface VodFetchEvents {
   'strategy-update': { strategy: string; phase?: string; bufferTarget?: number; qualityTier?: string };
   /** Group(s) unavailable on relay — playback should skip past them */
   'group-unavailable': { startGroup: number; endGroup: number };
+  /** Seek started - signals to clear decode buffers */
+  'seek-start': { targetGroup: number; targetObject: number };
+  /** Seek completed - buffering from new position */
+  'seek-complete': { targetGroup: number; success: boolean };
 }
 
 /**
@@ -551,21 +557,69 @@ export class VodFetchController {
 
   /**
    * Seek to a specific position
+   * Cancels active fetches, clears buffers, and starts fetching from new position
    */
   seek(groupId: number, objectId: number = 0): void {
-    log.info('Seeking', { groupId, objectId, currentGroup: this.playbackGroup });
+    log.info('Seeking', { groupId, objectId, currentGroup: this.playbackGroup, activeFetches: this.activeFetches.size });
 
-    // Reset state
+    // Emit seek-start so listeners can clear decode buffers
+    this.emit('seek-start', { targetGroup: groupId, targetObject: objectId });
+
+    // Cancel all active fetches
+    for (const [requestId] of this.activeFetches) {
+      log.info('Cancelling fetch for seek', { requestId });
+      this.emit('fetch-cancel', { requestId });
+    }
+    this.activeFetches.clear();
+
+    // Clear retry tracking
+    this.failedGroupRetries.clear();
+
+    // Reset state to new position
     this.playbackGroup = groupId;
     this.playbackObject = objectId;
     this.fetchedUpToGroup = groupId - 1;
     this.bufferedUpToGroup = groupId - 1;
     this.bufferedFrames = 0;
-    this.activeFetches.clear();
 
     // Start rebuffering from new position
     this.setState('rebuffering');
     this.fetchFromPosition(groupId);
+
+    // Emit seek-complete after initiating fetch (actual completion when buffer fills)
+    this.emit('seek-complete', { targetGroup: groupId, success: true });
+  }
+
+  /**
+   * Convert time in milliseconds to group ID
+   * @param timeMs - Time in milliseconds
+   * @returns Group ID
+   */
+  timeToGroup(timeMs: number): number {
+    return Math.floor(timeMs / this.config.gopDurationMs);
+  }
+
+  /**
+   * Convert group ID to time in milliseconds
+   * @param groupId - Group ID
+   * @returns Time in milliseconds
+   */
+  groupToTime(groupId: number): number {
+    return groupId * this.config.gopDurationMs;
+  }
+
+  /**
+   * Get the GOP duration in milliseconds
+   */
+  getGopDurationMs(): number {
+    return this.config.gopDurationMs;
+  }
+
+  /**
+   * Get total groups
+   */
+  getTotalGroups(): number {
+    return this.config.totalGroups;
   }
 
   /**

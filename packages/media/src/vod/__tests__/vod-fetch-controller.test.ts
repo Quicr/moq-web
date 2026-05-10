@@ -202,5 +202,89 @@ describe('VodFetchController', () => {
       const seekFetch = fetchRequests[fetchRequests.length - 1];
       expect(seekFetch.startGroup).toBe(50);
     });
+
+    it('emits seek-start and seek-complete events', () => {
+      const controller = new VodFetchController({
+        framerate: 30,
+        gopDurationMs: 2000,
+        totalGroups: 100,
+      });
+
+      const seekStartEvents: Array<{ targetGroup: number; targetObject: number }> = [];
+      const seekCompleteEvents: Array<{ targetGroup: number; success: boolean }> = [];
+
+      controller.on('seek-start', (data) => seekStartEvents.push(data));
+      controller.on('seek-complete', (data) => seekCompleteEvents.push(data));
+      controller.start();
+
+      controller.seek(25, 5);
+
+      expect(seekStartEvents.length).toBe(1);
+      expect(seekStartEvents[0].targetGroup).toBe(25);
+      expect(seekStartEvents[0].targetObject).toBe(5);
+
+      expect(seekCompleteEvents.length).toBe(1);
+      expect(seekCompleteEvents[0].targetGroup).toBe(25);
+      expect(seekCompleteEvents[0].success).toBe(true);
+    });
+
+    it('emits fetch-cancel for active fetches during seek', () => {
+      const controller = new VodFetchController({
+        framerate: 30,
+        gopDurationMs: 2000,
+        totalGroups: 100,
+      });
+
+      const cancelEvents: Array<{ requestId: number }> = [];
+      controller.on('fetch-cancel', (data) => cancelEvents.push(data));
+      controller.start();
+
+      // There's an active fetch after start
+      expect(controller.getStats().activeFetches).toBe(1);
+
+      // Seek should cancel it
+      controller.seek(50);
+      expect(cancelEvents.length).toBe(1);
+    });
+  });
+
+  describe('time/group conversion helpers', () => {
+    it('converts time to group correctly', () => {
+      const controller = new VodFetchController({
+        framerate: 30,
+        gopDurationMs: 2000, // 2 seconds per GOP
+        totalGroups: 100,
+      });
+
+      expect(controller.timeToGroup(0)).toBe(0);
+      expect(controller.timeToGroup(1000)).toBe(0); // 1s is still in first GOP
+      expect(controller.timeToGroup(2000)).toBe(1); // 2s is start of second GOP
+      expect(controller.timeToGroup(5000)).toBe(2); // 5s is in third GOP
+      expect(controller.timeToGroup(10000)).toBe(5); // 10s is in sixth GOP
+    });
+
+    it('converts group to time correctly', () => {
+      const controller = new VodFetchController({
+        framerate: 30,
+        gopDurationMs: 2000,
+        totalGroups: 100,
+      });
+
+      expect(controller.groupToTime(0)).toBe(0);
+      expect(controller.groupToTime(1)).toBe(2000);
+      expect(controller.groupToTime(5)).toBe(10000);
+      expect(controller.groupToTime(50)).toBe(100000);
+    });
+
+    it('returns correct GOP duration and total groups', () => {
+      const controller = new VodFetchController({
+        framerate: 30,
+        gopDurationMs: 1500,
+        totalGroups: 200,
+      });
+
+      expect(controller.getGopDurationMs()).toBe(1500);
+      expect(controller.getTotalGroups()).toBe(200);
+    });
   });
 });

@@ -1144,7 +1144,7 @@ export const useStore = create<AppStore>()(
         };
 
         // Create decode pipeline without subscribing - we'll use FETCH instead
-        const { subscriptionId, pushData, markGroupComplete, skipGroup } = await session.createVodPipeline(
+        const { subscriptionId, pushData, markGroupComplete, skipGroup, clearBuffers } = await session.createVodPipeline(
           namespace.split('/'),
           trackName,
           config,
@@ -1406,6 +1406,22 @@ export const useStore = create<AppStore>()(
           }
         });
 
+        // Handle fetch cancel (during seek)
+        controller.on('fetch-cancel', ({ requestId: cancelRequestId }: { requestId: number }) => {
+          log.info('Cancelling fetch', { cancelRequestId });
+          // Remove from tracking
+          fetchGroupCounts.delete(cancelRequestId);
+          // Note: MOQT session fetch cancel is handled separately if needed
+        });
+
+        // Handle seek start - clear decode buffers
+        controller.on('seek-start', ({ targetGroup, targetObject }: { targetGroup: number; targetObject: number }) => {
+          log.info('Seek start - clearing buffers', { targetGroup, targetObject });
+          // Clear the pipeline's decode buffers
+          // The pipeline will be recreated or flushed by the media session
+          clearBuffers();
+        });
+
         // Start the fetch controller (begins initial buffering from startGroup)
         console.log('[Store] Starting VodFetchController with startGroup', { startGroup, namespace, trackName });
         controller.start(startGroup);
@@ -1505,7 +1521,19 @@ export const useStore = create<AppStore>()(
         const { session } = get();
         if (!session) return;
 
-        await session.seek(subscriptionId, timeMs);
+        // Check if this subscription has a VOD fetch controller
+        const controller = vodFetchControllers.get(subscriptionId);
+        if (controller) {
+          // VOD mode: use controller for coordinated seek
+          const targetGroup = controller.timeToGroup(timeMs);
+          log.info('VOD seek via controller', { subscriptionId, timeMs, targetGroup });
+
+          // Controller handles: cancel fetches, clear buffers, fetch from new position
+          controller.seek(targetGroup, 0);
+        } else {
+          // Live/non-VOD mode: use session seek (FETCH-based)
+          await session.seek(subscriptionId, timeMs);
+        }
       },
 
       updateSyncTime: (audioSubscriptionId: number, videoTimeMs: number) => {

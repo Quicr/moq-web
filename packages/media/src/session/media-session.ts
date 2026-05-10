@@ -803,6 +803,7 @@ export class MediaSession {
     pushData: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
     markGroupComplete: (groupId: number) => void;
     skipGroup: (groupId: number) => void;
+    clearBuffers: () => Promise<void>;
   }> {
     if (!this.isReady) {
       throw new Error('Session not ready');
@@ -946,6 +947,10 @@ export class MediaSession {
       },
       skipGroup: (groupId: number) => {
         pipeline.skipGroup(groupId);
+      },
+      clearBuffers: async () => {
+        log.info('Clearing VOD pipeline buffers for seek', { subscriptionId });
+        await pipeline.reset();
       },
     };
   }
