@@ -1094,6 +1094,9 @@ export const useStore = create<AppStore>()(
         // Track groups received per fetch request for controller notification
         const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
 
+        // Map controller request IDs to session request IDs for fetch cancellation
+        const controllerToSessionRequestId = new Map<number, number>();
+
         // Calculate frame metrics for VOD playback
         const framerate = trackInfo.framerate ?? 30;
         const gopDurationMs = trackInfo.gopDuration ?? 2000;
@@ -1235,6 +1238,7 @@ export const useStore = create<AppStore>()(
 
               controller.onFetchComplete(controllerRequestId, event.lastGroupId);
               fetchGroupCounts.delete(controllerRequestId);
+              controllerToSessionRequestId.delete(controllerRequestId);
               if (unsubscribeFetchComplete) unsubscribeFetchComplete();
             };
 
@@ -1309,6 +1313,7 @@ export const useStore = create<AppStore>()(
                     markGroupComplete(highestGroup);
                     controller.onFetchComplete(controllerRequestId, highestGroup);
                     fetchGroupCounts.delete(controllerRequestId);
+                    controllerToSessionRequestId.delete(controllerRequestId);
                     if (unsubscribeFetchComplete) unsubscribeFetchComplete();
                     log.info('VOD fetch completed via idle detection', {
                       controllerRequestId,
@@ -1331,6 +1336,11 @@ export const useStore = create<AppStore>()(
 
             log.info('VOD fetch issued', { controllerRequestId, sessionRequestId, startGroup, endGroup });
 
+            // Store mapping for fetch cancellation
+            if (sessionRequestId !== null) {
+              controllerToSessionRequestId.set(controllerRequestId, sessionRequestId);
+            }
+
             // Start initial idle timer in case no data arrives at all
             // (relay may not send data stream even after FETCH_OK)
             // Use longer timeout for 4K content which has large keyframes
@@ -1347,6 +1357,7 @@ export const useStore = create<AppStore>()(
                 });
                 controller.onFetchComplete(controllerRequestId, lastKnownGroup);
                 fetchGroupCounts.delete(controllerRequestId);
+                controllerToSessionRequestId.delete(controllerRequestId);
                 if (unsubscribeFetchComplete) unsubscribeFetchComplete();
               }
             }, 15000); // 15 second timeout for initial data (4K keyframes are large)
@@ -1359,6 +1370,7 @@ export const useStore = create<AppStore>()(
           } catch (err) {
             log.error('VOD fetch error', { controllerRequestId, error: (err as Error).message });
             fetchGroupCounts.delete(controllerRequestId);
+            controllerToSessionRequestId.delete(controllerRequestId);
             // Clean up the fetch-complete listener on error
             if (typeof unsubscribeFetchComplete === 'function') {
               unsubscribeFetchComplete();
@@ -1407,11 +1419,24 @@ export const useStore = create<AppStore>()(
         });
 
         // Handle fetch cancel (during seek)
-        controller.on('fetch-cancel', ({ requestId: cancelRequestId }: { requestId: number }) => {
-          log.info('Cancelling fetch', { cancelRequestId });
+        controller.on('fetch-cancel', async ({ requestId: cancelRequestId }: { requestId: number }) => {
+          const sessionRequestId = controllerToSessionRequestId.get(cancelRequestId);
+          log.info('Cancelling fetch', { cancelRequestId, sessionRequestId });
+
           // Remove from tracking
           fetchGroupCounts.delete(cancelRequestId);
-          // Note: MOQT session fetch cancel is handled separately if needed
+          controllerToSessionRequestId.delete(cancelRequestId);
+
+          // Send FETCH_CANCEL to relay to stop data delivery
+          if (sessionRequestId !== undefined) {
+            try {
+              const moqtSession = session.getMOQTSession();
+              await moqtSession.cancelFetch(sessionRequestId);
+              log.info('Sent FETCH_CANCEL to relay', { cancelRequestId, sessionRequestId });
+            } catch (err) {
+              log.warn('Failed to send FETCH_CANCEL', { cancelRequestId, sessionRequestId, error: (err as Error).message });
+            }
+          }
         });
 
         // Handle seek start - clear decode buffers
