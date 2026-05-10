@@ -1097,6 +1097,10 @@ export const useStore = create<AppStore>()(
         // Map controller request IDs to session request IDs for fetch cancellation
         const controllerToSessionRequestId = new Map<number, number>();
 
+        // Track minimum valid group after seek - data from groups below this should be discarded
+        // This prevents stale in-flight data from cancelled fetches from contaminating the decoder
+        let minValidGroup = startGroup;
+
         // Calculate frame metrics for VOD playback
         const framerate = trackInfo.framerate ?? 30;
         const gopDurationMs = trackInfo.gopDuration ?? 2000;
@@ -1260,6 +1264,12 @@ export const useStore = create<AppStore>()(
               },
               {},
               (data: Uint8Array, groupId: number, objectId: number) => {
+                // Discard stale data from cancelled fetches (arrived after seek)
+                if (groupId < minValidGroup) {
+                  log.info('Discarding stale data after seek', { groupId, objectId, minValidGroup, dataSize: data.length });
+                  return;
+                }
+
                 // Track stats for adaptive fetch-ahead
                 const stats = fetchGroupCounts.get(controllerRequestId);
                 if (stats) {
@@ -1439,9 +1449,12 @@ export const useStore = create<AppStore>()(
           }
         });
 
-        // Handle seek start - clear decode buffers
+        // Handle seek start - clear decode buffers and update minimum valid group
         controller.on('seek-start', ({ targetGroup, targetObject }: { targetGroup: number; targetObject: number }) => {
-          log.info('Seek start - clearing buffers', { targetGroup, targetObject });
+          log.info('Seek start - clearing buffers and updating minValidGroup', { targetGroup, targetObject, previousMinValidGroup: minValidGroup });
+          // Update minValidGroup to filter out stale data from cancelled fetches
+          // Any data with groupId < targetGroup should be discarded
+          minValidGroup = targetGroup;
           // Clear the pipeline's decode buffers
           // The pipeline will be recreated or flushed by the media session
           clearBuffers();
