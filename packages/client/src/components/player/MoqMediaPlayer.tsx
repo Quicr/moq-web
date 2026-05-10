@@ -337,7 +337,10 @@ export const MoqMediaPlayer: React.FC<MoqMediaPlayerProps> = ({
 
       // FETCH the target position (same for live and VOD)
       await seekSubscription(subscriptionId, timeMs);
-      // TODO: Seek audio subscription too when audio seek is implemented
+      // Also seek audio subscription to maintain A/V sync
+      if (audioSubscriptionId) {
+        await seekSubscription(audioSubscriptionId, timeMs);
+      }
 
       // Update position
       setCurrentTime(timeMs);
