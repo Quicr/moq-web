@@ -21,3 +21,5 @@ export type {
 export { getResolutionConfig } from './types.js';
 export { LiveEdgeTracker } from './live-edge-tracker.js';
 export type { LiveEdgeInfo, LiveEdgeTrackerEvents, LiveEdgeTrackerConfig } from './live-edge-tracker.js';
+export { LiveTrickPlayController } from './live-trick-play.js';
+export type { LiveTrickPlayConfig, LiveTrickPlayEvents, SeekMode, SeekResult } from './live-trick-play.js';

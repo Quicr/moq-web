@@ -2909,6 +2909,48 @@ export class MOQTSession {
   }
 
   /**
+   * Seek a subscription to a specific position using SUBSCRIBE_UPDATE
+   * Used for live trick play to change the start position
+   */
+  async seekSubscription(
+    subscriptionId: number,
+    groupId: number,
+    objectId: number = 0
+  ): Promise<void> {
+    const subscription = this.subscriptionManager.get(subscriptionId);
+    if (!subscription) {
+      log.warn('No subscription found for seek', { subscriptionId });
+      return;
+    }
+
+    log.info('Seeking subscription', { subscriptionId, groupId, objectId });
+
+    const subscribeUpdateMessage = {
+      type: MessageType.SUBSCRIBE_UPDATE as const,
+      requestId: this.getNextRequestId(),
+      subscriptionRequestId: subscription.requestId,
+      startLocation: { groupId, objectId },
+      endGroup: 0,
+      subscriberPriority: 128,
+      forward: 1,
+    };
+
+    try {
+      const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
+      await this.doSendControl(updateBytes);
+      log.info('Sent SUBSCRIBE_UPDATE (seek)', {
+        subscriptionId,
+        requestId: subscribeUpdateMessage.requestId,
+        groupId,
+        objectId,
+      });
+    } catch (err) {
+      log.error('Failed to send SUBSCRIBE_UPDATE (seek)', { error: (err as Error).message });
+      throw err;
+    }
+  }
+
+  /**
    * Check if a subscription is paused
    */
   isSubscriptionPaused(subscriptionId: number): boolean {
