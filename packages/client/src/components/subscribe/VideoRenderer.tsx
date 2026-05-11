@@ -19,6 +19,14 @@ interface VideoRendererProps {
   height?: number;
   /** Optional className for styling */
   className?: string;
+  /** Track name for overlay */
+  trackName?: string;
+  /** Whether this track is DTS selected */
+  isDtsSelected?: boolean;
+  /** Bitrate in kbps for overlay */
+  bitrateKbps?: number;
+  /** Expected resolution label (e.g., "1080p", "720p") - shows instead of actual frame dimensions */
+  expectedResolution?: string;
 }
 
 /**
@@ -32,6 +40,10 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
   width,
   height: _height,
   className = '',
+  trackName,
+  isDtsSelected,
+  bitrateKbps,
+  expectedResolution,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -161,17 +173,46 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
       }}
     >
       {frame ? (
-        <canvas
-          ref={canvasRef}
-          style={{
-            display: 'block',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-          }}
-        />
+        <>
+          <canvas
+            ref={canvasRef}
+            style={{
+              display: 'block',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+            }}
+          />
+          {/* Video overlay with stats */}
+          <div className="absolute top-2 left-2 right-2 flex items-start justify-between pointer-events-none">
+            {/* Left: Resolution and bitrate */}
+            <div className="flex flex-col gap-1">
+              <div className="bg-black/60 text-white px-2 py-1 rounded text-xs font-mono">
+                {expectedResolution || `${frameWidth}×${frameHeight}`}
+              </div>
+              {bitrateKbps !== undefined && bitrateKbps > 0 && (
+                <div className="bg-black/60 text-white px-2 py-1 rounded text-xs font-mono">
+                  {bitrateKbps >= 1000 ? `${(bitrateKbps / 1000).toFixed(1)} Mbps` : `${bitrateKbps} kbps`}
+                </div>
+              )}
+            </div>
+            {/* Right: DTS Selected badge */}
+            <div className="flex flex-col gap-1 items-end">
+              {isDtsSelected && (
+                <div className="bg-green-500/90 text-white px-2 py-1 rounded text-xs font-bold">
+                  DTS Selected
+                </div>
+              )}
+              {trackName && (
+                <div className="bg-blue-500/80 text-white px-2 py-1 rounded text-xs">
+                  {trackName}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
       ) : (
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center text-gray-400">

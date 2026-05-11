@@ -9,7 +9,7 @@
  * any media-specific dependencies.
  */
 
-import type { GroupOrder } from '@web-moq/core';
+import type { GroupOrder, SwitchingSetAssignment } from '@web-moq/core';
 
 /**
  * Session state
@@ -39,6 +39,8 @@ export interface SubscribeOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
+  /** DTS Switching Set Assignment (for relay-side track switching) */
+  dtsAssignment?: SwitchingSetAssignment;
 }
 
 /**

@@ -970,39 +970,34 @@ export class MessageCodec {
       writer.writeVarInt(message.requestId);
       MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
 
-      // DEBUG: Send empty parameters to test server parsing
-      // TODO: Re-enable parameters once server compatibility is confirmed
-      writer.writeVarInt(0); // Empty parameters count
+      // Build parameters: subscriberPriority, subscriptionFilter, groupOrder, plus any custom params
+      const params = new Map<number, Uint8Array>(message.parameters ?? []);
 
-      // // Build parameters: subscriberPriority, subscriptionFilter, groupOrder
-      // // Keys: 0x20 (even), 0x21 (odd), 0x22 (even)
-      // const params = new Map<number, Uint8Array>(message.parameters ?? []);
+      // Add subscriber priority (0x20, even) - encode as varint bytes
+      if (message.subscriberPriority !== undefined) {
+        params.set(0x20, VarInt.encode(message.subscriberPriority));
+      }
 
-      // // Add subscriber priority (0x20, even) - encode as varint bytes
-      // if (message.subscriberPriority !== undefined) {
-      //   params.set(0x20, VarInt.encode(message.subscriberPriority));
-      // }
+      // Add subscription filter (0x21, odd) - encode as length + bytes
+      // Filter format: filterType [startGroup startObject] [endGroup]
+      const filterWriter = new BufferWriter();
+      filterWriter.writeVarInt(message.filterType);
+      if (message.filterType === FilterType.ABSOLUTE_START ||
+          message.filterType === FilterType.ABSOLUTE_RANGE) {
+        filterWriter.writeVarInt(message.startGroup ?? 0);
+        filterWriter.writeVarInt(message.startObject ?? 0);
+      }
+      if (message.filterType === FilterType.ABSOLUTE_RANGE) {
+        filterWriter.writeVarInt(message.endGroup ?? 0);
+      }
+      params.set(0x21, filterWriter.toUint8Array());
 
-      // // Add subscription filter (0x21, odd) - encode as length + bytes
-      // // Filter format: filterType [startGroup startObject] [endGroup]
-      // const filterWriter = new BufferWriter();
-      // filterWriter.writeVarInt(message.filterType);
-      // if (message.filterType === FilterType.ABSOLUTE_START ||
-      //     message.filterType === FilterType.ABSOLUTE_RANGE) {
-      //   filterWriter.writeVarInt(message.startGroup ?? 0);
-      //   filterWriter.writeVarInt(message.startObject ?? 0);
-      // }
-      // if (message.filterType === FilterType.ABSOLUTE_RANGE) {
-      //   filterWriter.writeVarInt(message.endGroup ?? 0);
-      // }
-      // params.set(0x21, filterWriter.toUint8Array());
+      // Add group order (0x22, even) - encode as varint bytes
+      if (message.groupOrder !== undefined) {
+        params.set(0x22, VarInt.encode(message.groupOrder));
+      }
 
-      // // Add group order (0x22, even) - encode as varint bytes
-      // if (message.groupOrder !== undefined) {
-      //   params.set(0x22, VarInt.encode(message.groupOrder));
-      // }
-
-      // MessageCodec.encodeRequestParameters(writer, params);
+      MessageCodec.encodeRequestParameters(writer, params);
     } else {
       // Draft-14 SUBSCRIBE format:
       // Request ID, Track Namespace, Track Name, Subscriber Priority, Group Order,

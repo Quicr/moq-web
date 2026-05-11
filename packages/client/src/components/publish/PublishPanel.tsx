@@ -32,6 +32,7 @@ interface TrackConfig {
   priority: number;
   deliveryMode: DeliveryMode;
   isPublishing: boolean;
+  isPaused: boolean;
   trackAlias?: bigint;
 }
 
@@ -43,6 +44,9 @@ export const PublishPanel: React.FC = () => {
     sessionState,
     startPublishing: storeStartPublishing,
     stopPublishing: storeStopPublishing,
+    pausePublishing,
+    resumePublishing,
+    isPublishPaused,
     keyframeInterval,
     videoResolution,
     setKeyframeInterval,
@@ -73,6 +77,13 @@ export const PublishPanel: React.FC = () => {
     deliveryTimeout: 5000,
     priority: 128,
     deliveryMode: 'stream', // Video defaults to stream
+  });
+
+  // Simulcast quality selection
+  const [simulcastQualities, setSimulcastQualities] = useState({
+    '1080p': true,
+    '720p': true,
+    '480p': true,
   });
 
   // Voice Activity Detection
@@ -204,6 +215,7 @@ export const PublishPanel: React.FC = () => {
       priority: newTrack.priority ?? 128,
       deliveryMode: newTrack.deliveryMode ?? defaultDeliveryMode,
       isPublishing: false,
+      isPaused: false,
     };
 
     setTrackConfigs([...trackConfigs, config]);
@@ -211,6 +223,64 @@ export const PublishPanel: React.FC = () => {
       ...newTrack,
       trackName: '',
     });
+  };
+
+  // Build simulcast track configs based on selected qualities
+  const buildSimulcastConfigs = (): TrackConfig[] => {
+    if (!newTrack.namespace) return [];
+
+    const qualityConfigs: Record<string, { resolution: Resolution; bitrate: number }> = {
+      '1080p': { resolution: '1080p', bitrate: 4000000 },
+      '720p': { resolution: '720p', bitrate: 2000000 },
+      '480p': { resolution: '480p', bitrate: 500000 },
+    };
+
+    return Object.entries(simulcastQualities)
+      .filter(([, enabled]) => enabled)
+      .map(([quality]) => ({
+        id: `track-${Date.now()}-${quality}`,
+        mediaType: 'video' as MediaType,
+        namespace: newTrack.namespace!,
+        trackName: `video-${quality}`,
+        resolution: qualityConfigs[quality].resolution,
+        framerate: 30 as Framerate,
+        bitrate: qualityConfigs[quality].bitrate,
+        deliveryTimeout: 5000,
+        priority: 128,
+        deliveryMode: 'stream' as DeliveryMode,
+        isPublishing: false,
+        isPaused: false,
+      }));
+  };
+
+  // Add simulcast tracks (without starting)
+  const addDtsSimulcastTracks = () => {
+    const configs = buildSimulcastConfigs();
+    if (configs.length === 0) return;
+    setTrackConfigs([...trackConfigs, ...configs]);
+  };
+
+  // Add AND start simulcast tracks in one action
+  const addAndStartSimulcast = async () => {
+    const configs = buildSimulcastConfigs();
+    if (configs.length === 0) return;
+
+    // Add to state
+    const newConfigs = [...trackConfigs, ...configs];
+    setTrackConfigs(newConfigs);
+
+    // Start each track immediately (don't wait for state update)
+    for (const config of configs) {
+      await startPublishingTrack(config);
+    }
+  };
+
+  // Start all stopped tracks
+  const startAllTracks = async () => {
+    const stoppedTracks = trackConfigs.filter(t => !t.isPublishing);
+    for (const track of stoppedTracks) {
+      await startPublishingTrack(track);
+    }
   };
 
   const removeTrackConfig = (id: string) => {
@@ -244,7 +314,7 @@ export const PublishPanel: React.FC = () => {
         return;
       }
 
-      // Pass the stream directly to startPublishing
+      // Pass the stream directly to startPublishing with per-track config for simulcast
       const trackAlias = await storeStartPublishing(
         config.namespace,
         config.trackName,
@@ -253,7 +323,13 @@ export const PublishPanel: React.FC = () => {
         config.deliveryMode,
         videoEnabled,
         audioEnabled,
-        stream
+        stream,
+        // Per-track video settings for simulcast (different resolution/bitrate per track)
+        config.mediaType === 'video' ? {
+          resolution: config.resolution,
+          bitrate: config.bitrate,
+          framerate: config.framerate,
+        } : undefined
       );
 
       setTrackConfigs(trackConfigs.map(t =>
@@ -415,9 +491,116 @@ export const PublishPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* Add New Track */}
+      {/* Add Video Tracks */}
       <div className="panel">
-        <div className="panel-header">Add Track to Publish</div>
+        <div className="panel-header">Add Video Tracks</div>
+        <div className="panel-body space-y-4">
+          <div>
+            <label className="label">Namespace</label>
+            <input
+              type="text"
+              value={newTrack.namespace}
+              onChange={(e) => setNewTrack({ ...newTrack, namespace: e.target.value })}
+              placeholder="suhas"
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">Use same namespace on subscriber</p>
+          </div>
+
+          {/* Quality Selection */}
+          <div>
+            <label className="label">Select Qualities</label>
+            <div className="grid grid-cols-3 gap-2 text-xs text-center">
+              <label className={`p-3 rounded cursor-pointer border-2 transition-colors ${
+                simulcastQualities['1080p']
+                  ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-400'
+                  : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-blue-300'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={simulcastQualities['1080p']}
+                  onChange={(e) => setSimulcastQualities({ ...simulcastQualities, '1080p': e.target.checked })}
+                  className="sr-only"
+                />
+                <div className="font-semibold text-blue-700 dark:text-blue-300">1080p</div>
+                <div className="text-gray-500">4 Mbps</div>
+              </label>
+              <label className={`p-3 rounded cursor-pointer border-2 transition-colors ${
+                simulcastQualities['720p']
+                  ? 'bg-green-50 dark:bg-green-900/20 border-green-400'
+                  : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-green-300'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={simulcastQualities['720p']}
+                  onChange={(e) => setSimulcastQualities({ ...simulcastQualities, '720p': e.target.checked })}
+                  className="sr-only"
+                />
+                <div className="font-semibold text-green-700 dark:text-green-300">720p</div>
+                <div className="text-gray-500">2 Mbps</div>
+              </label>
+              <label className={`p-3 rounded cursor-pointer border-2 transition-colors ${
+                simulcastQualities['480p']
+                  ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-400'
+                  : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-yellow-300'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={simulcastQualities['480p']}
+                  onChange={(e) => setSimulcastQualities({ ...simulcastQualities, '480p': e.target.checked })}
+                  className="sr-only"
+                />
+                <div className="font-semibold text-yellow-700 dark:text-yellow-300">480p</div>
+                <div className="text-gray-500">0.5 Mbps</div>
+              </label>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              {Object.values(simulcastQualities).filter(v => v).length === 0
+                ? 'Select at least one quality'
+                : `Tracks: ${Object.entries(simulcastQualities).filter(([,v]) => v).map(([q]) => `video-${q}`).join(', ')}`
+              }
+            </p>
+          </div>
+
+          {/* Main action button */}
+          <button
+            onClick={addAndStartSimulcast}
+            disabled={sessionState !== 'ready' || !newTrack.namespace || !Object.values(simulcastQualities).some(v => v)}
+            className="btn-success w-full py-3 text-base font-semibold"
+          >
+            Add & Start Publishing ({Object.values(simulcastQualities).filter(v => v).length} track{Object.values(simulcastQualities).filter(v => v).length !== 1 ? 's' : ''})
+          </button>
+
+          {/* Secondary actions */}
+          <div className="flex gap-2 text-sm">
+            <button
+              onClick={addDtsSimulcastTracks}
+              disabled={!newTrack.namespace || !Object.values(simulcastQualities).some(v => v)}
+              className="btn-secondary flex-1"
+            >
+              Add Only
+            </button>
+            {trackConfigs.some(t => !t.isPublishing) && (
+              <button
+                onClick={startAllTracks}
+                disabled={sessionState !== 'ready'}
+                className="btn-primary flex-1"
+              >
+                Start All Stopped
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Advanced: Single Track (collapsed by default) */}
+      <details className="panel">
+        <summary className="panel-header cursor-pointer flex items-center gap-2">
+          <svg className="w-4 h-4 transition-transform details-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          Advanced: Add Single Track
+        </summary>
         <div className="panel-body space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -426,7 +609,6 @@ export const PublishPanel: React.FC = () => {
                 value={newTrack.mediaType}
                 onChange={(e) => {
                   const mediaType = e.target.value as MediaType;
-                  // Auto-set delivery mode default: stream for video, datagram for audio
                   const deliveryMode: DeliveryMode = mediaType === 'video' ? 'stream' : 'datagram';
                   setNewTrack({ ...newTrack, mediaType, deliveryMode });
                 }}
@@ -445,25 +627,13 @@ export const PublishPanel: React.FC = () => {
                     onChange={(e) => setNewTrack({ ...newTrack, resolution: e.target.value as Resolution })}
                     className="input"
                   >
-                    <option value="1080p">1080p (1920x1080)</option>
-                    <option value="720p">720p (1280x720)</option>
-                    <option value="480p">480p (854x480)</option>
+                    <option value="1080p">1080p</option>
+                    <option value="720p">720p</option>
+                    <option value="480p">480p</option>
                   </select>
                 </div>
                 <div>
-                  <label className="label">Frame Rate</label>
-                  <select
-                    value={newTrack.framerate}
-                    onChange={(e) => setNewTrack({ ...newTrack, framerate: Number(e.target.value) as Framerate })}
-                    className="input"
-                  >
-                    <option value={30}>30 fps</option>
-                    <option value={24}>24 fps</option>
-                    <option value={15}>15 fps</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="label">Bitrate (Mbps)</label>
+                  <label className="label">Bitrate</label>
                   <select
                     value={newTrack.bitrate}
                     onChange={(e) => setNewTrack({ ...newTrack, bitrate: Number(e.target.value) })}
@@ -479,7 +649,7 @@ export const PublishPanel: React.FC = () => {
             )}
             {newTrack.mediaType === 'audio' && (
               <div>
-                <label className="label">Bitrate (kbps)</label>
+                <label className="label">Bitrate</label>
                 <select
                   value={newTrack.bitrate}
                   onChange={(e) => setNewTrack({ ...newTrack, bitrate: Number(e.target.value) })}
@@ -493,73 +663,24 @@ export const PublishPanel: React.FC = () => {
             )}
           </div>
           <div>
-            <label className="label">Namespace</label>
-            <input
-              type="text"
-              value={newTrack.namespace}
-              onChange={(e) => setNewTrack({ ...newTrack, namespace: e.target.value })}
-              placeholder="conference/room-1/media"
-              className="input"
-            />
-          </div>
-          <div>
             <label className="label">Track Name</label>
             <input
               type="text"
               value={newTrack.trackName}
               onChange={(e) => setNewTrack({ ...newTrack, trackName: e.target.value })}
-              placeholder={newTrack.mediaType === 'video' ? 'user-id/video' : 'user-id/audio'}
+              placeholder={newTrack.mediaType === 'video' ? 'video-custom' : 'audio'}
               className="input"
             />
-          </div>
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="label">Delivery Mode</label>
-              <select
-                value={newTrack.deliveryMode}
-                onChange={(e) => setNewTrack({ ...newTrack, deliveryMode: e.target.value as DeliveryMode })}
-                className="input"
-              >
-                <option value="stream">Stream</option>
-                <option value="datagram">Datagram</option>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">Stream for video, Datagram for audio</p>
-            </div>
-            <div>
-              <label className="label">Delivery Timeout (ms)</label>
-              <input
-                type="number"
-                value={newTrack.deliveryTimeout}
-                onChange={(e) => setNewTrack({ ...newTrack, deliveryTimeout: Number(e.target.value) })}
-                placeholder="5000"
-                min={0}
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">0 = drop immediately</p>
-            </div>
-            <div>
-              <label className="label">Priority</label>
-              <input
-                type="number"
-                value={newTrack.priority}
-                onChange={(e) => setNewTrack({ ...newTrack, priority: Number(e.target.value) })}
-                placeholder="128"
-                min={0}
-                max={255}
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">0 = highest, 255 = lowest</p>
-            </div>
           </div>
           <button
             onClick={addTrackConfig}
             disabled={!newTrack.namespace || !newTrack.trackName}
-            className="btn-primary w-full"
+            className="btn-secondary w-full"
           >
-            Add Track
+            Add Single Track
           </button>
         </div>
-      </div>
+      </details>
 
       {/* Track Configurations */}
       {trackConfigs.length > 0 && (
@@ -639,26 +760,101 @@ export const PublishPanel: React.FC = () => {
                       disabled={sessionState !== 'ready'}
                       className="btn-success btn-sm flex-1"
                     >
-                      Start Publishing
+                      Start
                     </button>
                   ) : (
                     <button
                       onClick={() => stopPublishingTrack(config)}
                       className="btn-danger btn-sm flex-1"
+                      title="Stop publishing - relay will select next best track (DTS)"
                     >
-                      Stop Publishing
+                      Stop
                     </button>
                   )}
                   <button
                     onClick={() => removeTrackConfig(config.id)}
                     disabled={config.isPublishing}
                     className="btn-secondary btn-sm"
+                    title="Remove track configuration"
                   >
                     Remove
                   </button>
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* DTS Simulcast Control - Quick toggle for each quality */}
+      {trackConfigs.some(t => t.isPublishing && t.mediaType === 'video') && (
+        <div className="panel">
+          <div className="panel-header flex items-center gap-2">
+            <span>DTS Simulcast Control</span>
+            <span className="text-xs text-gray-500 font-normal">(pause/resume triggers relay track selection)</span>
+          </div>
+          <div className="panel-body">
+            <div className="grid grid-cols-3 gap-3">
+              {['1080p', '720p', '480p'].map(quality => {
+                const config = trackConfigs.find(t => t.trackName === `video-${quality}`);
+                const isPublishing = config?.isPublishing ?? false;
+                const isConfigured = !!config;
+                // Check if the track is paused (only relevant if publishing)
+                const trackKey = config ? `${config.namespace}/${config.trackName}` : '';
+                const announceAlias = announceTrackAliases.get(trackKey);
+                const effectiveAlias = useAnnounceFlow && announceAlias !== undefined
+                  ? announceAlias
+                  : config?.trackAlias;
+                const isPaused = isPublishing && effectiveAlias !== undefined && isPublishPaused(effectiveAlias);
+                const isActive = isPublishing && !isPaused;
+
+                return (
+                  <button
+                    key={quality}
+                    onClick={() => {
+                      if (!config || effectiveAlias === undefined) return;
+                      if (isActive) {
+                        // Pause - stops sending frames
+                        pausePublishing(effectiveAlias);
+                        setTrackConfigs(trackConfigs.map(t =>
+                          t.id === config.id ? { ...t, isPaused: true } : t
+                        ));
+                      } else if (isPaused) {
+                        // Resume - starts sending frames again
+                        resumePublishing(effectiveAlias);
+                        setTrackConfigs(trackConfigs.map(t =>
+                          t.id === config.id ? { ...t, isPaused: false } : t
+                        ));
+                      }
+                    }}
+                    disabled={!isConfigured || !isPublishing || sessionState !== 'ready'}
+                    className={`p-4 rounded-lg border-2 transition-all ${
+                      !isConfigured || !isPublishing
+                        ? 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 opacity-50 cursor-not-allowed'
+                        : isActive
+                        ? 'bg-green-100 dark:bg-green-900/30 border-green-500 hover:bg-green-200 dark:hover:bg-green-900/50'
+                        : 'bg-yellow-100 dark:bg-yellow-900/30 border-yellow-400 hover:bg-yellow-200 dark:hover:bg-yellow-900/50'
+                    }`}
+                  >
+                    <div className={`text-lg font-bold ${
+                      !isConfigured || !isPublishing ? 'text-gray-400' :
+                      isActive ? 'text-green-700 dark:text-green-300' : 'text-yellow-600 dark:text-yellow-400'
+                    }`}>
+                      {quality}
+                    </div>
+                    <div className={`text-xs mt-1 ${
+                      !isConfigured || !isPublishing ? 'text-gray-400' :
+                      isActive ? 'text-green-600 dark:text-green-400' : 'text-yellow-500 dark:text-yellow-400'
+                    }`}>
+                      {!isConfigured ? 'Not configured' : !isPublishing ? 'Not publishing' : isActive ? 'SENDING' : 'PAUSED'}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-500 mt-3">
+              Click to pause/resume. Pausing stops frames; relay selects next available track.
+            </p>
           </div>
         </div>
       )}

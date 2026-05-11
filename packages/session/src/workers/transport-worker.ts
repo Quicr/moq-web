@@ -475,8 +475,10 @@ async function closeStream(streamId: number): Promise<void> {
     respond({ type: 'stream-closed', streamId });
   } catch (err) {
     const message = (err as Error).message;
-    // STOP_SENDING and RESET_STREAM are normal - relay already closed the stream
-    if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM')) {
+    // These are all normal close race conditions - not errors:
+    // - STOP_SENDING/RESET_STREAM: relay already closed the stream
+    // - "already been requested to be closed": double-close race condition
+    if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM') || message.includes('already been requested to be closed')) {
       outgoingStreams.delete(streamId);
       respond({ type: 'stream-closed', streamId });
     } else {

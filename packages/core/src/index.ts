@@ -239,6 +239,14 @@ export {
   trackAliasToNumber,
 } from './encoding/cityhash64.js';
 
+// DTS (Dynamic Track Switching) utilities
+export {
+  serializeSwitchingSetAssignment,
+  deserializeSwitchingSetAssignment,
+} from './encoding/dts.js';
+
+export type { SwitchingSetAssignment } from './encoding/dts.js';
+
 // Buffer pooling
 export {
   BufferPool,

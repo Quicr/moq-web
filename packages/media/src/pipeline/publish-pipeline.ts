@@ -61,6 +61,14 @@ export interface PublishPipelineConfig {
   quicrInteropEnabled?: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId?: number;
+  /**
+   * Enable frame scaling for simulcast encoding.
+   * When enabled, input video frames will be scaled to match the configured
+   * video.width and video.height before encoding. This is required for proper
+   * simulcast where different tracks encode at different resolutions.
+   * Default: false (frames are encoded at their original resolution)
+   */
+  enableFrameScaling?: boolean;
 }
 
 /**
@@ -169,6 +177,10 @@ export class PublishPipeline {
   private videoReader?: ReadableStreamDefaultReader<VideoFrame>;
   /** Audio frame reader (for cancellation on stop) */
   private audioReader?: ReadableStreamDefaultReader<AudioData>;
+  /** Offscreen canvas for frame scaling (when enableFrameScaling is true) */
+  private scalingCanvas?: OffscreenCanvas;
+  /** Canvas context for frame scaling */
+  private scalingCtx?: OffscreenCanvasRenderingContext2D;
   /** Video group ID (main thread mode only) - initialized with time-based ID */
   private videoGroupId = getInitialGroupId();
   /** Video object ID (main thread mode only) */
@@ -413,12 +425,44 @@ export class PublishPipeline {
   }
 
   /**
+   * Scale a video frame to the target resolution using OffscreenCanvas
+   */
+  private scaleVideoFrame(frame: VideoFrame, targetWidth: number, targetHeight: number): VideoFrame {
+    // Initialize scaling canvas if needed
+    if (!this.scalingCanvas || this.scalingCanvas.width !== targetWidth || this.scalingCanvas.height !== targetHeight) {
+      this.scalingCanvas = new OffscreenCanvas(targetWidth, targetHeight);
+      this.scalingCtx = this.scalingCanvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
+      log.info('Initialized scaling canvas', { targetWidth, targetHeight });
+    }
+
+    // Draw the frame scaled to target dimensions
+    this.scalingCtx!.drawImage(frame, 0, 0, targetWidth, targetHeight);
+
+    // Create a new VideoFrame from the scaled canvas
+    const scaledFrame = new VideoFrame(this.scalingCanvas, {
+      timestamp: frame.timestamp,
+      duration: frame.duration ?? undefined,
+    });
+
+    return scaledFrame;
+  }
+
+  /**
    * Process video frames from track
    */
   private async processVideoFrames(
     reader: ReadableStreamDefaultReader<VideoFrame>
   ): Promise<void> {
-    log.info('Starting video frame processing', { useWorker: this.useWorker });
+    const enableScaling = this.config.enableFrameScaling && this.config.video;
+    const targetWidth = this.config.video?.width;
+    const targetHeight = this.config.video?.height;
+
+    log.info('Starting video frame processing', {
+      useWorker: this.useWorker,
+      enableFrameScaling: enableScaling,
+      targetResolution: enableScaling ? `${targetWidth}x${targetHeight}` : 'native',
+    });
+
     let frameCount = 0;
     try {
       while (this._state === 'running' && !this._stopping) {
@@ -430,28 +474,43 @@ export class PublishPipeline {
         }
 
         if (frame) {
-
           frameCount++;
+
+          // Determine if we need to scale this frame
+          const needsScaling = enableScaling &&
+            targetWidth && targetHeight &&
+            (frame.displayWidth !== targetWidth || frame.displayHeight !== targetHeight);
+
           if (frameCount === 1 || frameCount % 30 === 0) {
             log.info('Processing video frame', {
               frameCount,
               timestamp: frame.timestamp,
-              width: frame.displayWidth,
-              height: frame.displayHeight,
+              inputWidth: frame.displayWidth,
+              inputHeight: frame.displayHeight,
+              needsScaling,
+              targetWidth: needsScaling ? targetWidth : undefined,
+              targetHeight: needsScaling ? targetHeight : undefined,
               useWorker: this.useWorker,
             });
+          }
+
+          // Scale frame if needed
+          let frameToEncode: VideoFrame = frame;
+          if (needsScaling) {
+            frameToEncode = this.scaleVideoFrame(frame, targetWidth!, targetHeight!);
+            frame.close(); // Close original frame after scaling
           }
 
           if (this.useWorker && this.encodeWorkerClient) {
             // Worker mode - transfer frame to worker (zero-copy)
             // Note: frame ownership transfers, no need to close
-            this.encodeWorkerClient.encodeVideo(frame);
+            this.encodeWorkerClient.encodeVideo(frameToEncode);
           } else if (this.videoEncoder) {
             // Main thread mode - encode locally
-            await this.videoEncoder.encode(frame);
-            frame.close();
+            await this.videoEncoder.encode(frameToEncode);
+            frameToEncode.close();
           } else {
-            frame.close();
+            frameToEncode.close();
           }
         }
       }

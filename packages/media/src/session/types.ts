@@ -7,7 +7,7 @@
  * Type definitions for the media-specific session layer.
  */
 
-import type { GroupOrder } from '@web-moq/core';
+import type { GroupOrder, SwitchingSetAssignment } from '@web-moq/core';
 
 /**
  * Session state
@@ -143,6 +143,16 @@ export interface MediaConfig {
   quicrInteropEnabled?: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId?: number;
+
+  // Simulcast encoding options
+  /**
+   * Enable frame scaling for simulcast encoding.
+   * When enabled, input video frames will be scaled to match the configured
+   * videoResolution before encoding. This is required for proper simulcast
+   * where different tracks encode at different resolutions from the same camera.
+   * Default: false (frames are encoded at their original resolution)
+   */
+  enableFrameScaling?: boolean;
 }
 
 /**
@@ -153,6 +163,8 @@ export interface MediaSubscribeOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
+  /** DTS Switching Set Assignment (for relay-side track switching) */
+  dtsAssignment?: SwitchingSetAssignment;
 }
 
 /**

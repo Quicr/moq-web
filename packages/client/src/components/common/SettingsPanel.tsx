@@ -312,6 +312,8 @@ export const SettingsPanel: React.FC = () => {
     setQuicrInteropEnabled,
     quicrParticipantId,
     setQuicrParticipantId,
+    enableFrameScaling,
+    setEnableFrameScaling,
   } = useStore();
 
   // Check if current settings differ from the selected profile
@@ -624,6 +626,9 @@ export const SettingsPanel: React.FC = () => {
                     <span>8 Mbps</span>
                   </div>
                 </div>
+                <SettingRow label="Enable Frame Scaling" description="Scale input frames to target resolution for simulcast encoding" tooltip="When enabled, input video frames from the camera will be scaled to match the configured resolution before encoding. Required for proper simulcast where different tracks encode at different resolutions (e.g., 1080p, 720p, 480p) from the same camera source.">
+                  <Toggle enabled={enableFrameScaling} onChange={() => setEnableFrameScaling(!enableFrameScaling)} color="bg-rose-500" />
+                </SettingRow>
               </div>
             </div>
 
