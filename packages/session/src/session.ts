@@ -31,6 +31,7 @@ import {
   Logger,
   IS_DRAFT_16,
   getCurrentALPNProtocol,
+  serializeSwitchingSetAssignment,
   type ClientSetupMessage,
   type ServerSetupMessage,
   type PublishMessage,
@@ -760,6 +761,20 @@ export class MOQTSession {
     };
     this.subscriptionManager.add(subscription);
 
+    // Build parameters map
+    const parameters = new Map<RequestParameter, Uint8Array>();
+
+    // Add DTS SWITCHING-SET-ASSIGNMENT if provided
+    if (options?.dtsAssignment) {
+      const dtsBytes = serializeSwitchingSetAssignment(options.dtsAssignment);
+      parameters.set(RequestParameter.SWITCHING_SET_ASSIGNMENT, dtsBytes);
+      log.info('Adding DTS assignment to SUBSCRIBE', {
+        switchingSetId: options.dtsAssignment.switchingSetId,
+        thresholdKbps: options.dtsAssignment.throughputThresholdKbps,
+        activate: options.dtsAssignment.activateSwitching,
+      });
+    }
+
     // Send SUBSCRIBE message
     const subscribeMessage: SubscribeMessage = {
       type: MessageType.SUBSCRIBE,
@@ -769,7 +784,7 @@ export class MOQTSession {
       subscriberPriority: options?.priority ?? 128,
       groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
       filterType: FilterType.LATEST_GROUP,
-      parameters: new Map(),
+      parameters,
     };
 
     const subscribeBytes = MessageCodec.encode(subscribeMessage);

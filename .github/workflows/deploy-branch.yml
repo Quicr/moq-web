@@ -6,7 +6,7 @@ on:
       branch:
         description: 'Branch to deploy'
         required: true
-        default: 'jitter-overhaul'
+        default: 'dts'
 
 permissions:
   contents: read
@@ -76,11 +76,33 @@ jobs:
         env:
           BASE_URL: /${{ github.event.repository.name }}/14/
 
-      - name: Combine all builds
+      - name: Add draft-14 to combined
+        run: mv packages/client/dist dist-combined/14
+
+      - name: Download existing gh-pages to preserve other branches
         run: |
-          mv packages/client/dist dist-combined/14
           mkdir -p dist-combined/branches
-          mv branch-build/${{ github.event.inputs.branch }} dist-combined/branches/
+          # Clone just the gh-pages branch (shallow) to get existing branch builds
+          git clone --depth 1 --branch gh-pages https://github.com/${{ github.repository }}.git gh-pages-existing || true
+          # Copy existing branches (if any) except the one we're rebuilding
+          if [ -d "gh-pages-existing/branches" ]; then
+            for dir in gh-pages-existing/branches/*/; do
+              branch_name=$(basename "$dir")
+              if [ "$branch_name" != "${{ github.event.inputs.branch }}" ]; then
+                echo "Preserving existing branch: $branch_name"
+                cp -r "$dir" "dist-combined/branches/"
+              fi
+            done
+          fi
+          rm -rf gh-pages-existing
+
+      - name: Add new branch build
+        run: mv branch-build/${{ github.event.inputs.branch }} dist-combined/branches/
+
+      - name: List deployed branches
+        run: |
+          echo "Branches that will be deployed:"
+          ls -la dist-combined/branches/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

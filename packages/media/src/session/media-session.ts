@@ -68,6 +68,10 @@ interface ActivePublication {
   cleanupHandlers: Array<() => void>;
   /** Secure Objects context for encryption (if enabled) */
   secureContext?: SecureObjectsContext;
+  /** Source stream for pause/resume */
+  stream?: MediaStream;
+  /** Paused state */
+  paused: boolean;
 }
 
 /**
@@ -370,6 +374,8 @@ export class MediaSession {
       // QuicR-Mac interop settings
       quicrInteropEnabled: config.quicrInteropEnabled,
       quicrParticipantId: config.quicrParticipantId,
+      // Frame scaling for simulcast
+      enableFrameScaling: config.enableFrameScaling,
     });
 
     // Build publish options
@@ -459,6 +465,8 @@ export class MediaSession {
       pipeline,
       cleanupHandlers,
       secureContext,
+      stream,
+      paused: false,
     });
 
     // Start the pipeline
@@ -498,6 +506,78 @@ export class MediaSession {
     await this.session.unpublish(trackAlias);
 
     log.info('Publishing stopped', { trackAlias: key });
+  }
+
+  /**
+   * Pause publishing a track (stops sending frames but keeps the track established)
+   *
+   * @param trackAlias - Track alias to pause
+   */
+  pausePublish(trackAlias: bigint | string): void {
+    const key = trackAlias.toString();
+    const publication = this.publications.get(key);
+    if (!publication) {
+      log.warn('No publication found for track alias', { trackAlias: key });
+      return;
+    }
+
+    if (publication.paused) {
+      log.debug('Publication already paused', { trackAlias: key });
+      return;
+    }
+
+    // Disable video tracks to stop frame production
+    if (publication.stream) {
+      for (const track of publication.stream.getVideoTracks()) {
+        track.enabled = false;
+        log.info('Paused video track', { trackAlias: key, trackId: track.id });
+      }
+    }
+
+    publication.paused = true;
+    log.info('Publishing paused', { trackAlias: key });
+  }
+
+  /**
+   * Resume publishing a paused track
+   *
+   * @param trackAlias - Track alias to resume
+   */
+  resumePublish(trackAlias: bigint | string): void {
+    const key = trackAlias.toString();
+    const publication = this.publications.get(key);
+    if (!publication) {
+      log.warn('No publication found for track alias', { trackAlias: key });
+      return;
+    }
+
+    if (!publication.paused) {
+      log.debug('Publication not paused', { trackAlias: key });
+      return;
+    }
+
+    // Re-enable video tracks to resume frame production
+    if (publication.stream) {
+      for (const track of publication.stream.getVideoTracks()) {
+        track.enabled = true;
+        log.info('Resumed video track', { trackAlias: key, trackId: track.id });
+      }
+    }
+
+    publication.paused = false;
+    log.info('Publishing resumed', { trackAlias: key });
+  }
+
+  /**
+   * Check if a publication is paused
+   *
+   * @param trackAlias - Track alias to check
+   * @returns true if paused, false otherwise
+   */
+  isPublishPaused(trackAlias: bigint | string): boolean {
+    const key = trackAlias.toString();
+    const publication = this.publications.get(key);
+    return publication?.paused ?? false;
   }
 
   /**
@@ -804,6 +884,8 @@ export class MediaSession {
       // QuicR-Mac interop settings
       quicrInteropEnabled: config.quicrInteropEnabled,
       quicrParticipantId: config.quicrParticipantId,
+      // Frame scaling for simulcast
+      enableFrameScaling: config.enableFrameScaling,
     });
 
     // Create secure context if encryption is enabled
@@ -880,6 +962,8 @@ export class MediaSession {
       pipeline,
       cleanupHandlers,
       secureContext,
+      stream,
+      paused: false,
     });
 
     // Start the pipeline

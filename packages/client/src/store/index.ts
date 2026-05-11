@@ -11,7 +11,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType } from '@web-moq/core';
+import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType, type SwitchingSetAssignment } from '@web-moq/core';
 import type { VADProvider, ExperienceProfileName } from '@web-moq/media';
 import {
   MediaSession,
@@ -175,8 +175,11 @@ interface ConnectionSlice {
   setServerUrl: (url: string) => void;
 
   // Publish/Subscribe methods that delegate to session
-  startPublishing: (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean, stream?: MediaStream) => Promise<bigint>;
+  startPublishing: (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean, stream?: MediaStream, perTrackConfig?: { resolution?: string; bitrate?: number; framerate?: number }) => Promise<bigint>;
   stopPublishing: (trackAlias: bigint | string) => Promise<void>;
+  pausePublishing: (trackAlias: bigint | string) => void;
+  resumePublishing: (trackAlias: bigint | string) => void;
+  isPublishPaused: (trackAlias: bigint | string) => boolean;
   // Announce flow methods
   announceNamespace: (namespace: string) => Promise<void>;
   cancelAnnounce: (namespace: string) => Promise<void>;
@@ -195,7 +198,7 @@ interface ConnectionSlice {
   }>;
   /** Map of namespace/trackName -> actual trackAlias for announce flow tracks */
   announceTrackAliases: Map<string, bigint>;
-  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => Promise<number>;
+  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', dtsAssignment?: SwitchingSetAssignment) => Promise<number>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
@@ -375,6 +378,8 @@ interface SettingsSlice {
   quicrInteropEnabled: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId: number;
+  /** Enable frame scaling for simulcast encoding (scale input frames to target resolution) */
+  enableFrameScaling: boolean;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -408,6 +413,7 @@ interface SettingsSlice {
   setSecureObjectsBaseKey: (value: string) => void;
   setQuicrInteropEnabled: (value: boolean) => void;
   setQuicrParticipantId: (value: number) => void;
+  setEnableFrameScaling: (value: boolean) => void;
   /** Apply an experience profile (sets all related settings) */
   applyExperienceProfile: (profile: ExperienceProfileName) => void;
   /** Update detected profile based on current settings */
@@ -588,7 +594,7 @@ export const useStore = create<AppStore>()(
               trackKey,
             });
 
-            const { pendingAnnounceTracks, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
+            const { pendingAnnounceTracks, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId, enableFrameScaling } = get();
             const pendingTrack = pendingAnnounceTracks.get(trackKey);
 
             if (pendingTrack) {
@@ -620,6 +626,8 @@ export const useStore = create<AppStore>()(
                   // QuicR-Mac interop settings
                   quicrInteropEnabled,
                   quicrParticipantId,
+                  // Frame scaling for simulcast
+                  enableFrameScaling,
                 };
 
                 log.info('Starting announce publish with config', {
@@ -765,7 +773,7 @@ export const useStore = create<AppStore>()(
 
       clearDecodeErrors: () => set({ decodeErrors: [] }),
 
-      startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean, stream?: MediaStream) => {
+      startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean, stream?: MediaStream, perTrackConfig?: { resolution?: string; bitrate?: number; framerate?: number }) => {
         const { session, localStream, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled: globalVideoEnabled, audioEnabled: globalAudioEnabled, useAnnounceFlow, audioDeliveryMode } = get();
         if (!session) {
           throw new Error('No session');
@@ -784,11 +792,15 @@ export const useStore = create<AppStore>()(
         const hasVideoTracks = effectiveStream.getVideoTracks().length > 0;
         const hasAudioTracks = effectiveStream.getAudioTracks().length > 0;
 
-        const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
+        // Use per-track config if provided, otherwise fall back to global settings
+        const effectiveResolution = (perTrackConfig?.resolution ?? videoResolution) as '480p' | '720p' | '1080p';
+        const effectiveBitrate = perTrackConfig?.bitrate ?? videoBitrate;
+
+        const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId, enableFrameScaling } = get();
         const config: MediaConfig = {
-          videoBitrate,
+          videoBitrate: effectiveBitrate,
           audioBitrate,
-          videoResolution,
+          videoResolution: effectiveResolution,
           keyframeInterval,
           deliveryTimeout: deliveryTimeout ?? 5000,
           priority: priority ?? 128,
@@ -804,7 +816,11 @@ export const useStore = create<AppStore>()(
           // QuicR-Mac interop settings
           quicrInteropEnabled,
           quicrParticipantId,
+          // Frame scaling for simulcast
+          enableFrameScaling,
         };
+
+        log.info('startPublishing with config', { namespace, trackName, effectiveResolution, effectiveBitrate, perTrackConfig });
 
         // Use announce flow if enabled
         if (useAnnounceFlow) {
@@ -884,6 +900,27 @@ export const useStore = create<AppStore>()(
         get().removePublishedTrack(`pub-${trackAlias.toString()}`);
       },
 
+      pausePublishing: (trackAlias: bigint | string) => {
+        const { session } = get();
+        if (!session) return;
+
+        session.pausePublish(trackAlias);
+      },
+
+      resumePublishing: (trackAlias: bigint | string) => {
+        const { session } = get();
+        if (!session) return;
+
+        session.resumePublish(trackAlias);
+      },
+
+      isPublishPaused: (trackAlias: bigint | string) => {
+        const { session } = get();
+        if (!session) return false;
+
+        return session.isPublishPaused(trackAlias);
+      },
+
       announceNamespace: async (namespace: string) => {
         const { session, localStream } = get();
         if (!session) {
@@ -930,7 +967,7 @@ export const useStore = create<AppStore>()(
         log.info('Namespace announcement cancelled', { namespace });
       },
 
-      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
+      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', dtsAssignment?: SwitchingSetAssignment) => {
         const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
@@ -959,11 +996,15 @@ export const useStore = create<AppStore>()(
           quicrInteropEnabled,
         };
 
+        // Build subscribe options with DTS if provided
+        const subscribeOptions = dtsAssignment ? { dtsAssignment } : undefined;
+
         const subscriptionId = await session.subscribe(
           namespace.split('/'),
           trackName,
           config,
-          mediaType
+          mediaType,
+          subscribeOptions
         );
 
         // Add to subscribed tracks
@@ -1292,6 +1333,7 @@ export const useStore = create<AppStore>()(
       secureObjectsBaseKey: '', // Default: empty (user must provide)
       quicrInteropEnabled: false, // Default: standard LOC packaging
       quicrParticipantId: 0, // Default: 0 (should be set by user)
+      enableFrameScaling: false, // Default: no frame scaling (frames encoded at original resolution)
 
       setTheme: (theme) => {
         set({ theme });
@@ -1343,6 +1385,7 @@ export const useStore = create<AppStore>()(
       setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
       setQuicrInteropEnabled: (value) => set({ quicrInteropEnabled: value }),
       setQuicrParticipantId: (value) => set({ quicrParticipantId: value }),
+      setEnableFrameScaling: (value) => set({ enableFrameScaling: value }),
 
       applyExperienceProfile: (profileName) => {
         if (profileName === 'custom') {
