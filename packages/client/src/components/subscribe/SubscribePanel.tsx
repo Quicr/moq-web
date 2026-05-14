@@ -10,15 +10,25 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
-import { VODVideoPlayer } from './VODVideoPlayer';
+import { VideoRenderer } from './VideoRenderer';
 import { AudioPlayer } from './AudioPlayer';
 import { JitterGraph } from './JitterGraph';
 import { LatencyStatsGraph } from './LatencyStatsGraph';
 import { SubscribeNamespacePanel } from './SubscribeNamespacePanel';
 import { isDebugMode } from '../common/DevSettingsPanel';
 import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@web-moq/media';
+import type { SwitchingSetAssignment } from '@web-moq/core';
 
 type MediaType = 'video' | 'audio';
+
+interface DtsConfig {
+  enabled: boolean;
+  switchingSetId: number;
+  throughputThresholdKbps: number;
+  setThroughputFraction: number;
+  activateSwitching: boolean;
+  setRank: number;
+}
 
 interface SubscriptionConfig {
   id: string;
@@ -28,6 +38,8 @@ interface SubscriptionConfig {
   subscriptionId?: number;
   isSubscribed: boolean;
   isPaused: boolean;
+  dts?: DtsConfig;
+  objectsReceived?: number;
 }
 
 interface VideoFrameMap {
@@ -72,6 +84,23 @@ export const SubscribePanel: React.FC = () => {
     trackName: '',
   });
 
+  // DTS configuration state
+  const [dtsEnabled, setDtsEnabled] = useState(false);
+  const [dtsConfig, setDtsConfig] = useState<Omit<DtsConfig, 'enabled'>>({
+    switchingSetId: 1,
+    throughputThresholdKbps: 2000,
+    setThroughputFraction: 5,
+    activateSwitching: false,
+    setRank: 1,
+  });
+
+  // DTS Simulcast quick setup (track names are fixed: video-1080p, video-720p, video-480p)
+  const [simulcastQualities, setSimulcastQualities] = useState({
+    '1080p': true,
+    '720p': true,
+    '480p': true,
+  });
+
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
 
   // Map of subscription IDs to their latest video frames - use refs to avoid React batching
@@ -82,6 +111,9 @@ export const SubscribePanel: React.FC = () => {
   const lastStateUpdateRef = useRef<{ [subscriptionId: number]: number }>({});
   // Track the last frame passed to React state (so we don't close it while VideoRenderer needs it)
   const lastStateFrameRef = useRef<VideoFrameMap>({});
+  // Track which subscription last received a frame (for DTS selection indicator)
+  const [lastActiveSubscriptionId, setLastActiveSubscriptionId] = useState<number | null>(null);
+  const lastFrameTimeRef = useRef<{ [subscriptionId: number]: number }>({});
 
   // Track active subscription IDs for video frame handler
   const activeSubscriptionIds = subscriptionConfigs
@@ -137,10 +169,13 @@ export const SubscribePanel: React.FC = () => {
       if (shouldUpdateState) {
         lastStateUpdateRef.current[data.subscriptionId] = now;
         lastStateFrameRef.current[data.subscriptionId] = data.frame;
+        lastFrameTimeRef.current[data.subscriptionId] = now;
         setVideoFrames(prev => ({
           ...prev,
           [data.subscriptionId]: data.frame,
         }));
+        // Update which subscription is currently receiving frames (for DTS indicator)
+        setLastActiveSubscriptionId(data.subscriptionId);
       }
       // Frames passed to React state will be closed by VideoRenderer after rendering
 
@@ -188,6 +223,8 @@ export const SubscribePanel: React.FC = () => {
       trackName: newSubscription.trackName,
       isSubscribed: false,
       isPaused: false,
+      dts: dtsEnabled ? { enabled: true, ...dtsConfig } : undefined,
+      objectsReceived: 0,
     };
 
     setSubscriptionConfigs([...subscriptionConfigs, config]);
@@ -195,6 +232,80 @@ export const SubscribePanel: React.FC = () => {
       ...newSubscription,
       trackName: '',
     });
+  };
+
+  // Build DTS simulcast subscription configs based on selected qualities
+  const buildSimulcastSubscriptionConfigs = (): SubscriptionConfig[] => {
+    if (!newSubscription.namespace) return [];
+
+    const qualityConfigs: Record<string, { threshold: number; rank: number }> = {
+      '1080p': { threshold: 4000, rank: 3 },
+      '720p': { threshold: 2000, rank: 2 },
+      '480p': { threshold: 500, rank: 1 },
+    };
+
+    const selectedQualities = Object.entries(simulcastQualities)
+      .filter(([, enabled]) => enabled)
+      .map(([quality]) => quality);
+
+    if (selectedQualities.length === 0) return [];
+
+    return selectedQualities.map((quality, index) => ({
+      id: `sub-config-${Date.now()}-${quality}`,
+      mediaType: 'video' as MediaType,
+      namespace: newSubscription.namespace!,
+      trackName: `video-${quality}`,
+      isSubscribed: false,
+      isPaused: false,
+      dts: {
+        enabled: true,
+        switchingSetId: 1,
+        throughputThresholdKbps: qualityConfigs[quality].threshold,
+        setThroughputFraction: 5,
+        activateSwitching: index === selectedQualities.length - 1,
+        setRank: qualityConfigs[quality].rank,
+      },
+      objectsReceived: 0,
+    }));
+  };
+
+  // Add AND subscribe to all simulcast tracks in one action
+  const addAndSubscribeSimulcast = async () => {
+    const configs = buildSimulcastSubscriptionConfigs();
+    if (configs.length === 0) return;
+
+    // Subscribe to each track and collect results
+    const subscribedConfigs: SubscriptionConfig[] = [];
+    for (const config of configs) {
+      try {
+        let dtsAssignment: SwitchingSetAssignment | undefined;
+        if (config.dts?.enabled) {
+          dtsAssignment = {
+            switchingSetId: config.dts.switchingSetId,
+            throughputThresholdKbps: config.dts.throughputThresholdKbps,
+            setThroughputFraction: config.dts.setThroughputFraction,
+            activateSwitching: config.dts.activateSwitching,
+            setRank: config.dts.setRank,
+          };
+        }
+        const subscriptionId = await startSubscription(config.namespace, config.trackName, config.mediaType, dtsAssignment);
+
+        // Immediately add to ref so frames can be processed
+        activeSubscriptionIdsRef.current = [...activeSubscriptionIdsRef.current, subscriptionId];
+
+        subscribedConfigs.push({
+          ...config,
+          isSubscribed: true,
+          subscriptionId,
+        });
+      } catch (err) {
+        console.error(`Failed to subscribe to ${config.trackName}:`, err);
+        subscribedConfigs.push(config); // Keep unsubscribed
+      }
+    }
+
+    // Update state once with all configs
+    setSubscriptionConfigs([...subscriptionConfigs, ...subscribedConfigs]);
   };
 
   const removeSubscriptionConfig = (id: string) => {
@@ -214,18 +325,32 @@ export const SubscribePanel: React.FC = () => {
         namespace: config.namespace,
         trackName: config.trackName,
         mediaType: config.mediaType,
+        dts: config.dts,
       });
     }
 
     try {
-      // Pass mediaType so only the appropriate decoder is created
-      const subscriptionId = await startSubscription(config.namespace, config.trackName, config.mediaType);
+      // Build DTS assignment if configured
+      let dtsAssignment: SwitchingSetAssignment | undefined;
+      if (config.dts?.enabled) {
+        dtsAssignment = {
+          switchingSetId: config.dts.switchingSetId,
+          throughputThresholdKbps: config.dts.throughputThresholdKbps,
+          setThroughputFraction: config.dts.setThroughputFraction,
+          activateSwitching: config.dts.activateSwitching,
+          setRank: config.dts.setRank,
+        };
+      }
+
+      // Pass mediaType and DTS assignment
+      const subscriptionId = await startSubscription(config.namespace, config.trackName, config.mediaType, dtsAssignment);
 
       if (isDebugMode()) {
         console.log('[SubscribePanel] Subscription created', {
           subscriptionId,
           namespace: config.namespace,
           trackName: config.trackName,
+          hasDts: !!dtsAssignment,
         });
       }
 
@@ -392,6 +517,69 @@ export const SubscribePanel: React.FC = () => {
               className="input"
             />
           </div>
+
+          {/* DTS Configuration */}
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+            <div className="flex items-center justify-between mb-3">
+              <label className="label mb-0">DTS (Dynamic Track Switching)</label>
+              <button
+                onClick={() => setDtsEnabled(!dtsEnabled)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  dtsEnabled ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    dtsEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {dtsEnabled && (
+              <div className="space-y-3 p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  Add multiple tracks with the same Switching Set ID. The relay will select one based on bandwidth.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label text-xs">Switching Set ID</label>
+                    <input
+                      type="number"
+                      value={dtsConfig.switchingSetId}
+                      onChange={(e) => setDtsConfig({ ...dtsConfig, switchingSetId: parseInt(e.target.value) || 1 })}
+                      className="input"
+                      min={1}
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-xs">Threshold (kbps)</label>
+                    <input
+                      type="number"
+                      value={dtsConfig.throughputThresholdKbps}
+                      onChange={(e) => setDtsConfig({ ...dtsConfig, throughputThresholdKbps: parseInt(e.target.value) || 0 })}
+                      className="input"
+                      min={0}
+                      step={100}
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={dtsConfig.activateSwitching}
+                      onChange={(e) => setDtsConfig({ ...dtsConfig, activateSwitching: e.target.checked })}
+                      className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    />
+                    <span>Activate Switching</span>
+                    <span className="text-xs text-gray-500">(set on last track in set)</span>
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+
           <button
             onClick={addSubscriptionConfig}
             disabled={!newSubscription.namespace || !newSubscription.trackName}
@@ -399,6 +587,92 @@ export const SubscribePanel: React.FC = () => {
           >
             Add Subscription
           </button>
+        </div>
+      </div>
+
+      {/* DTS Simulcast Subscribe */}
+      <div className="panel">
+        <div className="panel-header">Subscribe with DTS</div>
+        <div className="panel-body space-y-4">
+          <div>
+            <label className="label">Namespace</label>
+            <input
+              type="text"
+              value={newSubscription.namespace}
+              onChange={(e) => setNewSubscription({ ...newSubscription, namespace: e.target.value })}
+              placeholder="suhas"
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">Must match publisher's namespace</p>
+          </div>
+
+          {/* Quality Selection */}
+          <div>
+            <label className="label">Select Qualities</label>
+            <div className="grid grid-cols-3 gap-2 text-xs text-center">
+              <label className={`p-3 rounded cursor-pointer border-2 transition-colors ${
+                simulcastQualities['1080p']
+                  ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-400'
+                  : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-blue-300'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={simulcastQualities['1080p']}
+                  onChange={(e) => setSimulcastQualities({ ...simulcastQualities, '1080p': e.target.checked })}
+                  className="sr-only"
+                />
+                <div className="font-semibold text-blue-700 dark:text-blue-300">1080p</div>
+                <div className="text-gray-500">≥4 Mbps</div>
+              </label>
+              <label className={`p-3 rounded cursor-pointer border-2 transition-colors ${
+                simulcastQualities['720p']
+                  ? 'bg-green-50 dark:bg-green-900/20 border-green-400'
+                  : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-green-300'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={simulcastQualities['720p']}
+                  onChange={(e) => setSimulcastQualities({ ...simulcastQualities, '720p': e.target.checked })}
+                  className="sr-only"
+                />
+                <div className="font-semibold text-green-700 dark:text-green-300">720p</div>
+                <div className="text-gray-500">≥2 Mbps</div>
+              </label>
+              <label className={`p-3 rounded cursor-pointer border-2 transition-colors ${
+                simulcastQualities['480p']
+                  ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-400'
+                  : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-yellow-300'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={simulcastQualities['480p']}
+                  onChange={(e) => setSimulcastQualities({ ...simulcastQualities, '480p': e.target.checked })}
+                  className="sr-only"
+                />
+                <div className="font-semibold text-yellow-700 dark:text-yellow-300">480p</div>
+                <div className="text-gray-500">≥0.8 Mbps</div>
+              </label>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              {Object.values(simulcastQualities).filter(v => v).length === 0
+                ? 'Select at least one quality'
+                : `Tracks: ${Object.entries(simulcastQualities).filter(([,v]) => v).map(([q]) => `video-${q}`).join(', ')}`
+              }
+            </p>
+          </div>
+
+          {/* Main action button */}
+          <button
+            onClick={addAndSubscribeSimulcast}
+            disabled={sessionState !== 'ready' || !newSubscription.namespace || !Object.values(simulcastQualities).some(v => v)}
+            className="btn-success w-full py-3 text-base font-semibold"
+          >
+            Subscribe ({Object.values(simulcastQualities).filter(v => v).length} track{Object.values(simulcastQualities).filter(v => v).length !== 1 ? 's' : ''})
+          </button>
+
+          <p className="text-xs text-gray-500 text-center">
+            Relay will select best quality based on your bandwidth
+          </p>
         </div>
       </div>
 
@@ -464,13 +738,28 @@ export const SubscribePanel: React.FC = () => {
                             <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
                           </svg>
                         )}
+                        {config.dts?.enabled && (
+                          <span className="badge badge-purple text-xs">
+                            DTS Set {config.dts.switchingSetId} @ {config.dts.throughputThresholdKbps}kbps
+                            {config.dts.activateSwitching && ' ✓'}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-gray-500">{config.namespace}</div>
                     </div>
                   </div>
-                  <span className={`badge ${config.isSubscribed ? (config.isPaused ? 'badge-yellow' : 'badge-green') : 'badge-gray'}`}>
-                    {config.isSubscribed ? (config.isPaused ? 'Paused' : 'Subscribed') : 'Not Subscribed'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {config.isSubscribed && config.subscriptionId !== undefined && (
+                      <span className="text-xs text-gray-500">
+                        {subscribedTracks.find(t => t.id === `sub-${config.subscriptionId}`)?.stats.bytesTransferred
+                          ? `${Math.round((subscribedTracks.find(t => t.id === `sub-${config.subscriptionId}`)?.stats.bytesTransferred || 0) / 1024)}KB`
+                          : '0KB'}
+                      </span>
+                    )}
+                    <span className={`badge ${config.isSubscribed ? (config.isPaused ? 'badge-yellow' : 'badge-green') : 'badge-gray'}`}>
+                      {config.isSubscribed ? (config.isPaused ? 'Paused' : 'Subscribed') : 'Not Subscribed'}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="flex gap-2">
@@ -521,36 +810,63 @@ export const SubscribePanel: React.FC = () => {
         </div>
       )}
 
-      {/* Video Players - One per video subscription */}
-      {videoSubscriptions.length > 0 && (
-        <div className="panel">
-          <div className="panel-header">Video Players ({videoSubscriptions.length})</div>
-          <div className="panel-body">
-            <div className={`grid gap-4 ${videoSubscriptions.length === 1 ? 'grid-cols-1' : videoSubscriptions.length <= 4 ? 'grid-cols-2' : 'grid-cols-3'}`}>
-              {videoSubscriptions.map(config => (
-                <div key={config.id} className="space-y-2">
-                  <div className="text-sm font-medium flex items-center justify-between">
-                    <span className="flex items-center gap-1.5">
-                      <span className="truncate">{config.trackName}</span>
-                      {secureObjectsEnabled && (
-                        <svg className="w-4 h-4 text-yellow-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
-                        </svg>
-                      )}
-                    </span>
-                    {isDebugMode() && (
-                      <span className="text-xs text-gray-500 ml-2">
-                        {config.subscriptionId !== undefined && subscribedTracks.find(t => t.id === `sub-${config.subscriptionId}`)
-                          ? `G:${subscribedTracks.find(t => t.id === `sub-${config.subscriptionId}`)?.stats.groupId} O:${subscribedTracks.find(t => t.id === `sub-${config.subscriptionId}`)?.stats.objectId}`
-                          : ''}
+      {/* Video Players - sized proportionally by resolution (1080p largest, 720p medium, 480p smallest) */}
+      {videoSubscriptions.length > 0 && (() => {
+        // Compute DTS selection state and sort by bitrate (highest first)
+        // isDtsSelected is true only for the subscription that most recently received frames
+        const subscriptionsWithDts = videoSubscriptions.map(config => {
+          const track = subscribedTracks.find(t => t.id === `sub-${config.subscriptionId}`);
+          const bytesTransferred = track?.stats.bytesTransferred || 0;
+          // For DTS, only the subscription currently receiving data is "selected"
+          const isDtsSelected = config.dts?.enabled && config.subscriptionId === lastActiveSubscriptionId;
+          const bitrateKbps = config.dts?.throughputThresholdKbps || 0;
+          return { config, track, isDtsSelected, bitrateKbps, bytesTransferred };
+        }).sort((a, b) => b.bitrateKbps - a.bitrateKbps); // Sort by bitrate descending
+
+        const hasDtsSubscriptions = subscriptionsWithDts.some(s => s.config.dts?.enabled);
+        const selectedTrack = subscriptionsWithDts.find(s => s.isDtsSelected);
+
+        // Calculate relative widths based on resolution/bitrate
+        // 1080p (4000kbps) -> 100%, 720p (2000kbps) -> 70%, 480p (800kbps) -> 50%
+        const getWidthClass = (bitrateKbps: number) => {
+          if (bitrateKbps >= 3000) return 'w-full'; // 1080p - full width
+          if (bitrateKbps >= 1500) return 'w-3/4';  // 720p - 75% width
+          return 'w-1/2';                            // 480p - 50% width
+        };
+
+        return (
+          <div className="panel">
+            <div className="panel-header">
+              Video Players ({videoSubscriptions.length})
+              {hasDtsSubscriptions && selectedTrack && (
+                <span className="ml-2 text-xs text-green-600 dark:text-green-400">
+                  DTS Active: {selectedTrack.config.trackName}
+                </span>
+              )}
+            </div>
+            <div className="panel-body space-y-4">
+              {subscriptionsWithDts.map(({ config, track, isDtsSelected, bitrateKbps }) => (
+                <div key={config.id} className={`space-y-2 ${getWidthClass(bitrateKbps)}`}>
+                  {isDebugMode() && (
+                    <div className="text-sm font-medium flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <span className="truncate">{config.trackName}</span>
                       </span>
-                    )}
-                  </div>
-                  <VODVideoPlayer
+                      <span className="text-xs text-gray-500 ml-2">
+                        {track ? `G:${track.stats.groupId} O:${track.stats.objectId}` : ''}
+                      </span>
+                    </div>
+                  )}
+                  <VideoRenderer
                     frame={config.subscriptionId !== undefined ? videoFrames[config.subscriptionId] || null : null}
-                    subscriptionId={config.subscriptionId!}
-                    duration={0}
-                    showControls={true}
+                    trackName={config.trackName}
+                    isDtsSelected={isDtsSelected}
+                    bitrateKbps={bitrateKbps}
+                    expectedResolution={(() => {
+                      // Extract resolution from track name (e.g., "video-1080p" -> "1080p")
+                      const match = config.trackName.match(/(\d+p)$/);
+                      return match ? match[1] : undefined;
+                    })()}
                   />
                   {enableStats && config.subscriptionId !== undefined && (
                     <div className="space-y-2">
@@ -570,8 +886,8 @@ export const SubscribePanel: React.FC = () => {
               ))}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Audio Players - One per audio subscription */}
       {audioSubscriptions.length > 0 && (

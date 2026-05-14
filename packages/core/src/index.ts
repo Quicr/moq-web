@@ -187,6 +187,13 @@ export {
 export { MessageCodec, MessageCodecError, ObjectCodec } from './encoding/message-codec.js';
 export type { FetchEncoderState, FetchDecoderState, FetchObjectResult } from './encoding/message-codec.js';
 
+// DTS (Dynamic Track Switching)
+export {
+  serializeSwitchingSetAssignment,
+  deserializeSwitchingSetAssignment,
+} from './encoding/dts.js';
+export type { SwitchingSetAssignment } from './encoding/dts.js';
+
 // State machines
 export {
   ConnectionStateMachine,

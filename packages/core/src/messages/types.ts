@@ -276,6 +276,8 @@ export enum RequestParameter {
   SUBSCRIPTION_FILTER = 0x21,
   /** Group order (Draft-16) */
   GROUP_ORDER = 0x22,
+  /** DTS Switching Set Assignment (DTS4MoQ extension) */
+  SWITCHING_SET_ASSIGNMENT = 0x41,
 }
 
 /**
