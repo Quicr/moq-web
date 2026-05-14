@@ -101,9 +101,14 @@ export default function App() {
   };
 
   const downloadFile = (data: Uint8Array | string, filename: string, mimeType: string) => {
-    const blob = typeof data === 'string'
-      ? new Blob([data], { type: mimeType })
-      : new Blob([data], { type: mimeType });
+    let blob: Blob;
+    if (typeof data === 'string') {
+      blob = new Blob([data], { type: mimeType });
+    } else {
+      const arrayBuffer = new ArrayBuffer(data.byteLength);
+      new Uint8Array(arrayBuffer).set(data);
+      blob = new Blob([arrayBuffer], { type: mimeType });
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
