@@ -269,9 +269,9 @@ export default function App() {
               <h2 className="text-xl font-semibold">Results</h2>
               <button
                 onClick={clearResults}
-                className="text-sm text-gray-400 hover:text-gray-200"
+                className="bg-red-600 hover:bg-red-700 rounded px-3 py-1 text-sm font-medium"
               >
-                Clear all
+                Clear Results
               </button>
             </div>
             <div className="overflow-x-auto">
