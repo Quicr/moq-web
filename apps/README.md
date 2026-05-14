@@ -10,7 +10,7 @@ Each app is a self-contained web application that can be built and deployed inde
 
 Benchmark tool for testing GZIP compression effectiveness on MSF catalogs, media timelines, and event timelines.
 
-**Packages used:** None (standalone, uses browser-native CompressionStream API)
+**Packages used:** `@web-moq/msf` (catalog builder, timeline serializers)
 
 ## Development
 

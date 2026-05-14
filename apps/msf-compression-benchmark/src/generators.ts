@@ -1,3 +1,12 @@
+import {
+  createCatalog,
+  serializeCatalog,
+  serializeMediaTimeline,
+  serializeEventTimeline,
+  type MediaTimelinePoint,
+  type EventTimelinePoint,
+} from '@web-moq/msf';
+
 export interface CatalogOptions {
   numTracks: number;
   includeInitData: boolean;
@@ -5,58 +14,54 @@ export interface CatalogOptions {
 }
 
 export function generateCatalog(options: CatalogOptions): string {
-  const tracks = [];
+  const builder = createCatalog().generatedAt().isComplete(true);
 
   for (let i = 0; i < options.numTracks; i++) {
     const isVideo = i % 2 === 0;
-    const track: Record<string, unknown> = {
-      name: isVideo ? `video${Math.floor(i / 2)}` : `audio${Math.floor(i / 2)}`,
-      packaging: "loc",
-      renderGroup: isVideo ? 1 : 2,
-      mimeType: isVideo ? "video/mp4" : "audio/mp4",
-      codec: isVideo ? "avc1.64001f" : "mp4a.40.2",
-    };
 
     if (isVideo) {
-      track.width = 1920;
-      track.height = 1080;
-      track.frameRate = 30;
-      track.bitrate = 5000000;
-    } else {
-      track.sampleRate = 48000;
-      track.channelCount = 2;
-      track.bitrate = 128000;
-    }
-
-    if (options.includeInitData) {
-      const initBytes = new Uint8Array(options.initDataSize);
-      for (let j = 0; j < options.initDataSize; j++) {
-        initBytes[j] = Math.floor(Math.random() * 256);
+      let initData: string | undefined;
+      if (options.includeInitData) {
+        const initBytes = new Uint8Array(options.initDataSize);
+        for (let j = 0; j < options.initDataSize; j++) {
+          initBytes[j] = Math.floor(Math.random() * 256);
+        }
+        initData = btoa(String.fromCharCode(...initBytes));
       }
-      track.initData = btoa(String.fromCharCode(...initBytes));
-    }
 
-    tracks.push(track);
+      builder.addVideoTrack({
+        name: `video${Math.floor(i / 2)}`,
+        codec: 'avc1.64001f',
+        width: 1920,
+        height: 1080,
+        framerate: 30,
+        bitrate: 5000000,
+        isLive: true,
+        initData,
+      });
+    } else {
+      builder.addAudioTrack({
+        name: `audio${Math.floor(i / 2)}`,
+        codec: 'mp4a.40.2',
+        samplerate: 48000,
+        channelConfig: 'stereo',
+        bitrate: 128000,
+        isLive: true,
+      });
+    }
   }
 
-  const catalog = {
-    version: 1,
-    generatedAt: Date.now(),
-    isComplete: true,
-    tracks,
-  };
-
-  return JSON.stringify(catalog, null, 2);
+  return serializeCatalog(builder.build(), { pretty: true });
 }
 
 export interface MediaTimelineOptions {
   numEntries: number;
-  format: "explicit" | "template" | "mixed";
+  format: 'explicit' | 'template' | 'mixed';
   gopDuration: number;
 }
 
 export function generateMediaTimeline(options: MediaTimelineOptions): string {
-  if (options.format === "template") {
+  if (options.format === 'template') {
     return JSON.stringify({
       template: {
         startPts: 0,
@@ -68,22 +73,24 @@ export function generateMediaTimeline(options: MediaTimelineOptions): string {
     }, null, 2);
   }
 
-  const entries = [];
+  const points: MediaTimelinePoint[] = [];
   let pts = 0;
   const wallclockStart = Date.now() - options.numEntries * options.gopDuration;
 
   for (let i = 0; i < options.numEntries; i++) {
-    entries.push([
-      pts,
-      [i, 0],
-      wallclockStart + i * options.gopDuration
-    ]);
+    points.push({
+      mediaPTS: pts,
+      groupId: i,
+      objectId: 0,
+      wallclockTime: wallclockStart + i * options.gopDuration,
+    });
     pts += options.gopDuration;
   }
 
-  if (options.format === "mixed") {
+  if (options.format === 'mixed') {
+    const halfPoints = points.slice(0, Math.floor(points.length / 2));
     return JSON.stringify({
-      entries: entries.slice(0, Math.floor(entries.length / 2)),
+      entries: JSON.parse(serializeMediaTimeline(halfPoints)),
       template: {
         startPts: pts / 2,
         startGroup: Math.floor(options.numEntries / 2),
@@ -94,32 +101,32 @@ export function generateMediaTimeline(options: MediaTimelineOptions): string {
     }, null, 2);
   }
 
-  return JSON.stringify(entries, null, 2);
+  return serializeMediaTimeline(points);
 }
 
 export interface EventTimelineOptions {
   numEvents: number;
-  eventType: "sports" | "gps" | "speaker";
+  eventType: 'sports' | 'gps' | 'speaker';
 }
 
 export function generateEventTimeline(options: EventTimelineOptions): string {
-  const events = [];
+  const points: EventTimelinePoint[] = [];
   const baseTime = Date.now() - options.numEvents * 1000;
 
   for (let i = 0; i < options.numEvents; i++) {
     let data: Record<string, unknown>;
 
     switch (options.eventType) {
-      case "sports":
+      case 'sports':
         data = {
           homeScore: Math.floor(i / 10),
           awayScore: Math.floor(i / 15),
           period: Math.floor(i / 100) + 1,
           clock: `${Math.floor((i % 100) / 60)}:${String(i % 60).padStart(2, '0')}`,
-          event: i % 20 === 0 ? "goal" : i % 5 === 0 ? "foul" : "play",
+          event: i % 20 === 0 ? 'goal' : i % 5 === 0 ? 'foul' : 'play',
         };
         break;
-      case "gps":
+      case 'gps':
         data = {
           lat: 37.7749 + (Math.random() - 0.5) * 0.01,
           lng: -122.4194 + (Math.random() - 0.5) * 0.01,
@@ -128,7 +135,7 @@ export function generateEventTimeline(options: EventTimelineOptions): string {
           altitude: 10 + Math.random() * 5,
         };
         break;
-      case "speaker":
+      case 'speaker':
         data = {
           speakerId: `participant-${(i % 5) + 1}`,
           speaking: i % 3 !== 0,
@@ -137,11 +144,11 @@ export function generateEventTimeline(options: EventTimelineOptions): string {
         break;
     }
 
-    events.push({
-      t: baseTime + i * 1000,
+    points.push({
+      wallclockTime: baseTime + i * 1000,
       data,
     });
   }
 
-  return JSON.stringify(events, null, 2);
+  return serializeEventTimeline(points);
 }

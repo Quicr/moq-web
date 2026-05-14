@@ -41,6 +41,9 @@ importers:
 
   apps/msf-compression-benchmark:
     dependencies:
+      '@web-moq/msf':
+        specifier: workspace:*
+        version: link:../../packages/msf
       react:
         specifier: ^18.2.0
         version: 18.3.1

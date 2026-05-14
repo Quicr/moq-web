@@ -32,7 +32,7 @@ Uses the browser-native `CompressionStream` API for GZIP compression. No server-
 
 ## Packages Used
 
-None - this is a standalone app that doesn't depend on other moq-web packages.
+- `@web-moq/msf` - Catalog builder (`createCatalog`), media timeline serializer (`serializeMediaTimeline`), event timeline serializer (`serializeEventTimeline`)
 
 ## Related
 
