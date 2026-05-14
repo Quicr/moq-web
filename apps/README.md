@@ -1,12 +1,16 @@
 # MoQ Web Apps
 
-Standalone demo applications for Media over QUIC technologies.
+Standalone demo applications for Media over QUIC Transport built over packages from moq-web.
 
 Each app is a self-contained web application that can be built and deployed independently. Apps are intended to demonstrate, test, or benchmark specific aspects of MoQ protocols and formats.
 
 ## Apps
 
-- **msf-compression-benchmark** - Benchmark tool for testing GZIP compression effectiveness on MSF catalogs, media timelines, and event timelines
+### msf-compression-benchmark
+
+Benchmark tool for testing GZIP compression effectiveness on MSF catalogs, media timelines, and event timelines.
+
+**Packages used:** None (standalone, uses browser-native CompressionStream API)
 
 ## Development
 
