@@ -59,6 +59,27 @@ jobs:
       - name: Save draft-16 build
         run: mv packages/client/dist dist-combined
 
+      - name: Build apps
+        run: |
+          for app in apps/*/; do
+            if [ -f "$app/package.json" ]; then
+              (cd "$app" && pnpm build)
+            fi
+          done
+        env:
+          BASE_URL: /${{ github.event.repository.name }}/
+
+      - name: Copy apps to dist
+        run: |
+          mkdir -p dist-combined/apps
+          cp apps/index.html dist-combined/apps/
+          for app in apps/*/; do
+            if [ -d "$app/dist" ]; then
+              appname=$(basename "$app")
+              cp -r "$app/dist" "dist-combined/apps/$appname"
+            fi
+          done
+
       - name: Clean for draft-14 rebuild
         run: pnpm run clean
 
