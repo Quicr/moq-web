@@ -30,6 +30,7 @@ export async function compressGzip(data: string): Promise<Uint8Array> {
 export interface CompressionResult {
   originalSize: number;
   compressedSize: number;
+  compressedData: Uint8Array;
   ratio: number;
   savings: number;
 }
@@ -39,8 +40,8 @@ export async function benchmark(json: string): Promise<CompressionResult> {
   const originalBytes = encoder.encode(json);
   const originalSize = originalBytes.length;
 
-  const compressed = await compressGzip(json);
-  const compressedSize = compressed.length;
+  const compressedData = await compressGzip(json);
+  const compressedSize = compressedData.length;
 
   const ratio = compressedSize / originalSize;
   const savings = ((originalSize - compressedSize) / originalSize) * 100;
@@ -48,6 +49,7 @@ export async function benchmark(json: string): Promise<CompressionResult> {
   return {
     originalSize,
     compressedSize,
+    compressedData,
     ratio,
     savings,
   };

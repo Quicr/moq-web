@@ -27,7 +27,7 @@ function formatBytes(bytes: number): string {
 
 export default function App() {
   const [results, setResults] = useState<BenchmarkEntry[]>([]);
-  const [selectedJson, setSelectedJson] = useState<string | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<BenchmarkEntry | null>(null);
   const [customJson, setCustomJson] = useState('');
   const [isRunning, setIsRunning] = useState(false);
 
@@ -97,7 +97,19 @@ export default function App() {
 
   const clearResults = () => {
     setResults([]);
-    setSelectedJson(null);
+    setSelectedEntry(null);
+  };
+
+  const downloadFile = (data: Uint8Array | string, filename: string, mimeType: string) => {
+    const blob = typeof data === 'string'
+      ? new Blob([data], { type: mimeType })
+      : new Blob([data], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -290,8 +302,8 @@ export default function App() {
                   {results.map(entry => (
                     <tr
                       key={entry.id}
-                      className="border-b border-gray-700 hover:bg-gray-750 cursor-pointer"
-                      onClick={() => setSelectedJson(selectedJson === entry.json ? null : entry.json)}
+                      className={`border-b border-gray-700 hover:bg-gray-750 cursor-pointer ${selectedEntry?.id === entry.id ? 'bg-gray-750' : ''}`}
+                      onClick={() => setSelectedEntry(selectedEntry?.id === entry.id ? null : entry)}
                     >
                       <td className="py-3 pr-4">
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
@@ -320,11 +332,33 @@ export default function App() {
               </table>
             </div>
 
-            {selectedJson && (
+            {selectedEntry && (
               <div className="mt-4">
-                <h3 className="text-sm text-gray-400 mb-2">JSON Preview (click row to toggle)</h3>
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="text-sm text-gray-400">JSON Preview (click row to toggle)</h3>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        downloadFile(selectedEntry.json, `${selectedEntry.type}.json`, 'application/json');
+                      }}
+                      className="bg-gray-700 hover:bg-gray-600 rounded px-3 py-1 text-sm"
+                    >
+                      Download JSON
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        downloadFile(selectedEntry.result.compressedData, `${selectedEntry.type}.json.gz`, 'application/gzip');
+                      }}
+                      className="bg-gray-700 hover:bg-gray-600 rounded px-3 py-1 text-sm"
+                    >
+                      Download GZIP
+                    </button>
+                  </div>
+                </div>
                 <pre className="bg-gray-900 rounded p-4 overflow-auto max-h-64 text-sm font-mono">
-                  {selectedJson}
+                  {selectedEntry.json}
                 </pre>
               </div>
             )}
