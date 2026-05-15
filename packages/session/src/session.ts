@@ -30,7 +30,9 @@ import {
   BufferWriter,
   Logger,
   IS_DRAFT_16,
+  IS_DRAFT_18,
   getCurrentALPNProtocol,
+  getProtocolCodec,
   type ClientSetupMessage,
   type ServerSetupMessage,
   type PublishMessage,
@@ -139,9 +141,11 @@ export class MOQTSession {
   /**
    * Next request ID for subscribing/publishing
    * Draft-14: Start at 1, increment by 1
-   * Draft-16: Clients use even IDs (0, 2, 4, ...), servers use odd (1, 3, 5, ...)
+   * Draft-16+: Clients use even IDs (0, 2, 4, ...), servers use odd (1, 3, 5, ...)
    */
-  private nextRequestId = IS_DRAFT_16 ? 0 : 1;
+  private nextRequestId = (IS_DRAFT_16 || IS_DRAFT_18) ? 0 : 1;
+  /** Protocol codec for version-specific encoding/decoding */
+  private readonly codec = getProtocolCodec();
   /** Temporary message handler for setup */
   private onMessage?: (message: MOQTMessage) => void;
   /** Active video GOP streams by track alias (for GOP batching) */
@@ -212,7 +216,12 @@ export class MOQTSession {
         bytes: data.byteLength,
       } as SubscribeStatsEvent);
     });
-    log.debug('MOQTSession created', { isDraft16: IS_DRAFT_16, useWorker: this.useWorker });
+    log.debug('MOQTSession created', {
+      isDraft18: IS_DRAFT_18,
+      isDraft16: IS_DRAFT_16,
+      version: Version[this.codec.version],
+      useWorker: this.useWorker,
+    });
   }
 
   /**
@@ -245,13 +254,13 @@ export class MOQTSession {
   }
 
   /**
-   * Get next request ID (handles draft-14/16 parity rules)
+   * Get next request ID (handles draft-14/16/18 parity rules)
    * Draft-14: Increment by 1 (1, 2, 3, ...)
-   * Draft-16: Clients use even, increment by 2 (0, 2, 4, ...)
+   * Draft-16+: Clients use even, increment by 2 (0, 2, 4, ...)
    */
   private getNextRequestId(): number {
     const id = this.nextRequestId;
-    this.nextRequestId += IS_DRAFT_16 ? 2 : 1;
+    this.nextRequestId += (IS_DRAFT_16 || IS_DRAFT_18) ? 2 : 1;
     return id;
   }
 
