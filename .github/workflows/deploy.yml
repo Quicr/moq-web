@@ -51,12 +51,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build draft-16 (default)
+      - name: Build draft-18 (default)
         run: pnpm run build
         env:
           BASE_URL: /${{ github.event.repository.name }}/
 
-      - name: Save draft-16 build
+      - name: Save draft-18 build
         run: mv packages/client/dist dist-combined
 
       - name: Build apps
@@ -80,6 +80,17 @@ jobs:
             fi
           done
 
+      - name: Clean for draft-16 rebuild
+        run: pnpm run clean
+
+      - name: Build draft-16
+        run: pnpm run build:draft-16
+        env:
+          BASE_URL: /${{ github.event.repository.name }}/16/
+
+      - name: Save draft-16 build
+        run: mv packages/client/dist dist-combined/16
+
       - name: Clean for draft-14 rebuild
         run: pnpm run clean
 
@@ -88,7 +99,7 @@ jobs:
         env:
           BASE_URL: /${{ github.event.repository.name }}/14/
 
-      - name: Combine builds
+      - name: Save draft-14 build
         run: mv packages/client/dist dist-combined/14
 
       - name: Upload artifact
