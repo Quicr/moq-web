@@ -37,8 +37,12 @@ export enum Version {
   DRAFT_14 = 0xff00000e,
   /** Draft version 15 */
   DRAFT_15 = 0xff00000f,
-  /** Draft version 16 (final ALPN = 'moqt') */
+  /** Draft version 16 */
   DRAFT_16 = 0xff000010,
+  /** Draft version 17 */
+  DRAFT_17 = 0xff000011,
+  /** Draft version 18 */
+  DRAFT_18 = 0xff000012,
 }
 
 /**
