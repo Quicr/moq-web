@@ -8,8 +8,8 @@ import path from 'path';
 import { execSync } from 'child_process';
 
 // MOQT version selection at build time
-// Default to 'draft-18', can be set via MOQT_VERSION env var
-const moqtVersion = process.env.MOQT_VERSION || 'draft-18';
+// Default to 'draft-16', can be set via MOQT_VERSION env var
+const moqtVersion = process.env.MOQT_VERSION || 'draft-16';
 console.log(`Building with MOQT_VERSION=${moqtVersion}`);
 
 // Get git commit hash at build time

@@ -3,7 +3,7 @@
 
 import { defineConfig } from 'vitest/config';
 
-const moqtVersion = process.env.MOQT_VERSION || 'draft-18';
+const moqtVersion = process.env.MOQT_VERSION || 'draft-16';
 
 export default defineConfig({
   define: {
