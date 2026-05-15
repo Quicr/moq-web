@@ -25,7 +25,12 @@ declare const __MOQT_VERSION__: string | undefined;
  * Set at build time via __MOQT_VERSION__ define
  */
 export const MOQT_VERSION: string =
-  typeof __MOQT_VERSION__ !== 'undefined' ? __MOQT_VERSION__ : 'draft-16';
+  typeof __MOQT_VERSION__ !== 'undefined' ? __MOQT_VERSION__ : 'draft-18';
+
+/**
+ * True when building for draft-18
+ */
+export const IS_DRAFT_18: boolean = MOQT_VERSION === 'draft-18';
 
 /**
  * True when building for draft-16 (includes draft-15 changes)
@@ -33,9 +38,9 @@ export const MOQT_VERSION: string =
 export const IS_DRAFT_16: boolean = MOQT_VERSION === 'draft-16';
 
 /**
- * True when building for draft-14 (default)
+ * True when building for draft-14
  */
-export const IS_DRAFT_14: boolean = !IS_DRAFT_16;
+export const IS_DRAFT_14: boolean = MOQT_VERSION === 'draft-14';
 
 /**
  * Version number constants for wire format
@@ -44,6 +49,8 @@ export const VERSION_NUMBER = {
   DRAFT_14: 0xff00000e,
   DRAFT_15: 0xff00000f,
   DRAFT_16: 0xff000010,
+  DRAFT_17: 0xff000011,
+  DRAFT_18: 0xff000012,
 } as const;
 
 /**
@@ -54,18 +61,24 @@ export const ALPN_PROTOCOL = {
   DRAFT_14: 'moq-00',
   DRAFT_15: 'moqt-15',
   DRAFT_16: 'moqt-16',
+  DRAFT_17: 'moqt-17',
+  DRAFT_18: 'moqt-18',
 } as const;
 
 /**
  * Get the current version number for wire format
  */
 export function getCurrentVersionNumber(): number {
-  return IS_DRAFT_16 ? VERSION_NUMBER.DRAFT_16 : VERSION_NUMBER.DRAFT_14;
+  if (IS_DRAFT_18) return VERSION_NUMBER.DRAFT_18;
+  if (IS_DRAFT_16) return VERSION_NUMBER.DRAFT_16;
+  return VERSION_NUMBER.DRAFT_14;
 }
 
 /**
  * Get the ALPN protocol string for the current version
  */
 export function getCurrentALPNProtocol(): string {
-  return IS_DRAFT_16 ? ALPN_PROTOCOL.DRAFT_16 : ALPN_PROTOCOL.DRAFT_14;
+  if (IS_DRAFT_18) return ALPN_PROTOCOL.DRAFT_18;
+  if (IS_DRAFT_16) return ALPN_PROTOCOL.DRAFT_16;
+  return ALPN_PROTOCOL.DRAFT_14;
 }
