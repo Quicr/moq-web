@@ -25,7 +25,7 @@ declare const __MOQT_VERSION__: string | undefined;
  * Set at build time via __MOQT_VERSION__ define
  */
 export const MOQT_VERSION: string =
-  typeof __MOQT_VERSION__ !== 'undefined' ? __MOQT_VERSION__ : 'draft-18';
+  typeof __MOQT_VERSION__ !== 'undefined' ? __MOQT_VERSION__ : 'draft-16';
 
 /**
  * True when building for draft-18
