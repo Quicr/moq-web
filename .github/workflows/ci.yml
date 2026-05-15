@@ -119,8 +119,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
+      - name: Build (draft-18)
         run: pnpm run build
 
-      - name: Test
+      - name: Test (draft-18)
         run: pnpm run test
+
+      - name: Test (draft-16)
+        run: pnpm run test:draft-16
+
+      - name: Test (draft-14)
+        run: pnpm run test:draft-14
