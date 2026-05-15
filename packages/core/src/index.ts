@@ -228,6 +228,13 @@ export type { IProtocolCodec } from './encoding/protocol-codec.js';
 // Draft-18 message codec
 export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
 
+// Draft-18 stream codec
+export {
+  Draft18StreamCodec,
+  Draft18StreamCodecError,
+  SubgroupFlags,
+} from './encoding/draft18-stream-codec.js';
+
 // State machines
 export {
   ConnectionStateMachine,
