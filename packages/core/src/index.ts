@@ -59,6 +59,7 @@
 // Version constants (build-time selection)
 export {
   MOQT_VERSION,
+  IS_DRAFT_18,
   IS_DRAFT_16,
   IS_DRAFT_14,
   VERSION_NUMBER,
@@ -85,6 +86,16 @@ export {
   ObjectExistence,
   Priority,
   DeliveryMode,
+  // Draft-18 types
+  MessageTypeDraft18,
+  StreamTypeDraft18,
+  SetupOptionDraft18,
+  RoleDraft18,
+  RequestParameterDraft18,
+  SubscriptionFilterDraft18,
+  ObjectStatusDraft18,
+  SessionErrorCodeDraft18,
+  StreamResetErrorCodeDraft18,
 } from './messages/types.js';
 
 // Message interfaces (Draft 14/16)
@@ -139,6 +150,24 @@ export type {
   SubgroupHeader,
   FetchHeader,
   MOQTObject,
+  // Draft-18 types
+  Location,
+  ControlMessageDraft18,
+  ClientSetupMessageDraft18,
+  ServerSetupMessageDraft18,
+  SubscribeMessageDraft18,
+  SubscribeOkMessageDraft18,
+  PublishMessageDraft18,
+  RequestErrorMessageDraft18,
+  RequestOkMessageDraft18,
+  FetchMessageDraft18,
+  FetchOkMessageDraft18,
+  GoAwayMessageDraft18,
+  TrackStatusMessageDraft18,
+  SubgroupHeaderDraft18,
+  ObjectHeaderDraft18,
+  ObjectDatagramDraft18,
+  FetchObjectDraft18,
 } from './messages/types.js';
 
 // Type guards
@@ -184,6 +213,20 @@ export {
 
 // Message codec
 export { MessageCodec, MessageCodecError, ObjectCodec } from './encoding/message-codec.js';
+
+// Protocol codec abstraction (draft-version-agnostic)
+export {
+  getProtocolCodec,
+  getProtocolCodecForVersion,
+  usesMoqtVarInt,
+  usesQuicVarInt,
+  Draft18BufferWriter,
+  Draft18BufferReader,
+} from './encoding/protocol-codec.js';
+export type { IProtocolCodec } from './encoding/protocol-codec.js';
+
+// Draft-18 message codec
+export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
 
 // State machines
 export {
