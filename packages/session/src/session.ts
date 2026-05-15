@@ -21,20 +21,25 @@ import {
   MessageCodec,
   ObjectCodec,
   MessageType,
+  MessageTypeDraft18,
   Version,
   GroupOrder,
   FilterType,
   ObjectStatus,
   RequestParameter,
   SetupParameter,
+  RoleDraft18,
   BufferWriter,
   Logger,
   IS_DRAFT_16,
   IS_DRAFT_18,
   getCurrentALPNProtocol,
   getProtocolCodec,
+  Draft18MessageCodec,
   type ClientSetupMessage,
   type ServerSetupMessage,
+  type ClientSetupMessageDraft18,
+  type ServerSetupMessageDraft18,
   type PublishMessage,
   type SubscribeMessage,
   type SubscribeOkMessage,
@@ -44,6 +49,7 @@ import {
   type SubscribeNamespaceErrorMessage,
   type MOQTMessage,
   type ControlMessage,
+  type ControlMessageDraft18,
   type ObjectHeader,
 } from '@web-moq/core';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
@@ -341,11 +347,26 @@ export class MOQTSession {
   private setupTransportHandlers(): void {
     if (!this.transport) return;
 
-    // Set up control message handler
-    const controlCleanup = this.transport.on('control-message', (data) => {
-      this.handleControlMessage(data);
-    });
-    this.transportCleanup.push(controlCleanup);
+    if (IS_DRAFT_18) {
+      // Draft-18: Setup messages come on separate setup stream event
+      const setupCleanup = this.transport.on('setup-message', (data) => {
+        this.handleSetupMessage(data);
+      });
+      this.transportCleanup.push(setupCleanup);
+
+      // Incoming bidi streams for server-initiated requests
+      const bidiCleanup = this.transport.on('incoming-bidi-stream', (stream) => {
+        log.info('Received incoming-bidi-stream event from transport');
+        this.handleIncomingBidiStream(stream);
+      });
+      this.transportCleanup.push(bidiCleanup);
+    } else {
+      // Draft-14/16: Control messages come on control stream
+      const controlCleanup = this.transport.on('control-message', (data) => {
+        this.handleControlMessage(data);
+      });
+      this.transportCleanup.push(controlCleanup);
+    }
 
     // Set up datagram handler
     const datagramCleanup = this.transport.on('datagram', (data) => {
@@ -638,7 +659,7 @@ export class MOQTSession {
       throw new Error(`Cannot setup: session is ${this._state}`);
     }
 
-    log.info('Setting up MOQT session', { useWorker: this.useWorker });
+    log.info('Setting up MOQT session', { useWorker: this.useWorker, isDraft18: IS_DRAFT_18 });
     this.setState('setup');
 
     // Set up event handlers based on mode
@@ -648,36 +669,57 @@ export class MOQTSession {
       this.setupTransportHandlers();
     }
 
-    // Send CLIENT_SETUP
-    // Draft-14: Include version list
-    // Draft-16: Version negotiated via ALPN, no version list
-    const setupParams = new Map<SetupParameter, number | string>();
-    // Set max request ID to allow up to 1000 concurrent requests
-    setupParams.set(SetupParameter.MAX_REQUEST_ID, 1000);
+    if (IS_DRAFT_18) {
+      // Draft-18: Use Draft18MessageCodec and send on setup stream
+      const clientSetup: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        supportedVersions: [Version.DRAFT_18],
+        role: RoleDraft18.BOTH,
+      };
 
-    const clientSetup: ClientSetupMessage = {
-      type: MessageType.CLIENT_SETUP,
-      supportedVersions: IS_DRAFT_16
-        ? [Version.DRAFT_16]
-        : [Version.DRAFT_14, Version.DRAFT_15],
-      parameters: setupParams,
-    };
+      const setupBytes = Draft18MessageCodec.encode(clientSetup);
 
-    const setupBytes = MessageCodec.encode(clientSetup);
+      const hexBytes = Array.from(setupBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log.info('CLIENT_SETUP bytes (draft-18)', {
+        length: setupBytes.length,
+        hex: hexBytes,
+        alpnProtocol: getCurrentALPNProtocol(),
+      });
 
-    const hexBytes = Array.from(setupBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('CLIENT_SETUP bytes', {
-      length: setupBytes.length,
-      hex: hexBytes,
-      isDraft16: IS_DRAFT_16,
-      alpnProtocol: getCurrentALPNProtocol(),
-    });
+      await this.doSendControl(setupBytes);
+      log.info('Sent CLIENT_SETUP (draft-18)');
 
-    await this.doSendControl(setupBytes);
-    log.info('Sent CLIENT_SETUP');
+      // Wait for SERVER_SETUP on incoming setup stream
+      await this.waitForServerSetupDraft18();
+    } else {
+      // Draft-14/16: Use MessageCodec and send on control stream
+      const setupParams = new Map<SetupParameter, number | string>();
+      setupParams.set(SetupParameter.MAX_REQUEST_ID, 1000);
 
-    // Wait for SERVER_SETUP
-    await this.waitForServerSetup();
+      const clientSetup: ClientSetupMessage = {
+        type: MessageType.CLIENT_SETUP,
+        supportedVersions: IS_DRAFT_16
+          ? [Version.DRAFT_16]
+          : [Version.DRAFT_14, Version.DRAFT_15],
+        parameters: setupParams,
+      };
+
+      const setupBytes = MessageCodec.encode(clientSetup);
+
+      const hexBytes = Array.from(setupBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log.info('CLIENT_SETUP bytes', {
+        length: setupBytes.length,
+        hex: hexBytes,
+        isDraft16: IS_DRAFT_16,
+        alpnProtocol: getCurrentALPNProtocol(),
+      });
+
+      await this.doSendControl(setupBytes);
+      log.info('Sent CLIENT_SETUP');
+
+      // Wait for SERVER_SETUP
+      await this.waitForServerSetup();
+    }
     log.info('MOQT session ready');
   }
 
@@ -2134,7 +2176,7 @@ export class MOQTSession {
   // =========================================================================
 
   /**
-   * Wait for SERVER_SETUP message
+   * Wait for SERVER_SETUP message (draft-14/16)
    */
   private waitForServerSetup(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -2156,6 +2198,103 @@ export class MOQTSession {
 
       this.onMessage = handler;
     });
+  }
+
+  /**
+   * Wait for SERVER_SETUP message (draft-18)
+   */
+  private waitForServerSetupDraft18(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout waiting for SERVER_SETUP (draft-18)'));
+      }, 10000);
+
+      const handler = (message: ControlMessageDraft18) => {
+        if (message.type === MessageTypeDraft18.SERVER_SETUP) {
+          clearTimeout(timeout);
+          const serverSetup = message as ServerSetupMessageDraft18;
+          log.debug('Received SERVER_SETUP (draft-18)', {
+            version: serverSetup.selectedVersion,
+            role: serverSetup.role,
+          });
+          this.setState('ready');
+          resolve();
+        }
+      };
+
+      this.onSetupMessage = handler;
+    });
+  }
+
+  /** Draft-18 setup message handler */
+  private onSetupMessage?: (message: ControlMessageDraft18) => void;
+
+  /** Setup message buffer for draft-18 */
+  private setupBuffer = new Uint8Array(0);
+  private setupBufferOffset = 0;
+
+  /**
+   * Handle incoming setup stream messages (draft-18)
+   */
+  private handleSetupMessage(data: Uint8Array): void {
+    log.debug('Setup message received (draft-18)', { size: data.length });
+
+    try {
+      // Append to buffer
+      if (this.setupBuffer.length === 0) {
+        this.setupBuffer = new Uint8Array(data);
+        this.setupBufferOffset = 0;
+      } else {
+        const remaining = this.setupBuffer.length - this.setupBufferOffset;
+        const newBuffer = new Uint8Array(remaining + data.length);
+        newBuffer.set(this.setupBuffer.subarray(this.setupBufferOffset));
+        newBuffer.set(data, remaining);
+        this.setupBuffer = newBuffer;
+        this.setupBufferOffset = 0;
+      }
+
+      // Try to decode messages
+      while (this.setupBufferOffset < this.setupBuffer.length) {
+        try {
+          const view = this.setupBuffer.subarray(this.setupBufferOffset);
+          const [message, bytesRead] = Draft18MessageCodec.decode(view);
+
+          this.setupBufferOffset += bytesRead;
+
+          log.info('Received setup message (draft-18)', {
+            type: MessageTypeDraft18[message.type],
+          });
+
+          // Handle setup callback
+          if (this.onSetupMessage) {
+            this.onSetupMessage(message);
+          }
+        } catch (err) {
+          if ((err as Error).message?.includes('Incomplete') ||
+              (err as Error).message?.includes('buffer')) {
+            break;
+          }
+          throw err;
+        }
+      }
+
+      // Reset buffer if all consumed
+      if (this.setupBufferOffset >= this.setupBuffer.length) {
+        this.setupBuffer = new Uint8Array(0);
+        this.setupBufferOffset = 0;
+      }
+    } catch (err) {
+      log.error('Error handling setup message (draft-18)', err as Error);
+    }
+  }
+
+  /**
+   * Handle incoming bidirectional stream (draft-18 server-initiated requests)
+   */
+  private handleIncomingBidiStream(_stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): void {
+    log.info('Handling incoming bidi stream (draft-18)');
+    // TODO: Read the request message, route to appropriate handler, send response
+    // Full implementation in task #9
   }
 
   /**
