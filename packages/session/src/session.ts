@@ -29,6 +29,7 @@ import {
   RequestParameter,
   SetupParameter,
   RoleDraft18,
+  SubscriptionFilterDraft18,
   BufferWriter,
   Logger,
   IS_DRAFT_16,
@@ -41,8 +42,12 @@ import {
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
   type PublishMessage,
+  type PublishMessageDraft18 as _PublishMessageDraft18,
   type SubscribeMessage,
+  type SubscribeMessageDraft18,
   type SubscribeOkMessage,
+  type SubscribeOkMessageDraft18,
+  type RequestErrorMessageDraft18,
   type PublishNamespaceMessage,
   type PublishNamespaceOkMessage,
   type SubscribeNamespaceOkMessage,
@@ -796,6 +801,7 @@ export class MOQTSession {
       fullTrackName: fullTrackNameForLog,
       subscriptionId,
       trackAlias: trackAlias.toString(),
+      isDraft18: IS_DRAFT_18,
     });
 
     // Create subscription
@@ -811,33 +817,151 @@ export class MOQTSession {
     };
     this.subscriptionManager.add(subscription);
 
-    // Send SUBSCRIBE message
-    const subscribeMessage: SubscribeMessage = {
-      type: MessageType.SUBSCRIBE,
-      requestId,
-      trackAlias,
-      fullTrackName: { namespace, trackName },
-      subscriberPriority: options?.priority ?? 128,
-      groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
-      filterType: FilterType.LATEST_GROUP,
+    if (IS_DRAFT_18) {
+      // Draft-18: Send SUBSCRIBE on a new bidirectional stream
+      await this.subscribeDraft18(requestId, namespace, trackName, trackAlias, options);
+    } else {
+      // Draft-14/16: Send SUBSCRIBE on control stream
+      const subscribeMessage: SubscribeMessage = {
+        type: MessageType.SUBSCRIBE,
+        requestId,
+        trackAlias,
+        fullTrackName: { namespace, trackName },
+        subscriberPriority: options?.priority ?? 128,
+        groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
+        filterType: FilterType.LATEST_GROUP,
+        parameters: new Map(),
+      };
+
+      const subscribeBytes = MessageCodec.encode(subscribeMessage);
+
+      const hexBytes = Array.from(subscribeBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log.info('SUBSCRIBE bytes', { length: subscribeBytes.length, hex: hexBytes });
+
+      await this.doSendControl(subscribeBytes);
+      log.info('Sent SUBSCRIBE message', {
+        requestId,
+        trackAlias: trackAlias.toString(),
+        namespace: namespace.join('/'),
+        trackName,
+      });
+    }
+
+    log.info('Subscription started', { subscriptionId });
+    return subscriptionId;
+  }
+
+  /**
+   * Draft-18: Subscribe using per-request bidirectional stream
+   */
+  private async subscribeDraft18(
+    requestId: number,
+    namespace: string[],
+    trackName: string,
+    trackAlias: bigint,
+    _options?: SubscribeOptions
+  ): Promise<void> {
+    if (!this.transport) {
+      throw new Error('Transport not available');
+    }
+
+    // Create bidirectional stream for this request
+    const { readable, writable } = await this.transport.createRequestStream();
+
+    // Build SUBSCRIBE message
+    const subscribeMessage: SubscribeMessageDraft18 = {
+      type: MessageTypeDraft18.SUBSCRIBE,
+      requestId: BigInt(requestId),
+      trackNamespace: namespace,
+      trackName,
+      forwardState: true,
+      filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
       parameters: new Map(),
     };
 
-    const subscribeBytes = MessageCodec.encode(subscribeMessage);
+    const subscribeBytes = Draft18MessageCodec.encode(subscribeMessage);
 
     const hexBytes = Array.from(subscribeBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('SUBSCRIBE bytes', { length: subscribeBytes.length, hex: hexBytes });
+    log.info('SUBSCRIBE bytes (draft-18)', { length: subscribeBytes.length, hex: hexBytes });
 
-    await this.doSendControl(subscribeBytes);
-    log.info('Sent SUBSCRIBE message', {
+    // Send SUBSCRIBE on the bidi stream
+    const writer = writable.getWriter();
+    await writer.write(subscribeBytes);
+    writer.releaseLock();
+
+    log.info('Sent SUBSCRIBE message (draft-18)', {
       requestId,
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
     });
 
-    log.info('Subscription started', { subscriptionId });
-    return subscriptionId;
+    // Wait for response (SUBSCRIBE_OK or REQUEST_ERROR)
+    const response = await this.readRequestResponse(readable, BigInt(requestId));
+
+    if (response.type === MessageTypeDraft18.SUBSCRIBE_OK) {
+      const subscribeOk = response as SubscribeOkMessageDraft18;
+      log.info('Received SUBSCRIBE_OK (draft-18)', {
+        requestId: subscribeOk.requestId.toString(),
+        largestGroup: subscribeOk.largestLocation.group.toString(),
+        largestObject: subscribeOk.largestLocation.object.toString(),
+      });
+    } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      log.error('Received REQUEST_ERROR (draft-18)', {
+        requestId: error.requestId.toString(),
+        errorCode: error.errorCode,
+        reasonPhrase: error.reasonPhrase,
+      });
+      throw new Error(`SUBSCRIBE failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+    }
+  }
+
+  /**
+   * Read response from a request bidi stream (draft-18)
+   */
+  private async readRequestResponse(
+    readable: ReadableStream<Uint8Array>,
+    requestId: bigint
+  ): Promise<ControlMessageDraft18> {
+    const reader = readable.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalLength = 0;
+
+    try {
+      // Read until we have a complete message
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          throw new Error(`Stream closed before receiving response for request ${requestId}`);
+        }
+
+        chunks.push(value);
+        totalLength += value.length;
+
+        // Concatenate chunks
+        const buffer = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          buffer.set(chunk, offset);
+          offset += chunk.length;
+        }
+
+        // Try to decode
+        try {
+          const [message, _bytesRead] = Draft18MessageCodec.decode(buffer);
+          return message;
+        } catch (err) {
+          if ((err as Error).message?.includes('Incomplete') ||
+              (err as Error).message?.includes('buffer')) {
+            continue;
+          }
+          throw err;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
 
   /**
