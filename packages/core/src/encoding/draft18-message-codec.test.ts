@@ -1,0 +1,404 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
+// SPDX-License-Identifier: BSD-2-Clause
+
+import { describe, it, expect } from 'vitest';
+import { Draft18MessageCodec } from './draft18-message-codec';
+import {
+  MessageTypeDraft18,
+  Version,
+  GroupOrder,
+  SubscriptionFilterDraft18,
+  RoleDraft18,
+  type ClientSetupMessageDraft18,
+  type ServerSetupMessageDraft18,
+  type SubscribeMessageDraft18,
+  type SubscribeOkMessageDraft18,
+  type PublishMessageDraft18,
+  type RequestErrorMessageDraft18,
+  type RequestOkMessageDraft18,
+  type FetchMessageDraft18,
+  type FetchOkMessageDraft18,
+  type GoAwayMessageDraft18,
+  type TrackStatusMessageDraft18,
+} from '../messages/types';
+
+describe('Draft18MessageCodec', () => {
+  describe('CLIENT_SETUP', () => {
+    it('roundtrips basic CLIENT_SETUP', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        supportedVersions: [Version.DRAFT_18],
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded, bytesRead] = Draft18MessageCodec.decode(encoded);
+
+      expect(decoded.type).toBe(MessageTypeDraft18.CLIENT_SETUP);
+      expect((decoded as ClientSetupMessageDraft18).supportedVersions).toEqual([Version.DRAFT_18]);
+      expect(bytesRead).toBe(encoded.length);
+    });
+
+    it('roundtrips CLIENT_SETUP with all options', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        supportedVersions: [Version.DRAFT_18, Version.DRAFT_17],
+        role: RoleDraft18.BOTH,
+        path: '/moq',
+        authority: 'relay.example.com',
+        maxAuthTokenCacheSize: 100,
+        authToken: new Uint8Array([1, 2, 3, 4]),
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded, bytesRead] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as ClientSetupMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.CLIENT_SETUP);
+      expect(d.supportedVersions).toEqual([Version.DRAFT_18, Version.DRAFT_17]);
+      expect(d.role).toBe(RoleDraft18.BOTH);
+      expect(d.path).toBe('/moq');
+      expect(d.authority).toBe('relay.example.com');
+      expect(d.maxAuthTokenCacheSize).toBe(100);
+      expect(d.authToken).toEqual(new Uint8Array([1, 2, 3, 4]));
+      expect(bytesRead).toBe(encoded.length);
+    });
+  });
+
+  describe('SERVER_SETUP', () => {
+    it('roundtrips basic SERVER_SETUP', () => {
+      const message: ServerSetupMessageDraft18 = {
+        type: MessageTypeDraft18.SERVER_SETUP,
+        selectedVersion: Version.DRAFT_18,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      expect(decoded.type).toBe(MessageTypeDraft18.SERVER_SETUP);
+      expect((decoded as ServerSetupMessageDraft18).selectedVersion).toBe(Version.DRAFT_18);
+    });
+
+    it('roundtrips SERVER_SETUP with options', () => {
+      const message: ServerSetupMessageDraft18 = {
+        type: MessageTypeDraft18.SERVER_SETUP,
+        selectedVersion: Version.DRAFT_18,
+        role: RoleDraft18.SUBSCRIBER,
+        path: '/test',
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as ServerSetupMessageDraft18;
+      expect(d.selectedVersion).toBe(Version.DRAFT_18);
+      expect(d.role).toBe(RoleDraft18.SUBSCRIBER);
+      expect(d.path).toBe('/test');
+    });
+  });
+
+  describe('SUBSCRIBE', () => {
+    it('roundtrips basic SUBSCRIBE', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 1n,
+        trackNamespace: ['conference', 'room-123'],
+        trackName: 'video',
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.SUBSCRIBE);
+      expect(d.requestId).toBe(1n);
+      expect(d.trackNamespace).toEqual(['conference', 'room-123']);
+      expect(d.trackName).toBe('video');
+      expect(d.forwardState).toBe(true);
+      expect(d.filter).toBe(SubscriptionFilterDraft18.NEXT_GROUP_START);
+    });
+
+    it('roundtrips SUBSCRIBE with ABSOLUTE_RANGE filter', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 42n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: false,
+        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
+        startLocation: { group: 10n, object: 5n },
+        endGroupDelta: 100n,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeMessageDraft18;
+      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_RANGE);
+      expect(d.startLocation).toEqual({ group: 10n, object: 5n });
+      expect(d.endGroupDelta).toBe(100n);
+    });
+  });
+
+  describe('SUBSCRIBE_OK', () => {
+    it('roundtrips SUBSCRIBE_OK', () => {
+      const message: SubscribeOkMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_OK,
+        requestId: 1n,
+        largestLocation: { group: 100n, object: 50n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeOkMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.SUBSCRIBE_OK);
+      expect(d.requestId).toBe(1n);
+      expect(d.largestLocation).toEqual({ group: 100n, object: 50n });
+    });
+  });
+
+  describe('PUBLISH', () => {
+    it('roundtrips PUBLISH', () => {
+      const message: PublishMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH,
+        requestId: 5n,
+        trackAlias: 12345n,
+        trackNamespace: ['pub', 'ns'],
+        trackName: 'audio',
+        forwardState: true,
+        largestLocation: { group: 0n, object: 0n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as PublishMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.PUBLISH);
+      expect(d.requestId).toBe(5n);
+      expect(d.trackAlias).toBe(12345n);
+      expect(d.trackNamespace).toEqual(['pub', 'ns']);
+      expect(d.trackName).toBe('audio');
+      expect(d.forwardState).toBe(true);
+    });
+  });
+
+  describe('REQUEST_ERROR', () => {
+    it('roundtrips REQUEST_ERROR', () => {
+      const message: RequestErrorMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_ERROR,
+        requestId: 10n,
+        errorCode: 3,
+        reasonPhrase: 'Track not found',
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestErrorMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.REQUEST_ERROR);
+      expect(d.requestId).toBe(10n);
+      expect(d.errorCode).toBe(3);
+      expect(d.reasonPhrase).toBe('Track not found');
+    });
+  });
+
+  describe('REQUEST_OK', () => {
+    it('roundtrips REQUEST_OK without expires', () => {
+      const message: RequestOkMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_OK,
+        requestId: 7n,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestOkMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.REQUEST_OK);
+      expect(d.requestId).toBe(7n);
+    });
+
+    it('roundtrips REQUEST_OK with expires', () => {
+      const message: RequestOkMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_OK,
+        requestId: 7n,
+        expires: 3600n,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestOkMessageDraft18;
+      expect(d.expires).toBe(3600n);
+    });
+  });
+
+  describe('FETCH', () => {
+    it('roundtrips FETCH with track name', () => {
+      const message: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 20n,
+        joiningFlag: false,
+        trackNamespace: ['fetch', 'ns'],
+        trackName: 'history',
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 100n, object: 50n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as FetchMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.FETCH);
+      expect(d.joiningFlag).toBe(false);
+      expect(d.trackNamespace).toEqual(['fetch', 'ns']);
+      expect(d.trackName).toBe('history');
+      expect(d.startLocation).toEqual({ group: 0n, object: 0n });
+      expect(d.endLocation).toEqual({ group: 100n, object: 50n });
+    });
+
+    it('roundtrips FETCH with joining flag', () => {
+      const message: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 21n,
+        joiningFlag: true,
+        subscribeRequestId: 5n,
+        subscriberPriority: 64,
+        groupOrder: GroupOrder.DESCENDING,
+        startLocation: { group: 50n, object: 0n },
+        endLocation: { group: 100n, object: 0n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as FetchMessageDraft18;
+      expect(d.joiningFlag).toBe(true);
+      expect(d.subscribeRequestId).toBe(5n);
+      expect(d.trackNamespace).toBeUndefined();
+    });
+  });
+
+  describe('FETCH_OK', () => {
+    it('roundtrips FETCH_OK', () => {
+      const message: FetchOkMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH_OK,
+        requestId: 20n,
+        endOfTrack: true,
+        endLocation: { group: 100n, object: 50n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as FetchOkMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.FETCH_OK);
+      expect(d.endOfTrack).toBe(true);
+      expect(d.endLocation).toEqual({ group: 100n, object: 50n });
+    });
+  });
+
+  describe('GOAWAY', () => {
+    it('roundtrips GOAWAY without URI', () => {
+      const message: GoAwayMessageDraft18 = {
+        type: MessageTypeDraft18.GOAWAY,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      expect(decoded.type).toBe(MessageTypeDraft18.GOAWAY);
+      expect((decoded as GoAwayMessageDraft18).newSessionUri).toBeUndefined();
+    });
+
+    it('roundtrips GOAWAY with URI', () => {
+      const message: GoAwayMessageDraft18 = {
+        type: MessageTypeDraft18.GOAWAY,
+        newSessionUri: 'moqt://new-relay.example.com/moq',
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      expect((decoded as GoAwayMessageDraft18).newSessionUri).toBe('moqt://new-relay.example.com/moq');
+    });
+  });
+
+  describe('TRACK_STATUS', () => {
+    it('roundtrips TRACK_STATUS', () => {
+      const message: TrackStatusMessageDraft18 = {
+        type: MessageTypeDraft18.TRACK_STATUS,
+        requestId: 30n,
+        trackNamespace: ['status', 'ns'],
+        trackName: 'check',
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as TrackStatusMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.TRACK_STATUS);
+      expect(d.requestId).toBe(30n);
+      expect(d.trackNamespace).toEqual(['status', 'ns']);
+      expect(d.trackName).toBe('check');
+    });
+  });
+
+  describe('large values', () => {
+    it('handles large request IDs', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 0xFFFFFFFFFFFFFFFFn, // Max uint64
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      expect((decoded as SubscribeMessageDraft18).requestId).toBe(0xFFFFFFFFFFFFFFFFn);
+    });
+
+    it('handles large track aliases', () => {
+      const message: PublishMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH,
+        requestId: 1n,
+        trackAlias: 0x123456789ABCDEFn,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        largestLocation: { group: 0n, object: 0n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      expect((decoded as PublishMessageDraft18).trackAlias).toBe(0x123456789ABCDEFn);
+    });
+  });
+
+  describe('unicode', () => {
+    it('handles unicode track names', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 1n,
+        trackNamespace: ['会议', '房间-123'],
+        trackName: '视频轨道',
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeMessageDraft18;
+      expect(d.trackNamespace).toEqual(['会议', '房间-123']);
+      expect(d.trackName).toBe('视频轨道');
+    });
+  });
+});
