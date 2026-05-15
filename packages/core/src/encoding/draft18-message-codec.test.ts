@@ -14,12 +14,20 @@ import {
   type SubscribeMessageDraft18,
   type SubscribeOkMessageDraft18,
   type PublishMessageDraft18,
+  type PublishDoneMessageDraft18,
   type RequestErrorMessageDraft18,
   type RequestOkMessageDraft18,
+  type RequestUpdateMessageDraft18,
   type FetchMessageDraft18,
   type FetchOkMessageDraft18,
   type GoAwayMessageDraft18,
   type TrackStatusMessageDraft18,
+  type PublishNamespaceMessageDraft18,
+  type SubscribeNamespaceMessageDraft18,
+  type NamespaceMessageDraft18,
+  type NamespaceDoneMessageDraft18,
+  type SubscribeTracksMessageDraft18,
+  type PublishBlockedMessageDraft18,
 } from '../messages/types';
 
 describe('Draft18MessageCodec', () => {
@@ -399,6 +407,243 @@ describe('Draft18MessageCodec', () => {
       const d = decoded as SubscribeMessageDraft18;
       expect(d.trackNamespace).toEqual(['会议', '房间-123']);
       expect(d.trackName).toBe('视频轨道');
+    });
+  });
+
+  describe('PUBLISH_DONE', () => {
+    it('roundtrips basic PUBLISH_DONE', () => {
+      const message: PublishDoneMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH_DONE,
+        requestId: 42n,
+        finalLocation: { group: 100n, object: 50n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as PublishDoneMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.PUBLISH_DONE);
+      expect(d.requestId).toBe(42n);
+      expect(d.finalLocation.group).toBe(100n);
+      expect(d.finalLocation.object).toBe(50n);
+      expect(d.reasonPhrase).toBeUndefined();
+    });
+
+    it('roundtrips PUBLISH_DONE with reason', () => {
+      const message: PublishDoneMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH_DONE,
+        requestId: 1n,
+        finalLocation: { group: 0n, object: 0n },
+        reasonPhrase: 'End of stream',
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as PublishDoneMessageDraft18;
+      expect(d.reasonPhrase).toBe('End of stream');
+    });
+  });
+
+  describe('REQUEST_UPDATE', () => {
+    it('roundtrips basic REQUEST_UPDATE', () => {
+      const message: RequestUpdateMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_UPDATE,
+        requestId: 10n,
+        forwardState: true,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestUpdateMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.REQUEST_UPDATE);
+      expect(d.requestId).toBe(10n);
+      expect(d.forwardState).toBe(true);
+      expect(d.parameters).toBeUndefined();
+    });
+
+    it('roundtrips REQUEST_UPDATE with parameters', () => {
+      const params = new Map<number, Uint8Array>();
+      params.set(0x01, new Uint8Array([1, 2, 3]));
+
+      const message: RequestUpdateMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_UPDATE,
+        requestId: 5n,
+        forwardState: false,
+        parameters: params,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestUpdateMessageDraft18;
+      expect(d.forwardState).toBe(false);
+      expect(d.parameters).toBeDefined();
+      expect(d.parameters!.has(0x01)).toBe(true);
+    });
+  });
+
+  describe('PUBLISH_NAMESPACE', () => {
+    it('roundtrips basic PUBLISH_NAMESPACE', () => {
+      const message: PublishNamespaceMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH_NAMESPACE,
+        requestId: 1n,
+        trackNamespacePrefix: ['conference', 'room-123'],
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as PublishNamespaceMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.PUBLISH_NAMESPACE);
+      expect(d.requestId).toBe(1n);
+      expect(d.trackNamespacePrefix).toEqual(['conference', 'room-123']);
+    });
+
+    it('roundtrips PUBLISH_NAMESPACE with parameters', () => {
+      const params = new Map<number, Uint8Array>();
+      params.set(0x02, new Uint8Array([10]));
+
+      const message: PublishNamespaceMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH_NAMESPACE,
+        requestId: 2n,
+        trackNamespacePrefix: ['ns'],
+        parameters: params,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as PublishNamespaceMessageDraft18;
+      expect(d.parameters).toBeDefined();
+    });
+  });
+
+  describe('SUBSCRIBE_NAMESPACE', () => {
+    it('roundtrips basic SUBSCRIBE_NAMESPACE', () => {
+      const message: SubscribeNamespaceMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
+        requestId: 3n,
+        trackNamespacePrefix: ['media'],
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeNamespaceMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
+      expect(d.requestId).toBe(3n);
+      expect(d.trackNamespacePrefix).toEqual(['media']);
+    });
+  });
+
+  describe('NAMESPACE', () => {
+    it('roundtrips basic NAMESPACE', () => {
+      const message: NamespaceMessageDraft18 = {
+        type: MessageTypeDraft18.NAMESPACE,
+        trackNamespace: ['conference', 'room-456', 'video'],
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as NamespaceMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.NAMESPACE);
+      expect(d.trackNamespace).toEqual(['conference', 'room-456', 'video']);
+    });
+
+    it('roundtrips NAMESPACE with parameters', () => {
+      const params = new Map<number, Uint8Array>();
+      params.set(0x00, new Uint8Array([5]));
+
+      const message: NamespaceMessageDraft18 = {
+        type: MessageTypeDraft18.NAMESPACE,
+        trackNamespace: ['ns'],
+        trackNamespaceParameters: params,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as NamespaceMessageDraft18;
+      expect(d.trackNamespaceParameters).toBeDefined();
+    });
+  });
+
+  describe('NAMESPACE_DONE', () => {
+    it('roundtrips NAMESPACE_DONE', () => {
+      const message: NamespaceDoneMessageDraft18 = {
+        type: MessageTypeDraft18.NAMESPACE_DONE,
+        finalNamespace: ['conference', 'room-789'],
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as NamespaceDoneMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.NAMESPACE_DONE);
+      expect(d.finalNamespace).toEqual(['conference', 'room-789']);
+    });
+  });
+
+  describe('SUBSCRIBE_TRACKS', () => {
+    it('roundtrips basic SUBSCRIBE_TRACKS', () => {
+      const message: SubscribeTracksMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+        requestId: 5n,
+        trackNamespacePrefix: ['media', 'video'],
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeTracksMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.SUBSCRIBE_TRACKS);
+      expect(d.requestId).toBe(5n);
+      expect(d.trackNamespacePrefix).toEqual(['media', 'video']);
+      expect(d.forwardState).toBe(true);
+      expect(d.filter).toBe(SubscriptionFilterDraft18.NEXT_GROUP_START);
+    });
+
+    it('roundtrips SUBSCRIBE_TRACKS with pattern and range filter', () => {
+      const message: SubscribeTracksMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+        requestId: 6n,
+        trackNamespacePrefix: ['conference'],
+        trackNamePattern: 'video-*',
+        forwardState: false,
+        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
+        startLocation: { group: 10n, object: 0n },
+        endGroupDelta: 5n,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeTracksMessageDraft18;
+      expect(d.trackNamePattern).toBe('video-*');
+      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_RANGE);
+      expect(d.startLocation?.group).toBe(10n);
+      expect(d.endGroupDelta).toBe(5n);
+    });
+  });
+
+  describe('PUBLISH_BLOCKED', () => {
+    it('roundtrips PUBLISH_BLOCKED', () => {
+      const message: PublishBlockedMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH_BLOCKED,
+        trackAlias: 999n,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as PublishBlockedMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.PUBLISH_BLOCKED);
+      expect(d.trackAlias).toBe(999n);
     });
   });
 });

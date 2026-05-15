@@ -1605,6 +1605,94 @@ export interface FetchObjectDraft18 {
 }
 
 /**
+ * Draft-18 PUBLISH_DONE message
+ * Sent by publisher when it will no longer send objects on a track
+ */
+export interface PublishDoneMessageDraft18 {
+  type: MessageTypeDraft18.PUBLISH_DONE;
+  requestId: bigint;
+  finalLocation: Location;
+  reasonPhrase?: string;
+}
+
+/**
+ * Draft-18 REQUEST_UPDATE message
+ * Updates an existing subscription's forward state or parameters
+ */
+export interface RequestUpdateMessageDraft18 {
+  type: MessageTypeDraft18.REQUEST_UPDATE;
+  requestId: bigint;
+  forwardState: boolean;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 PUBLISH_NAMESPACE message
+ * Publisher announces availability of a namespace
+ */
+export interface PublishNamespaceMessageDraft18 {
+  type: MessageTypeDraft18.PUBLISH_NAMESPACE;
+  requestId: bigint;
+  trackNamespacePrefix: TrackNamespace;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 SUBSCRIBE_NAMESPACE message
+ * Subscriber requests announcements matching a namespace prefix
+ */
+export interface SubscribeNamespaceMessageDraft18 {
+  type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE;
+  requestId: bigint;
+  trackNamespacePrefix: TrackNamespace;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 NAMESPACE message
+ * Sent by publisher in response to SUBSCRIBE_NAMESPACE to announce a namespace
+ */
+export interface NamespaceMessageDraft18 {
+  type: MessageTypeDraft18.NAMESPACE;
+  trackNamespace: TrackNamespace;
+  trackNamespaceParameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 NAMESPACE_DONE message
+ * Signals end of namespace announcements for a SUBSCRIBE_NAMESPACE request
+ */
+export interface NamespaceDoneMessageDraft18 {
+  type: MessageTypeDraft18.NAMESPACE_DONE;
+  finalNamespace: TrackNamespace;
+}
+
+/**
+ * Draft-18 SUBSCRIBE_TRACKS message
+ * Subscribe to multiple tracks within matching namespaces
+ */
+export interface SubscribeTracksMessageDraft18 {
+  type: MessageTypeDraft18.SUBSCRIBE_TRACKS;
+  requestId: bigint;
+  trackNamespacePrefix: TrackNamespace;
+  trackNamePattern?: string;
+  forwardState: boolean;
+  filter: SubscriptionFilterDraft18;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 PUBLISH_BLOCKED message
+ * Publisher signals it is blocked from sending due to flow control
+ */
+export interface PublishBlockedMessageDraft18 {
+  type: MessageTypeDraft18.PUBLISH_BLOCKED;
+  trackAlias: bigint;
+}
+
+/**
  * Union of Draft-18 control messages
  */
 export type ControlMessageDraft18 =
@@ -1613,9 +1701,17 @@ export type ControlMessageDraft18 =
   | SubscribeMessageDraft18
   | SubscribeOkMessageDraft18
   | PublishMessageDraft18
+  | PublishDoneMessageDraft18
   | RequestErrorMessageDraft18
   | RequestOkMessageDraft18
+  | RequestUpdateMessageDraft18
   | FetchMessageDraft18
   | FetchOkMessageDraft18
   | GoAwayMessageDraft18
-  | TrackStatusMessageDraft18;
+  | TrackStatusMessageDraft18
+  | PublishNamespaceMessageDraft18
+  | SubscribeNamespaceMessageDraft18
+  | NamespaceMessageDraft18
+  | NamespaceDoneMessageDraft18
+  | SubscribeTracksMessageDraft18
+  | PublishBlockedMessageDraft18;

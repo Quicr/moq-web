@@ -33,7 +33,9 @@
  */
 
 import { Logger } from '../utils/logger.js';
-import { getCurrentALPNProtocol } from '../version/constants.js';
+import { getCurrentALPNProtocol, IS_DRAFT_18 } from '../version/constants.js';
+import { MOQTVarInt } from '../encoding/moqt-varint.js';
+import { StreamTypeDraft18 } from '../messages/types.js';
 
 const log = Logger.create('moqt:transport');
 
@@ -56,6 +58,8 @@ export type TransportEventType =
   | 'datagram'
   | 'unidirectional-stream'
   | 'control-message'
+  | 'setup-message'
+  | 'incoming-bidi-stream'
   | 'error';
 
 /**
@@ -66,6 +70,8 @@ export interface TransportEvents {
   'datagram': Uint8Array;
   'unidirectional-stream': ReadableStream<Uint8Array>;
   'control-message': Uint8Array;
+  'setup-message': Uint8Array;
+  'incoming-bidi-stream': { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> };
   'error': Error;
 }
 
@@ -117,10 +123,14 @@ export interface TransportConfig {
 export class MOQTransport {
   /** Underlying WebTransport instance */
   private transport?: WebTransport;
-  /** Control stream writer */
+  /** Control stream writer (draft-14/16) */
   private controlWriter?: WritableStreamDefaultWriter<Uint8Array>;
-  /** Control stream reader */
+  /** Control stream reader (draft-14/16) */
   private controlReader?: ReadableStreamDefaultReader<Uint8Array>;
+  /** Setup stream writer (draft-18 outgoing unidirectional) */
+  private setupWriter?: WritableStreamDefaultWriter<Uint8Array>;
+  /** Setup stream reader (draft-18 incoming unidirectional) */
+  private setupReader?: ReadableStreamDefaultReader<Uint8Array>;
   /** Current transport state */
   private _state: TransportState = 'disconnected';
   /** Event handlers */
@@ -253,17 +263,35 @@ export class MOQTransport {
 
       log.debug('WebTransport connected');
 
-      // Set up control stream (bidirectional)
-      const controlStream = await this.transport.createBidirectionalStream();
-      this.controlWriter = controlStream.writable.getWriter();
-      this.controlReader = controlStream.readable.getReader();
+      if (IS_DRAFT_18) {
+        // Draft-18: Setup uses pair of unidirectional streams with 0x2F00 type
+        // Create outgoing setup stream
+        const setupStream = await this.transport.createUnidirectionalStream();
+        this.setupWriter = setupStream.getWriter();
 
-      log.debug('Control stream established');
+        // Write stream type (0x2F00 as MOQT varint)
+        const streamType = MOQTVarInt.encode(BigInt(StreamTypeDraft18.SETUP));
+        await this.setupWriter.write(streamType);
 
-      // Start listening for incoming streams and datagrams
-      this.startStreamListener();
-      this.startDatagramListener();
-      this.startControlListener();
+        log.debug('Draft-18 outgoing setup stream established');
+
+        // Start listening for streams (including incoming setup stream)
+        this.startStreamListener();
+        this.startDatagramListener();
+        this.startBidiStreamListener();
+      } else {
+        // Draft-14/16: Single bidirectional control stream
+        const controlStream = await this.transport.createBidirectionalStream();
+        this.controlWriter = controlStream.writable.getWriter();
+        this.controlReader = controlStream.readable.getReader();
+
+        log.debug('Control stream established');
+
+        // Start listening for incoming streams and datagrams
+        this.startStreamListener();
+        this.startDatagramListener();
+        this.startControlListener();
+      }
 
       // Set up close handler
       this.transport.closed
@@ -302,8 +330,14 @@ export class MOQTransport {
           log.debug('Stream listener ended');
           break;
         }
-        log.trace('Received unidirectional stream');
-        this.emit('unidirectional-stream', stream);
+
+        if (IS_DRAFT_18) {
+          // Draft-18: Check stream type to route appropriately
+          this.handleDraft18UnidirectionalStream(stream);
+        } else {
+          log.trace('Received unidirectional stream');
+          this.emit('unidirectional-stream', stream);
+        }
       }
     } catch (err) {
       if (this._state === 'connected') {
@@ -313,6 +347,152 @@ export class MOQTransport {
         log.info('Stream listener stopped', { state: this._state, error: (err as Error).message });
       }
     }
+  }
+
+  /**
+   * Handle incoming unidirectional stream for draft-18
+   * Routes based on stream type (0x2F00 = setup, 0x05 = fetch, etc.)
+   */
+  private async handleDraft18UnidirectionalStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+    const streamReader = stream.getReader();
+
+    try {
+      // Read stream type (MOQT varint)
+      const { value: firstChunk, done } = await streamReader.read();
+      if (done || !firstChunk || firstChunk.length === 0) {
+        log.warn('Empty unidirectional stream received');
+        streamReader.releaseLock();
+        return;
+      }
+
+      // Decode stream type from first bytes
+      const [streamType, bytesRead] = MOQTVarInt.decode(firstChunk);
+      const streamTypeNum = Number(streamType);
+
+      log.debug('Draft-18 unidirectional stream received', {
+        streamType: streamTypeNum,
+        streamTypeHex: `0x${streamTypeNum.toString(16)}`,
+      });
+
+      if (streamTypeNum === StreamTypeDraft18.SETUP) {
+        // Setup stream from server - save reader for receiving SERVER_SETUP
+        this.setupReader = streamReader;
+
+        // Create a new stream that combines the remaining first chunk bytes with future reads
+        const remaining = firstChunk.subarray(bytesRead);
+        this.startSetupListener(remaining);
+      } else {
+        // Data stream - create a new ReadableStream that includes the remaining bytes
+        const remaining = firstChunk.subarray(bytesRead);
+        const reconstructedStream = this.reconstructStream(streamReader, remaining);
+        this.emit('unidirectional-stream', reconstructedStream);
+      }
+    } catch (err) {
+      log.error('Error handling draft-18 unidirectional stream', err as Error);
+      streamReader.releaseLock();
+    }
+  }
+
+  /**
+   * Reconstruct a ReadableStream with pre-read bytes
+   */
+  private reconstructStream(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    initialBytes: Uint8Array
+  ): ReadableStream<Uint8Array> {
+    let initial = initialBytes.length > 0 ? initialBytes : null;
+
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (initial) {
+          controller.enqueue(initial);
+          initial = null;
+          return;
+        }
+
+        const { value, done } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      },
+      cancel() {
+        reader.releaseLock();
+      },
+    });
+  }
+
+  /**
+   * Start listening for incoming bidirectional streams (draft-18)
+   */
+  private async startBidiStreamListener(): Promise<void> {
+    if (!this.transport) return;
+
+    log.debug('Starting bidi stream listener (draft-18)');
+    const reader = this.transport.incomingBidirectionalStreams.getReader();
+
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value: stream, done } = await reader.read();
+        if (done) {
+          log.debug('Bidi stream listener ended');
+          break;
+        }
+        log.debug('Received incoming bidirectional stream');
+        this.emit('incoming-bidi-stream', {
+          readable: stream.readable,
+          writable: stream.writable,
+        });
+      }
+    } catch (err) {
+      if (this._state === 'connected') {
+        log.error('Bidi stream listener error', err as Error);
+        this.handleError(err as Error);
+      } else {
+        log.info('Bidi stream listener stopped', { state: this._state, error: (err as Error).message });
+      }
+    }
+  }
+
+  /**
+   * Start listening for setup stream messages (draft-18)
+   */
+  private startSetupListener(initialData: Uint8Array): void {
+    if (!this.setupReader) return;
+
+    const reader = this.setupReader;
+
+    // Process any initial data
+    if (initialData.length > 0) {
+      log.trace('Processing initial setup data', { size: initialData.byteLength });
+      this.emit('setup-message', initialData);
+    }
+
+    // Continue reading
+    const readLoop = async () => {
+      try {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            log.debug('Setup stream ended');
+            break;
+          }
+
+          log.trace('Received setup message', { size: value.byteLength });
+          this.emit('setup-message', value);
+        }
+      } catch (err) {
+        if (this._state === 'connected') {
+          log.error('Setup listener error', err as Error);
+          this.handleError(err as Error);
+        }
+      }
+    };
+
+    readLoop();
   }
 
   /**
@@ -372,7 +552,7 @@ export class MOQTransport {
   }
 
   /**
-   * Send data on the control stream
+   * Send data on the control stream (draft-14/16) or setup stream (draft-18)
    *
    * @param data - Bytes to send
    * @throws Error if not connected or write fails
@@ -383,12 +563,41 @@ export class MOQTransport {
    * ```
    */
   async sendControl(data: Uint8Array): Promise<void> {
-    if (!this.controlWriter) {
+    if (IS_DRAFT_18) {
+      if (!this.setupWriter) {
+        throw new Error('Setup stream not connected');
+      }
+      log.trace('Sending setup message (draft-18)', { size: data.byteLength });
+      await this.setupWriter.write(data);
+    } else {
+      if (!this.controlWriter) {
+        throw new Error('Not connected');
+      }
+      log.trace('Sending control message', { size: data.byteLength });
+      await this.controlWriter.write(data);
+    }
+  }
+
+  /**
+   * Create a new bidirectional stream (draft-18)
+   * Used for per-request control messages (SUBSCRIBE, PUBLISH, FETCH, etc.)
+   *
+   * @returns Object with readable and writable streams
+   */
+  async createRequestStream(): Promise<{
+    readable: ReadableStream<Uint8Array>;
+    writable: WritableStream<Uint8Array>;
+  }> {
+    if (!this.transport) {
       throw new Error('Not connected');
     }
 
-    log.trace('Sending control message', { size: data.byteLength });
-    await this.controlWriter.write(data);
+    log.debug('Creating bidirectional request stream');
+    const stream = await this.transport.createBidirectionalStream();
+    return {
+      readable: stream.readable,
+      writable: stream.writable,
+    };
   }
 
   /** Datagram writer (kept for reuse to avoid locking issues) */
