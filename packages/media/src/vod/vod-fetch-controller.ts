@@ -920,7 +920,10 @@ export class LegacyFetchStrategy implements FetchStrategy {
     const adaptiveFetchAhead = this.calculateAdaptiveFetchAhead(ctx);
     const targetFetchGroup = ctx.playbackGroup + adaptiveFetchAhead;
 
-    if (ctx.highestInFlightGroup < targetFetchGroup) {
+    // Emergency fetch: if buffer is empty and no fetches in flight, always fetch
+    const bufferDepleted = ctx.bufferedFrames === 0 && ctx.activeFetchCount === 0;
+
+    if (ctx.highestInFlightGroup < targetFetchGroup || bufferDepleted) {
       const startGroup = ctx.highestInFlightGroup + 1;
       const fetchBatchGops = Math.ceil(this.fetchBatchSec / ctx.gopDurationSec);
       const fetchBatch = ctx.avgGroupDownloadMs > (ctx.gopDurationSec * 1000)

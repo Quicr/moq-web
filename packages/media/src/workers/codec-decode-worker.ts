@@ -89,6 +89,7 @@ interface DecodeChannel {
   currentVideoMeta: { groupId: number; objectId: number; timestamp: number; arrivedAt: number } | null;
   currentAudioMeta: { groupId: number; objectId: number; timestamp: number } | null;
   videoConfig: VideoDecoderWorkerConfig | null;
+  audioConfig: AudioDecoderWorkerConfig | null;
   hasReceivedKeyframe: boolean;
   droppedFramesBeforeKeyframe: number;
   enableStats: boolean;
@@ -167,6 +168,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     currentVideoMeta: null,
     currentAudioMeta: null,
     videoConfig: null,
+    audioConfig: null,
     hasReceivedKeyframe: false,
     droppedFramesBeforeKeyframe: 0,
     enableStats: config.enableStats ?? false,
@@ -569,6 +571,9 @@ function initAudioDecoder(channel: DecodeChannel, config: AudioDecoderWorkerConf
   }
 
   channel.audioDecoder.configure(audioDecoderConfig);
+
+  // Store config for later use (e.g., reset/reconfigure)
+  channel.audioConfig = config;
 
   log(`Audio decoder configured (channel ${channel.channelId})`, {
     codec: config.codec,
@@ -1256,6 +1261,50 @@ function resetChannel(channel: DecodeChannel): void {
   channel.lastAudioFrameInfo = null;
   // Reset codec description to force reconfigure on next keyframe after reset
   channel.lastCodecDescription = null;
+
+  // Reset decoders to clear any pending/queued frames and internal state
+  // This is critical for seek - without it, old reference frames can corrupt decoding
+  if (channel.videoDecoder && channel.videoDecoder.state === 'configured') {
+    try {
+      console.log(`[CodecDecodeWorker] Resetting video decoder (channel ${channel.channelId})`);
+      channel.videoDecoder.reset();
+      // Reconfigure after reset to restore decoder to usable state
+      if (channel.videoConfig) {
+        const decoderConfig: VideoDecoderConfig = {
+          codec: channel.videoConfig.codec,
+          codedWidth: channel.videoConfig.codedWidth,
+          codedHeight: channel.videoConfig.codedHeight,
+        };
+        if (channel.videoConfig.description) {
+          decoderConfig.description = channel.videoConfig.description;
+        }
+        channel.videoDecoder.configure(decoderConfig);
+        console.log(`[CodecDecodeWorker] Video decoder reconfigured after reset (channel ${channel.channelId})`);
+      }
+    } catch (err) {
+      console.error(`[CodecDecodeWorker] Error resetting video decoder (channel ${channel.channelId})`, err);
+    }
+  }
+
+  if (channel.audioDecoder && channel.audioDecoder.state === 'configured') {
+    try {
+      channel.audioDecoder.reset();
+      // Reconfigure after reset
+      if (channel.audioConfig) {
+        const decoderConfig: AudioDecoderConfig = {
+          codec: channel.audioConfig.codec,
+          sampleRate: channel.audioConfig.sampleRate,
+          numberOfChannels: channel.audioConfig.numberOfChannels,
+        };
+        if (channel.audioConfig.description) {
+          decoderConfig.description = channel.audioConfig.description;
+        }
+        channel.audioDecoder.configure(decoderConfig);
+      }
+    } catch (err) {
+      log(`Error resetting audio decoder (channel ${channel.channelId})`, err);
+    }
+  }
 
   // Close any pending frames
   for (const { frame } of channel.pendingVideoFrames) {
