@@ -406,15 +406,6 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     try {
       const mediaType = getTrackType(track) === 'audio' ? 'audio' : 'video';
 
-      // Pass video config from catalog track info for proper decoder configuration
-      const videoConfig = mediaType === 'video' && (track.codec || track.width) ? {
-        codec: track.codec,
-        width: track.width,
-        height: track.height,
-      } : undefined;
-
-      console.log('[CatalogSubscriber] Subscribing with video config:', videoConfig);
-
       // Always use SUBSCRIBE for catalog-discovered tracks
       // Jitter buffer profile is selected based on content type:
       //   - VOD (isLive=false): larger buffers, sequential ordering, no frame skipping
@@ -424,7 +415,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
         trackNamespace.join('/'),
         trackName,
         mediaType,
-        videoConfig,
+        undefined, // DTS assignment - not used in catalog subscriber
         track.isLive,
         track.framerate,
         track.gopDuration

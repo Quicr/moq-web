@@ -11,7 +11,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType } from '@web-moq/core';
+import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType, type SwitchingSetAssignment } from '@web-moq/core';
 import type { VADProvider, ExperienceProfileName } from '@web-moq/media';
 import {
   MediaSession,
@@ -204,7 +204,7 @@ interface ConnectionSlice {
     videoEnabled?: boolean;
     audioEnabled?: boolean;
   } | null;
-  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
+  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', dtsAssignment?: SwitchingSetAssignment, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
   /** Start VOD subscription using FETCH with adaptive buffer management */
   startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number, abrOptions?: { abrController: import('@web-moq/media').ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
   /** Standalone FETCH for previously published content (no media pipeline) */
@@ -970,7 +970,7 @@ export const useStore = create<AppStore>()(
         log.info('Namespace announcement cancelled', { namespace });
       },
 
-      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', videoConfig?: { codec?: string; width?: number; height?: number }, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
+      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', _dtsAssignment?: SwitchingSetAssignment, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
         const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
@@ -1009,12 +1009,6 @@ export const useStore = create<AppStore>()(
           secureObjectsBaseKey,
           // QuicR-Mac interop settings
           quicrInteropEnabled,
-          // Override video decoder config from catalog track info
-          videoDecoderConfig: videoConfig ? {
-            codec: videoConfig.codec,
-            codedWidth: videoConfig.width,
-            codedHeight: videoConfig.height,
-          } : undefined,
           // Override audio decoder config (for AAC from VOD)
           audioDecoderConfig: audioConfig ? {
             codec: audioConfig.codec,

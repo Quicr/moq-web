@@ -52,6 +52,14 @@ interface VideoRendererProps {
   framerate?: number;
   /** Whether content is live (affects frame drain strategy) */
   isLive?: boolean;
+  /** Track name for display/debugging */
+  trackName?: string;
+  /** Whether this track is currently selected by DTS */
+  isDtsSelected?: boolean;
+  /** Current bitrate in kbps */
+  bitrateKbps?: number;
+  /** Expected resolution from track name */
+  expectedResolution?: string;
 }
 
 /**
