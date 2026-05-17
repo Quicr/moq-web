@@ -2,20 +2,33 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * @fileoverview MOQT Core Library (Draft 14/16)
+ * @fileoverview MOQT Core Library
  *
  * Core MOQT protocol types, encoding, state management, and transport layer.
  * This package provides the fundamental building blocks for implementing
  * MOQT (Media over QUIC Transport) in TypeScript.
  *
  * Supports:
- * - Draft-14 (default)
- * - Draft-16 (build with MOQT_VERSION=draft-16)
+ * - Draft-14
+ * - Draft-16 (default)
+ * - Draft-18 (build with MOQT_VERSION=draft-18)
  *
  * @packageDocumentation
  *
  * @example
  * ```typescript
+ * // Unified API (recommended)
+ * import {
+ *   SubscriptionFilter,
+ *   GroupOrder,
+ *   capabilities,
+ *   currentVersion,
+ * } from '@web-moq/core';
+ *
+ * console.log('Protocol version:', currentVersion);
+ * console.log('Has SUBSCRIBE_TRACKS:', capabilities.subscribeTracks);
+ *
+ * // Legacy API (still supported)
  * import {
  *   MessageCodec,
  *   MessageType,
@@ -27,36 +40,78 @@
  *   MOQTransport,
  *   StreamManager,
  *   DatagramManager,
- *   IS_DRAFT_16,
+ *   IS_DRAFT_18,
  * } from '@web-moq/core';
- *
- * // Configure logging
- * Logger.setLevel(LogLevel.DEBUG);
- *
- * // Check version at runtime
- * console.log('Building for draft-16:', IS_DRAFT_16);
- *
- * // Create track manager
- * const tracks = new TrackManager();
- *
- * // Connect transport
- * const transport = new MOQTransport();
- * await transport.connect('https://relay.example.com/moq');
- *
- * // Create stream/datagram managers
- * const streams = new StreamManager(transport);
- * const datagrams = new DatagramManager(transport);
- *
- * // Encode a message
- * const bytes = MessageCodec.encode({
- *   type: MessageType.CLIENT_SETUP,
- *   supportedVersions: [Version.DRAFT_14],
- *   parameters: new Map([[SetupParameter.PATH, '/moq']]),
- * });
  * ```
  */
 
+// ============================================================================
+// Unified Public API (recommended)
+// ============================================================================
+
+// Unified API Types
+export type {
+  TrackNamespace as UnifiedTrackNamespace,
+  Location as UnifiedLocation,
+  FullTrackName as UnifiedFullTrackName,
+  Properties,
+  SessionOptions,
+  SessionState,
+  SubscribeRequest,
+  SubscribeResponse,
+  SubscribeUpdateOptions,
+  Subscription,
+  PublishRequest,
+  PublishResponse,
+  OutgoingObject,
+  Publication,
+  FetchRequest,
+  FetchResponse,
+  Fetch,
+  SubscribeNamespaceRequest,
+  AnnouncedNamespace,
+  TrackObject,
+  NamespaceSubscription,
+  PublishNamespaceRequest,
+  NamespacePublication,
+  MOQTObject as UnifiedMOQTObject,
+  RequestError,
+  RequestOk,
+  CodecCapabilities,
+  ISession,
+} from './api/types.js';
+
+// Enums
+export {
+  Version as ApiVersion,
+  SubscriptionFilter,
+  GroupOrder as ApiGroupOrder,
+  ObjectStatus as ApiObjectStatus,
+  Role,
+  NamespaceSubscribeMode,
+} from './api/types.js';
+
+// Codec utilities
+export {
+  capabilities,
+  currentVersion,
+  subscribeRequestToWire,
+  subscribeResponseFromWire,
+  publishRequestToWire,
+  publishResponseFromWire,
+  fetchRequestToWire,
+  fetchResponseFromWire,
+  subscribeNamespaceRequestToWire,
+  publishNamespaceRequestToWire,
+  errorFromWire,
+  filterFromWireV14,
+  filterFromWireV18,
+} from './api/codec.js';
+
+// ============================================================================
 // Version constants (build-time selection)
+// ============================================================================
+
 export {
   MOQT_VERSION,
   IS_DRAFT_18,
