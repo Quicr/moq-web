@@ -225,12 +225,23 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     // Don't just activate any keyframe that arrives - wait for the right one
     if (frame.isKeyframe && frame.objectId === 0 && frame.groupId === this.nextExpectedGroup) {
       const activeGroupId = this.buffer.getActiveGroupId();
-      if (activeGroupId < 0 || activeGroupId < frame.groupId) {
+      // Always activate the expected sequential group, even if PlayoutBuffer auto-activated
+      // a different group (which can happen when frames arrive out of order via parallel QUIC streams)
+      if (activeGroupId !== frame.groupId) {
+        // If a different group was incorrectly activated, mark it back to 'receiving'
+        if (activeGroupId >= 0) {
+          const wrongGroup = this.buffer.getGroup(activeGroupId);
+          if (wrongGroup && wrongGroup.status === 'active') {
+            wrongGroup.status = 'receiving';
+            this.log('DEACTIVATED WRONG GROUP', { wrongGroupId: activeGroupId });
+          }
+        }
         this.buffer.setActiveGroupId(frame.groupId);
         group.status = 'active';
         this.log('ACTIVATED EXPECTED GROUP', {
           groupId: frame.groupId,
-          nextExpected: this.nextExpectedGroup
+          nextExpected: this.nextExpectedGroup,
+          previousActiveGroup: activeGroupId
         });
       }
     }
@@ -252,6 +263,13 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
   getReadyFrames(maxFrames: number): FrameEntry<T>[] {
     // Check if paused - return no frames while paused
     if (this.paused) {
+      return [];
+    }
+
+    // VOD: Don't output anything until initialized with a keyframe
+    // This prevents outputting frames from the wrong group when parallel QUIC
+    // streams deliver out-of-order (e.g., group 184's P-frame before group 180's keyframe)
+    if (!this.initialized) {
       return [];
     }
 
