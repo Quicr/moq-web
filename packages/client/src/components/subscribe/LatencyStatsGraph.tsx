@@ -17,6 +17,7 @@ interface LatencyStatsSample {
   framesDropped?: number;
   framesDroppedBeforeKeyframe?: number;
   framesOutOfOrder?: number;
+  e2eLatency?: number;
 }
 
 interface LatencyStatsGraphProps {
@@ -43,6 +44,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
   const yellowThreshold = targetLatency * 2;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const delaySamplesRef = useRef<number[]>([]);
+  const e2eSamplesRef = useRef<number[]>([]);
   const depthSamplesRef = useRef<number[]>([]);
   const droppedRef = useRef<{ total: number; beforeKeyframe: number; outOfOrder: number }>({ total: 0, beforeKeyframe: 0, outOfOrder: 0 });
   const rafIdRef = useRef<number | null>(null);
@@ -69,6 +71,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
     }
 
     const delays = delaySamplesRef.current;
+    const e2eDelays = e2eSamplesRef.current;
     const depths = depthSamplesRef.current;
 
     // Clear canvas
@@ -82,10 +85,12 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
     }
 
     // Draw delay bars (main metric - in ms)
-    const maxDelay = Math.min(500, Math.max(...delays, 50));
-    const startX = canvasWidth - delays.length * (BAR_WIDTH + BAR_GAP);
+    // Use e2e latency if available, otherwise fall back to processing delay
+    const displayDelays = e2eDelays.length > 0 && e2eDelays.some(v => v > 0) ? e2eDelays : delays;
+    const maxDelay = Math.min(1000, Math.max(...displayDelays, 50));
+    const startX = canvasWidth - displayDelays.length * (BAR_WIDTH + BAR_GAP);
 
-    delays.forEach((value, i) => {
+    displayDelays.forEach((value, i) => {
       const barHeight = Math.max(2, (value / maxDelay) * (GRAPH_HEIGHT - 8));
       const x = startX + i * (BAR_WIDTH + BAR_GAP);
       const y = GRAPH_HEIGHT - barHeight - 2;
@@ -156,6 +161,12 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
 
       delaySamplesRef.current.push(data.stats.processingDelay);
       depthSamplesRef.current.push(data.stats.bufferDepth);
+      // Track e2e latency if available
+      if (data.stats.e2eLatency !== undefined && data.stats.e2eLatency > 0) {
+        e2eSamplesRef.current.push(data.stats.e2eLatency);
+      } else {
+        e2eSamplesRef.current.push(0);
+      }
 
       // Track dropped/out-of-order frames (these are cumulative totals)
       if (data.stats.framesDropped !== undefined) {
@@ -171,6 +182,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       if (delaySamplesRef.current.length > MAX_SAMPLES) {
         delaySamplesRef.current.shift();
         depthSamplesRef.current.shift();
+        e2eSamplesRef.current.shift();
       }
 
       needsDrawRef.current = true;
@@ -181,22 +193,27 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
 
   // Get latest stats for display
   const delays = delaySamplesRef.current;
+  const e2eDelays = e2eSamplesRef.current;
   const depths = depthSamplesRef.current;
-  const latestDelay = delays.length > 0 ? delays[delays.length - 1] : 0;
+  const hasE2e = e2eDelays.length > 0 && e2eDelays.some(v => v > 0);
+  const displayDelays = hasE2e ? e2eDelays : delays;
+  const latestDelay = displayDelays.length > 0 ? displayDelays[displayDelays.length - 1] : 0;
   const latestDepth = depths.length > 0 ? depths[depths.length - 1] : 0;
-  const avgDelay = delays.length > 0 ? delays.reduce((a, b) => a + b, 0) / delays.length : 0;
+  const avgDelay = displayDelays.length > 0 ? displayDelays.filter(v => v > 0).reduce((a, b) => a + b, 0) / displayDelays.filter(v => v > 0).length : 0;
   const dropped = droppedRef.current;
   const totalDropped = dropped.total + dropped.beforeKeyframe;
 
   return (
     <div className="bg-gray-800 rounded p-2">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-gray-400">E2E Delay</span>
+        <span className="text-xs text-gray-400" title={hasE2e ? "End-to-end latency (capture to display)" : "Local processing delay"}>
+          {hasE2e ? 'E2E Latency' : 'Processing Delay'}
+        </span>
         <span className="text-xs font-mono">
           <span className={`${latestDelay <= greenThreshold ? 'text-green-400' : latestDelay <= yellowThreshold ? 'text-yellow-400' : 'text-red-400'}`}>
             {latestDelay.toFixed(0)}ms
           </span>
-          <span className="text-gray-500 ml-2">avg: {avgDelay.toFixed(0)}ms</span>
+          <span className="text-gray-500 ml-2">avg: {isNaN(avgDelay) ? 0 : avgDelay.toFixed(0)}ms</span>
           <span className="text-blue-400 ml-2">buf: {latestDepth}</span>
         </span>
       </div>
@@ -208,7 +225,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
         style={{ imageRendering: 'pixelated' }}
       />
       <div className="flex items-center justify-between mt-1 text-xs text-gray-500">
-        <span>Bars: delay</span>
+        <span>Bars: {hasE2e ? 'e2e latency' : 'delay'}</span>
         <div>
           <span className="text-blue-400">Line: buf depth</span>
           {totalDropped > 0 && (

@@ -145,6 +145,8 @@ export interface LatencyStatsSample {
   framesDroppedBeforeKeyframe?: number;
   /** Frames decoded out of sequence order */
   framesOutOfOrder?: number;
+  /** End-to-end latency from capture to display (ms) - requires synchronized clocks */
+  e2eLatency?: number;
 }
 
 /**

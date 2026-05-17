@@ -477,9 +477,10 @@ export class PublishPipeline {
     }
 
     // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+    // Use Date.now() for captureTimestamp to enable end-to-end latency measurement
     const options = {
       isKeyframe: frame.isKeyframe,
-      captureTimestamp: performance.now(),
+      captureTimestamp: Date.now(),
       codecDescription: frame.codecDescription,
       quicrInterop: this.config.quicrInteropEnabled,
     };

@@ -33,6 +33,7 @@ interface VideoBufferData {
   isKeyframe: boolean;
   codecDescription?: Uint8Array;
   arrivedAt: number; // performance.now() when object arrived
+  captureTimestamp?: number; // Date.now() when frame was captured (from LOC)
 }
 
 interface AudioBufferData {
@@ -73,7 +74,7 @@ interface DecodeChannel {
   audioSequence: number;
   pendingVideoFrames: PendingVideoFrame[];
   pendingAudioData: PendingAudioData[];
-  currentVideoMeta: { groupId: number; objectId: number; timestamp: number; arrivedAt: number } | null;
+  currentVideoMeta: { groupId: number; objectId: number; timestamp: number; arrivedAt: number; captureTimestamp?: number } | null;
   currentAudioMeta: { groupId: number; objectId: number; timestamp: number } | null;
   videoConfig: VideoDecoderWorkerConfig | null;
   hasReceivedKeyframe: boolean;
@@ -275,11 +276,14 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
         const framesDropped = bufferStats?.framesDropped ?? 0;
         const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
         const framesOutOfOrder = channel.framesOutOfOrder;
-        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
+        // Calculate end-to-end latency if capture timestamp is available
+        // Note: requires roughly synchronized clocks between sender and receiver
+        const e2eLatency = meta.captureTimestamp ? Date.now() - meta.captureTimestamp : undefined;
+        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), e2eLatency: e2eLatency ? Math.round(e2eLatency) : undefined, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
         respond({
           type: 'latency-stats',
           channelId: channel.channelId,
-          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
+          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder, e2eLatency },
         });
       }
     },
@@ -476,6 +480,7 @@ function pushData(
         isKeyframe,
         codecDescription: frame.codecDescription,
         arrivedAt,
+        captureTimestamp: frame.captureTimestamp,
       };
 
       if (channel.videoArbiter) {
@@ -616,6 +621,7 @@ function decodeVideoFrame(
       objectId,
       timestamp: timestampMs * 1000, // Back to microseconds
       arrivedAt: frameData.arrivedAt,
+      captureTimestamp: frameData.captureTimestamp,
     };
 
     // Track frame info for diagnostics

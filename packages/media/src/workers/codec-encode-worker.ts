@@ -214,9 +214,11 @@ function handleEncodedVideoChunk(
   }
 
   // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+  // Use Date.now() for captureTimestamp to enable end-to-end latency measurement
+  // (performance.now() is relative to page load, not comparable across machines)
   const videoOptions = {
     isKeyframe,
-    captureTimestamp: performance.now(),
+    captureTimestamp: Date.now(),
     codecDescription,
     quicrInterop: channel.quicrInteropEnabled,
   };
@@ -263,8 +265,9 @@ function handleEncodedAudioChunk(channel: EncodeChannel, chunk: EncodedAudioChun
   channel.audioObjectId = 0;
 
   // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+  // Use Date.now() for captureTimestamp to enable end-to-end latency measurement
   const audioOptions = {
-    captureTimestamp: performance.now(),
+    captureTimestamp: Date.now(),
     quicrInterop: channel.quicrInteropEnabled,
     participantId: channel.quicrParticipantId,
   };
