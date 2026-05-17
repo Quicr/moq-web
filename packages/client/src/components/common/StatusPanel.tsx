@@ -23,7 +23,7 @@ const getMoqtVersionInfo = () => {
 };
 
 export const StatusPanel: React.FC = () => {
-  const { state, sessionState, error, serverUrl, useWorkers } = useStore();
+  const { state, sessionState, error, serverUrl } = useStore();
   const versionInfo = getMoqtVersionInfo();
 
   // Determine status color
@@ -50,9 +50,6 @@ export const StatusPanel: React.FC = () => {
           <span>Status</span>
           <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${versionInfo.color} text-white`}>
             {versionInfo.label}
-          </span>
-          <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${useWorkers ? 'bg-green-500' : 'bg-gray-400'} text-white`}>
-            {useWorkers ? 'Workers' : 'Main Thread'}
           </span>
         </div>
         <div className="flex items-center gap-2">

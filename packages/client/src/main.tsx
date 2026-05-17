@@ -3,9 +3,8 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { MOQTransport, Logger, LogLevel } from '@web-moq/core';
+import { Logger, LogLevel } from '@web-moq/core';
 import App from './App';
-import { setTransportFactory } from './store';
 import './index.css';
 
 // Initialize log level - default to ERROR unless changed in dev settings
@@ -22,9 +21,6 @@ try {
 } catch {
   Logger.setLevel(LogLevel.ERROR);
 }
-
-// Initialize the transport factory
-setTransportFactory((config) => new MOQTransport(config));
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
