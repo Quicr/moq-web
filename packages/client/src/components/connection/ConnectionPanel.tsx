@@ -11,7 +11,7 @@ import React, { useState } from 'react';
 import { useStore } from '../../store';
 
 export const ConnectionPanel: React.FC = () => {
-  const { serverUrl, state, error, connect, disconnect, setServerUrl, localDevelopment, setLocalDevelopment, useWorkers, setUseWorkers } = useStore();
+  const { serverUrl, state, error, connect, disconnect, setServerUrl, localDevelopment, setLocalDevelopment } = useStore();
   const [inputUrl, setInputUrl] = useState(serverUrl);
 
   const isConnecting = state === 'connecting';
@@ -88,32 +88,6 @@ export const ConnectionPanel: React.FC = () => {
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2">
           Enable for self-signed certificates (reads from /certificate.pem)
-        </p>
-
-        <div className="flex items-center justify-between">
-          <label htmlFor="useWorkers" className="text-sm text-gray-700 dark:text-gray-300">
-            Use Web Workers
-          </label>
-          <button
-            id="useWorkers"
-            type="button"
-            role="switch"
-            aria-checked={useWorkers}
-            onClick={() => setUseWorkers(!useWorkers)}
-            disabled={isConnected || isConnecting}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              useWorkers ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'
-            } ${isConnected || isConnecting ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                useWorkers ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2">
-          Offload encoding/decoding to background threads
         </p>
 
         {error && (
