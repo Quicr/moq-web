@@ -4,9 +4,11 @@
 /**
  * @fileoverview E2E Latency Graph Component
  *
- * Displays raw end-to-end latency (capture to display) as a line graph.
- * Note: This value includes clock skew between publisher and subscriber.
- * For clock-skew corrected delay, see LatencyStatsGraph (queuing delay).
+ * Displays end-to-end latency (capture to display) as a line graph.
+ * Shows both raw E2E (blue) and corrected E2E (green) when clock offset is available.
+ *
+ * Raw E2E = now_subscriber - captureTime_publisher (includes clock skew)
+ * Corrected E2E = rawE2E - clockOffset (octoping-corrected, accurate)
  */
 
 import React, { useRef, useEffect, useCallback } from 'react';
@@ -21,6 +23,8 @@ interface LatencyStatsSample {
   queuingDelay?: number;
   baselineDelay?: number;
   jitter?: number;
+  clockOffset?: number;
+  correctedE2e?: number;
 }
 
 interface E2ELatencyGraphProps {
@@ -31,15 +35,14 @@ interface E2ELatencyGraphProps {
 
 const MAX_SAMPLES = 60;
 const GRAPH_HEIGHT = 60;
-const POINT_GAP = 4;
 
 export const E2ELatencyGraph: React.FC<E2ELatencyGraphProps> = ({ subscriptionId, onLatencyStats, targetLatency = 100 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const e2eSamplesRef = useRef<number[]>([]);
+  const rawE2eSamplesRef = useRef<number[]>([]);
+  const correctedE2eSamplesRef = useRef<(number | null)[]>([]);
+  const clockOffsetRef = useRef<number | null>(null);
   const rafIdRef = useRef<number | null>(null);
   const needsDrawRef = useRef(false);
-
-  const canvasWidth = MAX_SAMPLES * POINT_GAP;
 
   const draw = useCallback(() => {
     if (!needsDrawRef.current) {
@@ -59,71 +62,130 @@ export const E2ELatencyGraph: React.FC<E2ELatencyGraphProps> = ({ subscriptionId
       return;
     }
 
-    const samples = e2eSamplesRef.current;
+    // Get actual display size from CSS layout
+    const rect = canvas.getBoundingClientRect();
+    const displayWidth = rect.width;
+    const displayHeight = GRAPH_HEIGHT;
+    const dpr = window.devicePixelRatio || 1;
+
+    // Set canvas buffer size for sharp rendering
+    const bufferWidth = Math.round(displayWidth * dpr);
+    const bufferHeight = Math.round(displayHeight * dpr);
+    if (canvas.width !== bufferWidth || canvas.height !== bufferHeight) {
+      canvas.width = bufferWidth;
+      canvas.height = bufferHeight;
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const rawSamples = rawE2eSamplesRef.current;
+    const correctedSamples = correctedE2eSamplesRef.current;
 
     // Clear canvas
     ctx.fillStyle = '#1f2937';
-    ctx.fillRect(0, 0, canvasWidth, GRAPH_HEIGHT);
+    ctx.fillRect(0, 0, displayWidth, displayHeight);
 
-    if (samples.length === 0) {
+    if (rawSamples.length === 0) {
       rafIdRef.current = requestAnimationFrame(draw);
       needsDrawRef.current = false;
       return;
     }
 
-    // Compute max for scaling
-    const maxValue = Math.max(Math.max(...samples), targetLatency * 2, 100);
-    const startX = canvasWidth - samples.length * POINT_GAP;
+    // Compute max for scaling (consider both raw and corrected)
+    const allValues = [...rawSamples, ...correctedSamples.filter((v): v is number => v !== null)];
+    const maxValue = Math.max(Math.max(...allValues), targetLatency * 2, 100);
+    const pointGap = displayWidth / MAX_SAMPLES;
+    const startX = displayWidth - rawSamples.length * pointGap;
 
     // Draw target latency threshold line
-    const thresholdY = GRAPH_HEIGHT - (targetLatency / maxValue) * (GRAPH_HEIGHT - 16) - 4;
-    if (thresholdY > 12 && thresholdY < GRAPH_HEIGHT - 4) {
+    const thresholdY = displayHeight - (targetLatency / maxValue) * (displayHeight - 16) - 4;
+    if (thresholdY > 12 && thresholdY < displayHeight - 4) {
       ctx.strokeStyle = 'rgba(34, 197, 94, 0.3)';
       ctx.setLineDash([2, 2]);
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, thresholdY);
-      ctx.lineTo(canvasWidth, thresholdY);
+      ctx.lineTo(displayWidth, thresholdY);
       ctx.stroke();
       ctx.setLineDash([]);
     }
 
-    // Draw E2E latency line
-    ctx.strokeStyle = '#3b82f6'; // blue
-    ctx.lineWidth = 2;
+    // Draw raw E2E latency line (blue, dashed if corrected available)
+    const hasCorrected = correctedSamples.some(v => v !== null);
+    ctx.strokeStyle = hasCorrected ? 'rgba(59, 130, 246, 0.5)' : '#3b82f6';
+    ctx.lineWidth = hasCorrected ? 1 : 1.5;
+    if (hasCorrected) ctx.setLineDash([3, 3]);
     ctx.beginPath();
 
-    samples.forEach((value, i) => {
-      const x = startX + i * POINT_GAP;
-      const y = GRAPH_HEIGHT - 4 - (value / maxValue) * (GRAPH_HEIGHT - 16);
+    rawSamples.forEach((value, i) => {
+      const x = startX + i * pointGap;
+      const y = displayHeight - 4 - (value / maxValue) * (displayHeight - 16);
       if (i === 0) {
         ctx.moveTo(x, y);
       } else {
         ctx.lineTo(x, y);
       }
     });
-
     ctx.stroke();
+    ctx.setLineDash([]);
 
-    // Draw dots at each point
-    ctx.fillStyle = '#3b82f6';
-    samples.forEach((value, i) => {
-      const x = startX + i * POINT_GAP;
-      const y = GRAPH_HEIGHT - 4 - (value / maxValue) * (GRAPH_HEIGHT - 16);
+    // Draw corrected E2E latency line (green, solid) if available
+    if (hasCorrected) {
+      ctx.strokeStyle = '#22c55e';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(x, y, 2, 0, Math.PI * 2);
-      ctx.fill();
-    });
+
+      let started = false;
+      correctedSamples.forEach((value, i) => {
+        if (value === null) return;
+        const x = startX + i * pointGap;
+        const y = displayHeight - 4 - (value / maxValue) * (displayHeight - 16);
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+
+      // Draw dots on corrected line
+      ctx.fillStyle = '#22c55e';
+      correctedSamples.forEach((value, i) => {
+        if (value === null) return;
+        const x = startX + i * pointGap;
+        const y = displayHeight - 4 - (value / maxValue) * (displayHeight - 16);
+        ctx.beginPath();
+        ctx.arc(x, y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    } else {
+      // Draw dots on raw line when no corrected data
+      ctx.fillStyle = '#3b82f6';
+      rawSamples.forEach((value, i) => {
+        const x = startX + i * pointGap;
+        const y = displayHeight - 4 - (value / maxValue) * (displayHeight - 16);
+        ctx.beginPath();
+        ctx.arc(x, y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
 
     // Draw current value label
-    const latest = samples[samples.length - 1];
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-    ctx.font = '9px monospace';
-    ctx.fillText(`${latest.toFixed(0)}ms`, 4, 10);
+    const latestRaw = rawSamples[rawSamples.length - 1];
+    const latestCorrected = correctedSamples[correctedSamples.length - 1];
+    ctx.font = '10px monospace';
+    if (latestCorrected !== null) {
+      ctx.fillStyle = '#22c55e';
+      ctx.fillText(`${latestCorrected.toFixed(0)}ms`, 4, 12);
+    } else {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.fillText(`${latestRaw.toFixed(0)}ms`, 4, 12);
+    }
 
     needsDrawRef.current = false;
     rafIdRef.current = requestAnimationFrame(draw);
-  }, [canvasWidth, targetLatency]);
+  }, [targetLatency]);
 
   // Start draw loop
   useEffect(() => {
@@ -140,13 +202,26 @@ export const E2ELatencyGraph: React.FC<E2ELatencyGraphProps> = ({ subscriptionId
     const unsubscribe = onLatencyStats((data) => {
       if (data.subscriptionId !== subscriptionId) return;
 
-      // Raw E2E = queuing + baseline (reconstructed)
+      // Raw E2E = queuing + baseline (reconstructed from min-delay heuristic)
       if (data.stats.queuingDelay !== undefined && data.stats.baselineDelay !== undefined) {
         const rawE2e = data.stats.queuingDelay + data.stats.baselineDelay;
-        e2eSamplesRef.current.push(rawE2e);
+        rawE2eSamplesRef.current.push(rawE2e);
 
-        if (e2eSamplesRef.current.length > MAX_SAMPLES) {
-          e2eSamplesRef.current.shift();
+        // Corrected E2E from octoping clock offset (if available)
+        if (data.stats.correctedE2e !== undefined) {
+          correctedE2eSamplesRef.current.push(data.stats.correctedE2e);
+        } else {
+          correctedE2eSamplesRef.current.push(null);
+        }
+
+        // Track clock offset
+        if (data.stats.clockOffset !== undefined) {
+          clockOffsetRef.current = data.stats.clockOffset;
+        }
+
+        if (rawE2eSamplesRef.current.length > MAX_SAMPLES) {
+          rawE2eSamplesRef.current.shift();
+          correctedE2eSamplesRef.current.shift();
         }
 
         needsDrawRef.current = true;
@@ -157,40 +232,67 @@ export const E2ELatencyGraph: React.FC<E2ELatencyGraphProps> = ({ subscriptionId
   }, [subscriptionId, onLatencyStats]);
 
   // Get latest stats for display
-  const samples = e2eSamplesRef.current;
-  const latest = samples.length > 0 ? samples[samples.length - 1] : 0;
-  const avg = samples.length > 0 ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
-  const min = samples.length > 0 ? Math.min(...samples) : 0;
-  const max = samples.length > 0 ? Math.max(...samples) : 0;
+  const rawSamples = rawE2eSamplesRef.current;
+  const correctedSamples = correctedE2eSamplesRef.current;
+  const clockOffset = clockOffsetRef.current;
+  const latestRaw = rawSamples.length > 0 ? rawSamples[rawSamples.length - 1] : 0;
+  const latestCorrected = correctedSamples.length > 0 ? correctedSamples[correctedSamples.length - 1] : null;
+  const hasCorrected = latestCorrected !== null;
+  const displayValue = hasCorrected ? latestCorrected : latestRaw;
+  const avgRaw = rawSamples.length > 0 ? rawSamples.reduce((a, b) => a + b, 0) / rawSamples.length : 0;
+  const validCorrected = correctedSamples.filter((v): v is number => v !== null);
+  const avgCorrected = validCorrected.length > 0 ? validCorrected.reduce((a, b) => a + b, 0) / validCorrected.length : null;
+  const minRaw = rawSamples.length > 0 ? Math.min(...rawSamples) : 0;
+  const maxRaw = rawSamples.length > 0 ? Math.max(...rawSamples) : 0;
 
   return (
     <div className="bg-gray-800 rounded p-2">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-gray-400" title="Raw end-to-end delay (capture to display). Includes clock skew between publisher and subscriber.">
+        <span
+          className="text-xs text-gray-400 cursor-help"
+          title={hasCorrected
+            ? "Corrected E2E = rawE2E - clockOffset (octoping). Green line shows accurate latency."
+            : "Raw E2E = t_display - t_capture. Includes clock skew between machines."
+          }
+        >
           E2E Latency
-          <span className="text-yellow-500 ml-1" title="Includes clock offset between machines">*</span>
+          {hasCorrected ? (
+            <span className="text-green-500 ml-1">(corrected)</span>
+          ) : (
+            <span className="text-gray-500 ml-1">(raw)</span>
+          )}
         </span>
         <span className="text-xs font-mono">
-          <span className={`${latest <= targetLatency ? 'text-green-400' : latest <= targetLatency * 2 ? 'text-yellow-400' : 'text-red-400'}`}>
-            {latest.toFixed(0)}ms
+          <span className={`${displayValue <= targetLatency ? 'text-green-400' : displayValue <= targetLatency * 2 ? 'text-yellow-400' : 'text-red-400'}`}>
+            {displayValue.toFixed(0)}ms
           </span>
-          <span className="text-gray-500 ml-2">avg: {avg.toFixed(0)}ms</span>
+          <span className="text-gray-500 ml-2">
+            avg: {(avgCorrected ?? avgRaw).toFixed(0)}ms
+          </span>
         </span>
       </div>
       <canvas
         ref={canvasRef}
-        width={canvasWidth}
-        height={GRAPH_HEIGHT}
         className="w-full rounded"
-        style={{ imageRendering: 'pixelated' }}
+        style={{ height: GRAPH_HEIGHT }}
       />
       <div className="flex items-center justify-between mt-1 text-xs text-gray-500">
-        <span>
-          min: {min.toFixed(0)}ms / max: {max.toFixed(0)}ms
-        </span>
-        <span className="text-yellow-500" title="Value includes clock skew between publisher and subscriber clocks">
-          *uncorrected
-        </span>
+        <span>min: {minRaw.toFixed(0)}ms / max: {maxRaw.toFixed(0)}ms</span>
+        {clockOffset !== null ? (
+          <span
+            className="text-green-500 cursor-help"
+            title={`Clock offset computed via octoping: subscriber clock is ${clockOffset > 0 ? 'ahead' : 'behind'} by ${Math.abs(clockOffset)}ms`}
+          >
+            skew: {clockOffset > 0 ? '+' : ''}{clockOffset}ms
+          </span>
+        ) : (
+          <span
+            className="text-yellow-500 cursor-help"
+            title="No clock offset in LOC header. Showing raw E2E which includes clock skew."
+          >
+            *uncorrected
+          </span>
+        )}
       </div>
     </div>
   );

@@ -190,7 +190,7 @@ interface ConnectionSlice {
   // Jitter sample handler registration (only active when enableStats is true)
   onJitterSample: (handler: (data: { subscriptionId: number; sample: { interArrivalTimes: number[]; avgJitter: number; maxJitter: number } }) => void) => () => void;
   // Latency stats handler registration (only active when enableStats is true)
-  onLatencyStats: (handler: (data: { subscriptionId: number; stats: { processingDelay: number; bufferDepth: number; bufferDelay: number } }) => void) => () => void;
+  onLatencyStats: (handler: (data: { subscriptionId: number; stats: { processingDelay: number; bufferDepth: number; bufferDelay: number; framesDropped?: number; framesDroppedBeforeKeyframe?: number; framesOutOfOrder?: number; queuingDelay?: number; baselineDelay?: number; jitter?: number; clockOffset?: number; correctedE2e?: number } }) => void) => () => void;
 }
 
 // ============================================================================

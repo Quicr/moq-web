@@ -102,6 +102,17 @@ export { TimingEstimator, createTimingEstimator } from './pipeline/timing-estima
 export { MonotonicTickProvider, WallClockTickProvider } from './pipeline/tick-provider.js';
 export type { TickProvider, TickProviderConfig } from './pipeline/tick-provider.js';
 export type { TimingEstimatorConfig } from './pipeline/timing-estimator.js';
+export {
+  ClockSkewEstimator,
+  createTimingFeedback,
+  serializeTimingFeedback,
+  deserializeTimingFeedback,
+} from './pipeline/clock-skew-estimator.js';
+export type {
+  TimingFeedback,
+  ClockSkewEstimate,
+  ClockSkewEstimatorConfig,
+} from './pipeline/clock-skew-estimator.js';
 export type {
   GroupState,
   GroupStatus,

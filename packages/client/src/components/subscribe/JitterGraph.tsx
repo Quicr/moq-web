@@ -5,8 +5,7 @@
  * @fileoverview Jitter Graph Component
  *
  * Lightweight scrolling bar graph showing network jitter.
- * Uses canvas with requestAnimationFrame for efficient rendering
- * without blocking media playback.
+ * Formula: jitter = avgVariation(interArrivalTimes)
  */
 
 import React, { useRef, useEffect, useCallback } from 'react';
@@ -18,25 +17,15 @@ interface JitterSample {
 }
 
 interface JitterGraphProps {
-  /** Subscription ID for this graph */
   subscriptionId: number;
-  /** Handler to register for jitter samples */
   onJitterSample: (handler: (data: { subscriptionId: number; sample: JitterSample }) => void) => () => void;
-  /** Target latency from experience profile (used for color thresholds) */
   targetLatency?: number;
 }
 
-/** Number of samples to display in the graph */
 const MAX_SAMPLES = 60;
-/** Graph height in pixels */
 const GRAPH_HEIGHT = 40;
-/** Bar width in pixels */
-const BAR_WIDTH = 3;
-/** Gap between bars */
-const BAR_GAP = 1;
 
 export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitterSample, targetLatency = 100 }) => {
-  // Color thresholds based on target latency (20% and 50% of target, with minimums)
   const greenThreshold = Math.max(10, targetLatency * 0.2);
   const yellowThreshold = Math.max(25, targetLatency * 0.5);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -44,10 +33,6 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
   const rafIdRef = useRef<number | null>(null);
   const needsDrawRef = useRef(false);
 
-  // Calculate canvas width based on max samples
-  const canvasWidth = MAX_SAMPLES * (BAR_WIDTH + BAR_GAP);
-
-  // Draw function using requestAnimationFrame
   const draw = useCallback(() => {
     if (!needsDrawRef.current) {
       rafIdRef.current = requestAnimationFrame(draw);
@@ -66,11 +51,27 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
       return;
     }
 
+    // Get actual display size from CSS layout
+    const rect = canvas.getBoundingClientRect();
+    const displayWidth = rect.width;
+    const displayHeight = GRAPH_HEIGHT;
+    const dpr = window.devicePixelRatio || 1;
+
+    // Set canvas buffer size for sharp rendering
+    const bufferWidth = Math.round(displayWidth * dpr);
+    const bufferHeight = Math.round(displayHeight * dpr);
+    if (canvas.width !== bufferWidth || canvas.height !== bufferHeight) {
+      canvas.width = bufferWidth;
+      canvas.height = bufferHeight;
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
     const samples = samplesRef.current;
 
     // Clear canvas
-    ctx.fillStyle = '#1f2937'; // dark gray background
-    ctx.fillRect(0, 0, canvasWidth, GRAPH_HEIGHT);
+    ctx.fillStyle = '#1f2937';
+    ctx.fillRect(0, 0, displayWidth, displayHeight);
 
     if (samples.length === 0) {
       rafIdRef.current = requestAnimationFrame(draw);
@@ -78,43 +79,46 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
       return;
     }
 
-    // Find max for scaling (cap at 100ms for reasonable display)
+    // Find max for scaling
     const maxVal = Math.min(100, Math.max(...samples, 10));
 
-    // Draw bars from right to left (newest on right)
-    const startX = canvasWidth - samples.length * (BAR_WIDTH + BAR_GAP);
-    samples.forEach((value, i) => {
-      const barHeight = Math.max(2, (value / maxVal) * (GRAPH_HEIGHT - 4));
-      const x = startX + i * (BAR_WIDTH + BAR_GAP);
-      const y = GRAPH_HEIGHT - barHeight - 2;
+    const barWidth = (displayWidth / MAX_SAMPLES) * 0.75;
+    const barGap = (displayWidth / MAX_SAMPLES) * 0.25;
+    const startX = displayWidth - samples.length * (barWidth + barGap);
 
-      // Color based on value relative to target latency
+    // Draw bars from right to left
+    samples.forEach((value, i) => {
+      const barHeight = Math.max(2, (value / maxVal) * (displayHeight - 4));
+      const x = startX + i * (barWidth + barGap);
+      const y = displayHeight - barHeight - 2;
+
       if (value <= greenThreshold) {
-        ctx.fillStyle = '#22c55e'; // green - low jitter
+        ctx.fillStyle = '#22c55e';
       } else if (value <= yellowThreshold) {
-        ctx.fillStyle = '#eab308'; // yellow - moderate jitter
+        ctx.fillStyle = '#eab308';
       } else {
-        ctx.fillStyle = '#ef4444'; // red - high jitter
+        ctx.fillStyle = '#ef4444';
       }
 
-      ctx.fillRect(x, y, BAR_WIDTH, barHeight);
+      ctx.fillRect(x, y, barWidth, barHeight);
     });
 
     // Draw scale line at yellow threshold
-    const lineY = GRAPH_HEIGHT - (yellowThreshold / maxVal) * (GRAPH_HEIGHT - 4) - 2;
-    if (lineY > 0 && lineY < GRAPH_HEIGHT) {
+    const lineY = displayHeight - (yellowThreshold / maxVal) * (displayHeight - 4) - 2;
+    if (lineY > 0 && lineY < displayHeight) {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
       ctx.setLineDash([2, 2]);
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, lineY);
-      ctx.lineTo(canvasWidth, lineY);
+      ctx.lineTo(displayWidth, lineY);
       ctx.stroke();
       ctx.setLineDash([]);
     }
 
     needsDrawRef.current = false;
     rafIdRef.current = requestAnimationFrame(draw);
-  }, [canvasWidth, greenThreshold, yellowThreshold]);
+  }, [greenThreshold, yellowThreshold]);
 
   // Start draw loop
   useEffect(() => {
@@ -131,22 +135,18 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
     const unsubscribe = onJitterSample((data) => {
       if (data.subscriptionId !== subscriptionId) return;
 
-      // Add new average jitter sample
       samplesRef.current.push(data.sample.avgJitter);
 
-      // Keep only last MAX_SAMPLES
       if (samplesRef.current.length > MAX_SAMPLES) {
         samplesRef.current.shift();
       }
 
-      // Mark for redraw
       needsDrawRef.current = true;
     });
 
     return unsubscribe;
   }, [subscriptionId, onJitterSample]);
 
-  // Get latest stats for display
   const samples = samplesRef.current;
   const latestAvg = samples.length > 0 ? samples[samples.length - 1] : 0;
   const maxJitter = samples.length > 0 ? Math.max(...samples) : 0;
@@ -154,7 +154,12 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
   return (
     <div className="bg-gray-800 rounded p-2">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-gray-400">Jitter</span>
+        <span
+          className="text-xs text-gray-400 cursor-help"
+          title="Network jitter: variation in packet inter-arrival times compared to expected interval"
+        >
+          Jitter <span className="text-gray-500">(arrival variance)</span>
+        </span>
         <span className="text-xs font-mono">
           <span className={`${latestAvg <= greenThreshold ? 'text-green-400' : latestAvg <= yellowThreshold ? 'text-yellow-400' : 'text-red-400'}`}>
             {latestAvg.toFixed(1)}ms
@@ -164,10 +169,8 @@ export const JitterGraph: React.FC<JitterGraphProps> = ({ subscriptionId, onJitt
       </div>
       <canvas
         ref={canvasRef}
-        width={canvasWidth}
-        height={GRAPH_HEIGHT}
         className="w-full rounded"
-        style={{ imageRendering: 'pixelated' }}
+        style={{ height: GRAPH_HEIGHT }}
       />
     </div>
   );

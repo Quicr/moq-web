@@ -34,6 +34,7 @@ interface VideoBufferData {
   codecDescription?: Uint8Array;
   arrivedAt: number; // performance.now() when object arrived
   captureTimestamp?: number; // Date.now() when frame was captured (from LOC)
+  clockOffset?: number; // Clock skew correction in ms (subscriber - publisher), from LOC extension
 }
 
 interface AudioBufferData {
@@ -74,7 +75,7 @@ interface DecodeChannel {
   audioSequence: number;
   pendingVideoFrames: PendingVideoFrame[];
   pendingAudioData: PendingAudioData[];
-  currentVideoMeta: { groupId: number; objectId: number; timestamp: number; arrivedAt: number; captureTimestamp?: number } | null;
+  currentVideoMeta: { groupId: number; objectId: number; timestamp: number; arrivedAt: number; captureTimestamp?: number; clockOffset?: number } | null;
   currentAudioMeta: { groupId: number; objectId: number; timestamp: number } | null;
   videoConfig: VideoDecoderWorkerConfig | null;
   hasReceivedKeyframe: boolean;
@@ -286,13 +287,15 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
         let queuingDelay: number | undefined;
         let baselineDelay: number | undefined;
         let jitter: number | undefined;
+        let correctedE2e: number | undefined;
+        const clockOffset = meta.clockOffset;
         if (meta.captureTimestamp) {
           const rawE2e = Date.now() - meta.captureTimestamp;
           // Track minimum (captures clock_offset + min_network_delay)
           if (rawE2e < channel.minObservedE2e) {
             channel.minObservedE2e = rawE2e;
           }
-          // Queuing delay = raw - baseline (clock skew cancels out)
+          // Queuing delay = raw - baseline (clock skew cancels out via min-delay heuristic)
           queuingDelay = rawE2e - channel.minObservedE2e;
           baselineDelay = channel.minObservedE2e;
           // Jitter = inter-frame variation (absolute difference from previous)
@@ -300,12 +303,18 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
             jitter = Math.abs(rawE2e - channel.prevRawE2e);
           }
           channel.prevRawE2e = rawE2e;
+          // Corrected E2E using octoping-computed clock offset from LOC header
+          // clockOffset = subscriber_clock - publisher_clock
+          // correctedE2E = rawE2E - clockOffset
+          if (clockOffset !== undefined) {
+            correctedE2e = rawE2e - clockOffset;
+          }
         }
-        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), queuingDelay: queuingDelay !== undefined ? Math.round(queuingDelay) : undefined, jitter: jitter !== undefined ? Math.round(jitter) : undefined, baseline: baselineDelay !== undefined ? Math.round(baselineDelay) : undefined, bufferDepth, bufferDelay });
+        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), queuingDelay: queuingDelay !== undefined ? Math.round(queuingDelay) : undefined, jitter: jitter !== undefined ? Math.round(jitter) : undefined, baseline: baselineDelay !== undefined ? Math.round(baselineDelay) : undefined, clockOffset, correctedE2e: correctedE2e !== undefined ? Math.round(correctedE2e) : undefined, bufferDepth, bufferDelay });
         respond({
           type: 'latency-stats',
           channelId: channel.channelId,
-          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder, queuingDelay, baselineDelay, jitter },
+          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder, queuingDelay, baselineDelay, jitter, clockOffset, correctedE2e },
         });
       }
     },
@@ -503,6 +512,7 @@ function pushData(
         codecDescription: frame.codecDescription,
         arrivedAt,
         captureTimestamp: frame.captureTimestamp,
+        clockOffset: frame.clockOffset,
       };
 
       if (channel.videoArbiter) {
@@ -644,6 +654,7 @@ function decodeVideoFrame(
       timestamp: timestampMs * 1000, // Back to microseconds
       arrivedAt: frameData.arrivedAt,
       captureTimestamp: frameData.captureTimestamp,
+      clockOffset: frameData.clockOffset,
     };
 
     // Track frame info for diagnostics
