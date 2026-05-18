@@ -447,6 +447,15 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     this.initialized = false;
     this.isRebuffering = false;
     this.playbackStarted = false;
+    // Reset pacing timer so frames release immediately after seek
+    this.lastFrameReleaseTime = 0;
+    // Reset FPS tracking
+    this.fpsWindowStart = 0;
+    this.fpsWindowFrames = 0;
+    // Reset sync clock if present (for A/V sync after seek)
+    if (this.syncClock) {
+      this.syncClock.reset();
+    }
   }
 
   /**
