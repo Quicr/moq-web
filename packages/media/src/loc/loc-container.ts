@@ -60,6 +60,8 @@ export enum LOCExtensionType {
   AUDIO_LEVEL = 0x03,
   /** Codec-specific data */
   CODEC_DATA = 0x10,
+  /** Clock offset for E2E latency correction (signed int32, ms) */
+  CLOCK_OFFSET = 0x20,
 }
 
 /**
@@ -136,6 +138,8 @@ export interface LOCVideoOptions {
   quicrInterop?: boolean;
   /** VAD data for QuicR interop mode */
   vadData?: VADData;
+  /** Clock offset for E2E latency correction (signed ms) */
+  clockOffset?: number;
 }
 
 /**
@@ -156,6 +160,8 @@ export interface LOCAudioOptions {
   vadData?: VADData;
   /** Participant ID for QuicR interop mode (32-bit) */
   participantId?: number;
+  /** Clock offset for E2E latency correction (signed ms) */
+  clockOffset?: number;
 }
 
 /**
@@ -202,6 +208,8 @@ export interface LOCFrame {
   vadData?: VADData;
   /** Participant ID (if present, QuicR interop) */
   participantId?: number;
+  /** Clock offset for E2E latency correction (signed ms) */
+  clockOffset?: number;
 }
 
 // ============================================================================
@@ -518,6 +526,11 @@ export class LOCPackager {
       size += 1 + varintEncodedLength(tsLen) + tsLen;
     }
 
+    // Clock offset extension: type(1) + length(1) + data(4 bytes signed int32)
+    if (options.clockOffset !== undefined) {
+      size += 1 + 1 + 4;
+    }
+
     // Frame marking extension: type(1) + length_varint(1) + data(1)
     if (options.frameMarking) {
       size += 1 + 1 + 1; // type + length(1) + marking byte
@@ -589,6 +602,11 @@ export class LOCPackager {
       size += 1 + varintEncodedLength(tsLen) + tsLen;
     }
 
+    // Clock offset extension: type(1) + length(1) + data(4 bytes signed int32)
+    if (options.clockOffset !== undefined) {
+      size += 1 + 1 + 4;
+    }
+
     // Audio level extension: type(1) + length(1=varint for 1) + data(1)
     if (options.audioLevel !== undefined) {
       size += 1 + 1 + 1;
@@ -654,6 +672,7 @@ export class LOCPackager {
     // Count extensions for header byte
     let extensionCount = 0;
     if (options.captureTimestamp !== undefined) extensionCount++;
+    if (options.clockOffset !== undefined) extensionCount++;
     if (options.frameMarking) extensionCount++;
     if (options.codecDescription) extensionCount++;
 
@@ -673,6 +692,17 @@ export class LOCPackager {
       buffer[offset++] = LOCExtensionType.CAPTURE_TIMESTAMP;
       offset += writeVarintAt(buffer, offset, tsLen);
       offset += writeVarintBigIntAt(buffer, offset, timestampMicros);
+    }
+
+    if (options.clockOffset !== undefined) {
+      buffer[offset++] = LOCExtensionType.CLOCK_OFFSET;
+      buffer[offset++] = 4; // length = 4 bytes
+      // Write signed int32 in big-endian
+      const val = Math.round(options.clockOffset);
+      buffer[offset++] = (val >> 24) & 0xff;
+      buffer[offset++] = (val >> 16) & 0xff;
+      buffer[offset++] = (val >> 8) & 0xff;
+      buffer[offset++] = val & 0xff;
     }
 
     if (options.frameMarking) {
@@ -796,6 +826,7 @@ export class LOCPackager {
     // Count extensions
     let extensionCount = 0;
     if (options.captureTimestamp !== undefined) extensionCount++;
+    if (options.clockOffset !== undefined) extensionCount++;
     if (options.audioLevel !== undefined) extensionCount++;
 
     // Header byte: MKKK EEEE
@@ -814,6 +845,17 @@ export class LOCPackager {
       buffer[offset++] = LOCExtensionType.CAPTURE_TIMESTAMP;
       offset += writeVarintAt(buffer, offset, tsLen);
       offset += writeVarintBigIntAt(buffer, offset, timestampMicros);
+    }
+
+    if (options.clockOffset !== undefined) {
+      buffer[offset++] = LOCExtensionType.CLOCK_OFFSET;
+      buffer[offset++] = 4; // length = 4 bytes
+      // Write signed int32 in big-endian
+      const val = Math.round(options.clockOffset);
+      buffer[offset++] = (val >> 24) & 0xff;
+      buffer[offset++] = (val >> 16) & 0xff;
+      buffer[offset++] = (val >> 8) & 0xff;
+      buffer[offset++] = val & 0xff;
     }
 
     if (options.audioLevel !== undefined) {
@@ -1057,6 +1099,7 @@ export class LOCUnpackager {
     // Parse extensions
     const extensions: LOCExtension[] = [];
     let captureTimestamp: number | undefined;
+    let clockOffset: number | undefined;
     let frameMarking: VideoFrameMarking | undefined;
     let audioLevel: { level: number; voiceActivity: boolean } | undefined;
     let codecDescription: Uint8Array | undefined;
@@ -1106,6 +1149,12 @@ export class LOCUnpackager {
           case LOCExtensionType.CAPTURE_TIMESTAMP: {
             const extReader = new BufferReader(data);
             captureTimestamp = Number(extReader.readVarInt()) / 1000;
+            break;
+          }
+          case LOCExtensionType.CLOCK_OFFSET: {
+            // Read signed int32 big-endian
+            const val = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+            clockOffset = val;
             break;
           }
           case LOCExtensionType.VIDEO_FRAME_MARKING: {
@@ -1178,6 +1227,7 @@ export class LOCUnpackager {
       header,
       payload,
       captureTimestamp,
+      clockOffset,
       frameMarking,
       audioLevel,
       codecDescription,
