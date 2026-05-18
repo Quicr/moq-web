@@ -111,6 +111,8 @@ interface DecodeChannel {
   lastCodecDescription: Uint8Array | null;
   /** Sync clock for A/V synchronization (audio channels follow video's clock) */
   syncClock: SharedPlaybackClock | null;
+  /** Whether video decoder is recovering from error - blocks new frames until keyframe */
+  videoDecoderRecovering: boolean;
 }
 
 // Map of channel ID to decode context
@@ -185,6 +187,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     lastEmittedTimestamp: -1,
     lastCodecDescription: null,
     syncClock: null, // Set externally via update-sync-time message
+    videoDecoderRecovering: false,
   };
 
   const jitterDelay = config.jitterBufferDelay ?? 100;
@@ -449,6 +452,8 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
 
       // Reset keyframe state to force waiting for new keyframe after error
       channel.hasReceivedKeyframe = false;
+      // Block new frames until keyframe arrives (prevents cascade of errors)
+      channel.videoDecoderRecovering = true;
 
       // Recover the decoder - WebCodecs errors often close the decoder entirely
       if (channel.videoConfig) {
@@ -822,12 +827,14 @@ function decodeVideoFrame(
   sequence: number
 ): boolean {
   // Wait for keyframe before starting to decode
+  // Also drop frames if decoder is recovering from error (prevents cascade of failures)
   if (!channel.hasReceivedKeyframe && !frameData.isKeyframe) {
     channel.droppedFramesBeforeKeyframe++;
     log(`Dropping delta frame - waiting for keyframe (channel ${channel.channelId})`, {
       groupId,
       objectId,
       droppedCount: channel.droppedFramesBeforeKeyframe,
+      recovering: channel.videoDecoderRecovering,
     });
     return false;
   }
@@ -835,6 +842,8 @@ function decodeVideoFrame(
   if (frameData.isKeyframe) {
     channel.hasReceivedKeyframe = true;
     channel.videoKeyframesReceived++;
+    // Clear recovery flag - keyframe allows us to resume normal decoding
+    channel.videoDecoderRecovering = false;
     log(`KEYFRAME received (channel ${channel.channelId})`, {
       groupId,
       objectId,
@@ -1253,6 +1262,7 @@ function resetChannel(channel: DecodeChannel): void {
   channel.droppedFramesBeforeKeyframe = 0;
   channel.lastDecodedSequence = -1;
   channel.framesOutOfOrder = 0;
+  channel.videoDecoderRecovering = false; // Clear recovery state on explicit reset
   // Reset diagnostic counters
   channel.videoFramesDecoded = 0;
   channel.videoKeyframesReceived = 0;
