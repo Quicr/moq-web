@@ -278,6 +278,8 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     // VOD: If no active group, try to activate the expected sequential group
     if (activeGroupId < 0) {
       if (!this.tryActivateNextSequentialGroup()) {
+        // Waiting for next group - reset pacing so frames release immediately when ready
+        this.lastFrameReleaseTime = 0;
         return [];
       }
     }
@@ -286,6 +288,8 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
     if (!group || group.status !== 'active') {
       // Try to activate the expected sequential group
       if (!this.tryActivateNextSequentialGroup()) {
+        // Waiting for next group - reset pacing so frames release immediately when ready
+        this.lastFrameReleaseTime = 0;
         return [];
       }
       return this.getReadyFrames(maxFrames); // Retry with new active group
@@ -391,6 +395,10 @@ export class VodReleasePolicy<T> extends BaseReleasePolicy<T> {
         }
 
         this.updateFpsTracking(now, result.length);
+      } else {
+        // No frames available - reset pacing timer so next frame releases immediately
+        // This prevents accumulating pacing debt when frames arrive slowly
+        this.lastFrameReleaseTime = 0;
       }
 
       // Check if we should complete this group and move to next
