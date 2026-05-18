@@ -54,6 +54,8 @@ interface EncodeChannel {
   quicrParticipantId: number;
   /** Flag to suppress output after destroy */
   destroyed: boolean;
+  /** Clock offset for octoping skew correction (ms) */
+  clockOffset?: number;
 }
 
 // Map of channel ID to encode context
@@ -216,11 +218,12 @@ function handleEncodedVideoChunk(
   // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
   // Use Date.now() for captureTimestamp to enable end-to-end latency measurement
   // (performance.now() is relative to page load, not comparable across machines)
-  const videoOptions = {
+  const videoOptions: Parameters<typeof channel.packager.calculateVideoPacketSize>[1] = {
     isKeyframe,
     captureTimestamp: Date.now(),
     codecDescription,
     quicrInterop: channel.quicrInteropEnabled,
+    clockOffset: channel.clockOffset,
   };
   const videoPacketSize = channel.packager.calculateVideoPacketSize(data, videoOptions);
   const videoBuffer = new Uint8Array(videoPacketSize);
@@ -266,10 +269,11 @@ function handleEncodedAudioChunk(channel: EncodeChannel, chunk: EncodedAudioChun
 
   // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
   // Use Date.now() for captureTimestamp to enable end-to-end latency measurement
-  const audioOptions = {
+  const audioOptions: Parameters<typeof channel.packager.calculateAudioPacketSize>[1] = {
     captureTimestamp: Date.now(),
     quicrInterop: channel.quicrInteropEnabled,
     participantId: channel.quicrParticipantId,
+    clockOffset: channel.clockOffset,
   };
   const audioPacketSize = channel.packager.calculateAudioPacketSize(data, audioOptions);
   const audioBuffer = new Uint8Array(audioPacketSize);
@@ -511,6 +515,17 @@ self.onmessage = async (event: MessageEvent<CodecEncodeWorkerRequest>): Promise<
       }
       channel.forceNextKeyframe = true;
       log(`Next frame will be keyframe (channel ${msg.channelId})`);
+      break;
+    }
+
+    case 'set-clock-offset': {
+      const channel = channels.get(msg.channelId);
+      if (!channel) {
+        log(`Channel ${msg.channelId} not found for set-clock-offset`);
+        return;
+      }
+      channel.clockOffset = msg.offsetMs;
+      log(`Clock offset set to ${msg.offsetMs}ms (channel ${msg.channelId})`);
       break;
     }
 

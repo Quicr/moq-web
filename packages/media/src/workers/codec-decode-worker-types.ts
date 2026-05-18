@@ -145,12 +145,16 @@ export interface LatencyStatsSample {
   framesDroppedBeforeKeyframe?: number;
   /** Frames decoded out of sequence order */
   framesOutOfOrder?: number;
-  /** Queuing delay above baseline (ms) - clock-skew corrected */
+  /** Queuing delay above baseline (ms) - clock-skew corrected via min-delay heuristic */
   queuingDelay?: number;
   /** Minimum observed e2e delay (baseline, includes clock offset) */
   baselineDelay?: number;
   /** Inter-frame jitter (ms) - variation between consecutive frames */
   jitter?: number;
+  /** Clock offset from LOC extension (ms) - octoping-computed (subscriber - publisher) */
+  clockOffset?: number;
+  /** E2E latency corrected using clockOffset from LOC (ms) - only if clockOffset present */
+  correctedE2e?: number;
 }
 
 /**

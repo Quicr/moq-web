@@ -235,6 +235,14 @@ export class CodecEncodeWorkerClient {
   }
 
   /**
+   * Set clock offset for octoping-style skew correction
+   * This value is embedded in LOC headers
+   */
+  setClockOffset(offsetMs: number): void {
+    this.post({ type: 'set-clock-offset', channelId: this.channelId, offsetMs });
+  }
+
+  /**
    * Flush encoders
    */
   async flush(): Promise<void> {
