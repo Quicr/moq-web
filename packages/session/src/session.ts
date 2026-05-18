@@ -1345,11 +1345,13 @@ export class MOQTSession {
       forward: publishOkResult.forward,
     });
 
-    // If forward=0, wait for SUBSCRIBE_UPDATE
-    if (publishOkResult.forward === 0) {
+    // If forward=0, wait for SUBSCRIBE_UPDATE (unless skipForwardWait is set)
+    if (publishOkResult.forward === 0 && !options?.skipForwardWait) {
       log.info('Forward=0, waiting for subscriber (SUBSCRIBE_UPDATE with forward=1)');
       await this.publicationManager.waitForForward(requestId);
       log.info('Forward enabled by subscriber, can start sending data');
+    } else if (publishOkResult.forward === 0) {
+      log.info('Forward=0 but skipForwardWait=true, starting immediately');
     } else {
       log.info('Forward=1, subscriber already exists - starting immediately');
     }
