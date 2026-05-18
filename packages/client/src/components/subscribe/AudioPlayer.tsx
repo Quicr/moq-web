@@ -43,6 +43,7 @@ interface AudioAnalysis {
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudioData, getVideoTimeMs }) => {
   const updateSyncTime = useStore(state => state.updateSyncTime);
+  const onSeekStart = useStore(state => state.onSeekStart);
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -105,6 +106,24 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
       });
     }
   }, [volume, isMuted]);
+
+  // Reset timing state on seek to prevent stale A/V sync calculations
+  useEffect(() => {
+    const unsubscribe = onSeekStart(({ subscriptionId: seekSubId }) => {
+      // Reset timing if this is our subscription or its paired video subscription
+      // (we receive audio subscription ID, but seek happens on video subscription)
+      console.log('[AudioPlayer] Seek detected, resetting timing state', {
+        ourSubscriptionId: subscriptionId,
+        seekSubscriptionId: seekSubId,
+      });
+      isFirstFrameRef.current = true;
+      timeOffsetRef.current = null;
+      firstPtsRef.current = null;
+      nextPlayTimeRef.current = audioContextRef.current?.currentTime ?? 0;
+    });
+
+    return unsubscribe;
+  }, [onSeekStart, subscriptionId]);
 
   // Handle incoming audio data
   useEffect(() => {
