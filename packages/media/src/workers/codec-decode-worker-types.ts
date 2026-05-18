@@ -145,8 +145,12 @@ export interface LatencyStatsSample {
   framesDroppedBeforeKeyframe?: number;
   /** Frames decoded out of sequence order */
   framesOutOfOrder?: number;
-  /** End-to-end latency from capture to display (ms) - requires synchronized clocks */
-  e2eLatency?: number;
+  /** Queuing delay above baseline (ms) - clock-skew corrected */
+  queuingDelay?: number;
+  /** Minimum observed e2e delay (baseline, includes clock offset) */
+  baselineDelay?: number;
+  /** Inter-frame jitter (ms) - variation between consecutive frames */
+  jitter?: number;
 }
 
 /**

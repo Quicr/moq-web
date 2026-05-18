@@ -84,6 +84,8 @@ interface DecodeChannel {
   framesOutOfOrder: number;
   // Clock skew correction: minimum observed e2e delay
   minObservedE2e: number;
+  // Previous raw e2e for jitter calculation
+  prevRawE2e: number | null;
   // Diagnostic tracking
   videoFramesDecoded: number;
   videoKeyframesReceived: number;
@@ -147,6 +149,7 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     lastDecodedSequence: -1,
     framesOutOfOrder: 0,
     minObservedE2e: Infinity,
+    prevRawE2e: null,
     // Diagnostic tracking
     videoFramesDecoded: 0,
     videoKeyframesReceived: 0,
@@ -279,25 +282,30 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
         const framesDropped = bufferStats?.framesDropped ?? 0;
         const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
         const framesOutOfOrder = channel.framesOutOfOrder;
-        // Calculate end-to-end latency with clock skew correction
-        // Uses minimum observed delay to cancel out clock offset
-        let e2eLatency: number | undefined;
+        // Calculate queuing delay and jitter with clock skew correction
+        let queuingDelay: number | undefined;
+        let baselineDelay: number | undefined;
+        let jitter: number | undefined;
         if (meta.captureTimestamp) {
           const rawE2e = Date.now() - meta.captureTimestamp;
-          // Track minimum (this captures clock_offset + min_network_delay)
+          // Track minimum (captures clock_offset + min_network_delay)
           if (rawE2e < channel.minObservedE2e) {
             channel.minObservedE2e = rawE2e;
           }
-          // Corrected e2e = raw - min + baseline
-          // We report the jitter above baseline (min becomes 0)
-          // To show actual network delay, we'd need RTT estimation
-          e2eLatency = rawE2e - channel.minObservedE2e;
+          // Queuing delay = raw - baseline (clock skew cancels out)
+          queuingDelay = rawE2e - channel.minObservedE2e;
+          baselineDelay = channel.minObservedE2e;
+          // Jitter = inter-frame variation (absolute difference from previous)
+          if (channel.prevRawE2e !== null) {
+            jitter = Math.abs(rawE2e - channel.prevRawE2e);
+          }
+          channel.prevRawE2e = rawE2e;
         }
-        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), e2eLatency: e2eLatency !== undefined ? Math.round(e2eLatency) : undefined, minE2e: channel.minObservedE2e !== Infinity ? Math.round(channel.minObservedE2e) : undefined, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
+        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), queuingDelay: queuingDelay !== undefined ? Math.round(queuingDelay) : undefined, jitter: jitter !== undefined ? Math.round(jitter) : undefined, baseline: baselineDelay !== undefined ? Math.round(baselineDelay) : undefined, bufferDepth, bufferDelay });
         respond({
           type: 'latency-stats',
           channelId: channel.channelId,
-          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder, e2eLatency },
+          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder, queuingDelay, baselineDelay, jitter },
         });
       }
     },

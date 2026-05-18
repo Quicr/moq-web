@@ -4,7 +4,7 @@
 /**
  * @fileoverview Latency Stats Graph Component
  *
- * Displays end-to-end processing delay and jitter buffer depth.
+ * Displays queuing delay (bars), jitter (orange line), and baseline reference.
  * Uses canvas with requestAnimationFrame for efficient rendering.
  */
 
@@ -17,7 +17,9 @@ interface LatencyStatsSample {
   framesDropped?: number;
   framesDroppedBeforeKeyframe?: number;
   framesOutOfOrder?: number;
-  e2eLatency?: number;
+  queuingDelay?: number;
+  baselineDelay?: number;
+  jitter?: number;
 }
 
 interface LatencyStatsGraphProps {
@@ -32,20 +34,19 @@ interface LatencyStatsGraphProps {
 /** Number of samples to display */
 const MAX_SAMPLES = 60;
 /** Graph height in pixels */
-const GRAPH_HEIGHT = 50;
+const GRAPH_HEIGHT = 60;
 /** Bar width in pixels */
 const BAR_WIDTH = 3;
 /** Gap between bars */
 const BAR_GAP = 1;
 
 export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscriptionId, onLatencyStats, targetLatency = 100 }) => {
-  // Color thresholds based on target latency
   const greenThreshold = targetLatency;
   const yellowThreshold = targetLatency * 2;
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const delaySamplesRef = useRef<number[]>([]);
-  const e2eSamplesRef = useRef<number[]>([]);
-  const depthSamplesRef = useRef<number[]>([]);
+  const queuingSamplesRef = useRef<number[]>([]);
+  const jitterSamplesRef = useRef<number[]>([]);
+  const baselineRef = useRef<number | null>(null);
   const droppedRef = useRef<{ total: number; beforeKeyframe: number; outOfOrder: number }>({ total: 0, beforeKeyframe: 0, outOfOrder: 0 });
   const rafIdRef = useRef<number | null>(null);
   const needsDrawRef = useRef(false);
@@ -70,53 +71,52 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       return;
     }
 
-    const delays = delaySamplesRef.current;
-    const e2eDelays = e2eSamplesRef.current;
-    const depths = depthSamplesRef.current;
+    const queuing = queuingSamplesRef.current;
+    const jitters = jitterSamplesRef.current;
+    const baseline = baselineRef.current;
 
     // Clear canvas
     ctx.fillStyle = '#1f2937';
     ctx.fillRect(0, 0, canvasWidth, GRAPH_HEIGHT);
 
-    if (delays.length === 0) {
+    if (queuing.length === 0) {
       rafIdRef.current = requestAnimationFrame(draw);
       needsDrawRef.current = false;
       return;
     }
 
-    // Draw delay bars (main metric - in ms)
-    // Use e2e latency if available, otherwise fall back to processing delay
-    const displayDelays = e2eDelays.length > 0 && e2eDelays.some(v => v > 0) ? e2eDelays : delays;
-    const maxDelay = Math.min(1000, Math.max(...displayDelays, 50));
-    const startX = canvasWidth - displayDelays.length * (BAR_WIDTH + BAR_GAP);
+    // Compute max for scaling (consider both queuing and jitter)
+    const maxQueuing = Math.max(...queuing, 50);
+    const maxJitter = jitters.length > 0 ? Math.max(...jitters, 20) : 20;
+    const maxValue = Math.min(500, Math.max(maxQueuing, maxJitter));
+    const startX = canvasWidth - queuing.length * (BAR_WIDTH + BAR_GAP);
 
-    displayDelays.forEach((value, i) => {
-      const barHeight = Math.max(2, (value / maxDelay) * (GRAPH_HEIGHT - 8));
+    // Draw queuing delay bars
+    queuing.forEach((value, i) => {
+      const barHeight = Math.max(2, (value / maxValue) * (GRAPH_HEIGHT - 12));
       const x = startX + i * (BAR_WIDTH + BAR_GAP);
       const y = GRAPH_HEIGHT - barHeight - 2;
 
-      // Color based on delay relative to target latency
       if (value <= greenThreshold) {
-        ctx.fillStyle = '#22c55e'; // green - within target
+        ctx.fillStyle = '#22c55e'; // green
       } else if (value <= yellowThreshold) {
-        ctx.fillStyle = '#eab308'; // yellow - up to 2x target
+        ctx.fillStyle = '#eab308'; // yellow
       } else {
-        ctx.fillStyle = '#ef4444'; // red - exceeds 2x target
+        ctx.fillStyle = '#ef4444'; // red
       }
 
       ctx.fillRect(x, y, BAR_WIDTH, barHeight);
     });
 
-    // Draw buffer depth line overlay (scale to fit)
-    if (depths.length > 1) {
-      const maxDepth = Math.max(...depths, 5);
-      ctx.strokeStyle = '#60a5fa';
+    // Draw jitter line overlay (orange)
+    if (jitters.length > 1) {
+      ctx.strokeStyle = '#f97316'; // orange
       ctx.lineWidth = 1.5;
       ctx.beginPath();
 
-      depths.forEach((depth, i) => {
+      jitters.forEach((jitter, i) => {
         const x = startX + i * (BAR_WIDTH + BAR_GAP) + BAR_WIDTH / 2;
-        const y = GRAPH_HEIGHT - 4 - (depth / maxDepth) * (GRAPH_HEIGHT - 12);
+        const y = GRAPH_HEIGHT - 4 - (jitter / maxValue) * (GRAPH_HEIGHT - 12);
         if (i === 0) {
           ctx.moveTo(x, y);
         } else {
@@ -127,15 +127,22 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       ctx.stroke();
     }
 
-    // Draw reference line at target latency
-    const lineY = GRAPH_HEIGHT - (greenThreshold / maxDelay) * (GRAPH_HEIGHT - 8) - 2;
-    if (lineY > 0 && lineY < GRAPH_HEIGHT) {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    // Draw baseline reference line (dashed white) at bottom with label
+    if (baseline !== null) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.font = '9px monospace';
+      ctx.fillText(`baseline: ${baseline.toFixed(0)}ms`, 4, 10);
+    }
+
+    // Draw target threshold line
+    const thresholdY = GRAPH_HEIGHT - (greenThreshold / maxValue) * (GRAPH_HEIGHT - 12) - 2;
+    if (thresholdY > 12 && thresholdY < GRAPH_HEIGHT - 2) {
+      ctx.strokeStyle = 'rgba(34, 197, 94, 0.3)';
       ctx.setLineDash([2, 2]);
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(0, lineY);
-      ctx.lineTo(canvasWidth, lineY);
+      ctx.moveTo(0, thresholdY);
+      ctx.lineTo(canvasWidth, thresholdY);
       ctx.stroke();
       ctx.setLineDash([]);
     }
@@ -159,16 +166,26 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
     const unsubscribe = onLatencyStats((data) => {
       if (data.subscriptionId !== subscriptionId) return;
 
-      delaySamplesRef.current.push(data.stats.processingDelay);
-      depthSamplesRef.current.push(data.stats.bufferDepth);
-      // Track e2e latency if available
-      if (data.stats.e2eLatency !== undefined && data.stats.e2eLatency > 0) {
-        e2eSamplesRef.current.push(data.stats.e2eLatency);
+      // Track queuing delay
+      if (data.stats.queuingDelay !== undefined) {
+        queuingSamplesRef.current.push(data.stats.queuingDelay);
       } else {
-        e2eSamplesRef.current.push(0);
+        queuingSamplesRef.current.push(data.stats.processingDelay);
       }
 
-      // Track dropped/out-of-order frames (these are cumulative totals)
+      // Track jitter
+      if (data.stats.jitter !== undefined) {
+        jitterSamplesRef.current.push(data.stats.jitter);
+      } else {
+        jitterSamplesRef.current.push(0);
+      }
+
+      // Track baseline
+      if (data.stats.baselineDelay !== undefined) {
+        baselineRef.current = data.stats.baselineDelay;
+      }
+
+      // Track dropped/out-of-order frames
       if (data.stats.framesDropped !== undefined) {
         droppedRef.current.total = data.stats.framesDropped;
       }
@@ -179,10 +196,9 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
         droppedRef.current.outOfOrder = data.stats.framesOutOfOrder;
       }
 
-      if (delaySamplesRef.current.length > MAX_SAMPLES) {
-        delaySamplesRef.current.shift();
-        depthSamplesRef.current.shift();
-        e2eSamplesRef.current.shift();
+      if (queuingSamplesRef.current.length > MAX_SAMPLES) {
+        queuingSamplesRef.current.shift();
+        jitterSamplesRef.current.shift();
       }
 
       needsDrawRef.current = true;
@@ -192,29 +208,27 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
   }, [subscriptionId, onLatencyStats]);
 
   // Get latest stats for display
-  const delays = delaySamplesRef.current;
-  const e2eDelays = e2eSamplesRef.current;
-  const depths = depthSamplesRef.current;
-  const hasE2e = e2eDelays.length > 0 && e2eDelays.some(v => v > 0);
-  const displayDelays = hasE2e ? e2eDelays : delays;
-  const latestDelay = displayDelays.length > 0 ? displayDelays[displayDelays.length - 1] : 0;
-  const latestDepth = depths.length > 0 ? depths[depths.length - 1] : 0;
-  const avgDelay = displayDelays.length > 0 ? displayDelays.filter(v => v > 0).reduce((a, b) => a + b, 0) / displayDelays.filter(v => v > 0).length : 0;
+  const queuing = queuingSamplesRef.current;
+  const jitters = jitterSamplesRef.current;
+  const baseline = baselineRef.current;
+  const latestQueuing = queuing.length > 0 ? queuing[queuing.length - 1] : 0;
+  const latestJitter = jitters.length > 0 ? jitters[jitters.length - 1] : 0;
+  const avgQueuing = queuing.length > 0 ? queuing.reduce((a, b) => a + b, 0) / queuing.length : 0;
   const dropped = droppedRef.current;
   const totalDropped = dropped.total + dropped.beforeKeyframe;
 
   return (
     <div className="bg-gray-800 rounded p-2">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-gray-400" title={hasE2e ? "E2E jitter above baseline (clock-skew corrected)" : "Local processing delay"}>
-          {hasE2e ? 'E2E Jitter' : 'Processing Delay'}
+        <span className="text-xs text-gray-400" title="Queuing delay above baseline (clock-skew corrected)">
+          Queuing Delay
         </span>
         <span className="text-xs font-mono">
-          <span className={`${latestDelay <= greenThreshold ? 'text-green-400' : latestDelay <= yellowThreshold ? 'text-yellow-400' : 'text-red-400'}`}>
-            {latestDelay.toFixed(0)}ms
+          <span className={`${latestQueuing <= greenThreshold ? 'text-green-400' : latestQueuing <= yellowThreshold ? 'text-yellow-400' : 'text-red-400'}`}>
+            {latestQueuing.toFixed(0)}ms
           </span>
-          <span className="text-gray-500 ml-2">avg: {isNaN(avgDelay) ? 0 : avgDelay.toFixed(0)}ms</span>
-          <span className="text-blue-400 ml-2">buf: {latestDepth}</span>
+          <span className="text-gray-500 ml-2">avg: {avgQueuing.toFixed(0)}ms</span>
+          <span className="text-orange-400 ml-2" title="Inter-frame jitter">j: {latestJitter.toFixed(0)}ms</span>
         </span>
       </div>
       <canvas
@@ -225,9 +239,16 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
         style={{ imageRendering: 'pixelated' }}
       />
       <div className="flex items-center justify-between mt-1 text-xs text-gray-500">
-        <span>Bars: {hasE2e ? 'e2e jitter' : 'delay'}</span>
+        <span>
+          <span className="text-green-400">Bars</span>: queuing
+          <span className="text-orange-400 ml-2">Line</span>: jitter
+        </span>
         <div>
-          <span className="text-blue-400">Line: buf depth</span>
+          {baseline !== null && (
+            <span className="text-gray-400 mr-2" title="Minimum observed delay (includes clock offset)">
+              base: {baseline.toFixed(0)}ms
+            </span>
+          )}
           {totalDropped > 0 && (
             <span className="text-red-400 ml-2" title={`Late: ${dropped.total}, Before KF: ${dropped.beforeKeyframe}`}>
               drop: {totalDropped}
