@@ -145,6 +145,28 @@ export function useVideoFrameQueue() {
   }, []);
 
   /**
+   * Clear all queued frames for a subscription (for seek)
+   * Unlike removeSubscription, this keeps the subscription active but clears pending frames
+   */
+  const clearSubscription = useCallback((subscriptionId: number) => {
+    const queue = frameQueuesRef.current.get(subscriptionId);
+    if (queue) {
+      for (const entry of queue) {
+        if (!consumedFramesRef.current.has(entry.frame)) {
+          try {
+            entry.frame.close();
+          } catch {
+            // Already closed
+          }
+        }
+      }
+      queue.length = 0; // Clear the queue but keep it in the map
+    }
+    // Clear pending update for this subscription
+    pendingUpdateRef.current.delete(subscriptionId);
+  }, []);
+
+  /**
    * Cleanup all subscriptions
    */
   const cleanup = useCallback(() => {
@@ -215,6 +237,7 @@ export function useVideoFrameQueue() {
     getQueueDepth,
     onFrameUpdate,
     removeSubscription,
+    clearSubscription,
     cleanup,
   };
 }

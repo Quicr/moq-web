@@ -73,6 +73,20 @@ const log = {
 // These manage adaptive buffer-aware fetching for VOD content
 const vodFetchControllers = new Map<number, VodFetchController>();
 
+// Module-level seek event handlers (called when seek starts to clear frame queues)
+const seekStartHandlers = new Set<(data: { subscriptionId: number; targetGroup: number }) => void>();
+
+// Emit seek start event to all registered handlers
+function emitSeekStart(subscriptionId: number, targetGroup: number): void {
+  for (const handler of seekStartHandlers) {
+    try {
+      handler({ subscriptionId, targetGroup });
+    } catch (err) {
+      log.error('Seek start handler error', err);
+    }
+  }
+}
+
 interface TransportConfig {
   serverCertificateHashes?: ArrayBuffer[];
   connectionTimeout?: number;
@@ -227,6 +241,8 @@ interface ConnectionSlice {
   onVideoFrame: (handler: (data: { subscriptionId: number; frame: VideoFrame }) => void) => () => void;
   // Audio data handler registration
   onAudioData: (handler: (data: { subscriptionId: number; audioData: AudioData }) => void) => () => void;
+  // Seek start event - emitted when seek begins (for clearing frame queues)
+  onSeekStart: (handler: (data: { subscriptionId: number; targetGroup: number }) => void) => () => void;
   // Subscribe stats handler registration (groupId, objectId, bytes per object received)
   onSubscribeStats: (handler: (data: { subscriptionId: number; groupId: number; objectId: number; bytes: number }) => void) => () => void;
   // Jitter sample handler registration (only active when enableStats is true)
@@ -1452,6 +1468,8 @@ export const useStore = create<AppStore>()(
           // Clear the pipeline's decode buffers
           // The pipeline will be recreated or flushed by the media session
           clearBuffers();
+          // Emit seek start event so components can clear their frame queues
+          emitSeekStart(subscriptionId, targetGroup);
         });
 
         // Start the fetch controller (begins initial buffering from startGroup)
@@ -1625,6 +1643,13 @@ export const useStore = create<AppStore>()(
           // Call the original handler
           handler(event);
         });
+      },
+
+      onSeekStart: (handler) => {
+        seekStartHandlers.add(handler);
+        return () => {
+          seekStartHandlers.delete(handler);
+        };
       },
 
       onSubscribeStats: (handler) => {

@@ -79,7 +79,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
   namespace,
   onNamespaceChange,
 }) => {
-  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame, onAudioData, onSubscribeStats, vodFetchStrategy } = useStore();
+  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame, onAudioData, onSubscribeStats, onSeekStart, vodFetchStrategy } = useStore();
 
   const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
@@ -301,6 +301,18 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
 
     return unsubscribe;
   }, [onVideoFrame]);
+
+  // Handle seek start - clear frame queues to prevent stale frames after seek
+  useEffect(() => {
+    const unsubscribe = onSeekStart(({ subscriptionId }) => {
+      console.log('[CatalogSubscriberPanel] Seek start - clearing frame queues', { subscriptionId });
+      // Clear both FETCH and SUBSCRIBE frame queues for this subscription
+      fetchFrameQueue.clearSubscription(subscriptionId);
+      subscribeFrameQueue.clearSubscription(subscriptionId);
+    });
+
+    return unsubscribe;
+  }, [onSeekStart, fetchFrameQueue, subscribeFrameQueue]);
 
   /**
    * Connect & Subscribe flow - handles connection if needed

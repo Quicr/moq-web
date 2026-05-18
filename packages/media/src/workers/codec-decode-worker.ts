@@ -396,6 +396,12 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
       const meta = channel.currentVideoMeta;
       const now = performance.now();
 
+      // Clear recovery flag on successful decode - decoder is healthy again
+      if (channel.videoDecoderRecovering) {
+        channel.videoDecoderRecovering = false;
+        log(`Decoder recovery complete - successful frame output (channel ${channel.channelId})`);
+      }
+
       respond(
         {
           type: 'video-frame',
@@ -827,7 +833,7 @@ function decodeVideoFrame(
   sequence: number
 ): boolean {
   // Wait for keyframe before starting to decode
-  // Also drop frames if decoder is recovering from error (prevents cascade of failures)
+  // Drop P-frames until we successfully receive AND decode a keyframe
   if (!channel.hasReceivedKeyframe && !frameData.isKeyframe) {
     channel.droppedFramesBeforeKeyframe++;
     log(`Dropping delta frame - waiting for keyframe (channel ${channel.channelId})`, {
@@ -839,11 +845,24 @@ function decodeVideoFrame(
     return false;
   }
 
+  // Also drop P-frames while recovering from decode error (prevents error cascade)
+  // This is separate from hasReceivedKeyframe because we need to ALSO wait for
+  // the keyframe's decode to complete before accepting P-frames
+  if (channel.videoDecoderRecovering && !frameData.isKeyframe) {
+    channel.droppedFramesBeforeKeyframe++;
+    log(`Dropping delta frame - decoder recovering from error (channel ${channel.channelId})`, {
+      groupId,
+      objectId,
+      droppedCount: channel.droppedFramesBeforeKeyframe,
+    });
+    return false;
+  }
+
   if (frameData.isKeyframe) {
     channel.hasReceivedKeyframe = true;
     channel.videoKeyframesReceived++;
-    // Clear recovery flag - keyframe allows us to resume normal decoding
-    channel.videoDecoderRecovering = false;
+    // NOTE: Don't clear videoDecoderRecovering here - it will be cleared in the
+    // decoder's output callback when the keyframe decode completes successfully
     log(`KEYFRAME received (channel ${channel.channelId})`, {
       groupId,
       objectId,
