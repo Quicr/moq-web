@@ -226,9 +226,9 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
       <div className="flex items-center justify-between mb-1">
         <span
           className="text-xs text-gray-400 cursor-help"
-          title="Queuing delay = E2E - baseline. Baseline = min(E2E) observed, which approximates clock_skew + min_network_delay. This cancels out clock skew, showing only variable delay (congestion, jitter buffer, etc)."
+          title="Variable delay above minimum. Formula: (now - captureTime) - min(now - captureTime). Cancels out clock skew, showing only congestion/buffering delay."
         >
-          Queuing Delay <span className="text-gray-500">(e2e - min_e2e)</span>
+          Queuing Delay <span className="text-gray-500">(delay - baseline)</span>
         </span>
         <span className="text-xs font-mono">
           <span className={`${latestQueuing <= greenThreshold ? 'text-green-400' : latestQueuing <= yellowThreshold ? 'text-yellow-400' : 'text-red-400'}`}>
@@ -252,7 +252,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
           {baseline !== null && (
             <span
               className="text-gray-400 mr-2 cursor-help"
-              title="Baseline = minimum E2E observed. Includes clock_skew + min_network_delay. Subtracted from E2E to get clock-corrected queuing delay."
+              title="Baseline = min(delay) observed = clock_skew + min_network_delay. Subtracted to cancel clock skew."
             >
               base: {baseline.toFixed(0)}ms
             </span>

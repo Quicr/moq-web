@@ -55,6 +55,8 @@ export interface PublishOptions {
   deliveryMode?: 'stream' | 'datagram';
   /** Audio delivery mode when main mode is 'stream' (default: 'datagram' for low latency) */
   audioDeliveryMode?: 'datagram' | 'stream';
+  /** Skip waiting for forward=1 (for fire-and-forget feedback tracks) */
+  skipForwardWait?: boolean;
 }
 
 /**
