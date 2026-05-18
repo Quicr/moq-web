@@ -206,8 +206,8 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
   return (
     <div className="bg-gray-800 rounded p-2">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-gray-400" title={hasE2e ? "End-to-end latency (capture to display)" : "Local processing delay"}>
-          {hasE2e ? 'E2E Latency' : 'Processing Delay'}
+        <span className="text-xs text-gray-400" title={hasE2e ? "E2E jitter above baseline (clock-skew corrected)" : "Local processing delay"}>
+          {hasE2e ? 'E2E Jitter' : 'Processing Delay'}
         </span>
         <span className="text-xs font-mono">
           <span className={`${latestDelay <= greenThreshold ? 'text-green-400' : latestDelay <= yellowThreshold ? 'text-yellow-400' : 'text-red-400'}`}>
@@ -225,7 +225,7 @@ export const LatencyStatsGraph: React.FC<LatencyStatsGraphProps> = ({ subscripti
         style={{ imageRendering: 'pixelated' }}
       />
       <div className="flex items-center justify-between mt-1 text-xs text-gray-500">
-        <span>Bars: {hasE2e ? 'e2e latency' : 'delay'}</span>
+        <span>Bars: {hasE2e ? 'e2e jitter' : 'delay'}</span>
         <div>
           <span className="text-blue-400">Line: buf depth</span>
           {totalDropped > 0 && (
