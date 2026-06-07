@@ -28,7 +28,12 @@ export type MediaSessionEventType =
   | 'subscribe-stats'
   | 'incoming-subscribe'
   | 'incoming-publish'
-  | 'namespace-acknowledged';
+  | 'incoming-fetch'
+  | 'namespace-acknowledged'
+  // DVR/FETCH events
+  | 'fetch-object'
+  | 'fetch-complete'
+  | 'fetch-error';
 
 /**
  * Worker configuration for offloading processing to web workers
@@ -109,6 +114,21 @@ export interface MediaConfig {
   // Group-aware jitter buffer options (for parallel QUIC stream handling)
   /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
   useGroupArbiter?: boolean;
+
+  /**
+   * Policy type for frame release strategy (new architecture, takes precedence over useGroupArbiter)
+   * - 'vod': Sequential playback, no skipping, wait for all frames (use for DVR/recorded content)
+   * - 'live': Deadline-based with jitter buffer (for real-time streaming)
+   * - 'adaptive': Auto-detect based on arrival patterns
+   */
+  policyType?: 'vod' | 'live' | 'adaptive';
+
+  /** Whether content is live (from catalog) - used with policyType to select behavior */
+  isLive?: boolean;
+  /** Filter type for subscription: 'latest' (default) or 'absolute' (start from beginning for VOD) */
+  filterType?: 'latest' | 'absolute';
+  /** Start group for absolute filter type (default: 0) */
+  startGroup?: number;
   /** Maximum acceptable end-to-end latency in ms before skipping to next keyframe (default: 500) */
   maxLatency?: number;
   /** Initial estimated GOP duration in ms (default: 1000) */
@@ -129,6 +149,8 @@ export interface MediaConfig {
   useLatencyDeadline?: boolean;
   /** Enable GroupArbiter debug logging (default: false) */
   arbiterDebug?: boolean;
+  /** Minimum frames to buffer before starting VOD playback (default: 30) */
+  minBufferFrames?: number;
 
   // Secure Objects (E2E encryption) options
   /** Enable Secure Objects encryption/decryption */
@@ -143,6 +165,23 @@ export interface MediaConfig {
   quicrInteropEnabled?: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId?: number;
+
+  // Video decoder config override (from catalog track info)
+  /** Override video decoder configuration instead of using videoResolution preset */
+  videoDecoderConfig?: {
+    codec?: string;
+    codedWidth?: number;
+    codedHeight?: number;
+  };
+
+  // Audio decoder config override (for AAC from VOD)
+  /** Override audio decoder configuration (e.g., AAC codec and AudioSpecificConfig) */
+  audioDecoderConfig?: {
+    codec?: string;
+    sampleRate?: number;
+    numberOfChannels?: number;
+    description?: Uint8Array;
+  };
 }
 
 /**
@@ -153,6 +192,12 @@ export interface MediaSubscribeOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
+  /** Filter type: 'latest' for live (default), 'absolute' for VOD to start from beginning */
+  filterType?: 'latest' | 'absolute';
+  /** Start group ID when filterType is 'absolute' (default: 0) */
+  startGroup?: number;
+  /** Start object ID when filterType is 'absolute' (default: 0) */
+  startObject?: number;
 }
 
 /**

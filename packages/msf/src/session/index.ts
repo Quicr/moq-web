@@ -31,4 +31,5 @@ export {
   createMSFSession,
   type MSFSessionConfig,
   type TrackInfo,
+  type PublishedTrackInfo,
 } from './msf-session.js';

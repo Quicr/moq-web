@@ -21,7 +21,6 @@ import { getCurrentALPNProtocol, IS_DRAFT_16 } from '@web-moq/core';
 let transport: WebTransport | null = null;
 let controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let controlReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-let datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let currentState: TransportState = 'disconnected';
 let debug = false;
 
@@ -111,10 +110,6 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     controlReader = controlStream.readable.getReader();
     log('Control stream established');
 
-    // Set up persistent datagram writer to avoid locking issues
-    datagramWriter = transport.datagrams.writable.getWriter();
-    log('Datagram writer established');
-
     // Start listeners
     listenForControlMessages();
     listenForDatagrams();
@@ -148,9 +143,6 @@ async function disconnect(code?: number, reason?: string): Promise<void> {
     await controlWriter?.close().catch(() => {});
     controlReader?.cancel().catch(() => {});
 
-    // Close datagram writer
-    datagramWriter?.releaseLock();
-
     // Close all outgoing streams
     for (const [, stream] of outgoingStreams) {
       await stream.writer.close().catch(() => {});
@@ -177,7 +169,6 @@ function cleanup(): void {
   transport = null;
   controlWriter = null;
   controlReader = null;
-  datagramWriter = null;
   outgoingStreams.clear();
   nextStreamId = 0;
 }
@@ -337,13 +328,15 @@ async function sendControl(data: Uint8Array): Promise<void> {
  * Send datagram
  */
 async function sendDatagram(data: Uint8Array): Promise<void> {
-  if (!datagramWriter) {
+  if (!transport) {
     respond({ type: 'error', message: 'Not connected' });
     return;
   }
 
   try {
-    await datagramWriter.write(data);
+    const writer = transport.datagrams.writable.getWriter();
+    await writer.write(data);
+    writer.releaseLock();
   } catch (err) {
     respond({ type: 'error', message: (err as Error).message });
   }
@@ -431,8 +424,9 @@ async function writeStream(
 ): Promise<void> {
   const streamInfo = outgoingStreams.get(streamId);
   if (!streamInfo) {
-    // Stream already closed/cleaned up - not a fatal error, just a race condition
-    log('Stream not found (already closed)', { streamId });
+    // Stream was already closed (e.g., by STOP_SENDING) - this is normal, not an error
+    log('Write to closed stream', { streamId });
+    respond({ type: 'stream-closed', streamId });
     return;
   }
 
@@ -446,10 +440,10 @@ async function writeStream(
     }
   } catch (err) {
     const message = (err as Error).message;
-    // STOP_SENDING and RESET_STREAM are normal for stream-per-object delivery
-    // Relay closes/resets stream after receiving object
-    if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM')) {
-      log('Stream closed by relay', { streamId, reason: message.includes('STOP_SENDING') ? 'STOP_SENDING' : 'RESET_STREAM' });
+    // STOP_SENDING, RESET_STREAM, and aborted are normal for stream-per-object delivery
+    // Relay closes stream after receiving object or when aborting a FETCH
+    if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM') || message.includes('aborted')) {
+      log('Stream closed by relay', { streamId, reason: message });
       outgoingStreams.delete(streamId);
       respond({ type: 'stream-closed', streamId });
     } else {
@@ -464,8 +458,9 @@ async function writeStream(
 async function closeStream(streamId: number): Promise<void> {
   const streamInfo = outgoingStreams.get(streamId);
   if (!streamInfo) {
-    // Stream already closed/cleaned up - not a fatal error, just a race condition
-    log('Stream not found for close (already closed)', { streamId });
+    // Stream was already closed - this is normal, not an error
+    log('Close on already-closed stream', { streamId });
+    respond({ type: 'stream-closed', streamId });
     return;
   }
 
@@ -475,8 +470,8 @@ async function closeStream(streamId: number): Promise<void> {
     respond({ type: 'stream-closed', streamId });
   } catch (err) {
     const message = (err as Error).message;
-    // STOP_SENDING and RESET_STREAM are normal - relay already closed the stream
-    if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM')) {
+    // STOP_SENDING, RESET_STREAM, and aborted are normal - relay already closed the stream
+    if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM') || message.includes('aborted')) {
       outgoingStreams.delete(streamId);
       respond({ type: 'stream-closed', streamId });
     } else {
