@@ -37,9 +37,11 @@
 import { Logger } from '@web-moq/core';
 import { H264Decoder, VideoDecoderConfig } from '../webcodecs/video-decoder.js';
 import { OpusDecoder, AudioDecoderConfig } from '../webcodecs/audio-decoder.js';
+import { AACDecoder } from '../webcodecs/aac-decoder.js';
 import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
 import { JitterBuffer } from './jitter-buffer.js';
 import { GroupArbiter } from './group-arbiter.js';
+import { PresentationReorderBuffer } from './presentation-reorder-buffer.js';
 import { CodecDecodeWorkerClient, LatencyStatsSample } from '../workers/codec-decode-worker-api.js';
 import type { DecodeErrorDiagnostics } from '../workers/codec-decode-worker-types.js';
 
@@ -84,6 +86,17 @@ export interface SubscribePipelineConfig {
   // Group-aware jitter buffer options
   /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
   useGroupArbiter?: boolean;
+
+  /**
+   * Policy type for frame release strategy (new architecture, takes precedence over useGroupArbiter)
+   * - 'vod': Sequential playback, no skipping, wait for all frames (for DVR/recorded content)
+   * - 'live': Deadline-based with jitter buffer (for real-time streaming)
+   * - 'adaptive': Auto-detect based on arrival patterns
+   */
+  policyType?: 'vod' | 'live' | 'adaptive';
+
+  /** Whether content is live (from catalog) - used with policyType to select behavior */
+  isLive?: boolean;
   /** Maximum acceptable end-to-end latency in ms (default: 500) */
   maxLatency?: number;
   /** Initial estimated GOP duration in ms (default: 1000) */
@@ -104,6 +117,8 @@ export interface SubscribePipelineConfig {
   useLatencyDeadline?: boolean;
   /** Enable GroupArbiter debug logging (default: false) */
   arbiterDebug?: boolean;
+  /** Minimum frames to buffer before starting VOD playback (default: 30) */
+  minBufferFrames?: number;
 
   /** Enable QuicR-Mac interop mode for LOC unpackaging (default: false) */
   quicrInteropEnabled?: boolean;
@@ -227,8 +242,8 @@ export class SubscribePipeline {
   private channelId: number;
   /** Video decoder (main thread mode) */
   private videoDecoder?: H264Decoder;
-  /** Audio decoder (main thread mode) */
-  private audioDecoder?: OpusDecoder;
+  /** Audio decoder (main thread mode) - can be OpusDecoder or AACDecoder */
+  private audioDecoder?: OpusDecoder | AACDecoder;
   /** LOC unpackager (main thread mode) */
   private unpackager = new LOCUnpackager();
   /** Video jitter buffer (main thread mode, legacy) */
@@ -269,6 +284,8 @@ export class SubscribePipeline {
   private pipelineStartTime = 0;
   /** Whether first object has been received */
   private firstObjectReceived = false;
+  /** Presentation reorder buffer for B-frame reordering (VOD only) */
+  private reorderBuffer?: PresentationReorderBuffer;
 
   /**
    * Create a new SubscribePipeline
@@ -354,6 +371,24 @@ export class SubscribePipeline {
     });
     this.decodeWorkerClient = new CodecDecodeWorkerClient(worker, this.channelId);
 
+    // Create reorder buffer for VOD content (B-frames need presentation order sorting)
+    // VOD is detected when isLive is explicitly false
+    const needsReorderBuffer = this.config.isLive === false;
+    if (needsReorderBuffer) {
+      log.info('Creating presentation reorder buffer for VOD B-frame handling');
+      this.reorderBuffer = new PresentationReorderBuffer(
+        (frame) => this.emit('video-frame', frame),
+        {
+          // H.264 High Profile can have deep B-frame reordering (up to 16 frames).
+          // The SPS max_num_reorder_frames indicates the minimum, but actual
+          // PTS-DTS gaps in content like BBB can span 15+ frames.
+          bufferDepth: 16,
+          maxHoldTimeMs: 500,
+          debug: false,
+        }
+      );
+    }
+
     // Set up event handlers for decoded frames
     this.decodeWorkerClient.on('video-frame', (response) => {
       log.trace('Pipeline received video-frame from worker', {
@@ -362,7 +397,27 @@ export class SubscribePipeline {
         width: response.result.frame.displayWidth,
         height: response.result.frame.displayHeight,
       });
-      this.emit('video-frame', response.result.frame);
+      // Route through reorder buffer for VOD, direct emit for live
+      if (this.reorderBuffer) {
+        this.reorderBuffer.push(response.result.frame);
+      } else {
+        this.emit('video-frame', response.result.frame);
+      }
+    });
+
+    // Handle SPS info from decoder — dynamically configure reorder buffer depth
+    this.decodeWorkerClient.on('sps-info', (response: { maxNumReorderFrames: number; profileIdc: number; levelIdc: number }) => {
+      if (this.reorderBuffer) {
+        // Use max_num_reorder_frames from SPS + margin for safety
+        const depth = Math.max(response.maxNumReorderFrames + 2, 4);
+        log.info('Configuring reorder buffer from SPS', {
+          maxNumReorderFrames: response.maxNumReorderFrames,
+          bufferDepth: depth,
+          profile: response.profileIdc,
+          level: response.levelIdc,
+        });
+        this.reorderBuffer.setBufferDepth(depth);
+      }
     });
 
     this.decodeWorkerClient.on('audio-data', (response) => {
@@ -408,15 +463,19 @@ export class SubscribePipeline {
         : undefined,
       audio: this.config.audio && (mediaType === 'audio' || !mediaType)
         ? {
-            codec: 'opus',
+            codec: this.config.audio.codec ?? 'opus',
             sampleRate: this.config.audio.sampleRate,
             numberOfChannels: this.config.audio.numberOfChannels,
+            description: this.config.audio.description,
           }
         : undefined,
       jitterBufferDelay: this.config.jitterBufferDelay ?? 100,
       enableStats: this.enableStats,
       // GroupArbiter configuration (passed through to worker)
       useGroupArbiter: this.config.useGroupArbiter,
+      // New PlayoutBuffer architecture options
+      policyType: this.config.policyType,
+      isLive: this.config.isLive,
       maxLatency: this.config.maxLatency,
       estimatedGopDuration: this.config.estimatedGopDuration,
       catalogFramerate: this.config.catalogFramerate,
@@ -429,6 +488,7 @@ export class SubscribePipeline {
       arbiterDebug: this.config.arbiterDebug,
       // QuicR interop mode for LOC unpackaging
       quicrInteropEnabled: this.config.quicrInteropEnabled,
+      minBufferFrames: this.config.minBufferFrames,
     });
 
     log.info('Decode worker channel initialized', { channelId: this.channelId });
@@ -450,6 +510,16 @@ export class SubscribePipeline {
     // Set up video decoding (only if mediaType is 'video' or not specified)
     const shouldCreateVideoDecoder = this.config.video && (mediaType === 'video' || !mediaType);
     if (shouldCreateVideoDecoder) {
+      // Create reorder buffer for VOD content (B-frames need presentation order sorting)
+      const needsReorderBuffer = this.config.isLive === false;
+      if (needsReorderBuffer && !this.reorderBuffer) {
+        log.info('Creating presentation reorder buffer for VOD B-frame handling (main thread)');
+        this.reorderBuffer = new PresentationReorderBuffer(
+          (frame) => this.emit('video-frame', frame),
+          { bufferDepth: 4, maxHoldTimeMs: 200, debug: false }
+        );
+      }
+
       this.videoDecoder = new H264Decoder();
       log.info('Registering frame handler on video decoder', {
         decoderInstanceId: this.videoDecoder.id,
@@ -460,7 +530,12 @@ export class SubscribePipeline {
           width: frame.displayWidth,
           height: frame.displayHeight,
         });
-        this.emit('video-frame', frame);
+        // Route through reorder buffer for VOD, direct emit for live
+        if (this.reorderBuffer) {
+          this.reorderBuffer.push(frame);
+        } else {
+          this.emit('video-frame', frame);
+        }
       });
       log.debug('Frame handler registered', {
         decoderInstanceId: this.videoDecoder.id,
@@ -509,16 +584,47 @@ export class SubscribePipeline {
     // Set up audio decoding (only if mediaType is 'audio' or not specified)
     const shouldCreateAudioDecoder = this.config.audio && (mediaType === 'audio' || !mediaType);
     if (shouldCreateAudioDecoder) {
-      this.audioDecoder = new OpusDecoder();
-      this.audioDecoder.on('frame', (audioData) => {
-        this.emit('audio-data', audioData);
-      });
-      this.audioDecoder.on('error', (error) => {
-        log.error('Audio decoder error', error);
-        this.emit('error', error);
-      });
+      const audioCodec = this.config.audio!.codec ?? 'opus';
+      const isAAC = audioCodec.startsWith('mp4a.');
 
-      await this.audioDecoder.start(this.config.audio!);
+      if (isAAC) {
+        log.info('Creating AAC decoder for audio', {
+          codec: audioCodec,
+          sampleRate: this.config.audio!.sampleRate,
+          channels: this.config.audio!.numberOfChannels,
+          hasDescription: !!this.config.audio!.description,
+        });
+        const aacDecoder = new AACDecoder();
+        aacDecoder.on('frame', (audioData) => {
+          this.emit('audio-data', audioData);
+        });
+        aacDecoder.on('error', (error) => {
+          log.error('AAC decoder error', error);
+          this.emit('error', error);
+        });
+        await aacDecoder.start({
+          sampleRate: this.config.audio!.sampleRate,
+          numberOfChannels: this.config.audio!.numberOfChannels,
+          description: this.config.audio!.description!,
+        });
+        this.audioDecoder = aacDecoder;
+      } else {
+        log.info('Creating Opus decoder for audio', {
+          codec: audioCodec,
+          sampleRate: this.config.audio!.sampleRate,
+          channels: this.config.audio!.numberOfChannels,
+        });
+        const opusDecoder = new OpusDecoder();
+        opusDecoder.on('frame', (audioData) => {
+          this.emit('audio-data', audioData);
+        });
+        opusDecoder.on('error', (error) => {
+          log.error('Opus decoder error', error);
+          this.emit('error', error);
+        });
+        await opusDecoder.start(this.config.audio!);
+        this.audioDecoder = opusDecoder;
+      }
 
       // Create buffer based on configuration
       if (this.useGroupArbiter) {
@@ -560,6 +666,16 @@ export class SubscribePipeline {
     objectId: number,
     timestamp: number
   ): void {
+    log.info('Pipeline.push() called', {
+      channelId: this.channelId,
+      state: this._state,
+      groupId,
+      objectId,
+      dataSize: data.length,
+      useWorker: this.useWorker,
+      hasWorkerClient: !!this.decodeWorkerClient,
+    });
+
     if (this._state !== 'running') {
       log.warn('Pipeline not running, ignoring object');
       return;
@@ -594,7 +710,7 @@ export class SubscribePipeline {
 
     // Worker mode: forward data to worker for processing
     if (this.useWorker && this.decodeWorkerClient) {
-      log.info('Pushing to decode worker', { channelId: this.channelId, groupId, objectId, dataSize: data.length });
+      log.trace('Pushing to decode worker', { groupId, objectId, dataSize: data.length });
       this.decodeWorkerClient.push(data, groupId, objectId, timestamp);
       return;
     }
@@ -896,6 +1012,12 @@ export class SubscribePipeline {
       this.jitterEmitTimer = undefined;
     }
 
+    // Flush and cleanup reorder buffer
+    if (this.reorderBuffer) {
+      this.reorderBuffer.flush();
+      this.reorderBuffer = undefined;
+    }
+
     // Worker mode: close worker
     if (this.useWorker && this.decodeWorkerClient) {
       this.decodeWorkerClient.close();
@@ -973,6 +1095,60 @@ export class SubscribePipeline {
     // Main thread mode: signal arbiters directly
     this.videoArbiter?.markGroupComplete(groupId);
     this.audioArbiter?.markGroupComplete(groupId);
+  }
+
+  /**
+   * Skip a group that is unavailable on the relay.
+   * Advances the sequential release policy past this group.
+   */
+  skipGroup(groupId: number): void {
+    log.info('Skipping unavailable group', { groupId, channelId: this.channelId });
+
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.skipGroup(groupId);
+      return;
+    }
+
+    // Main thread mode: not supported (playout buffer is in worker for VOD)
+  }
+
+  /**
+   * Pause frame output
+   * Frames continue to buffer but are not released for decoding
+   */
+  pause(): void {
+    log.info('Pausing pipeline', { channelId: this.channelId });
+
+    // Worker mode: send message to worker (playout buffer is in worker)
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.pause();
+    }
+    // Main thread mode: TODO - would need to add pause to GroupArbiter
+    // For now, pause only works with decode worker
+  }
+
+  /**
+   * Resume frame output
+   */
+  resume(): void {
+    log.info('Resuming pipeline', { channelId: this.channelId });
+
+    // Worker mode: send message to worker (playout buffer is in worker)
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.resume();
+    }
+    // Main thread mode: TODO - would need to add resume to GroupArbiter
+  }
+
+  /**
+   * Update the A/V sync clock with current video playback time
+   * Call this on audio pipelines when video frames are rendered
+   * @param masterTimeMs - Current video playback time in milliseconds (PTS)
+   */
+  updateSyncTime(masterTimeMs: number): void {
+    if (this.useWorker && this.decodeWorkerClient) {
+      this.decodeWorkerClient.updateSyncTime(masterTimeMs);
+    }
   }
 
   /**

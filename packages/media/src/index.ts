@@ -55,6 +55,10 @@ export type {
   AudioEncoderEvent,
 } from './webcodecs/audio-encoder.js';
 
+// H.264 SPS parser
+export { parseH264SPS } from './webcodecs/h264-sps-parser.js';
+export type { H264SPSInfo } from './webcodecs/h264-sps-parser.js';
+
 // WebCodecs decoders
 export { H264Decoder } from './webcodecs/video-decoder.js';
 export type {
@@ -67,6 +71,12 @@ export type {
   AudioDecoderConfig,
   AudioDecoderEvent,
 } from './webcodecs/audio-decoder.js';
+
+export { AACDecoder } from './webcodecs/aac-decoder.js';
+export type {
+  AACDecoderConfig,
+  AACDecoderEvent,
+} from './webcodecs/aac-decoder.js';
 
 // LOC container
 export {
@@ -96,16 +106,17 @@ export type {
   JitterBufferStats,
 } from './pipeline/jitter-buffer.js';
 
-// Group-aware jitter buffer (deadline-based ordering)
+// Group-aware jitter buffer (deadline-based ordering) - LEGACY
+// Note: GroupArbiter is being replaced by PlayoutBuffer + ReleasePolicy
 export { GroupArbiter } from './pipeline/group-arbiter.js';
 export { TimingEstimator, createTimingEstimator } from './pipeline/timing-estimator.js';
 export { MonotonicTickProvider, WallClockTickProvider } from './pipeline/tick-provider.js';
 export type { TickProvider, TickProviderConfig } from './pipeline/tick-provider.js';
 export type { TimingEstimatorConfig } from './pipeline/timing-estimator.js';
 export type {
-  GroupState,
-  GroupStatus,
-  FrameEntry,
+  GroupState as LegacyGroupState,
+  GroupStatus as LegacyGroupStatus,
+  FrameEntry as LegacyFrameEntry,
   ArbiterStats,
   TimingConfig,
   ArbiterFrameInput,
@@ -115,6 +126,56 @@ export {
   createGroupState,
   createArbiterStats,
 } from './pipeline/group-arbiter-types.js';
+
+// PlayoutBuffer - New architecture for frame buffering
+// Separates storage (PlayoutBuffer) from release logic (ReleasePolicy)
+export { PlayoutBuffer, DEFAULT_BUFFER_CONFIG } from './pipeline/playout-buffer.js';
+export type {
+  FrameEntry,
+  GroupState,
+  GroupStatus,
+  FrameInput,
+  PlayoutBufferStats,
+  PlayoutBufferConfig,
+} from './pipeline/playout-buffer.js';
+
+// Release Policies - Control when frames are released from buffer
+export { BaseReleasePolicy } from './pipeline/release-policy.js';
+export type { ReleasePolicy, ReleasePolicyStats } from './pipeline/release-policy.js';
+
+// VOD Release Policy - Sequential playback, no skipping
+export { VodReleasePolicy, DEFAULT_VOD_POLICY_CONFIG } from './pipeline/vod-release-policy.js';
+export type { VodReleasePolicyConfig } from './pipeline/vod-release-policy.js';
+
+// Live Release Policy - Deadline-based with jitter buffer (replaces GroupArbiter)
+export { LiveReleasePolicy, DEFAULT_LIVE_POLICY_CONFIG } from './pipeline/live-release-policy.js';
+export type { LiveReleasePolicyConfig, LivePolicyStats } from './pipeline/live-release-policy.js';
+
+// Adaptive Release Policy - Self-tuning for unknown content
+export { AdaptiveReleasePolicy, DEFAULT_ADAPTIVE_POLICY_CONFIG } from './pipeline/adaptive-release-policy.js';
+export type { AdaptiveReleasePolicyConfig, AdaptivePolicyStats } from './pipeline/adaptive-release-policy.js';
+
+// Shared Playback Clock - A/V sync for tracks with same renderGroup
+export { SharedPlaybackClock, PlaybackClockRegistry } from './pipeline/shared-playback-clock.js';
+export type { SharedPlaybackClockConfig, ClockDecision, ClockCheckResult } from './pipeline/shared-playback-clock.js';
+
+// Presentation Reorder Buffer - Sorts decoded frames by PTS for B-frame support
+export { PresentationReorderBuffer } from './pipeline/presentation-reorder-buffer.js';
+export type { PresentationReorderBufferConfig } from './pipeline/presentation-reorder-buffer.js';
+
+// PlayoutBuffer Factory - Easy creation based on content type
+// Selection modes: catalog-driven, explicit config, or adaptive (default)
+export {
+  createPlayoutBuffer,
+  createPlayoutBufferFromTrack,
+  createDefaultPlayoutBuffer,
+  createVodPlayoutBuffer,
+  createLivePlayoutBuffer,
+  createAdaptivePlayoutBuffer,
+  createFromArbiterConfig,
+  POLICY_PRESETS,
+} from './pipeline/playout-buffer-factory.js';
+export type { TrackPolicyInfo, PolicyType, PolicyConfig } from './pipeline/playout-buffer-factory.js';
 
 // Backpressure control
 export { BackpressureController } from './pipeline/backpressure.js';
@@ -215,3 +276,31 @@ export type {
   ExperienceProfileSettings,
   ExperienceProfile,
 } from './profiles/index.js';
+
+// VOD Loader
+export { VODLoader } from './vod/vod-loader.js';
+export type { VODLoadProgress, VODLoaderOptions, VODPreloadMetadata, VODAudioMetadata } from './vod/vod-loader.js';
+
+// VOD Fetch Controller - Adaptive buffer-aware fetching for smooth VOD playback
+export { VodFetchController, LegacyFetchStrategy, createVodFetchController } from './vod/vod-fetch-controller.js';
+export type { VodFetchConfig, VodFetchEvents } from './vod/vod-fetch-controller.js';
+
+// VOD Fetch Strategies
+export type { FetchStrategy, FetchDecision, FetchStrategyContext } from './vod/fetch-strategy.js';
+export { SbrFetchStrategy, DEFAULT_SBR_CONFIG } from './vod/sbr-fetch-strategy.js';
+export type { SbrConfig } from './vod/sbr-fetch-strategy.js';
+export { AbrFetchStrategy, DEFAULT_ABR_FETCH_CONFIG } from './vod/abr-fetch-strategy.js';
+export type { AbrFetchConfig } from './vod/abr-fetch-strategy.js';
+
+// MP4 Parser (for advanced use - VODLoader uses this internally)
+export { MP4Parser } from './vod/mp4-parser.js';
+export type { VideoTrackInfo, AudioTrackInfo, SampleEntry, MP4ParseResult } from './vod/mp4-parser.js';
+
+// ABR (Adaptive Bitrate) Controller
+export { ABRController, DEFAULT_ABR_CONFIG } from './abr/index.js';
+export type {
+  ABRTrack,
+  ABRAlgorithm,
+  ABRControllerConfig,
+  ABRStats,
+} from './abr/index.js';

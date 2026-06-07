@@ -50,6 +50,8 @@ export interface CatalogSubscribeOptions {
 export interface CatalogPublishOptions {
   /** Group numbering strategy */
   groupNumbering?: GroupNumberingStrategy;
+  /** Republish interval in ms (0 = disabled). Republishes catalog periodically with new groupId */
+  republishIntervalMs?: number;
 }
 
 /**
@@ -65,6 +67,7 @@ export class CatalogSubscriber {
   private currentCatalog: FullCatalog | null = null;
   private callback: CatalogCallback;
   private errorCallback?: (error: Error) => void;
+  private subscribeOkCleanup?: () => void;
 
   constructor(
     session: MOQTSession,
@@ -79,11 +82,21 @@ export class CatalogSubscriber {
 
   /**
    * Start subscribing to the catalog
+   *
+   * Uses SUBSCRIBE to establish the subscription, then FETCHes from
+   * largestGroupId to retrieve the current catalog (for late subscribers).
    */
   async subscribe(): Promise<void> {
     if (this.subscriptionId !== null) {
       throw new CatalogTrackError('Already subscribed');
     }
+
+    // Set up listener for SUBSCRIBE_OK to get largestGroupId and FETCH
+    this.subscribeOkCleanup = this.session.on('subscribe-ok', (event) => {
+      if (event.subscriptionId === this.subscriptionId) {
+        this.handleSubscribeOk(event);
+      }
+    });
 
     this.subscriptionId = await this.session.subscribe(
       this.namespace,
@@ -94,9 +107,35 @@ export class CatalogSubscriber {
   }
 
   /**
+   * Handle SUBSCRIBE_OK - FETCH from largestGroupId to get current catalog
+   */
+  private async handleSubscribeOk(event: {
+    largestGroupId?: number;
+    largestObjectId?: number;
+  }): Promise<void> {
+    // Clean up listener - we only need it once
+    if (this.subscribeOkCleanup) {
+      this.subscribeOkCleanup();
+      this.subscribeOkCleanup = undefined;
+    }
+
+    // FETCH disabled: Akamai relay disconnects when receiving FETCH messages.
+    // Workaround: Publisher republishes catalog periodically so late subscribers
+    // receive it via normal SUBSCRIBE delivery.
+    // TODO: Re-enable when relay supports FETCH forwarding
+    console.log('[CatalogSubscriber] SUBSCRIBE_OK received, largestGroupId:', event.largestGroupId);
+  }
+
+  /**
    * Stop subscribing to the catalog
    */
   async unsubscribe(): Promise<void> {
+    // Clean up subscribe-ok listener if still active
+    if (this.subscribeOkCleanup) {
+      this.subscribeOkCleanup();
+      this.subscribeOkCleanup = undefined;
+    }
+
     if (this.subscriptionId === null) {
       return;
     }
@@ -161,6 +200,8 @@ export class CatalogPublisher {
   private trackAlias: bigint | null = null;
   private groupNumbering: EpochGroupNumbering | SequentialGroupNumbering;
   private currentCatalog: FullCatalog | null = null;
+  private republishIntervalMs: number;
+  private republishTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     session: MOQTSession,
@@ -172,6 +213,7 @@ export class CatalogPublisher {
     this.groupNumbering = createGroupNumbering(
       options.groupNumbering ?? 'epoch'
     );
+    this.republishIntervalMs = options.republishIntervalMs ?? 0;
   }
 
   /**
@@ -193,6 +235,12 @@ export class CatalogPublisher {
    * Stop publishing the catalog track
    */
   async stop(): Promise<void> {
+    // Stop periodic republishing
+    if (this.republishTimer) {
+      clearInterval(this.republishTimer);
+      this.republishTimer = null;
+    }
+
     if (this.trackAlias === null) {
       return;
     }
@@ -205,6 +253,7 @@ export class CatalogPublisher {
    * Publish a full catalog
    *
    * This starts a new group and sends the catalog as object 0.
+   * If republishIntervalMs is set, starts periodic republishing.
    */
   async publishFull(catalog: FullCatalog): Promise<void> {
     if (this.trackAlias === null) {
@@ -221,6 +270,35 @@ export class CatalogPublisher {
     });
 
     this.currentCatalog = catalog;
+
+    // Start periodic republishing if configured and not already running
+    if (this.republishIntervalMs > 0 && !this.republishTimer) {
+      this.republishTimer = setInterval(() => {
+        this.republishCatalog();
+      }, this.republishIntervalMs);
+    }
+  }
+
+  /**
+   * Republish the current catalog with a new group ID (timestamp-based)
+   */
+  private async republishCatalog(): Promise<void> {
+    if (this.trackAlias === null || this.currentCatalog === null) {
+      return;
+    }
+
+    try {
+      const [groupId, objectId] = this.groupNumbering.nextFull();
+      const data = serializeCatalogToBytes(this.currentCatalog);
+
+      await this.session.sendObject(this.trackAlias, data, {
+        groupId,
+        objectId,
+        isKeyframe: true,
+      });
+    } catch {
+      // Ignore errors during periodic republish - session may be closing
+    }
   }
 
   /**
