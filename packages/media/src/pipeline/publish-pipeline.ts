@@ -91,7 +91,9 @@ export type PipelineEvent =
   | 'audio-object'
   | 'error'
   | 'started'
-  | 'stopped';
+  | 'stopped'
+  | 'paused'
+  | 'resumed';
 
 /**
  * Publish Pipeline
@@ -159,16 +161,12 @@ export class PublishPipeline {
   private handlers = new Map<PipelineEvent, Set<(data: unknown) => void>>();
   /** Pipeline state */
   private _state: 'idle' | 'running' | 'stopped' = 'idle';
-  /** Flag to stop accepting new frames (set during flush before full stop) */
-  private _stopping = false;
+  /** Whether the pipeline is paused (forward=0) */
+  private _paused = false;
   /** Video track processor */
   private videoProcessor?: MediaStreamTrackProcessor<VideoFrame>;
   /** Audio track processor */
   private audioProcessor?: MediaStreamTrackProcessor<AudioData>;
-  /** Video frame reader (for cancellation on stop) */
-  private videoReader?: ReadableStreamDefaultReader<VideoFrame>;
-  /** Audio frame reader (for cancellation on stop) */
-  private audioReader?: ReadableStreamDefaultReader<AudioData>;
   /** Video group ID (main thread mode only) - initialized with time-based ID */
   private videoGroupId = getInitialGroupId();
   /** Video object ID (main thread mode only) */
@@ -229,11 +227,6 @@ export class PublishPipeline {
     if (!this.encodeWorkerClient) return;
 
     this.encodeWorkerClient.on('video-encoded', ({ result }) => {
-      if (this._state !== 'running') {
-        log.debug('Ignoring video-encoded callback', { state: this._state });
-        return;
-      }
-
       const obj: PublishedObject = {
         type: 'video',
         data: result.data,
@@ -251,15 +244,13 @@ export class PublishPipeline {
         size: obj.data.byteLength,
       });
 
-      this.emit('video-object', obj);
+      // Skip emitting if paused (forward=0)
+      if (!this._paused) {
+        this.emit('video-object', obj);
+      }
     });
 
     this.encodeWorkerClient.on('audio-encoded', ({ result }) => {
-      if (this._state !== 'running') {
-        log.debug('Ignoring audio-encoded callback', { state: this._state });
-        return;
-      }
-
       const obj: PublishedObject = {
         type: 'audio',
         data: result.data,
@@ -270,13 +261,10 @@ export class PublishPipeline {
         priority: Priority.HIGH,
       };
 
-      log.info('Audio object ready (from worker)', {
-        groupId: obj.groupId,
-        objectId: obj.objectId,
-        size: obj.data.byteLength,
-      });
-
-      this.emit('audio-object', obj);
+      // Skip emitting if paused (forward=0)
+      if (!this._paused) {
+        this.emit('audio-object', obj);
+      }
     });
 
     this.encodeWorkerClient.on('error', ({ message }) => {
@@ -383,10 +371,10 @@ export class PublishPipeline {
     if (this.useWorker) {
       // Create track processor
       this.videoProcessor = new MediaStreamTrackProcessor({ track });
-      this.videoReader = this.videoProcessor.readable.getReader();
+      const reader = this.videoProcessor.readable.getReader();
 
       // Process frames (sends to worker)
-      this.processVideoFrames(this.videoReader);
+      this.processVideoFrames(reader);
       return;
     }
 
@@ -406,10 +394,10 @@ export class PublishPipeline {
 
     // Create track processor
     this.videoProcessor = new MediaStreamTrackProcessor({ track });
-    this.videoReader = this.videoProcessor.readable.getReader();
+    const reader = this.videoProcessor.readable.getReader();
 
     // Process frames
-    this.processVideoFrames(this.videoReader);
+    this.processVideoFrames(reader);
   }
 
   /**
@@ -421,16 +409,14 @@ export class PublishPipeline {
     log.info('Starting video frame processing', { useWorker: this.useWorker });
     let frameCount = 0;
     try {
-      while (this._state === 'running' && !this._stopping) {
+      while (this._state === 'running') {
         const { value: frame, done } = await reader.read();
-        if (done || this._stopping) {
-          if (frame) frame.close();
-          log.info('Video frame reader done or stopping');
+        if (done) {
+          log.info('Video frame reader done');
           break;
         }
 
         if (frame) {
-
           frameCount++;
           if (frameCount === 1 || frameCount % 30 === 0) {
             log.info('Processing video frame', {
@@ -505,7 +491,10 @@ export class PublishPipeline {
       size: obj.data.byteLength,
     });
 
-    this.emit('video-object', obj);
+    // Skip emitting if paused (forward=0)
+    if (!this._paused) {
+      this.emit('video-object', obj);
+    }
   }
 
   /**
@@ -540,10 +529,10 @@ export class PublishPipeline {
     if (this.useWorker) {
       // Create track processor
       this.audioProcessor = new MediaStreamTrackProcessor({ track });
-      this.audioReader = this.audioProcessor.readable.getReader();
+      const reader = this.audioProcessor.readable.getReader();
 
       // Process audio (sends to worker)
-      this.processAudioFrames(this.audioReader);
+      this.processAudioFrames(reader);
       return;
     }
 
@@ -569,10 +558,10 @@ export class PublishPipeline {
 
       // Create track processor
       this.audioProcessor = new MediaStreamTrackProcessor({ track });
-      this.audioReader = this.audioProcessor.readable.getReader();
+      const reader = this.audioProcessor.readable.getReader();
 
       // Process audio
-      this.processAudioFrames(this.audioReader);
+      this.processAudioFrames(reader);
     } catch (err) {
       log.error('Failed to set up audio encoding', err as Error);
       this.emit('error', err);
@@ -593,16 +582,14 @@ export class PublishPipeline {
     this.audioEncoderConfigured = false;
 
     try {
-      while (this._state === 'running' && !this._stopping) {
+      while (this._state === 'running') {
         const { value: audioData, done } = await reader.read();
-        if (done || this._stopping) {
-          if (audioData) audioData.close();
-          log.info('Audio frame reader done or stopping');
+        if (done) {
+          log.info('Audio frame reader done');
           break;
         }
 
         if (audioData) {
-
           frameCount++;
 
           // Worker mode - send audio data to worker
@@ -764,7 +751,10 @@ export class PublishPipeline {
       size: obj.data.byteLength,
     });
 
-    this.emit('audio-object', obj);
+    // Skip emitting if paused (forward=0)
+    if (!this._paused) {
+      this.emit('audio-object', obj);
+    }
   }
 
   /**
@@ -801,6 +791,40 @@ export class PublishPipeline {
   }
 
   /**
+   * Check if pipeline is paused
+   */
+  get isPaused(): boolean {
+    return this._paused;
+  }
+
+  /**
+   * Pause the pipeline (no subscribers - forward=0)
+   *
+   * When paused, the pipeline drops encoded objects without emitting events.
+   * The capture and encoding continue so resumption is seamless.
+   */
+  pause(): void {
+    if (!this._paused) {
+      this._paused = true;
+      log.info('Publish pipeline paused (forward=0)');
+      this.emit('paused', undefined);
+    }
+  }
+
+  /**
+   * Resume the pipeline (subscribers exist - forward=1)
+   *
+   * Resumes emitting encoded objects.
+   */
+  resume(): void {
+    if (this._paused) {
+      this._paused = false;
+      log.info('Publish pipeline resumed (forward=1)');
+      this.emit('resumed', undefined);
+    }
+  }
+
+  /**
    * Stop the pipeline
    */
   async stop(): Promise<void> {
@@ -809,25 +833,8 @@ export class PublishPipeline {
     }
 
     log.info('Stopping publish pipeline', { channelId: this.channelId });
-
-    // Set stopping flag FIRST to break processing loops immediately
-    this._stopping = true;
-
-    // Set state to stopped to block all callbacks
     this._state = 'stopped';
     this.abortController?.abort();
-
-    // Cancel readers to unblock any pending read()
-    if (this.videoReader) {
-      await this.videoReader.cancel().catch(() => {});
-      this.videoReader = undefined;
-    }
-    if (this.audioReader) {
-      await this.audioReader.cancel().catch(() => {});
-      this.audioReader = undefined;
-    }
-
-    this._stopping = false;
 
     // Close worker client (cleans up channel in worker)
     if (this.encodeWorkerClient) {
@@ -879,7 +886,7 @@ export class PublishPipeline {
    */
   on(event: 'video-object' | 'audio-object', handler: (obj: PublishedObject) => void): () => void;
   on(event: 'error', handler: (error: Error) => void): () => void;
-  on(event: 'started' | 'stopped', handler: () => void): () => void;
+  on(event: 'started' | 'stopped' | 'paused' | 'resumed', handler: () => void): () => void;
   on(
     event: PipelineEvent,
     handler: ((obj: PublishedObject) => void) | ((error: Error) => void) | (() => void)

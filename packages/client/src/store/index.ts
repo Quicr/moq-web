@@ -11,7 +11,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType } from '@web-moq/core';
+import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType, type SwitchingSetAssignment } from '@web-moq/core';
 import type { VADProvider, ExperienceProfileName } from '@web-moq/media';
 import {
   MediaSession,
@@ -20,6 +20,12 @@ import {
   type WorkerConfig,
   EXPERIENCE_PROFILES,
   detectCurrentProfile,
+  createVodFetchController,
+  type VodFetchController,
+  SbrFetchStrategy,
+  AbrFetchStrategy,
+  ABRController,
+  type FetchStrategy,
 } from '@web-moq/media';
 import { TransportState, LogLevel } from '../types';
 import { isDebugMode } from '../components/common/DevSettingsPanel';
@@ -56,12 +62,30 @@ function getWorkers(): WorkerConfig {
   return workers;
 }
 
-// Simple logger for now - will use moqt-core Logger when built
+// Simple logger that only outputs warn/error by default
 const log = {
-  info: (msg: string, data?: unknown) => console.log(`[moqt:client:store] ${msg}`, data),
+  info: (_msg: string, _data?: unknown) => { /* silent unless debugging */ },
   warn: (msg: string, data?: unknown) => console.warn(`[moqt:client:store] ${msg}`, data),
   error: (msg: string, data?: unknown) => console.error(`[moqt:client:store] ${msg}`, data),
 };
+
+// Module-level storage for VOD fetch controllers (keyed by subscriptionId)
+// These manage adaptive buffer-aware fetching for VOD content
+const vodFetchControllers = new Map<number, VodFetchController>();
+
+// Module-level seek event handlers (called when seek starts to clear frame queues)
+const seekStartHandlers = new Set<(data: { subscriptionId: number; targetGroup: number }) => void>();
+
+// Emit seek start event to all registered handlers
+function emitSeekStart(subscriptionId: number, targetGroup: number): void {
+  for (const handler of seekStartHandlers) {
+    try {
+      handler({ subscriptionId, targetGroup });
+    } catch (err) {
+      log.error('Seek start handler error', err);
+    }
+  }
+}
 
 interface TransportConfig {
   serverCertificateHashes?: ArrayBuffer[];
@@ -175,40 +199,58 @@ interface ConnectionSlice {
   setServerUrl: (url: string) => void;
 
   // Publish/Subscribe methods that delegate to session
-  startPublishing: (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean, stream?: MediaStream) => Promise<bigint>;
+  startPublishing: (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean) => Promise<bigint>;
   stopPublishing: (trackAlias: bigint | string) => Promise<void>;
   // Announce flow methods
   announceNamespace: (namespace: string) => Promise<void>;
   cancelAnnounce: (namespace: string) => Promise<void>;
   /** Status for announce flow UI */
   announceStatus: 'idle' | 'announcing' | 'waiting' | 'active';
-  /** Map of namespace/trackName -> pending config + stream for announce flow tracks */
-  pendingAnnounceTracks: Map<string, {
+  /** Pending stream for announce flow (waiting for subscribers) */
+  pendingAnnounceStream: MediaStream | null;
+  pendingAnnounceConfig: {
     namespace: string;
     trackName: string;
-    stream: MediaStream;
     deliveryTimeout?: number;
     priority?: number;
     deliveryMode?: 'stream' | 'datagram';
+    /** Track type enabled from panel - overrides stream track detection */
     videoEnabled?: boolean;
     audioEnabled?: boolean;
-  }>;
-  /** Map of namespace/trackName -> actual trackAlias for announce flow tracks */
-  announceTrackAliases: Map<string, bigint>;
-  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => Promise<number>;
+  } | null;
+  startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', dtsAssignment?: SwitchingSetAssignment, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
+  /** Start VOD subscription using FETCH with adaptive buffer management */
+  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number, abrOptions?: { abrController: import('@web-moq/media').ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
+  /** Standalone FETCH for previously published content (no media pipeline) */
+  fetchTrack: (
+    namespace: string,
+    trackName: string,
+    startGroup: number,
+    endGroup: number,
+    onData: (data: Uint8Array, groupId: number, objectId: number) => void
+  ) => Promise<{ requestId: number; cancel: () => Promise<void> }>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
   isSubscriptionPaused: (subscriptionId: number) => boolean;
+  seekSubscription: (subscriptionId: number, timeMs: number) => Promise<void>;
+  /** Update A/V sync time for an audio subscription (call when video frame is rendered) */
+  updateSyncTime: (audioSubscriptionId: number, videoTimeMs: number) => void;
 
   // Video frame handler registration
   onVideoFrame: (handler: (data: { subscriptionId: number; frame: VideoFrame }) => void) => () => void;
   // Audio data handler registration
   onAudioData: (handler: (data: { subscriptionId: number; audioData: AudioData }) => void) => () => void;
+  // Seek start event - emitted when seek begins (for clearing frame queues)
+  onSeekStart: (handler: (data: { subscriptionId: number; targetGroup: number }) => void) => () => void;
+  // Subscribe stats handler registration (groupId, objectId, bytes per object received)
+  onSubscribeStats: (handler: (data: { subscriptionId: number; groupId: number; objectId: number; bytes: number }) => void) => () => void;
   // Jitter sample handler registration (only active when enableStats is true)
   onJitterSample: (handler: (data: { subscriptionId: number; sample: { interArrivalTimes: number[]; avgJitter: number; maxJitter: number } }) => void) => () => void;
   // Latency stats handler registration (only active when enableStats is true)
   onLatencyStats: (handler: (data: { subscriptionId: number; stats: { processingDelay: number; bufferDepth: number; bufferDelay: number } }) => void) => () => void;
+  // Incoming FETCH event handler (for VOD publisher local playback)
+  onIncomingFetch: (handler: (data: { namespace: string[]; trackName: string; startGroup: number; endGroup: number }) => void) => () => void;
 }
 
 // ============================================================================
@@ -235,14 +277,31 @@ interface PublishSlice {
 // Subscribe Slice
 // ============================================================================
 
+/** VOD fetch stats exposed for the diagnostics overlay */
+export interface VodFetchStatsSnapshot {
+  strategy: string;
+  state: string;
+  bufferedSeconds: number;
+  bufferedFrames: number;
+  playbackGroup: number;
+  fetchedUpToGroup: number;
+  activeFetches: number;
+  avgMsPerGop: number;
+  adaptiveFetchAhead: number;
+  downloadSamples: number;
+}
+
 interface SubscribeSlice {
   subscribedTracks: MediaTrack[];
   availableTracks: Array<{ namespace: string[]; trackName: string }>;
+  /** Live VOD fetch stats per subscription (updated periodically) */
+  vodFetchStats: Map<number, VodFetchStatsSnapshot>;
 
   addSubscribedTrack: (track: MediaTrack) => void;
   removeSubscribedTrack: (id: string) => void;
   setAvailableTracks: (tracks: Array<{ namespace: string[]; trackName: string }>) => void;
   updateSubscribedTrackStats: (id: string, stats: MediaTrack['stats']) => void;
+  updateVodFetchStats: (subscriptionId: number, stats: VodFetchStatsSnapshot) => void;
 }
 
 // ============================================================================
@@ -349,6 +408,13 @@ interface SettingsSlice {
   experienceProfile: ExperienceProfileName;
   /** Use GroupArbiter for group-aware jitter buffering (handles parallel QUIC streams) */
   useGroupArbiter: boolean;
+  /**
+   * Policy type for frame release strategy (new PlayoutBuffer architecture)
+   * - 'vod': Sequential playback, no skipping (for DVR/recorded content)
+   * - 'live': Deadline-based with jitter buffer (for real-time streaming)
+   * - 'adaptive': Auto-detect from catalog isLive or arrival patterns
+   */
+  policyType: 'vod' | 'live' | 'adaptive';
   /** Maximum acceptable latency before skipping to next keyframe (ms) */
   maxLatency: number;
   /** Initial estimated GOP duration (ms) */
@@ -375,6 +441,24 @@ interface SettingsSlice {
   quicrInteropEnabled: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId: number;
+  /** Enable VOD publishing mode (load video from URL) */
+  vodPublishEnabled: boolean;
+  /** VOD fetch strategy: legacy (adaptive), sbr (sawtooth buffer), abr (multi-bitrate) */
+  vodFetchStrategy: 'legacy' | 'sbr' | 'abr';
+  /** SBR: initial buffer before playback starts in seconds */
+  sbrInitialBufferSec: number;
+  /** SBR: target buffer in seconds */
+  sbrTargetBufferSec: number;
+  /** SBR: low buffer threshold in seconds (triggers fetch) */
+  sbrLowBufferSec: number;
+  /** SBR: high buffer threshold in seconds (fetch fills to this) */
+  sbrHighBufferSec: number;
+  /** ABR: buffer target while switching quality (seconds) */
+  abrSwitchingBufferSec: number;
+  /** ABR: buffer target at intermediate quality (seconds) */
+  abrIntermediateBufferSec: number;
+  /** ABR: buffer target at highest quality (seconds) */
+  abrTopBufferSec: number;
 
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
   setLogLevel: (level: LogLevel) => void;
@@ -395,6 +479,7 @@ interface SettingsSlice {
   setVadVisualizationEnabled: (value: boolean) => void;
   setAudioDeliveryMode: (mode: 'datagram' | 'stream') => void;
   setUseGroupArbiter: (value: boolean) => void;
+  setPolicyType: (value: 'vod' | 'live' | 'adaptive') => void;
   setMaxLatency: (value: number) => void;
   setEstimatedGopDuration: (value: number) => void;
   setSkipToLatestGroup: (value: boolean) => void;
@@ -408,6 +493,15 @@ interface SettingsSlice {
   setSecureObjectsBaseKey: (value: string) => void;
   setQuicrInteropEnabled: (value: boolean) => void;
   setQuicrParticipantId: (value: number) => void;
+  setVodPublishEnabled: (value: boolean) => void;
+  setVodFetchStrategy: (value: 'legacy' | 'sbr' | 'abr') => void;
+  setSbrInitialBufferSec: (value: number) => void;
+  setSbrTargetBufferSec: (value: number) => void;
+  setSbrLowBufferSec: (value: number) => void;
+  setSbrHighBufferSec: (value: number) => void;
+  setAbrSwitchingBufferSec: (value: number) => void;
+  setAbrIntermediateBufferSec: (value: number) => void;
+  setAbrTopBufferSec: (value: number) => void;
   /** Apply an experience profile (sets all related settings) */
   applyExperienceProfile: (profile: ExperienceProfileName) => void;
   /** Update detected profile based on current settings */
@@ -435,8 +529,8 @@ export const useStore = create<AppStore>()(
       decodeErrors: [],
       // Announce flow state
       announceStatus: 'idle',
-      pendingAnnounceTracks: new Map(),
-      announceTrackAliases: new Map(),
+      pendingAnnounceStream: null,
+      pendingAnnounceConfig: null,
 
       connect: async (url: string) => {
         const { transport: existingTransport, session: existingSession, localDevelopment, useWorkers } = get();
@@ -510,30 +604,9 @@ export const useStore = create<AppStore>()(
 
           session.on('state-change', (sessionState) => {
             set({ sessionState });
-            // When session state changes to 'error', clean up all state
+            // When session state changes to 'error', update transport state to trigger UI transition
             if (sessionState === 'error') {
-              const { localStream, pendingAnnounceTracks } = get();
-              // Stop camera/microphone capture
-              if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-              }
-              // Stop any pending announce track streams
-              for (const track of pendingAnnounceTracks.values()) {
-                track.stream.getTracks().forEach(t => t.stop());
-              }
-              // Reset all UX state
-              set({
-                state: 'disconnected',
-                localStream: null,
-                pendingAnnounceTracks: new Map(),
-                announceTrackAliases: new Map(),
-                announceStatus: 'idle',
-                publishedTracks: [],
-                subscribedTracks: [],
-                namespaceSubscriptions: [],
-                isPublishing: false,
-              });
-              log.info('Session error: cleaned up all state');
+              set({ state: 'disconnected' });
             }
           });
 
@@ -579,27 +652,26 @@ export const useStore = create<AppStore>()(
 
           // Listen for incoming subscriptions (announce flow)
           session.on('incoming-subscribe', async (event) => {
-            const trackKey = `${event.namespace.join('/')}/${event.trackName}`;
             log.info('Incoming subscription (announce flow)', {
               requestId: event.requestId,
               namespace: event.namespace.join('/'),
               trackName: event.trackName,
               trackAlias: event.trackAlias.toString(),
-              trackKey,
             });
 
-            const { pendingAnnounceTracks, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
-            const pendingTrack = pendingAnnounceTracks.get(trackKey);
+            const { pendingAnnounceStream, pendingAnnounceConfig, videoBitrate, audioBitrate, videoResolution, keyframeInterval, audioDeliveryMode, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
 
-            if (pendingTrack) {
+            if (pendingAnnounceStream && pendingAnnounceConfig) {
               try {
                 // Check what tracks the stream actually has
-                const hasVideoTracks = pendingTrack.stream.getVideoTracks().length > 0;
-                const hasAudioTracks = pendingTrack.stream.getAudioTracks().length > 0;
+                const hasVideoTracks = pendingAnnounceStream.getVideoTracks().length > 0;
+                const hasAudioTracks = pendingAnnounceStream.getAudioTracks().length > 0;
 
-                // Use the track's explicit config for video/audio enabled
-                const videoEnabled = (pendingTrack.videoEnabled ?? false) && hasVideoTracks;
-                const audioEnabled = (pendingTrack.audioEnabled ?? false) && hasAudioTracks;
+                // Use the panel's explicit track type config, but only if the stream has those tracks
+                // This respects the panel's intent (e.g., user selected "video" track type)
+                // rather than using global settings which may not match the panel's configuration
+                const videoEnabled = (pendingAnnounceConfig.videoEnabled ?? hasVideoTracks) && hasVideoTracks;
+                const audioEnabled = (pendingAnnounceConfig.audioEnabled ?? hasAudioTracks) && hasAudioTracks;
 
                 // Start publishing on this track
                 const config = {
@@ -607,9 +679,9 @@ export const useStore = create<AppStore>()(
                   audioBitrate,
                   videoResolution,
                   keyframeInterval,
-                  deliveryTimeout: pendingTrack.deliveryTimeout ?? 5000,
-                  priority: pendingTrack.priority ?? 128,
-                  deliveryMode: pendingTrack.deliveryMode ?? 'stream',
+                  deliveryTimeout: pendingAnnounceConfig.deliveryTimeout ?? 5000,
+                  priority: pendingAnnounceConfig.priority ?? 128,
+                  deliveryMode: pendingAnnounceConfig.deliveryMode ?? 'stream',
                   audioDeliveryMode,
                   videoEnabled,
                   audioEnabled,
@@ -622,20 +694,11 @@ export const useStore = create<AppStore>()(
                   quicrParticipantId,
                 };
 
-                log.info('Starting announce publish with config', {
-                  trackKey,
-                  videoEnabled: config.videoEnabled,
-                  audioEnabled: config.audioEnabled,
-                  hasVideoTracks,
-                  hasAudioTracks,
-                  deliveryMode: config.deliveryMode,
-                });
-
                 await session.startAnnouncePublish(
                   event.trackAlias,
                   event.namespace,
                   event.trackName,
-                  pendingTrack.stream,
+                  pendingAnnounceStream,
                   config
                 );
 
@@ -650,22 +713,18 @@ export const useStore = create<AppStore>()(
                   stats: { groupId: 0, objectId: 0, bytesTransferred: 0 },
                 });
 
-                // Store the trackAlias mapping for this namespace/trackName
-                const newMap = new Map(get().announceTrackAliases);
-                newMap.set(trackKey, event.trackAlias);
-                set({ announceStatus: 'active', announceTrackAliases: newMap });
+                set({ announceStatus: 'active' });
                 log.info('Started publishing for subscriber (announce flow)', {
                   trackAlias: event.trackAlias.toString(),
-                  trackKey,
                 });
               } catch (err) {
                 log.error('Failed to start announce publish', err);
                 set({ error: (err as Error).message });
               }
             } else {
-              log.warn('Incoming subscription but no pending track config', {
-                trackKey,
-                availableTracks: Array.from(pendingAnnounceTracks.keys()),
+              log.warn('Incoming subscription but no pending stream', {
+                hasPendingStream: !!pendingAnnounceStream,
+                hasPendingConfig: !!pendingAnnounceConfig,
               });
             }
           });
@@ -730,7 +789,7 @@ export const useStore = create<AppStore>()(
       },
 
       disconnect: async () => {
-        const { transport, session, localStream, pendingAnnounceTracks } = get();
+        const { transport, session, localStream, pendingAnnounceStream } = get();
         if (session) {
           await session.close();
         }
@@ -741,11 +800,10 @@ export const useStore = create<AppStore>()(
         if (localStream) {
           localStream.getTracks().forEach(track => track.stop());
         }
-        // Stop any pending announce track streams
-        for (const track of pendingAnnounceTracks.values()) {
-          track.stream.getTracks().forEach(t => t.stop());
+        if (pendingAnnounceStream) {
+          pendingAnnounceStream.getTracks().forEach(track => track.stop());
         }
-        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceTracks: new Map(), announceTrackAliases: new Map(), announceStatus: 'idle', publishedTracks: [], subscribedTracks: [], namespaceSubscriptions: [] });
+        set({ transport: null, session: null, state: 'disconnected', sessionState: 'none', localStream: null, pendingAnnounceStream: null, publishedTracks: [], subscribedTracks: [], namespaceSubscriptions: [] });
       },
 
       setServerUrl: (url: string) => set({ serverUrl: url }),
@@ -765,15 +823,13 @@ export const useStore = create<AppStore>()(
 
       clearDecodeErrors: () => set({ decodeErrors: [] }),
 
-      startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean, stream?: MediaStream) => {
+      startPublishing: async (namespace: string, trackName: string, deliveryTimeout?: number, priority?: number, deliveryMode?: 'stream' | 'datagram', videoEnabled?: boolean, audioEnabled?: boolean) => {
         const { session, localStream, videoBitrate, audioBitrate, videoResolution, keyframeInterval, videoEnabled: globalVideoEnabled, audioEnabled: globalAudioEnabled, useAnnounceFlow, audioDeliveryMode } = get();
         if (!session) {
           throw new Error('No session');
         }
-        // Use provided stream or fall back to localStream
-        const effectiveStream = stream ?? localStream;
-        if (!effectiveStream) {
-          throw new Error('No stream provided');
+        if (!localStream) {
+          throw new Error('No local stream');
         }
 
         // Use passed parameters if provided, otherwise fall back to global state
@@ -781,8 +837,8 @@ export const useStore = create<AppStore>()(
         const effectiveAudioEnabled = audioEnabled ?? globalAudioEnabled;
 
         // Check what tracks the stream actually has
-        const hasVideoTracks = effectiveStream.getVideoTracks().length > 0;
-        const hasAudioTracks = effectiveStream.getAudioTracks().length > 0;
+        const hasVideoTracks = localStream.getVideoTracks().length > 0;
+        const hasAudioTracks = localStream.getAudioTracks().length > 0;
 
         const { secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled, quicrParticipantId } = get();
         const config: MediaConfig = {
@@ -808,25 +864,21 @@ export const useStore = create<AppStore>()(
 
         // Use announce flow if enabled
         if (useAnnounceFlow) {
-          const trackKey = `${namespace}/${trackName}`;
-          log.info('Using announce flow for publishing', { namespace, trackName, trackKey, videoEnabled: effectiveVideoEnabled, audioEnabled: effectiveAudioEnabled, hasVideoTracks, hasAudioTracks });
-
-          // Add this track's config + stream to the pending tracks map
-          const newTracks = new Map(get().pendingAnnounceTracks);
-          newTracks.set(trackKey, {
-            namespace,
-            trackName,
-            stream: effectiveStream,
-            deliveryTimeout: deliveryTimeout ?? 5000,
-            priority: priority ?? 128,
-            deliveryMode: deliveryMode ?? 'stream',
-            videoEnabled: effectiveVideoEnabled,
-            audioEnabled: effectiveAudioEnabled,
-          });
+          log.info('Using announce flow for publishing', { namespace, trackName });
 
           set({
             announceStatus: 'announcing',
-            pendingAnnounceTracks: newTracks,
+            pendingAnnounceStream: localStream,
+            pendingAnnounceConfig: {
+              namespace,
+              trackName,
+              deliveryTimeout: deliveryTimeout ?? 5000,
+              priority: priority ?? 128,
+              deliveryMode: deliveryMode ?? 'stream',
+              // Store the panel's explicit track type intent
+              videoEnabled: effectiveVideoEnabled,
+              audioEnabled: effectiveAudioEnabled,
+            },
           });
 
           try {
@@ -837,18 +889,16 @@ export const useStore = create<AppStore>()(
             });
 
             set({ announceStatus: 'waiting' });
-            log.info('Namespace announced, waiting for subscribers', { namespace, trackKey });
+            log.info('Namespace announced, waiting for subscribers', { namespace });
 
             // Return a placeholder track alias - actual publishing happens when subscribers connect
             return BigInt(0);
           } catch (err) {
             log.error('Failed to announce namespace', err);
-            // Remove this track's config on error
-            const errorTracks = new Map(get().pendingAnnounceTracks);
-            errorTracks.delete(trackKey);
             set({
-              announceStatus: errorTracks.size > 0 ? 'waiting' : 'idle',
-              pendingAnnounceTracks: errorTracks,
+              announceStatus: 'idle',
+              pendingAnnounceStream: null,
+              pendingAnnounceConfig: null,
               error: (err as Error).message,
             });
             throw err;
@@ -859,7 +909,7 @@ export const useStore = create<AppStore>()(
         const trackAlias = await session.publish(
           namespace.split('/'),
           trackName,
-          effectiveStream,
+          localStream,
           config
         );
 
@@ -895,6 +945,11 @@ export const useStore = create<AppStore>()(
 
         set({
           announceStatus: 'announcing',
+          pendingAnnounceStream: localStream,
+          pendingAnnounceConfig: {
+            namespace,
+            trackName: '', // Will be determined by subscriber
+          },
         });
 
         try {
@@ -910,7 +965,8 @@ export const useStore = create<AppStore>()(
           log.error('Failed to announce namespace', err);
           set({
             announceStatus: 'idle',
-            pendingAnnounceTracks: new Map(),
+            pendingAnnounceStream: null,
+            pendingAnnounceConfig: null,
             error: (err as Error).message,
           });
           throw err;
@@ -924,16 +980,23 @@ export const useStore = create<AppStore>()(
         await session.cancelAnnounce(namespace.split('/'));
         set({
           announceStatus: 'idle',
-          pendingAnnounceTracks: new Map(),
-          announceTrackAliases: new Map(),
+          pendingAnnounceStream: null,
+          pendingAnnounceConfig: null,
         });
         log.info('Namespace announcement cancelled', { namespace });
       },
 
-      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio') => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+      startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', _dtsAssignment?: SwitchingSetAssignment, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
+        }
+
+        // For VOD with FETCH, use small initial buffer - data arrives quickly
+        const minBufferFrames: number | undefined = 5;
+        if (catalogFramerate && catalogGopDuration) {
+          const framesPerGop = catalogFramerate * (catalogGopDuration / 1000);
+          log.info('VOD catalog info', { catalogFramerate, catalogGopDuration, framesPerGop, minBufferFrames });
         }
 
         const config: MediaConfig = {
@@ -943,8 +1006,13 @@ export const useStore = create<AppStore>()(
           enableStats,
           jitterBufferDelay,
           useGroupArbiter,
+          // New PlayoutBuffer architecture - pass isLive from catalog for auto policy selection
+          policyType,
+          isLive,
+          catalogFramerate, // For VOD frame pacing
+          minBufferFrames, // Derived from catalog framerate and GOP duration
           maxLatency,
-          estimatedGopDuration,
+          estimatedGopDuration: catalogGopDuration ?? estimatedGopDuration,
           skipToLatestGroup,
           skipGraceFrames,
           enableCatchUp,
@@ -957,6 +1025,13 @@ export const useStore = create<AppStore>()(
           secureObjectsBaseKey,
           // QuicR-Mac interop settings
           quicrInteropEnabled,
+          // Override audio decoder config (for AAC from VOD)
+          audioDecoderConfig: audioConfig ? {
+            codec: audioConfig.codec,
+            sampleRate: audioConfig.sampleRate,
+            numberOfChannels: audioConfig.numberOfChannels,
+            description: audioConfig.description,
+          } : undefined,
         };
 
         const subscriptionId = await session.subscribe(
@@ -977,6 +1052,490 @@ export const useStore = create<AppStore>()(
         });
 
         return subscriptionId;
+      },
+
+      // VOD subscription using FETCH with adaptive buffer management
+      startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0, abrOptions?: { abrController: ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrInitialBufferSec, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
+        if (!session) {
+          throw new Error('No session');
+        }
+
+        // Use provided buffer config or defaults for adaptive buffering
+        const effectiveBufferConfig = {
+          initialBufferSec: bufferConfig?.initialBufferSec ?? 3,
+          minBufferSec: bufferConfig?.minBufferSec ?? 2,
+          fetchBatchSec: bufferConfig?.fetchBatchSec ?? 2,
+        };
+
+        log.info('Starting VOD subscription with FETCH', {
+          namespace,
+          trackName,
+          mediaType,
+          trackInfo,
+          bufferConfig: effectiveBufferConfig,
+        });
+
+        // Build fetch strategy based on user settings
+        let strategy: FetchStrategy | undefined;
+        if (vodFetchStrategy === 'sbr') {
+          strategy = new SbrFetchStrategy({
+            initialBufferSec: sbrInitialBufferSec,
+            targetBufferSec: sbrTargetBufferSec,
+            lowBufferSec: sbrLowBufferSec,
+            highBufferSec: sbrHighBufferSec,
+          });
+        } else if (vodFetchStrategy === 'abr' && abrOptions) {
+          strategy = new AbrFetchStrategy({
+            abrController: abrOptions.abrController,
+            altGroup: abrOptions.altGroup,
+            switchingBufferSec: abrSwitchingBufferSec,
+            intermediateBufferSec: abrIntermediateBufferSec,
+            topBufferSec: abrTopBufferSec,
+          });
+        }
+
+        // Create VodFetchController for adaptive buffer management
+        const controller = createVodFetchController(trackInfo, {
+          ...effectiveBufferConfig,
+          strategy,
+        });
+
+        // Track groups received per fetch request for controller notification
+        const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
+
+        // Map controller request IDs to session request IDs for fetch cancellation
+        const controllerToSessionRequestId = new Map<number, number>();
+
+        // Track minimum valid group after seek - data from groups below this should be discarded
+        // This prevents stale in-flight data from cancelled fetches from contaminating the decoder
+        let minValidGroup = startGroup;
+
+        // Calculate frame metrics for VOD playback
+        const framerate = trackInfo.framerate ?? 30;
+        const gopDurationMs = trackInfo.gopDuration ?? 2000;
+        const gopDurationSec = gopDurationMs / 1000;
+        const framesPerGop = Math.round(framerate * gopDurationSec);
+        // VodReleasePolicy minBufferFrames: small value to start playback quickly
+        // The fetch controller manages the larger buffer separately
+        // Use ~0.5 second of frames or 1 GOP, whichever is smaller
+        const halfSecondFrames = Math.round(framerate * 0.5);
+        const minBufferFrames = Math.min(halfSecondFrames, framesPerGop);
+
+        log.info('VOD buffer config', {
+          framerate,
+          gopDurationMs,
+          framesPerGop,
+          minBufferFrames,
+          totalGroups: trackInfo.totalGroups,
+          strategy: strategy?.name ?? 'none',
+        });
+
+        // Create VOD pipeline (FETCH-only, no SUBSCRIBE message sent to server)
+        const config: MediaConfig = {
+          videoBitrate,
+          audioBitrate,
+          videoResolution,
+          enableStats,
+          jitterBufferDelay,
+          policyType: 'vod',
+          isLive: false,
+          catalogFramerate: framerate,
+          minBufferFrames,
+          estimatedGopDuration: gopDurationMs,
+          arbiterDebug,
+          secureObjectsEnabled,
+          secureObjectsCipherSuite,
+          secureObjectsBaseKey,
+          videoDecoderConfig: videoConfig ? {
+            codec: videoConfig.codec,
+            codedWidth: videoConfig.width,
+            codedHeight: videoConfig.height,
+          } : undefined,
+          audioDecoderConfig: audioConfig ? {
+            codec: audioConfig.codec,
+            sampleRate: audioConfig.sampleRate,
+            numberOfChannels: audioConfig.numberOfChannels,
+            description: audioConfig.description,
+          } : undefined,
+        };
+
+        // Create decode pipeline without subscribing - we'll use FETCH instead
+        const { subscriptionId, pushData, markGroupComplete, skipGroup, clearBuffers } = await session.createVodPipeline(
+          namespace.split('/'),
+          trackName,
+          config,
+          mediaType
+        );
+
+        // Listen for FETCH_OK to update totalGroups if relay has fewer groups than catalog claims
+        // Only trust largestGroupId when endOfTrack is true (relay confirms end of content)
+        const moqtSessionForFetchComplete = session.getMOQTSession();
+        moqtSessionForFetchComplete.on('fetch-complete', (event: { requestId: number; largestGroupId: number; endOfTrack: boolean }) => {
+          // largestGroupId from FETCH_OK indicates the highest group available on the relay
+          // Only update if endOfTrack is true - otherwise relay may just have partial data
+          const actualTotalGroups = event.largestGroupId + 1;
+          if (event.endOfTrack && actualTotalGroups < (trackInfo.totalGroups ?? 100)) {
+            log.info('VOD content has fewer groups than catalog claimed (endOfTrack confirmed)', {
+              catalogTotalGroups: trackInfo.totalGroups,
+              actualTotalGroups,
+              largestGroupId: event.largestGroupId,
+              endOfTrack: event.endOfTrack,
+            });
+            controller.updateTotalGroups(actualTotalGroups);
+          }
+        });
+
+        // Handle fetch requests from controller
+        controller.on('fetch-request', async ({ startGroup, endGroup, requestId: controllerRequestId }: { startGroup: number; endGroup: number; requestId: number }) => {
+          // Use endObject=0 which the relay interprets as "all objects in group"
+          // Using larger values (like 255) causes relay parsing issues
+          const maxObjectId = 0;
+          log.info('VOD fetch request', { controllerRequestId, startGroup, endGroup, framesPerGop, maxObjectId });
+          console.log('[Store] FETCH request from controller', { controllerRequestId, startGroup, endGroup, framesPerGop, maxObjectId, namespace, trackName });
+
+          // Initialize tracking for this fetch using controller's requestId
+          fetchGroupCounts.set(controllerRequestId, {
+            groupsReceived: new Set(),
+            framesReceived: 0,
+            bytesReceived: 0,
+          });
+
+          // Declare unsubscribe function outside try for cleanup in catch
+          let unsubscribeFetchComplete: (() => void) | undefined;
+
+          try {
+            // Get the MOQT session to issue fetch
+            const moqtSession = session.getMOQTSession();
+            const fetchStartTime = performance.now();
+
+            // Track groups received in this specific fetch for marking complete
+            const fetchGroups = new Set<number>();
+            const lastObjectIdByGroup = new Map<number, number>();
+
+            // Variable to store the session's requestId (set after fetch() returns)
+            let sessionRequestId: number | null = null;
+            // Queue to store events that arrive before sessionRequestId is set
+            let pendingEvents: { requestId: number }[] = [];
+            let listenerActive = true;
+            // Per-fetch idle timer (not global, so multiple concurrent fetches work)
+            let fetchIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
+            const handleFetchStreamComplete = (event: { requestId: number; lastGroupId: number }) => {
+              if (!listenerActive) return;
+
+              // If sessionRequestId not yet set, queue the event
+              if (sessionRequestId === null) {
+                pendingEvents.push(event);
+                return;
+              }
+
+              // Match against session's requestId
+              if (event.requestId !== sessionRequestId) return;
+
+              listenerActive = false;
+
+              // Now that all objects have arrived, mark groups complete
+              for (const g of fetchGroups) {
+                markGroupComplete(g);
+              }
+
+              const fetchDuration = performance.now() - fetchStartTime;
+              log.info('VOD fetch stream complete (all data received)', {
+                controllerRequestId,
+                sessionRequestId,
+                durationMs: Math.round(fetchDuration),
+                groupsReceived: fetchGroups.size,
+                framesReceived: fetchGroupCounts.get(controllerRequestId)?.framesReceived ?? 0,
+                lastGroupId: event.lastGroupId,
+              });
+
+              controller.onFetchComplete(controllerRequestId, event.lastGroupId);
+              fetchGroupCounts.delete(controllerRequestId);
+              controllerToSessionRequestId.delete(controllerRequestId);
+              if (unsubscribeFetchComplete) unsubscribeFetchComplete();
+            };
+
+            // Set up fetch-stream-complete listener BEFORE issuing fetch
+            // This fires when all data has been received, unlike fetch-complete which fires on FETCH_OK
+            unsubscribeFetchComplete = session.getMOQTSession().on('fetch-stream-complete', handleFetchStreamComplete);
+
+            // Issue fetch and capture the session's requestId
+            // endObject must be large enough to cover all objects in the group
+            // maxObjectId calculated at handler start using framesPerGop
+            sessionRequestId = await moqtSession.fetch(
+              namespace.split('/'),
+              trackName,
+              {
+                startGroup,
+                startObject: 0,
+                endGroup,
+                endObject: maxObjectId,
+              },
+              {},
+              (data: Uint8Array, groupId: number, objectId: number) => {
+                // Discard stale data from cancelled fetches (arrived after seek)
+                if (groupId < minValidGroup) {
+                  log.info('Discarding stale data after seek', { groupId, objectId, minValidGroup, dataSize: data.length });
+                  return;
+                }
+
+                // Track stats for adaptive fetch-ahead
+                const stats = fetchGroupCounts.get(controllerRequestId);
+                if (stats) {
+                  stats.bytesReceived += data.length;
+                  stats.framesReceived++;
+
+                  // Notify controller about group completion (when objectId wraps or new group)
+                  if (!stats.groupsReceived.has(groupId)) {
+                    stats.groupsReceived.add(groupId);
+                    // Estimate frames per group (will be refined as we receive data)
+                    controller.onGroupReceived(groupId, framesPerGop);
+                  }
+
+                  // Report bytes for download speed tracking
+                  controller.onFetchData(controllerRequestId, data.length);
+                }
+
+                // Track which groups we've received objects for
+                const isNewGroup = !fetchGroups.has(groupId);
+                fetchGroups.add(groupId);
+                lastObjectIdByGroup.set(groupId, Math.max(lastObjectIdByGroup.get(groupId) ?? -1, objectId));
+
+                // When we start receiving a new group, mark all previous groups as complete
+                // (FETCH delivers groups in ascending order per draft-16)
+                if (isNewGroup) {
+                  for (const g of fetchGroups) {
+                    if (g < groupId) {
+                      markGroupComplete(g);
+                    }
+                  }
+                }
+
+                // Use idle detection to handle incomplete FETCH streams
+                // Relay may not deliver all requested groups, or stream may not close properly
+                // Reset timer on every object
+                if (fetchIdleTimer) {
+                  clearTimeout(fetchIdleTimer);
+                }
+                // Idle timeout strategy:
+                // - 500ms if we've received data from the last requested group (nearly done)
+                // - 1500ms if we've received multiple groups (data was flowing, gap likely)
+                // - 5000ms for first group (4K keyframes can be very large/slow)
+                const reachedEndGroup = groupId >= endGroup;
+                const idleTimeoutMs = reachedEndGroup ? 500 : fetchGroups.size > 1 ? 1500 : 5000;
+                fetchIdleTimer = setTimeout(() => {
+                  // Only complete if we haven't already (via fetch-stream-complete)
+                  if (listenerActive) {
+                    listenerActive = false;
+                    // Mark the highest group we actually received as complete
+                    const highestGroup = Math.max(...fetchGroups);
+                    markGroupComplete(highestGroup);
+                    controller.onFetchComplete(controllerRequestId, highestGroup);
+                    fetchGroupCounts.delete(controllerRequestId);
+                    controllerToSessionRequestId.delete(controllerRequestId);
+                    if (unsubscribeFetchComplete) unsubscribeFetchComplete();
+                    log.info('VOD fetch completed via idle detection', {
+                      controllerRequestId,
+                      sessionRequestId,
+                      requestedEndGroup: endGroup,
+                      actualLastGroup: highestGroup,
+                      lastObjectId: lastObjectIdByGroup.get(highestGroup),
+                      groupsReceived: Array.from(fetchGroups).sort((a, b) => a - b),
+                      reachedEndGroup,
+                    });
+                  }
+                }, idleTimeoutMs);
+
+                // Push data to decode pipeline (created above)
+                const timestamp = performance.now() * 1000; // microseconds
+                pushData(data, groupId, objectId, timestamp);
+
+              }
+            );
+
+            log.info('VOD fetch issued', { controllerRequestId, sessionRequestId, startGroup, endGroup });
+
+            // Store mapping for fetch cancellation
+            if (sessionRequestId !== null) {
+              controllerToSessionRequestId.set(controllerRequestId, sessionRequestId);
+            }
+
+            // Start initial idle timer in case no data arrives at all
+            // (relay may not send data stream even after FETCH_OK)
+            // Use longer timeout for 4K content which has large keyframes
+            fetchIdleTimer = setTimeout(() => {
+              if (listenerActive) {
+                listenerActive = false;
+                // No data received at all - report failure with startGroup-1 as last group
+                const lastKnownGroup = startGroup > 0 ? startGroup - 1 : -1;
+                log.warn('VOD fetch timeout - no data received', {
+                  controllerRequestId,
+                  sessionRequestId,
+                  startGroup,
+                  endGroup,
+                });
+                controller.onFetchComplete(controllerRequestId, lastKnownGroup);
+                fetchGroupCounts.delete(controllerRequestId);
+                controllerToSessionRequestId.delete(controllerRequestId);
+                if (unsubscribeFetchComplete) unsubscribeFetchComplete();
+              }
+            }, 15000); // 15 second timeout for initial data (4K keyframes are large)
+
+            // Process any events that arrived while we were waiting for fetch() to return
+            for (const event of pendingEvents) {
+              handleFetchStreamComplete(event as { requestId: number; lastGroupId: number });
+            }
+            pendingEvents = [];
+          } catch (err) {
+            log.error('VOD fetch error', { controllerRequestId, error: (err as Error).message });
+            fetchGroupCounts.delete(controllerRequestId);
+            controllerToSessionRequestId.delete(controllerRequestId);
+            // Clean up the fetch-complete listener on error
+            if (typeof unsubscribeFetchComplete === 'function') {
+              unsubscribeFetchComplete();
+            }
+          }
+        });
+
+        // Handle ready-to-play event
+        controller.on('ready-to-play', ({ bufferedGroups, bufferedFrames }: { bufferedGroups: number; bufferedFrames: number }) => {
+          log.info('VOD ready to play', { bufferedGroups, bufferedFrames });
+        });
+
+        // Handle rebuffering events
+        controller.on('rebuffering', ({ currentGroup }: { currentGroup: number }) => {
+          log.warn('VOD rebuffering', { currentGroup });
+        });
+
+        controller.on('rebuffer-ended', ({ bufferedFrames }: { bufferedFrames: number }) => {
+          log.info('VOD rebuffer ended', { bufferedFrames });
+        });
+
+        // Handle adaptive speed updates and push stats to store
+        controller.on('speed-update', ({ avgMsPerGop, adaptiveFetchAhead }: { avgMsPerGop: number; adaptiveFetchAhead: number }) => {
+          log.info('VOD adaptive update', { avgMsPerGop: Math.round(avgMsPerGop), adaptiveFetchAhead });
+          // Update reactive stats for the diagnostics overlay
+          const stats = controller.getStats();
+          get().updateVodFetchStats(subscriptionId, stats);
+        });
+
+        // Also update stats on group received and state changes for live overlay
+        controller.on('state-change', () => {
+          const stats = controller.getStats();
+          get().updateVodFetchStats(subscriptionId, stats);
+        });
+        controller.on('ready-to-play', () => {
+          const stats = controller.getStats();
+          get().updateVodFetchStats(subscriptionId, stats);
+        });
+
+        // Handle groups that are unavailable on the relay — skip them for continued playback
+        controller.on('group-unavailable', ({ startGroup: gapStart, endGroup: gapEnd }: { startGroup: number; endGroup: number }) => {
+          log.warn('Skipping unavailable groups for continued playback', { gapStart, gapEnd });
+          for (let g = gapStart; g <= gapEnd; g++) {
+            skipGroup(g);
+          }
+        });
+
+        // Handle fetch cancel (during seek)
+        controller.on('fetch-cancel', async ({ requestId: cancelRequestId }: { requestId: number }) => {
+          const sessionRequestId = controllerToSessionRequestId.get(cancelRequestId);
+          log.info('Cancelling fetch', { cancelRequestId, sessionRequestId });
+
+          // Remove from tracking
+          fetchGroupCounts.delete(cancelRequestId);
+          controllerToSessionRequestId.delete(cancelRequestId);
+
+          // Send FETCH_CANCEL to relay to stop data delivery
+          if (sessionRequestId !== undefined) {
+            try {
+              const moqtSession = session.getMOQTSession();
+              await moqtSession.cancelFetch(sessionRequestId);
+              log.info('Sent FETCH_CANCEL to relay', { cancelRequestId, sessionRequestId });
+            } catch (err) {
+              log.warn('Failed to send FETCH_CANCEL', { cancelRequestId, sessionRequestId, error: (err as Error).message });
+            }
+          }
+        });
+
+        // Handle seek start - clear decode buffers and update minimum valid group
+        controller.on('seek-start', ({ targetGroup, targetObject }: { targetGroup: number; targetObject: number }) => {
+          log.info('Seek start - clearing buffers and updating minValidGroup', { targetGroup, targetObject, previousMinValidGroup: minValidGroup });
+          // Update minValidGroup to filter out stale data from cancelled fetches
+          // Any data with groupId < targetGroup should be discarded
+          minValidGroup = targetGroup;
+          // Clear the pipeline's decode buffers
+          // The pipeline will be recreated or flushed by the media session
+          clearBuffers();
+          // Emit seek start event so components can clear their frame queues
+          emitSeekStart(subscriptionId, targetGroup);
+        });
+
+        // Start the fetch controller (begins initial buffering from startGroup)
+        console.log('[Store] Starting VodFetchController with startGroup', { startGroup, namespace, trackName });
+        controller.start(startGroup);
+
+        // Add to subscribed tracks
+        get().addSubscribedTrack({
+          id: `sub-${subscriptionId}`,
+          type: mediaType,
+          namespace: namespace.split('/'),
+          trackName,
+          active: true,
+          stats: { groupId: 0, objectId: 0, bytesTransferred: 0 },
+        });
+
+        // Store controller reference for later access (e.g., seeking)
+        // Use a module-level Map since we can't add it to Zustand state easily
+        vodFetchControllers.set(subscriptionId, controller);
+
+        return subscriptionId;
+      },
+
+      // Standalone FETCH for testing/debugging - no media pipeline
+      fetchTrack: async (
+        namespace: string,
+        trackName: string,
+        startGroup: number,
+        endGroup: number,
+        onData: (data: Uint8Array, groupId: number, objectId: number) => void
+      ) => {
+        const { session } = get();
+        if (!session) {
+          throw new Error('No session');
+        }
+
+        log.info('Starting standalone FETCH', {
+          namespace,
+          trackName,
+          startGroup,
+          endGroup,
+        });
+
+        const moqtSession = session.getMOQTSession();
+        const requestId = await moqtSession.fetch(
+          namespace.split('/'),
+          trackName,
+          {
+            startGroup,
+            startObject: 0,
+            endGroup,
+            endObject: 0, // 0 = entire group
+          },
+          {},
+          onData
+        );
+
+        log.info('FETCH request started', { requestId, namespace, trackName });
+
+        return {
+          requestId,
+          cancel: async () => {
+            log.info('Cancelling FETCH', { requestId });
+            await moqtSession.cancelFetch(requestId);
+          },
+        };
       },
 
       stopSubscription: async (subscriptionId: number) => {
@@ -1008,6 +1567,32 @@ export const useStore = create<AppStore>()(
         return session.isSubscriptionPaused(subscriptionId);
       },
 
+      seekSubscription: async (subscriptionId: number, timeMs: number) => {
+        const { session } = get();
+        if (!session) return;
+
+        // Check if this subscription has a VOD fetch controller
+        const controller = vodFetchControllers.get(subscriptionId);
+        if (controller) {
+          // VOD mode: use controller for coordinated seek
+          const targetGroup = controller.timeToGroup(timeMs);
+          log.info('VOD seek via controller', { subscriptionId, timeMs, targetGroup });
+
+          // Controller handles: cancel fetches, clear buffers, fetch from new position
+          controller.seek(targetGroup, 0);
+        } else {
+          // Live/non-VOD mode: use session seek (FETCH-based)
+          await session.seek(subscriptionId, timeMs);
+        }
+      },
+
+      updateSyncTime: (audioSubscriptionId: number, videoTimeMs: number) => {
+        const { session } = get();
+        if (!session) return;
+
+        session.updateSyncTime(audioSubscriptionId, videoTimeMs);
+      },
+
       onVideoFrame: (handler) => {
         const { session } = get();
         if (isDebugMode()) {
@@ -1022,7 +1607,16 @@ export const useStore = create<AppStore>()(
         if (isDebugMode()) {
           console.log('[Store] Registering video-frame handler on session');
         }
-        return session.on('video-frame', handler);
+        // Wrap handler to notify VOD fetch controller when frames are consumed
+        return session.on('video-frame', (event) => {
+          // Notify VOD fetch controller if this is a VOD subscription
+          const controller = vodFetchControllers.get(event.subscriptionId);
+          if (controller) {
+            controller.onFrameConsumed();
+          }
+          // Call the original handler
+          handler(event);
+        });
       },
 
       onAudioData: (handler) => {
@@ -1039,7 +1633,31 @@ export const useStore = create<AppStore>()(
         if (isDebugMode()) {
           console.log('[Store] Registering audio-data handler on session');
         }
-        return session.on('audio-data', handler);
+        // Wrap handler to notify VOD fetch controller when audio frames are consumed
+        return session.on('audio-data', (event) => {
+          // Notify VOD fetch controller if this is a VOD subscription
+          const controller = vodFetchControllers.get(event.subscriptionId);
+          if (controller) {
+            controller.onFrameConsumed();
+          }
+          // Call the original handler
+          handler(event);
+        });
+      },
+
+      onSeekStart: (handler) => {
+        seekStartHandlers.add(handler);
+        return () => {
+          seekStartHandlers.delete(handler);
+        };
+      },
+
+      onSubscribeStats: (handler) => {
+        const { session } = get();
+        if (!session) {
+          return () => {};
+        }
+        return session.on('subscribe-stats', handler);
       },
 
       onJitterSample: (handler) => {
@@ -1056,6 +1674,21 @@ export const useStore = create<AppStore>()(
           return () => {};
         }
         return session.on('latency-stats', handler);
+      },
+
+      onIncomingFetch: (handler) => {
+        const { session } = get();
+        if (!session) {
+          return () => {};
+        }
+        return session.on('incoming-fetch', (event) => {
+          handler({
+            namespace: event.namespace,
+            trackName: event.trackName,
+            startGroup: event.range.startGroup,
+            endGroup: event.range.endGroup,
+          });
+        });
       },
 
       // ========================================
@@ -1095,6 +1728,7 @@ export const useStore = create<AppStore>()(
       // ========================================
       subscribedTracks: [],
       availableTracks: [],
+      vodFetchStats: new Map(),
 
       addSubscribedTrack: (track) =>
         set((state) => ({
@@ -1114,6 +1748,13 @@ export const useStore = create<AppStore>()(
             t.id === id ? { ...t, stats } : t
           ),
         })),
+
+      updateVodFetchStats: (subscriptionId, stats) =>
+        set((state) => {
+          const newMap = new Map(state.vodFetchStats);
+          newMap.set(subscriptionId, stats);
+          return { vodFetchStats: newMap };
+        }),
 
       // ========================================
       // Namespace Subscribe State
@@ -1148,7 +1789,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1164,6 +1805,8 @@ export const useStore = create<AppStore>()(
           enableStats,
           jitterBufferDelay,
           useGroupArbiter,
+          // New PlayoutBuffer architecture
+          policyType,
           maxLatency,
           estimatedGopDuration,
           skipToLatestGroup,
@@ -1278,7 +1921,8 @@ export const useStore = create<AppStore>()(
       vadVisualizationEnabled: false, // Default viz off for performance
       audioDeliveryMode: 'datagram', // Default to datagram for low latency
       experienceProfile: 'interactive', // Default to interactive profile
-      useGroupArbiter: false, // Default to legacy JitterBuffer
+      useGroupArbiter: false, // Legacy - kept for backward compatibility
+      policyType: 'adaptive', // Default to auto-detect from catalog or arrival patterns
       maxLatency: 500, // Default 500ms max latency
       estimatedGopDuration: 1000, // Default 1s GOP
       skipToLatestGroup: false, // Default: complete current GOP before switching
@@ -1292,6 +1936,15 @@ export const useStore = create<AppStore>()(
       secureObjectsBaseKey: '', // Default: empty (user must provide)
       quicrInteropEnabled: false, // Default: standard LOC packaging
       quicrParticipantId: 0, // Default: 0 (should be set by user)
+      vodPublishEnabled: false, // Default: VOD publishing off
+      vodFetchStrategy: 'legacy', // Default: adaptive fetch-ahead (original behavior)
+      sbrInitialBufferSec: 3, // Default: 3 seconds before playback starts
+      sbrTargetBufferSec: 30,
+      sbrLowBufferSec: 20,
+      sbrHighBufferSec: 40,
+      abrSwitchingBufferSec: 4,
+      abrIntermediateBufferSec: 30,
+      abrTopBufferSec: 60,
 
       setTheme: (theme) => {
         set({ theme });
@@ -1330,6 +1983,7 @@ export const useStore = create<AppStore>()(
       setVadVisualizationEnabled: (value) => set({ vadVisualizationEnabled: value }),
       setAudioDeliveryMode: (mode) => set({ audioDeliveryMode: mode }),
       setUseGroupArbiter: (value) => set({ useGroupArbiter: value }),
+      setPolicyType: (value) => set({ policyType: value }),
       setMaxLatency: (value) => set({ maxLatency: value }),
       setEstimatedGopDuration: (value) => set({ estimatedGopDuration: value }),
       setSkipToLatestGroup: (value) => set({ skipToLatestGroup: value }),
@@ -1343,6 +1997,15 @@ export const useStore = create<AppStore>()(
       setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
       setQuicrInteropEnabled: (value) => set({ quicrInteropEnabled: value }),
       setQuicrParticipantId: (value) => set({ quicrParticipantId: value }),
+      setVodPublishEnabled: (value) => set({ vodPublishEnabled: value }),
+      setVodFetchStrategy: (value) => set({ vodFetchStrategy: value }),
+      setSbrInitialBufferSec: (value) => set({ sbrInitialBufferSec: value }),
+      setSbrTargetBufferSec: (value) => set({ sbrTargetBufferSec: value }),
+      setSbrLowBufferSec: (value) => set({ sbrLowBufferSec: value }),
+      setSbrHighBufferSec: (value) => set({ sbrHighBufferSec: value }),
+      setAbrSwitchingBufferSec: (value) => set({ abrSwitchingBufferSec: value }),
+      setAbrIntermediateBufferSec: (value) => set({ abrIntermediateBufferSec: value }),
+      setAbrTopBufferSec: (value) => set({ abrTopBufferSec: value }),
 
       applyExperienceProfile: (profileName) => {
         if (profileName === 'custom') {
@@ -1408,6 +2071,7 @@ export const useStore = create<AppStore>()(
         audioDeliveryMode: state.audioDeliveryMode,
         experienceProfile: state.experienceProfile,
         useGroupArbiter: state.useGroupArbiter,
+        policyType: state.policyType,
         maxLatency: state.maxLatency,
         estimatedGopDuration: state.estimatedGopDuration,
         skipToLatestGroup: state.skipToLatestGroup,
@@ -1421,6 +2085,15 @@ export const useStore = create<AppStore>()(
         secureObjectsBaseKey: state.secureObjectsBaseKey,
         quicrInteropEnabled: state.quicrInteropEnabled,
         quicrParticipantId: state.quicrParticipantId,
+        vodPublishEnabled: state.vodPublishEnabled,
+        vodFetchStrategy: state.vodFetchStrategy,
+        sbrInitialBufferSec: state.sbrInitialBufferSec,
+        sbrTargetBufferSec: state.sbrTargetBufferSec,
+        sbrLowBufferSec: state.sbrLowBufferSec,
+        sbrHighBufferSec: state.sbrHighBufferSec,
+        abrSwitchingBufferSec: state.abrSwitchingBufferSec,
+        abrIntermediateBufferSec: state.abrIntermediateBufferSec,
+        abrTopBufferSec: state.abrTopBufferSec,
       }),
     }
   )

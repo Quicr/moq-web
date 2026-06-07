@@ -246,6 +246,38 @@ export class CodecDecodeWorkerClient {
   }
 
   /**
+   * Skip a group that is unavailable on the relay.
+   * Advances the sequential release policy past this group.
+   */
+  skipGroup(groupId: number): void {
+    this.post({ type: 'skip-group', channelId: this.channelId, groupId });
+  }
+
+  /**
+   * Pause frame output on this channel
+   * The playout buffer stops releasing frames while paused
+   */
+  pause(): void {
+    this.post({ type: 'pause', channelId: this.channelId });
+  }
+
+  /**
+   * Resume frame output on this channel
+   */
+  resume(): void {
+    this.post({ type: 'resume', channelId: this.channelId });
+  }
+
+  /**
+   * Update the A/V sync clock with current video playback time
+   * Call this on audio channels when video frames are rendered
+   * @param masterTimeMs - Current video playback time in milliseconds (PTS)
+   */
+  updateSyncTime(masterTimeMs: number): void {
+    this.post({ type: 'update-sync-time', channelId: this.channelId, masterTimeMs });
+  }
+
+  /**
    * Destroy this channel and clean up resources
    * Call this when unsubscribing
    */
@@ -282,6 +314,7 @@ export class CodecDecodeWorkerClient {
   on(type: 'error', handler: (data: ChannelErrorResponse) => void): void;
   on(type: 'destroyed', handler: (data: { channelId: number }) => void): void;
   on(type: 'arbiter-debug', handler: (data: { channelId: number; message: string; data?: Record<string, unknown> }) => void): void;
+  on(type: 'sps-info', handler: (data: { channelId: number; maxNumReorderFrames: number; profileIdc: number; levelIdc: number }) => void): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(type: string, handler: (data: any) => void): void {
     if (!this.handlers.has(type)) {

@@ -30,12 +30,14 @@ export interface VideoDecoderWorkerConfig {
  * Audio decoder configuration
  */
 export interface AudioDecoderWorkerConfig {
-  /** Codec string (e.g., 'opus') */
+  /** Codec string (e.g., 'opus', 'mp4a.40.2' for AAC-LC) */
   codec: string;
   /** Sample rate */
   sampleRate: number;
   /** Number of channels */
   numberOfChannels: number;
+  /** Codec description (required for AAC - AudioSpecificConfig from esds box) */
+  description?: Uint8Array;
 }
 
 /**
@@ -56,6 +58,18 @@ export interface CodecDecodeWorkerConfig {
   // Group-aware jitter buffer options (Phase 4)
   /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
   useGroupArbiter?: boolean;
+
+  /**
+   * Policy type for frame release strategy (replaces useGroupArbiter)
+   * - 'vod': Sequential playback, no skipping, wait for all frames
+   * - 'live': Deadline-based with jitter buffer (default when useGroupArbiter=true)
+   * - 'adaptive': Auto-detect based on arrival patterns
+   * When set, this takes precedence over useGroupArbiter.
+   */
+  policyType?: 'vod' | 'live' | 'adaptive';
+
+  /** Whether content is live (from catalog) - used with policyType='adaptive' to skip detection */
+  isLive?: boolean;
   /** Maximum acceptable end-to-end latency in ms (default: 500) */
   maxLatency?: number;
   /** Initial estimated GOP duration in ms (default: 1000) */
@@ -78,6 +92,8 @@ export interface CodecDecodeWorkerConfig {
   arbiterDebug?: boolean;
   /** Enable QuicR-Mac interop mode for LOC unpackaging (default: false) */
   quicrInteropEnabled?: boolean;
+  /** Minimum frames to buffer before starting VOD playback (default: 30) */
+  minBufferFrames?: number;
 }
 
 /**
@@ -98,7 +114,11 @@ export type CodecDecodeWorkerRequest =
   | { type: 'reconfigure-audio'; channelId: number; config: AudioDecoderWorkerConfig }
   | { type: 'reset'; channelId: number }
   | { type: 'mark-group-complete'; channelId: number; groupId: number }
+  | { type: 'skip-group'; channelId: number; groupId: number }
+  | { type: 'pause'; channelId: number }
+  | { type: 'resume'; channelId: number }
   | { type: 'destroy'; channelId: number }
+  | { type: 'update-sync-time'; channelId: number; masterTimeMs: number }
   | { type: 'close' };
 
 /**
@@ -190,4 +210,5 @@ export type CodecDecodeWorkerResponse =
   | { type: 'destroyed'; channelId: number }
   | { type: 'error'; channelId?: number; message: string; diagnostics?: DecodeErrorDiagnostics }
   | { type: 'arbiter-debug'; channelId: number; message: string; data?: Record<string, unknown> }
+  | { type: 'sps-info'; channelId: number; maxNumReorderFrames: number; profileIdc: number; levelIdc: number }
   | { type: 'closed' };

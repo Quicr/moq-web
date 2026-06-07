@@ -11,18 +11,39 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { isDebugMode } from '../common/DevSettingsPanel';
+import { useStore } from '../../store';
 
 interface AudioPlayerProps {
   subscriptionId: number;
   onAudioData: (handler: (data: { subscriptionId: number; audioData: AudioData }) => void) => () => void;
+  /** Get current video playback time in milliseconds for A/V sync */
+  getVideoTimeMs?: () => number;
 }
 
 // Buffer time to add at start to allow audio to accumulate (reduces glitches)
-const INITIAL_BUFFER_TIME = 0.05; // 50ms
+const INITIAL_BUFFER_TIME = 0.1; // 100ms
 // Max gap allowed before resetting schedule (handles network delays)
 const MAX_SCHEDULE_GAP = 0.3; // 300ms
 
-export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudioData }) => {
+// Audio analysis data
+interface AudioAnalysis {
+  frameNum: number;
+  timestampUs: number;
+  timestampSec: number;
+  durationSec: number;
+  sampleRate: number;
+  numberOfFrames: number;
+  numberOfChannels: number;
+  minSample: number;
+  maxSample: number;
+  avgAbsSample: number;
+  hasClipping: boolean;
+  gapFromPrevMs: number | null;
+}
+
+export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudioData, getVideoTimeMs }) => {
+  const updateSyncTime = useStore(state => state.updateSyncTime);
+  const onSeekStart = useStore(state => state.onSeekStart);
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -32,15 +53,35 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
   const nextPlayTimeRef = useRef<number>(0);
   const isInitializedRef = useRef(false);
   const isFirstFrameRef = useRef(true);
+  // Track the offset between content time (PTS) and AudioContext time
+  const timeOffsetRef = useRef<number | null>(null);
+  // Track the first PTS we received
+  const firstPtsRef = useRef<number | null>(null);
+  // Audio analysis
+  const analysisDataRef = useRef<AudioAnalysis[]>([]);
+  const prevEndTimeRef = useRef<number | null>(null);
+  // Last sync time sent to worker (avoid flooding)
+  const lastSyncTimeSentRef = useRef<number>(0);
 
-  // Initialize AudioContext on first user interaction or when playing starts
-  const initializeAudio = useCallback(() => {
-    if (audioContextRef.current) return;
-
-    if (isDebugMode()) {
-      console.log('[AudioPlayer] Initializing AudioContext');
+  // Initialize AudioContext with the content's sample rate
+  const initializeAudio = useCallback((contentSampleRate: number) => {
+    if (audioContextRef.current) {
+      // If already initialized with different sample rate, close and recreate
+      if (audioContextRef.current.sampleRate !== contentSampleRate) {
+        console.log('[AudioPlayer] Sample rate mismatch, recreating AudioContext', {
+          current: audioContextRef.current.sampleRate,
+          content: contentSampleRate,
+        });
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+        gainNodeRef.current = null;
+      } else {
+        return; // Already initialized with correct sample rate
+      }
     }
-    const audioContext = new AudioContext({ sampleRate: 48000 });
+
+    console.log('[AudioPlayer] Initializing AudioContext with sample rate:', contentSampleRate);
+    const audioContext = new AudioContext({ sampleRate: contentSampleRate });
     audioContextRef.current = audioContext;
 
     const gainNode = audioContext.createGain();
@@ -51,23 +92,38 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
     nextPlayTimeRef.current = audioContext.currentTime;
     isInitializedRef.current = true;
     isFirstFrameRef.current = true; // Reset for fresh start
+    timeOffsetRef.current = null; // Reset time offset for new context
 
-    if (isDebugMode()) {
-      console.log('[AudioPlayer] AudioContext initialized', {
-        sampleRate: audioContext.sampleRate,
-        state: audioContext.state,
-      });
-    }
+    console.log('[AudioPlayer] AudioContext initialized', {
+      sampleRate: audioContext.sampleRate,
+      state: audioContext.state,
+    });
 
     // Resume if suspended (browser autoplay policy)
     if (audioContext.state === 'suspended') {
       audioContext.resume().then(() => {
-        if (isDebugMode()) {
-          console.log('[AudioPlayer] AudioContext resumed');
-        }
+        console.log('[AudioPlayer] AudioContext resumed');
       });
     }
   }, [volume, isMuted]);
+
+  // Reset timing state on seek to prevent stale A/V sync calculations
+  useEffect(() => {
+    const unsubscribe = onSeekStart(({ subscriptionId: seekSubId }) => {
+      // Reset timing if this is our subscription or its paired video subscription
+      // (we receive audio subscription ID, but seek happens on video subscription)
+      console.log('[AudioPlayer] Seek detected, resetting timing state', {
+        ourSubscriptionId: subscriptionId,
+        seekSubscriptionId: seekSubId,
+      });
+      isFirstFrameRef.current = true;
+      timeOffsetRef.current = null;
+      firstPtsRef.current = null;
+      nextPlayTimeRef.current = audioContextRef.current?.currentTime ?? 0;
+    });
+
+    return unsubscribe;
+  }, [onSeekStart, subscriptionId]);
 
   // Handle incoming audio data
   useEffect(() => {
@@ -88,10 +144,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
       if (data.subscriptionId !== subscriptionId) return;
 
       const audioData = data.audioData;
+      const sampleRate = audioData.sampleRate;
 
-      // Initialize audio context on first audio data if not already done
-      if (!audioContextRef.current) {
-        initializeAudio();
+      // Initialize audio context with content's sample rate
+      if (!audioContextRef.current || audioContextRef.current.sampleRate !== sampleRate) {
+        initializeAudio(sampleRate);
       }
 
       const audioContext = audioContextRef.current;
@@ -107,7 +164,22 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
         // Create AudioBuffer from AudioData
         const numberOfChannels = audioData.numberOfChannels;
         const numberOfFrames = audioData.numberOfFrames;
-        const sampleRate = audioData.sampleRate;
+
+        // Get timestamp from AudioData (microseconds)
+        const audioTimestampUs = audioData.timestamp;
+        const audioTimestampSec = audioTimestampUs / 1_000_000;
+
+        // Always log first 10 frames for debugging
+        if (audioStats.framesPlayed < 10) {
+          console.log('[AudioPlayer] DEBUG frame', {
+            frameNum: audioStats.framesPlayed,
+            audioTimestampUs,
+            audioTimestampSec,
+            numberOfFrames: audioData.numberOfFrames,
+            sampleRate: audioData.sampleRate,
+            durationSec: audioData.numberOfFrames / audioData.sampleRate,
+          });
+        }
 
         if (isDebugMode()) {
           console.log('[AudioPlayer] Creating AudioBuffer', {
@@ -115,6 +187,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
             numberOfFrames,
             sampleRate,
             contextSampleRate: audioContext.sampleRate,
+            audioTimestampUs,
+            audioTimestampSec,
           });
         }
 
@@ -133,42 +207,175 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
           });
         }
 
+        // Analyze audio for first 50 frames
+        const frameNum = analysisDataRef.current.length;
+        if (frameNum < 50) {
+          const channelData = audioBuffer.getChannelData(0); // Analyze first channel
+          let minSample = Infinity;
+          let maxSample = -Infinity;
+          let sumAbs = 0;
+          for (let i = 0; i < channelData.length; i++) {
+            const sample = channelData[i];
+            minSample = Math.min(minSample, sample);
+            maxSample = Math.max(maxSample, sample);
+            sumAbs += Math.abs(sample);
+          }
+          const avgAbsSample = sumAbs / channelData.length;
+          const hasClipping = maxSample >= 0.99 || minSample <= -0.99;
+
+          // Calculate gap from previous frame
+          const durationSec = numberOfFrames / sampleRate;
+          const expectedEndTime = prevEndTimeRef.current;
+          const gapFromPrevMs = expectedEndTime !== null
+            ? (audioTimestampSec - expectedEndTime) * 1000
+            : null;
+
+          const analysis: AudioAnalysis = {
+            frameNum,
+            timestampUs: audioTimestampUs,
+            timestampSec: audioTimestampSec,
+            durationSec,
+            sampleRate,
+            numberOfFrames,
+            numberOfChannels,
+            minSample,
+            maxSample,
+            avgAbsSample,
+            hasClipping,
+            gapFromPrevMs,
+          };
+          analysisDataRef.current.push(analysis);
+          prevEndTimeRef.current = audioTimestampSec + durationSec;
+
+          // Log every 10th frame or interesting frames
+          if (frameNum % 10 === 0 || hasClipping || (gapFromPrevMs !== null && Math.abs(gapFromPrevMs) > 5)) {
+            console.log('[AudioPlayer] ANALYSIS', analysis);
+          }
+
+          // At frame 49, log summary
+          if (frameNum === 49) {
+            const gaps = analysisDataRef.current
+              .filter(a => a.gapFromPrevMs !== null)
+              .map(a => a.gapFromPrevMs!);
+            const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+            const maxGap = Math.max(...gaps);
+            const minGap = Math.min(...gaps);
+            const clippingCount = analysisDataRef.current.filter(a => a.hasClipping).length;
+            const timestamps = analysisDataRef.current.map(a => a.timestampSec);
+            const timestampDiffs = timestamps.slice(1).map((t, i) => t - timestamps[i]);
+
+            console.log('[AudioPlayer] === ANALYSIS SUMMARY (50 frames) ===');
+            console.log('[AudioPlayer] Gaps: avg=', avgGap.toFixed(2), 'ms, min=', minGap.toFixed(2), 'ms, max=', maxGap.toFixed(2), 'ms');
+            console.log('[AudioPlayer] Clipping frames:', clippingCount);
+            console.log('[AudioPlayer] First timestamp:', timestamps[0].toFixed(3), 's');
+            console.log('[AudioPlayer] Last timestamp:', timestamps[timestamps.length - 1].toFixed(3), 's');
+            console.log('[AudioPlayer] Avg timestamp diff:', (timestampDiffs.reduce((a,b)=>a+b,0)/timestampDiffs.length*1000).toFixed(2), 'ms');
+            console.log('[AudioPlayer] Sample rates:', [...new Set(analysisDataRef.current.map(a => a.sampleRate))]);
+            console.log('[AudioPlayer] Avg sample level:', (analysisDataRef.current.reduce((a,b)=>a+b.avgAbsSample,0)/50).toFixed(4));
+            console.log('[AudioPlayer] Full data:', analysisDataRef.current);
+          }
+        }
+
         // Create source and play
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(gainNode);
 
-        // Schedule playback with improved timing
+        // Schedule playback - sync with video if available, otherwise use PTS
         const currentTime = audioContext.currentTime;
         let playTime: number;
 
-        if (isFirstFrameRef.current) {
-          // First frame: add initial buffer to let more audio accumulate
-          playTime = currentTime + INITIAL_BUFFER_TIME;
-          isFirstFrameRef.current = false;
-          if (isDebugMode()) {
-            console.log('[AudioPlayer] First frame, adding initial buffer', {
+        // Get video time for A/V sync (if available)
+        const videoTimeMs = getVideoTimeMs?.();
+        const videoTimeSec = videoTimeMs !== undefined && videoTimeMs > 0 ? videoTimeMs / 1000 : undefined;
+
+        // Log video time periodically for A/V sync debugging
+        if (audioStats.framesPlayed % 50 === 0) {
+          console.log('[AudioPlayer] A/V sync check', {
+            audioFrame: audioStats.framesPlayed,
+            audioTimestampSec,
+            videoTimeMs,
+            videoTimeSec,
+            hasVideoTime: videoTimeSec !== undefined,
+          });
+        }
+
+        if (isFirstFrameRef.current || timeOffsetRef.current === null) {
+          // First frame: establish the time offset
+          if (videoTimeSec !== undefined) {
+            // Sync with video: calculate offset so audio PTS matches video time
+            // Audio should play when video reaches the same PTS
+            const audioAheadOfVideo = audioTimestampSec - videoTimeSec;
+            playTime = currentTime + Math.max(INITIAL_BUFFER_TIME, audioAheadOfVideo);
+            timeOffsetRef.current = playTime - audioTimestampSec;
+            console.log('[AudioPlayer] First frame, syncing with video', {
               currentTime,
               playTime,
-              bufferTime: INITIAL_BUFFER_TIME,
+              audioTimestampSec,
+              videoTimeSec,
+              audioAheadOfVideo,
+              timeOffset: timeOffsetRef.current,
             });
-          }
-        } else {
-          // Check if we've fallen too far behind (network delay, etc.)
-          const gap = currentTime - nextPlayTimeRef.current;
-          if (gap > MAX_SCHEDULE_GAP) {
-            // Reset scheduling to current time + small buffer
-            playTime = currentTime + 0.05; // 50ms ahead
+          } else {
+            // No video sync - use simple buffering
+            playTime = currentTime + INITIAL_BUFFER_TIME;
+            timeOffsetRef.current = playTime - audioTimestampSec;
             if (isDebugMode()) {
-              console.log('[AudioPlayer] Schedule gap detected, resetting', {
-                gap,
-                oldNextTime: nextPlayTimeRef.current,
-                newPlayTime: playTime,
+              console.log('[AudioPlayer] First frame (no video sync)', {
+                currentTime,
+                playTime,
+                audioTimestampSec,
+                timeOffset: timeOffsetRef.current,
               });
             }
-          } else {
-            // Normal case: schedule right after previous buffer
-            playTime = Math.max(currentTime, nextPlayTimeRef.current);
+          }
+          firstPtsRef.current = audioTimestampSec;
+          isFirstFrameRef.current = false;
+        } else {
+          // Calculate where this frame should play based on its PTS
+          playTime = audioTimestampSec + timeOffsetRef.current;
+
+          // If we have video time, check A/V sync and adjust if needed
+          if (videoTimeSec !== undefined) {
+            const audioVsVideo = audioTimestampSec - videoTimeSec;
+            // If audio is more than 1 second behind video, DROP this frame entirely
+            // Playing stale audio is worse than skipping it
+            if (audioVsVideo < -1.0) {
+              console.log('[AudioPlayer] Audio too far behind video, DROPPING frame', {
+                audioVsVideo,
+                audioTimestampSec,
+                videoTimeSec,
+              });
+              audioData.close();
+              return; // Skip this frame entirely
+            }
+            // If audio is 200ms-1s behind video, play immediately to catch up
+            if (audioVsVideo < -0.2) {
+              playTime = currentTime; // Play immediately
+              console.log('[AudioPlayer] Audio behind video, catching up', { audioVsVideo });
+            } else if (audioVsVideo > 0.5) {
+              // Audio is ahead of video - delay
+              playTime = currentTime + (audioVsVideo - 0.1); // Play when video catches up
+              console.log('[AudioPlayer] Audio ahead of video, delaying', { audioVsVideo, delay: audioVsVideo - 0.1 });
+            }
+          }
+
+          // Check if we've fallen too far behind (audio scheduling, not A/V)
+          const lag = currentTime - playTime;
+          if (lag > MAX_SCHEDULE_GAP) {
+            // Reset: re-establish time offset from current position
+            playTime = currentTime + 0.02; // 20ms ahead
+            timeOffsetRef.current = playTime - audioTimestampSec;
+            if (isDebugMode()) {
+              console.log('[AudioPlayer] Too far behind, resetting time offset', {
+                lag,
+                newPlayTime: playTime,
+                newTimeOffset: timeOffsetRef.current,
+              });
+            }
+          } else if (playTime < currentTime) {
+            // Frame is slightly late, play immediately
+            playTime = currentTime;
           }
         }
 
@@ -178,12 +385,13 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
           console.log('[AudioPlayer] Scheduled audio playback', {
             currentTime,
             playTime,
+            audioTimestampSec,
             duration: audioBuffer.duration,
             gainValue: gainNode.gain.value,
           });
         }
 
-        // Update next play time
+        // Update next play time (for gap detection, not used for scheduling)
         nextPlayTimeRef.current = playTime + audioBuffer.duration;
 
         // Update stats
@@ -215,6 +423,31 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ subscriptionId, onAudi
       gainNodeRef.current.gain.value = isMuted ? 0 : volume;
     }
   }, [volume, isMuted]);
+
+  // Send video time to audio worker for A/V sync (SharedPlaybackClock)
+  // This runs at ~60fps when video is playing, throttled to avoid flooding
+  useEffect(() => {
+    if (!getVideoTimeMs) return;
+
+    let animationFrameId: number;
+
+    const sendSyncUpdate = () => {
+      const videoTimeMs = getVideoTimeMs();
+      // Only send if video time has changed significantly (>10ms)
+      if (videoTimeMs > 0 && Math.abs(videoTimeMs - lastSyncTimeSentRef.current) > 10) {
+        updateSyncTime(subscriptionId, videoTimeMs);
+        lastSyncTimeSentRef.current = videoTimeMs;
+      }
+      animationFrameId = requestAnimationFrame(sendSyncUpdate);
+    };
+
+    // Start the sync loop
+    animationFrameId = requestAnimationFrame(sendSyncUpdate);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [subscriptionId, getVideoTimeMs, updateSyncTime]);
 
   // Cleanup on unmount
   useEffect(() => {

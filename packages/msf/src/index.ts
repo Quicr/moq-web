@@ -252,4 +252,5 @@ export {
   createMSFSession,
   type MSFSessionConfig,
   type TrackInfo,
+  type PublishedTrackInfo,
 } from './session/index.js';

@@ -37,11 +37,13 @@ const log = Logger.create('moqt:media:audio-decoder');
  * Audio decoder configuration
  */
 export interface AudioDecoderConfig {
+  /** Audio codec (e.g., 'opus', 'mp4a.40.2' for AAC-LC). Defaults to 'opus'. */
+  codec?: string;
   /** Sample rate in Hz */
   sampleRate: number;
   /** Number of audio channels */
   numberOfChannels: number;
-  /** Codec description (optional) */
+  /** Codec description (optional for Opus, required for AAC - AudioSpecificConfig) */
   description?: Uint8Array;
 }
 

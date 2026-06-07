@@ -282,8 +282,8 @@ export const SettingsPanel: React.FC = () => {
     setVadProvider,
     vadVisualizationEnabled,
     setVadVisualizationEnabled,
-    useGroupArbiter,
-    setUseGroupArbiter,
+    policyType,
+    setPolicyType,
     maxLatency,
     setMaxLatency,
     estimatedGopDuration,
@@ -312,6 +312,24 @@ export const SettingsPanel: React.FC = () => {
     setQuicrInteropEnabled,
     quicrParticipantId,
     setQuicrParticipantId,
+    vodPublishEnabled,
+    setVodPublishEnabled,
+    vodFetchStrategy,
+    setVodFetchStrategy,
+    sbrInitialBufferSec,
+    setSbrInitialBufferSec,
+    sbrTargetBufferSec,
+    setSbrTargetBufferSec,
+    sbrLowBufferSec,
+    setSbrLowBufferSec,
+    sbrHighBufferSec,
+    setSbrHighBufferSec,
+    abrSwitchingBufferSec,
+    setAbrSwitchingBufferSec,
+    abrIntermediateBufferSec,
+    setAbrIntermediateBufferSec,
+    abrTopBufferSec,
+    setAbrTopBufferSec,
   } = useStore();
 
   // Check if current settings differ from the selected profile
@@ -385,6 +403,13 @@ export const SettingsPanel: React.FC = () => {
       text: 'text-slate-700 dark:text-slate-300',
       badge: 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300',
       dot: 'bg-slate-500',
+    },
+    'vod': {
+      border: 'border-l-indigo-500',
+      bg: 'bg-indigo-50 dark:bg-indigo-900/20',
+      text: 'text-indigo-700 dark:text-indigo-300',
+      badge: 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300',
+      dot: 'bg-indigo-500',
     },
     'custom': {
       border: 'border-l-purple-500',
@@ -691,40 +716,110 @@ export const SettingsPanel: React.FC = () => {
                 <SettingRow label="MOQT VarInt Encoding" description={varIntType === VarIntType.MOQT ? 'MOQT varint (Section 1.4.1)' : 'QUIC varint (RFC 9000)'}>
                   <Toggle enabled={varIntType === VarIntType.MOQT} onChange={() => setVarIntType(varIntType === VarIntType.MOQT ? VarIntType.QUIC : VarIntType.MOQT)} color="bg-cyan-500" />
                 </SettingRow>
+                <SettingRow label="Enable VOD Publishing" description="Publish video from URL for DVR/rewind playback">
+                  <Toggle enabled={vodPublishEnabled} onChange={() => setVodPublishEnabled(!vodPublishEnabled)} color="bg-cyan-500" />
+                </SettingRow>
+              </div>
+            </div>
+
+            {/* VOD Fetch Strategy */}
+            <div className="p-4 rounded-xl bg-gradient-to-br from-teal-50 to-white dark:from-teal-900/20 dark:to-gray-900 border border-teal-100 dark:border-teal-900/30">
+              <SectionHeader icon={Icons.playback} title="VOD Fetch Strategy" description="Buffer management for VOD playback via FETCH" colorScheme={{ icon: 'text-teal-500', bg: 'bg-teal-100 dark:bg-teal-900/30' }} />
+              <div className="space-y-3">
+                <SettingRow label="Strategy" description={
+                  vodFetchStrategy === 'sbr' ? 'Sawtooth buffer with large batch fetches' :
+                  vodFetchStrategy === 'abr' ? 'Progressive quality ramp-up for multi-bitrate' :
+                  'Adaptive fetch-ahead based on network speed'
+                }>
+                  <select
+                    value={vodFetchStrategy}
+                    onChange={(e) => setVodFetchStrategy(e.target.value as 'legacy' | 'sbr' | 'abr')}
+                    className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm font-medium text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  >
+                    <option value="legacy">Legacy (Adaptive)</option>
+                    <option value="sbr">SBR (Sawtooth Buffer)</option>
+                    <option value="abr">ABR (Multi-Bitrate)</option>
+                  </select>
+                </SettingRow>
+
+                {vodFetchStrategy === 'sbr' && (
+                  <div className="ml-2 pl-3 border-l-2 border-teal-200 dark:border-teal-700 space-y-3">
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Initial Buffer: {sbrInitialBufferSec}s</label>
+                      <input type="range" min={1} max={10} value={sbrInitialBufferSec}
+                        onChange={(e) => setSbrInitialBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                      <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-0.5">Buffer before playback starts. Lower = faster start, higher = smoother playback.</p>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Target Buffer: {sbrTargetBufferSec}s</label>
+                      <input type="range" min={5} max={60} value={sbrTargetBufferSec}
+                        onChange={(e) => setSbrTargetBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                      <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-0.5">Initial fetch fills buffer to this level.</p>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Low Threshold: {sbrLowBufferSec}s</label>
+                      <input type="range" min={2} max={sbrTargetBufferSec} value={sbrLowBufferSec}
+                        onChange={(e) => setSbrLowBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                      <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-0.5">Triggers new fetch when buffer drops to this level.</p>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">High Threshold: {sbrHighBufferSec}s</label>
+                      <input type="range" min={sbrTargetBufferSec} max={120} value={sbrHighBufferSec}
+                        onChange={(e) => setSbrHighBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                      <p className="text-[10px] text-gray-500 dark:text-gray-500 mt-0.5">Fetch refills buffer up to this level (sawtooth pattern).</p>
+                    </div>
+                  </div>
+                )}
+
+                {vodFetchStrategy === 'abr' && (
+                  <div className="ml-2 pl-3 border-l-2 border-teal-200 dark:border-teal-700 space-y-2">
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Switching Buffer: {abrSwitchingBufferSec}s</label>
+                      <input type="range" min={1} max={10} value={abrSwitchingBufferSec}
+                        onChange={(e) => setAbrSwitchingBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Intermediate Buffer: {abrIntermediateBufferSec}s</label>
+                      <input type="range" min={10} max={60} value={abrIntermediateBufferSec}
+                        onChange={(e) => setAbrIntermediateBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Top Quality Buffer: {abrTopBufferSec}s</label>
+                      <input type="range" min={30} max={120} value={abrTopBufferSec}
+                        onChange={(e) => setAbrTopBufferSec(Number(e.target.value))}
+                        className="w-full h-1.5 accent-teal-500" />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="p-4 rounded-xl bg-gradient-to-br from-sky-50 to-white dark:from-sky-900/20 dark:to-gray-900 border border-sky-100 dark:border-sky-900/30">
               <SectionHeader icon={Icons.profile} title="Experience Profile" description="Playback latency and buffer settings" colorScheme={sectionColors.profile} />
 
-              {/* Current Profile Indicator */}
-              {(() => {
-                const currentProfile = experienceProfile === 'custom'
-                  ? { displayName: 'Custom', targetLatency: maxLatency }
-                  : EXPERIENCE_PROFILES[experienceProfile];
-                const colors = profileColors[experienceProfile];
-                return (
-                  <div className={`mb-4 p-3 rounded-lg border-l-4 ${colors.border} ${colors.bg}`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className={`w-3 h-3 rounded-full ${colors.dot}`} />
-                        <span className={`font-semibold text-sm ${colors.text}`}>
-                          {currentProfile.displayName}
-                          {isModified && <span className="ml-1.5 text-xs font-normal text-amber-600 dark:text-amber-400">(modified)</span>}
-                        </span>
-                      </div>
-                      <span className={`px-2.5 py-1 rounded-full text-xs font-mono font-medium ${colors.badge}`}>
-                        {currentProfile.targetLatency}ms
-                      </span>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div className="mb-4 p-3 bg-white/50 dark:bg-gray-900/30 rounded-lg border border-sky-200 dark:border-sky-800/50">
-                <SettingRow label="Enable GroupArbiter" description="Required for profile settings to take effect">
-                  <Toggle enabled={useGroupArbiter} onChange={() => setUseGroupArbiter(!useGroupArbiter)} color="bg-sky-500" />
+              <div className="mb-4 p-3 bg-white/50 dark:bg-gray-900/30 rounded-lg border border-sky-200 dark:border-sky-800/50 space-y-3">
+                <SettingRow label="Buffer Policy" description="Frame release strategy for playback">
+                  <select
+                    value={policyType}
+                    onChange={(e) => setPolicyType(e.target.value as 'vod' | 'live' | 'adaptive')}
+                    className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm font-medium text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  >
+                    <option value="adaptive">Auto (from catalog)</option>
+                    <option value="vod">VOD (Sequential)</option>
+                    <option value="live">Live (Deadline-based)</option>
+                  </select>
                 </SettingRow>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                  {policyType === 'adaptive' && 'Auto mode: Uses isLive from catalog, or detects from arrival patterns'}
+                  {policyType === 'vod' && 'VOD mode: Sequential playback, waits for all frames, no skipping (for DVR/recorded)'}
+                  {policyType === 'live' && 'Live mode: Deadline-based with jitter buffer, can skip frames for low latency'}
+                </div>
               </div>
 
               <div className="mb-4 flex items-center justify-center gap-1 text-[10px] text-gray-500">
