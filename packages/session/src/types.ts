@@ -65,8 +65,8 @@ export interface ObjectMetadata {
   groupId: number;
   /** Object ID within the group */
   objectId: number;
-  /** Whether this is a keyframe (starts new GOP for streams) */
-  isKeyframe?: boolean;
+  /** Signals the start of a new group (closes previous group's stream, opens new one) */
+  newGroup?: boolean;
   /** Object type hint (for logging) */
   type?: string;
 }

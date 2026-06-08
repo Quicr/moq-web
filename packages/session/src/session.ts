@@ -1678,8 +1678,8 @@ export class MOQTSession {
     if (deliveryMode === 'datagram') {
       await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
     } else {
-      // Video with keyframe info uses GOP batching (one stream per group)
-      if (metadata.type === 'video' && metadata.isKeyframe !== undefined) {
+      // newGroup flag triggers group-based stream batching (one stream per group)
+      if (metadata.newGroup !== undefined) {
         await this.sendObjectWithGOP(trackAlias, data, metadata, priority);
       } else if (metadata.type === 'audio') {
         // Audio uses configured audioDeliveryMode (default: datagram for low latency)
@@ -1828,7 +1828,7 @@ export class MOQTSession {
     const aliasKey = trackAlias.toString();
 
     try {
-      if (metadata.isKeyframe) {
+      if (metadata.newGroup) {
         // Close existing stream with END_OF_GROUP marker
         const existing = this.activeVideoStreams.get(aliasKey);
         if (existing) {
@@ -2029,7 +2029,7 @@ export class MOQTSession {
         trackAlias: aliasKey,
         groupId: metadata.groupId,
         objectId: metadata.objectId,
-        isKeyframe: metadata.isKeyframe,
+        newGroup: metadata.newGroup,
         error: (err as Error).message,
       });
       this.activeVideoStreams.delete(aliasKey);
