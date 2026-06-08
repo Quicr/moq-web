@@ -167,6 +167,8 @@ export class MOQTSession {
   private namespaceSubscriptionStreams = new Map<number, number>();
   /** Our own namespace prefix for filtering out self-publishes */
   private ownNamespacePrefix: string | null = null;
+  /** Authorization token for CLIENT_SETUP */
+  private authToken: string | null = null;
 
   /**
    * Create a new MOQTSession
@@ -213,6 +215,14 @@ export class MOQTSession {
       } as SubscribeStatsEvent);
     });
     log.debug('MOQTSession created', { isDraft16: IS_DRAFT_16, useWorker: this.useWorker });
+  }
+
+  /**
+   * Set authorization token to include in CLIENT_SETUP.
+   * Must be called before setup().
+   */
+  setAuthToken(token: string): void {
+    this.authToken = token;
   }
 
   /**
@@ -642,9 +652,17 @@ export class MOQTSession {
     // Send CLIENT_SETUP
     // Draft-14: Include version list
     // Draft-16: Version negotiated via ALPN, no version list
-    const setupParams = new Map<SetupParameter, number | string>();
-    // Set max request ID to allow up to 1000 concurrent requests
+    const setupParams = new Map<SetupParameter, number | string | Uint8Array>();
     setupParams.set(SetupParameter.MAX_REQUEST_ID, 1000);
+    if (this.authToken) {
+      // Encode as: token_type (varint) || token_value (bytes)
+      // C4M token type = 0x63346d
+      const tokenBytes = new TextEncoder().encode(this.authToken);
+      const tokenWriter = new BufferWriter();
+      tokenWriter.writeVarInt(0x63346d);
+      tokenWriter.writeBytes(tokenBytes);
+      setupParams.set(SetupParameter.AUTHORIZATION_TOKEN, tokenWriter.toUint8Array());
+    }
 
     const clientSetup: ClientSetupMessage = {
       type: MessageType.CLIENT_SETUP,

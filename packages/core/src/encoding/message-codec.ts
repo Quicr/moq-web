@@ -525,7 +525,7 @@ export class MessageCodec {
    */
   private static encodeSetupParameters(
     writer: BufferWriter,
-    parameters: Map<SetupParameter, number | string>
+    parameters: Map<SetupParameter, number | string | Uint8Array>
   ): void {
     writer.writeVarInt(parameters.size);
 
@@ -550,7 +550,10 @@ export class MessageCodec {
           }
         } else {
           // Odd key: write length + bytes
-          if (typeof value === 'string') {
+          if (value instanceof Uint8Array) {
+            writer.writeVarInt(value.length);
+            writer.writeBytes(value);
+          } else if (typeof value === 'string') {
             const bytes = new TextEncoder().encode(value);
             writer.writeVarInt(bytes.length);
             writer.writeBytes(bytes);
@@ -565,7 +568,10 @@ export class MessageCodec {
       // Draft-14: No delta encoding, all parameters use length + bytes format
       for (const [key, value] of parameters) {
         writer.writeVarInt(key);
-        if (typeof value === 'string') {
+        if (value instanceof Uint8Array) {
+          writer.writeVarInt(value.length);
+          writer.writeBytes(value);
+        } else if (typeof value === 'string') {
           writer.writeString(value);
         } else {
           const encoded = VarInt.encode(value);
@@ -588,7 +594,7 @@ export class MessageCodec {
    */
   private static decodeSetupParameters(
     reader: BufferReader
-  ): Map<SetupParameter, number | string> {
+  ): Map<SetupParameter, number | string | Uint8Array> {
     const count = reader.readVarIntNumber();
 
     // Security: limit parameter count to prevent DoS
@@ -596,7 +602,7 @@ export class MessageCodec {
       throw new MessageCodecError(`Too many parameters: ${count}`);
     }
 
-    const parameters = new Map<SetupParameter, number | string>();
+    const parameters = new Map<SetupParameter, number | string | Uint8Array>();
 
     if (IS_DRAFT_16) {
       // Draft-16: Delta-encoded keys, even keys = varint value, odd keys = length + bytes

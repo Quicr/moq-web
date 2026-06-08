@@ -490,7 +490,7 @@ export interface ClientSetupMessage extends MOQTMessage {
   /** List of protocol versions supported by the client */
   supportedVersions: Version[];
   /** Session setup parameters */
-  parameters: Map<SetupParameter, number | string>;
+  parameters: Map<SetupParameter, number | string | Uint8Array>;
 }
 
 /**
@@ -505,7 +505,7 @@ export interface ServerSetupMessage extends MOQTMessage {
   /** Selected protocol version */
   selectedVersion: Version;
   /** Session setup parameters */
-  parameters: Map<SetupParameter, number | string>;
+  parameters: Map<SetupParameter, number | string | Uint8Array>;
 }
 
 /**
