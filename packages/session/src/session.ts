@@ -1899,15 +1899,46 @@ export class MOQTSession {
         });
       } else {
         // P-frame: write to existing stream
-        const existing = this.activeVideoStreams.get(aliasKey);
+        let existing = this.activeVideoStreams.get(aliasKey);
 
         if (!existing) {
-          log.warn('No active GOP stream for P-frame, creating new stream', {
+          // No active stream — open one (treat this object as the start of a subgroup)
+          log.info('No active GOP stream, opening new stream for group', {
             trackAlias: aliasKey,
             groupId: metadata.groupId,
             objectId: metadata.objectId,
           });
-          await this.sendObjectViaStream(trackAlias, data, metadata, priority);
+
+          const streamInfo = await this.doCreateStream();
+          const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
+            trackAlias,
+            groupId: metadata.groupId,
+            subgroupId: 0,
+            publisherPriority: priority,
+          }, false);
+
+          const objectData = ObjectCodec.encodeStreamObject(
+            metadata.objectId,
+            data,
+            ObjectStatus.NORMAL,
+            -1,
+            hasExtensions
+          );
+
+          const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
+          combinedData.set(subgroupHeader, 0);
+          combinedData.set(objectData, subgroupHeader.length);
+
+          await this.doWriteStream(streamInfo, combinedData);
+
+          this.activeVideoStreams.set(aliasKey, {
+            writer: streamInfo.writer!,
+            streamId: streamInfo.streamId!,
+            groupId: metadata.groupId,
+            objectCount: 1,
+            previousObjectId: metadata.objectId,
+            hasExtensions,
+          });
           return;
         }
 
@@ -1949,15 +1980,45 @@ export class MOQTSession {
           });
         } catch (writeErr) {
           const errMsg = (writeErr as Error).message;
-          // Stream was closed (STOP_SENDING or not found) - clean up and drop this P-frame
-          // Next keyframe will start a fresh GOP stream
           if (errMsg.includes('not found') || errMsg.includes('STOP_SENDING')) {
-            log.debug('GOP stream closed by relay, dropping P-frame until next keyframe', {
+            log.info('GOP stream closed by relay, reopening for same group', {
               trackAlias: aliasKey,
               groupId: metadata.groupId,
               objectId: metadata.objectId,
             });
             this.activeVideoStreams.delete(aliasKey);
+
+            // Reopen stream and retry as if this is a new keyframe for the same group
+            const streamInfo = await this.doCreateStream();
+            const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
+              trackAlias,
+              groupId: metadata.groupId,
+              subgroupId: 0,
+              publisherPriority: priority,
+            }, false /* not endOfGroup - stream stays open */);
+
+            const retryObjectData = ObjectCodec.encodeStreamObject(
+              metadata.objectId,
+              data,
+              ObjectStatus.NORMAL,
+              -1, // first object in new subgroup
+              hasExtensions
+            );
+
+            const combinedData = new Uint8Array(subgroupHeader.length + retryObjectData.length);
+            combinedData.set(subgroupHeader, 0);
+            combinedData.set(retryObjectData, subgroupHeader.length);
+
+            await this.doWriteStream(streamInfo, combinedData);
+
+            this.activeVideoStreams.set(aliasKey, {
+              writer: streamInfo.writer!,
+              streamId: streamInfo.streamId!,
+              groupId: metadata.groupId,
+              objectCount: 1,
+              previousObjectId: metadata.objectId,
+              hasExtensions,
+            });
           } else {
             throw writeErr;
           }
