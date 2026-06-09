@@ -12,7 +12,7 @@ import type { GroupOrder } from '@web-moq/core';
 /**
  * Session state
  */
-export type SessionState = 'none' | 'setup' | 'ready' | 'error';
+export type SessionState = 'none' | 'setup' | 'ready' | 'closing' | 'error';
 
 /**
  * Media session event types
