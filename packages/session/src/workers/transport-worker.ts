@@ -110,8 +110,11 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     if (IS_DRAFT_18) {
       // Draft-18: Setup uses unidirectional stream with 0x2F00 type prefix
       const setupStream = await transport.createUnidirectionalStream();
+      log('Draft-18 setup stream created', { streamId: (setupStream as any).id ?? (setupStream as any).streamId ?? 'unknown' });
       setupWriter = setupStream.getWriter();
       const streamTypeBytes = MOQTVarInt.encode(BigInt(StreamTypeDraft18.SETUP));
+      const hex = Array.from(streamTypeBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log('Writing stream type prefix', { hex, length: streamTypeBytes.length });
       await setupWriter.write(streamTypeBytes);
       log('Draft-18 setup stream established');
     } else {
@@ -440,8 +443,13 @@ async function sendControl(data: Uint8Array): Promise<void> {
       return;
     }
     try {
+      const hex = Array.from(data.subarray(0, Math.min(32, data.length)))
+        .map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log('sendControl (draft-18)', { length: data.length, hex });
       await setupWriter.write(data);
+      log('sendControl written successfully');
     } catch (err) {
+      log('sendControl error', { error: (err as Error).message });
       respond({ type: 'error', message: (err as Error).message });
     }
   } else {
