@@ -514,8 +514,22 @@ export class MOQTSession {
     }
   }
 
-  /** Controllers for incoming bidi streams from worker (draft-18) */
+  /** Controllers for bidi streams (incoming and outgoing request streams) */
   private incomingBidiControllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+
+  /**
+   * Read a response from a worker bidi stream (for client-initiated request streams)
+   */
+  private async readWorkerBidiResponse(streamId: number): Promise<ControlMessageDraft18> {
+    const readable = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        this.incomingBidiControllers.set(streamId, controller);
+      },
+    });
+    const response = await this.readRequestResponse(readable, 0n);
+    this.incomingBidiControllers.delete(streamId);
+    return response;
+  }
 
   /**
    * Handle incoming bidi stream from worker (draft-18 server-initiated requests)
@@ -747,6 +761,7 @@ export class MOQTSession {
       // Wire format: Length (16-bit) | Setup Options
       const clientSetup: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
+        moqtImplementation: 'moq-web 0.1.0',
       };
 
       const setupBytes = Draft18MessageCodec.encodeSetupStream(clientSetup);
@@ -2055,35 +2070,48 @@ export class MOQTSession {
     namespaceStr: string,
     announceInfo: AnnouncedNamespaceInfo
   ): Promise<void> {
-    if (!this.transport) {
-      throw new Error('Transport not available');
-    }
-
-    const { readable, writable } = await this.transport.createRequestStream();
-
     const publishNsMessage: PublishNamespaceMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH_NAMESPACE,
       requestId: BigInt(requestId),
       trackNamespacePrefix: namespace,
     };
 
-    const writer = writable.getWriter();
-    await writer.write(Draft18MessageCodec.encode(publishNsMessage));
-    writer.releaseLock();
+    const encoded = Draft18MessageCodec.encode(publishNsMessage);
 
-    log.info('Sent PUBLISH_NAMESPACE (draft-18)', { namespace: namespaceStr, requestId });
+    if (this.useWorker && this.transportWorker) {
+      const streamId = await this.transportWorker.createBidiStream();
+      this.transportWorker.writeStream(streamId, encoded);
+      log.info('Sent PUBLISH_NAMESPACE (draft-18) via worker', { namespace: namespaceStr, requestId, streamId });
 
-    // Wait for REQUEST_OK or REQUEST_ERROR
-    const response = await this.readRequestResponse(readable, BigInt(requestId));
+      const response = await this.readWorkerBidiResponse(streamId);
+      if (response.type === MessageTypeDraft18.REQUEST_OK) {
+        announceInfo.acknowledged = true;
+        this.emit('namespace-acknowledged', { namespace });
+        log.info('PUBLISH_NAMESPACE accepted (draft-18)', { namespace: namespaceStr });
+      } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+        const error = response as RequestErrorMessageDraft18;
+        this.announcedNamespaces.delete(namespaceStr);
+        throw new Error(`Namespace announcement failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      }
+    } else if (this.transport) {
+      const { readable, writable } = await this.transport.createRequestStream();
+      const writer = writable.getWriter();
+      await writer.write(encoded);
+      writer.releaseLock();
+      log.info('Sent PUBLISH_NAMESPACE (draft-18)', { namespace: namespaceStr, requestId });
 
-    if (response.type === MessageTypeDraft18.REQUEST_OK) {
-      announceInfo.acknowledged = true;
-      this.emit('namespace-acknowledged', { namespace });
-      log.info('PUBLISH_NAMESPACE accepted (draft-18)', { namespace: namespaceStr });
-    } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
-      const error = response as RequestErrorMessageDraft18;
-      this.announcedNamespaces.delete(namespaceStr);
-      throw new Error(`Namespace announcement failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      const response = await this.readRequestResponse(readable, BigInt(requestId));
+      if (response.type === MessageTypeDraft18.REQUEST_OK) {
+        announceInfo.acknowledged = true;
+        this.emit('namespace-acknowledged', { namespace });
+        log.info('PUBLISH_NAMESPACE accepted (draft-18)', { namespace: namespaceStr });
+      } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+        const error = response as RequestErrorMessageDraft18;
+        this.announcedNamespaces.delete(namespaceStr);
+        throw new Error(`Namespace announcement failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      }
+    } else {
+      throw new Error('No transport available');
     }
   }
 
