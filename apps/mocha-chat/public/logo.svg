@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Saucer -->
+  <ellipse cx="30" cy="54" rx="22" ry="4" fill="#d4a574" opacity="0.4"/>
+  <!-- Cup body -->
+  <path d="M12 28 C12 28 10 50 14 52 C18 54 38 54 42 52 C46 50 44 28 44 28 Z" fill="url(#cup-body)"/>
+  <!-- Cup rim highlight -->
+  <path d="M12 28 C12 26 16 24 28 24 C40 24 44 26 44 28 C44 30 40 31 28 31 C16 31 12 30 12 28Z" fill="url(#cup-rim)"/>
+  <!-- Handle -->
+  <path d="M44 32 C50 32 52 36 52 40 C52 44 50 48 44 48" stroke="url(#handle)" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <!-- Steam wisps -->
+  <path d="M22 20 C22 16 24 14 26 16" stroke="#c68a4e" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.6">
+    <animate attributeName="opacity" values="0.6;0.2;0.6" dur="3s" repeatCount="indefinite"/>
+  </path>
+  <path d="M28 18 C28 13 31 11 33 14" stroke="#d4a574" stroke-width="2.5" stroke-linecap="round" fill="none" opacity="0.7">
+    <animate attributeName="opacity" values="0.7;0.3;0.7" dur="2.5s" repeatCount="indefinite"/>
+  </path>
+  <path d="M34 20 C34 15 37 13 39 16" stroke="#c68a4e" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.5">
+    <animate attributeName="opacity" values="0.5;0.2;0.5" dur="3.5s" repeatCount="indefinite"/>
+  </path>
+  <!-- Chat dots in cup -->
+  <circle cx="23" cy="40" r="2.5" fill="white" opacity="0.8"/>
+  <circle cx="28" cy="40" r="2.5" fill="white" opacity="0.8"/>
+  <circle cx="33" cy="40" r="2.5" fill="white" opacity="0.8"/>
+  <defs>
+    <linearGradient id="cup-body" x1="12" y1="28" x2="44" y2="54" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8B4513"/>
+      <stop offset="50%" stop-color="#6B3410"/>
+      <stop offset="100%" stop-color="#4a2508"/>
+    </linearGradient>
+    <linearGradient id="cup-rim" x1="12" y1="24" x2="44" y2="31" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#d4a574"/>
+      <stop offset="100%" stop-color="#c68a4e"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="44" y1="32" x2="52" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8B4513"/>
+      <stop offset="100%" stop-color="#6B3410"/>
+    </linearGradient>
+  </defs>
+</svg>
