@@ -229,22 +229,22 @@ export enum RoleDraft18 {
 }
 
 /**
- * Draft-18 Request Parameter Types
+ * Draft-18 Message Parameter Types (per spec section 10.2)
  */
 export enum RequestParameterDraft18 {
-  AUTHORIZATION_TOKEN = 0x00,
-  SUBGROUP_DELIVERY_TIMEOUT = 0x01,
   OBJECT_DELIVERY_TIMEOUT = 0x02,
-  FILL_TIMEOUT = 0x03,
+  AUTHORIZATION_TOKEN = 0x03,
   RENDEZVOUS_TIMEOUT = 0x04,
-  SUBSCRIBER_PRIORITY = 0x05,
-  GROUP_ORDER = 0x06,
-  SUBSCRIPTION_FILTER = 0x07,
+  SUBGROUP_DELIVERY_TIMEOUT = 0x06,
   EXPIRES = 0x08,
   LARGEST_OBJECT = 0x09,
-  FORWARD = 0x0a,
-  NEW_GROUP_REQUEST = 0x0b,
-  TRACK_NAMESPACE_PREFIX = 0x0c,
+  FILL_TIMEOUT = 0x0A,
+  FORWARD = 0x10,
+  SUBSCRIBER_PRIORITY = 0x20,
+  SUBSCRIPTION_FILTER = 0x21,
+  GROUP_ORDER = 0x22,
+  NEW_GROUP_REQUEST = 0x32,
+  TRACK_NAMESPACE_PREFIX = 0x34,
 }
 
 /**
@@ -1478,6 +1478,7 @@ export interface SubscribeMessageDraft18 {
 export interface SubscribeOkMessageDraft18 {
   type: MessageTypeDraft18.SUBSCRIBE_OK;
   requestId: bigint;
+  trackAlias?: bigint;
   largestLocation: Location;
   trackProperties?: Map<number, Uint8Array>;
 }
@@ -1503,6 +1504,7 @@ export interface RequestErrorMessageDraft18 {
   type: MessageTypeDraft18.REQUEST_ERROR;
   requestId: bigint;
   errorCode: number;
+  retryInterval?: bigint;
   reasonPhrase: string;
 }
 
@@ -1616,6 +1618,8 @@ export interface PublishDoneMessageDraft18 {
   type: MessageTypeDraft18.PUBLISH_DONE;
   requestId: bigint;
   finalLocation: Location;
+  statusCode?: bigint;
+  streamCount?: bigint;
   reasonPhrase?: string;
 }
 
