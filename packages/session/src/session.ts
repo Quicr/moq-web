@@ -2992,7 +2992,9 @@ export class MOQTSession {
    * Handle incoming setup stream messages (draft-18)
    */
   private handleSetupMessage(data: Uint8Array): void {
-    log.debug('Setup message received (draft-18)', { size: data.length });
+    const hex = Array.from(data.subarray(0, Math.min(32, data.length)))
+      .map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log.info('Setup message received (draft-18)', { size: data.length, hex });
 
     try {
       // Append to buffer
