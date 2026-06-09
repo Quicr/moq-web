@@ -5,6 +5,7 @@ interface Room {
   id: string;
   name: string;
   namespace_prefix: string;
+  visibility: 'public' | 'authenticated' | 'private';
 }
 
 interface ChannelState {
@@ -38,10 +39,11 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
       const res = await fetch(`${TOKEN_SERVICE_URL}/rooms`);
       if (!res.ok) return;
       const data = await res.json();
-      const rooms: Room[] = data.map((r: { id: string; name: string; namespace_prefix: string }) => ({
+      const rooms: Room[] = data.map((r: { id: string; name: string; namespace_prefix: string; visibility?: string }) => ({
         id: r.id,
         name: r.name,
         namespace_prefix: r.namespace_prefix,
+        visibility: r.visibility || 'public',
       }));
       set({ rooms });
     } catch {
