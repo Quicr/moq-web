@@ -1226,11 +1226,25 @@ export class MOQTSession {
 
     if (response.type === MessageTypeDraft18.SUBSCRIBE_OK) {
       const subscribeOk = response as SubscribeOkMessageDraft18;
+      const relayTrackAlias = subscribeOk.trackAlias ?? subscribeOk.requestId;
       log.info('Received SUBSCRIBE_OK (draft-18)', {
-        requestId: subscribeOk.requestId.toString(),
+        trackAlias: relayTrackAlias.toString(),
+        localTrackAlias: trackAlias.toString(),
         largestGroup: subscribeOk.largestLocation.group.toString(),
         largestObject: subscribeOk.largestLocation.object.toString(),
       });
+      // Update subscription's track alias to match what relay assigned
+      if (relayTrackAlias !== trackAlias) {
+        const sub = this.subscriptionManager.findByRequestId(requestId);
+        if (sub) {
+          this.subscriptionManager.updateTrackAlias(sub.subscriptionId, relayTrackAlias);
+          log.info('Updated subscription trackAlias', {
+            subscriptionId: sub.subscriptionId,
+            oldAlias: trackAlias.toString(),
+            newAlias: relayTrackAlias.toString(),
+          });
+        }
+      }
     } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
       log.error('Received REQUEST_ERROR (draft-18)', {

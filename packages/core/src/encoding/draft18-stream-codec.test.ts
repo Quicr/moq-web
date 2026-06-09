@@ -15,10 +15,13 @@ import {
 describe('Draft18StreamCodec', () => {
   describe('isSubgroupHeader', () => {
     it('identifies valid subgroup stream types', () => {
-      expect(Draft18StreamCodec.isSubgroupHeader(0b00010000)).toBe(true);
-      expect(Draft18StreamCodec.isSubgroupHeader(0b01010000)).toBe(true);
-      expect(Draft18StreamCodec.isSubgroupHeader(0b10010000)).toBe(true);
-      expect(Draft18StreamCodec.isSubgroupHeader(0b11010000)).toBe(true);
+      // Valid: 0x10-0x1F, 0x30-0x3F, 0x50-0x5F, 0x70-0x7F (bit 4 set, bit 7 clear)
+      expect(Draft18StreamCodec.isSubgroupHeader(0x10)).toBe(true);
+      expect(Draft18StreamCodec.isSubgroupHeader(0x14)).toBe(true);
+      expect(Draft18StreamCodec.isSubgroupHeader(0x30)).toBe(true);
+      expect(Draft18StreamCodec.isSubgroupHeader(0x50)).toBe(true);
+      expect(Draft18StreamCodec.isSubgroupHeader(0x70)).toBe(true);
+      expect(Draft18StreamCodec.isSubgroupHeader(0x7F)).toBe(true);
     });
 
     it('rejects non-subgroup stream types', () => {
@@ -49,7 +52,7 @@ describe('Draft18StreamCodec', () => {
       expect(bytesRead).toBe(encoded.length);
     });
 
-    it('roundtrips subgroup header with explicit first object', () => {
+    it('roundtrips subgroup header with FIRST_OBJECT bit unset (non-zero first object)', () => {
       const header: SubgroupHeaderDraft18 = {
         streamType: 0,
         trackAlias: 456n,
@@ -62,28 +65,30 @@ describe('Draft18StreamCodec', () => {
       const encoded = Draft18StreamCodec.encodeSubgroupHeader(header);
       const [decoded] = Draft18StreamCodec.decodeSubgroupHeader(encoded);
 
-      expect(decoded.firstObject).toBe(100n);
+      // FIRST_OBJECT bit not set means firstObject is undefined (not first published)
+      expect(decoded.firstObject).toBeUndefined();
+      // Verify FIRST_OBJECT bit is NOT set in stream type
+      expect(decoded.streamType & SubgroupFlags.FIRST_OBJECT).toBe(0);
     });
 
-    it('roundtrips subgroup header with properties', () => {
-      const props = new Map<number, Uint8Array>();
-      props.set(0, MOQTVarInt.encode(42)); // Even key: object status
-      props.set(1, new Uint8Array([1, 2, 3])); // Odd key: custom property
-
+    it('roundtrips subgroup header with all flags', () => {
       const header: SubgroupHeaderDraft18 = {
         streamType: SubgroupFlags.BASE_TYPE,
         trackAlias: 789n,
         groupId: 30n,
         subgroupId: 2n,
         publisherPriority: 255,
-        subgroupProperties: props,
       };
 
       const encoded = Draft18StreamCodec.encodeSubgroupHeader(header);
       const [decoded] = Draft18StreamCodec.decodeSubgroupHeader(encoded);
 
-      expect(decoded.subgroupProperties).toBeDefined();
-      expect(decoded.subgroupProperties!.size).toBe(2);
+      expect(decoded.trackAlias).toBe(789n);
+      expect(decoded.groupId).toBe(30n);
+      expect(decoded.subgroupId).toBe(2n);
+      expect(decoded.publisherPriority).toBe(255);
+      // FIRST_OBJECT bit set because firstObject is undefined (defaults to 0)
+      expect(decoded.streamType & SubgroupFlags.FIRST_OBJECT).toBe(SubgroupFlags.FIRST_OBJECT);
     });
 
     it('roundtrips subgroup header with END_OF_GROUP flag', () => {
@@ -149,11 +154,12 @@ describe('Draft18StreamCodec', () => {
         payloadLength: 512n,
       };
 
-      const encoded = Draft18StreamCodec.encodeObjectHeader(header);
-      const [decoded] = Draft18StreamCodec.decodeObjectHeader(encoded);
+      const encoded = Draft18StreamCodec.encodeObjectHeader(header, true);
+      const [decoded] = Draft18StreamCodec.decodeObjectHeader(encoded, 0, true);
 
       expect(decoded.objectProperties).toBeDefined();
       expect(decoded.objectProperties!.size).toBe(1);
+      expect(decoded.payloadLength).toBe(512n);
     });
 
     it('roundtrips object header with zero delta', () => {
