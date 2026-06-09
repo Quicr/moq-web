@@ -25,8 +25,10 @@ export type TransportWorkerEventType =
   | 'connected'
   | 'disconnected'
   | 'control-message'
+  | 'setup-message'
   | 'datagram'
   | 'incoming-stream'
+  | 'incoming-bidi-stream'
   | 'stream-data'
   | 'stream-closed'
   | 'stream-created'
@@ -173,8 +175,10 @@ export class TransportWorkerClient {
   on(type: 'connected', handler: () => void): void;
   on(type: 'disconnected', handler: (data: { reason?: string }) => void): void;
   on(type: 'control-message', handler: (data: { data: Uint8Array }) => void): void;
+  on(type: 'setup-message', handler: (data: { data: Uint8Array }) => void): void;
   on(type: 'datagram', handler: (data: { data: Uint8Array }) => void): void;
   on(type: 'incoming-stream', handler: (data: { streamId: number }) => void): void;
+  on(type: 'incoming-bidi-stream', handler: (data: { streamId: number }) => void): void;
   on(type: 'stream-data', handler: (data: { streamId: number; data: Uint8Array }) => void): void;
   on(type: 'bidi-stream-data', handler: (data: { streamId: number; data: Uint8Array }) => void): void;
   on(type: 'stream-closed', handler: (data: { streamId: number }) => void): void;
