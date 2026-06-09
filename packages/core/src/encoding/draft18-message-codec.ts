@@ -126,14 +126,13 @@ export class Draft18MessageCodec {
 
     const payload = payloadWriter.toUint8Array();
 
-    // Draft-18 framing: Message Type (MOQT varint) | Message Length (16-bit fixed) | Message Payload
-    // Per spec Figure 3: Length (16) is a fixed 16-bit big-endian integer
+    // Draft-18 framing: Message Type (MOQT varint) | Message Length (16-bit BE) | Message Payload
     const typeBytes = MOQTVarInt.encode(BigInt(message.type));
-    const lengthBytes = MOQTVarInt.encode(BigInt(payload.length));
-    const result = new Uint8Array(typeBytes.length + lengthBytes.length + payload.length);
+    const result = new Uint8Array(typeBytes.length + 2 + payload.length);
     result.set(typeBytes, 0);
-    result.set(lengthBytes, typeBytes.length);
-    result.set(payload, typeBytes.length + lengthBytes.length);
+    result[typeBytes.length] = (payload.length >> 8) & 0xFF;
+    result[typeBytes.length + 1] = payload.length & 0xFF;
+    result.set(payload, typeBytes.length + 2);
 
     return result;
   }
@@ -142,15 +141,15 @@ export class Draft18MessageCodec {
    * Decode a draft-18 control message from bytes
    */
   static decode(buffer: Uint8Array, offset = 0): [ControlMessageDraft18, number] {
-    // Draft-18 framing: Message Type (MOQT varint) | Message Length (MOQT varint) | Message Payload
+    // Draft-18 framing: Message Type (MOQT varint) | Message Length (16-bit BE) | Message Payload
     const [typeValue, typeBytesRead] = MOQTVarInt.decodeNumber(buffer, offset);
     const messageType = typeValue as MessageTypeDraft18;
 
-    if (buffer.length < offset + typeBytesRead + 1) {
+    if (buffer.length < offset + typeBytesRead + 2) {
       throw new Draft18CodecError('Incomplete message: missing length field');
     }
-    const [payloadLength, lengthBytesRead] = MOQTVarInt.decodeNumber(buffer, offset + typeBytesRead);
-    const headerSize = typeBytesRead + lengthBytesRead;
+    const payloadLength = (buffer[offset + typeBytesRead] << 8) | buffer[offset + typeBytesRead + 1];
+    const headerSize = typeBytesRead + 2;
 
     if (buffer.length < offset + headerSize + payloadLength) {
       throw new Draft18CodecError('Incomplete message: not enough payload bytes');
