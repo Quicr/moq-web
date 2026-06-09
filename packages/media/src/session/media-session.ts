@@ -1131,6 +1131,19 @@ export class MediaSession {
       quicrInteropEnabled: config.quicrInteropEnabled,
     });
 
+    // Clean up existing pipeline for same track (e.g. remote user redialed)
+    const trackKey = `${event.namespace.join('/')}/${event.trackName}`;
+    for (const [oldSubId, sub] of this.subscriptions) {
+      const oldKey = `${sub.namespace.join('/')}/${sub.trackName}`;
+      if (oldKey === trackKey) {
+        log.info('Replacing stale decode pipeline', { oldSubId, trackKey });
+        await sub.pipeline.stop();
+        this.pipelineToSubscriptionId.delete(sub.pipeline);
+        this.subscriptions.delete(oldSubId);
+        break;
+      }
+    }
+
     log.info('Created decode pipeline for discovered track', {
       namespaceSubscriptionId: event.namespaceSubscriptionId,
       trackName: event.trackName,

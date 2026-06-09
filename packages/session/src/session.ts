@@ -1498,23 +1498,15 @@ export class MOQTSession {
       return;
     }
 
-    // Check for trackAlias collision - this will cause routing issues
+    // Handle trackAlias reuse (e.g. remote user ended and redialed)
     const existingSubscription = this.subscriptionManager.getByAlias(BigInt(message.trackAlias));
     if (existingSubscription) {
-      const existingTrackName = [...existingSubscription.namespace, existingSubscription.trackName].join('/');
-      log.error('TrackAlias collision detected - multiple tracks using same alias will cause data corruption', {
+      log.info('Replacing stale subscription for reused trackAlias', {
         trackAlias: message.trackAlias.toString(),
-        newTrack: fullTrackNameStr,
-        existingTrack: existingTrackName,
-        existingSubscriptionId: existingSubscription.subscriptionId,
+        oldSubscriptionId: existingSubscription.subscriptionId,
+        track: fullTrackNameStr,
       });
-
-      // Emit error event so UI can warn the user
-      this.emit('error', new Error(
-        `TrackAlias collision: "${fullTrackNameStr}" and "${existingTrackName}" both use alias ${message.trackAlias}. Video/audio data may be corrupted.`
-      ));
-
-      // Continue anyway - we'll accept the PUBLISH but routing will be broken
+      this.subscriptionManager.remove(existingSubscription.subscriptionId);
     }
 
     // Store track info
