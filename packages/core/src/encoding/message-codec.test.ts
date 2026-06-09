@@ -1035,7 +1035,7 @@ describe('ObjectCodec', () => {
       const [objectId, decodedPayload, status, bytesConsumed] = ObjectCodec.decodeStreamObject(
         encoded,
         0,
-        true, // hasExtensions
+        false, // hasExtensions/hasProperties - encode doesn't write properties
         false // useRemainingAsPayload
       );
 
@@ -1072,7 +1072,7 @@ describe('ObjectCodec', () => {
       const [objectId, decodedPayload, , bytesConsumed] = ObjectCodec.decodeStreamObject(
         withPrefix,
         3,
-        true,
+        false,
         false
       );
 

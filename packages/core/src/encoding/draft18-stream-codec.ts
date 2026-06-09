@@ -26,12 +26,28 @@ const log = Logger.create('moqt:core:draft18-stream');
 
 /**
  * Subgroup stream type bit flags (in 0b0XX1XXXX format)
+ * Per draft-18 spec:
+ *   Bit 0 (0x01): PROPERTIES — object properties present in all objects
+ *   Bits 1-2 (0x06): SUBGROUP_ID_MODE — 00=0, 01=first obj ID, 10=explicit, 11=reserved
+ *   Bit 3 (0x08): END_OF_GROUP
+ *   Bit 4 (0x10): Always 1 (identifies as subgroup header)
+ *   Bit 5 (0x20): DEFAULT_PRIORITY — when 1, Priority field omitted
+ *   Bit 6 (0x40): FIRST_OBJECT — first object is first ever published in subgroup
  */
 export const SubgroupFlags = {
-  END_OF_GROUP: 0b00100000,      // Bit 5
-  FIRST_OBJECT: 0b01000000,      // Bit 6: If set, first object ID is implicit (0)
-  SUBGROUP_PROPERTIES: 0b10000000, // Bit 7: If set, subgroup properties follow
-  BASE_TYPE: 0b00010000,         // Base pattern for subgroup headers
+  PROPERTIES: 0x01,              // Bit 0: Object properties present
+  SUBGROUP_ID_MODE_MASK: 0x06,   // Bits 1-2: Subgroup ID mode
+  END_OF_GROUP: 0x08,            // Bit 3: Last subgroup in group
+  BASE_TYPE: 0x10,               // Bit 4: Always set
+  DEFAULT_PRIORITY: 0x20,        // Bit 5: Priority field omitted (use default)
+  FIRST_OBJECT: 0x40,            // Bit 6: First object is first in subgroup
+} as const;
+
+export const SubgroupIdMode = {
+  ZERO: 0b00,          // Subgroup ID = 0, field absent
+  FIRST_OBJECT: 0b01,  // Subgroup ID = first object ID, field absent
+  EXPLICIT: 0b10,      // Subgroup ID field present
+  RESERVED: 0b11,      // Reserved
 } as const;
 
 export class Draft18StreamCodecError extends Error {
@@ -49,8 +65,9 @@ export class Draft18StreamCodec {
    * Check if a stream type is a subgroup header
    */
   static isSubgroupHeader(streamType: number): boolean {
-    // Pattern: 0b0XX1XXXX where XX are flag bits
-    return (streamType & 0b00010000) !== 0 && (streamType & 0b11110000) < 0xf0;
+    // Pattern: 0b0XX1XXXX — bit 4 set, bit 7 clear
+    // Valid ranges: 0x10-0x1F, 0x30-0x3F, 0x50-0x5F, 0x70-0x7F
+    return (streamType & 0x10) !== 0 && (streamType & 0x80) === 0;
   }
 
   /**
@@ -62,38 +79,33 @@ export class Draft18StreamCodec {
     // Build stream type from flags
     let streamType = SubgroupFlags.BASE_TYPE;
 
+    // SUBGROUP_ID_MODE (bits 1-2): use explicit mode (0b10)
+    streamType |= (SubgroupIdMode.EXPLICIT << 1);
+
+    // FIRST_OBJECT bit
     if (header.firstObject === undefined || header.firstObject === 0n) {
-      streamType |= SubgroupFlags.FIRST_OBJECT; // First object ID implicit
+      streamType |= SubgroupFlags.FIRST_OBJECT;
     }
 
-    if (header.subgroupProperties && header.subgroupProperties.size > 0) {
-      streamType |= SubgroupFlags.SUBGROUP_PROPERTIES;
-    }
-
-    // Allow caller to set END_OF_GROUP via streamType
+    // END_OF_GROUP bit
     if ((header.streamType & SubgroupFlags.END_OF_GROUP) !== 0) {
       streamType |= SubgroupFlags.END_OF_GROUP;
     }
 
+    // PROPERTIES bit
+    if (header.subgroupProperties && header.subgroupProperties.size > 0) {
+      streamType |= SubgroupFlags.PROPERTIES;
+    }
+
+    // DEFAULT_PRIORITY: we always write priority explicitly (bit=0)
+
     writer.writeVarInt(streamType);
     writer.writeVarInt(header.trackAlias);
     writer.writeVarInt(header.groupId);
+    // Subgroup ID (present because SUBGROUP_ID_MODE = EXPLICIT)
     writer.writeVarInt(header.subgroupId);
+    // Publisher Priority (present because DEFAULT_PRIORITY bit is 0)
     writer.writeByte(header.publisherPriority);
-
-    // Write first object ID if not implicit
-    if ((streamType & SubgroupFlags.FIRST_OBJECT) === 0 && header.firstObject !== undefined) {
-      writer.writeVarInt(header.firstObject);
-    }
-
-    // Write subgroup properties if present
-    if ((streamType & SubgroupFlags.SUBGROUP_PROPERTIES) !== 0 && header.subgroupProperties) {
-      const propsWriter = new Draft18BufferWriter();
-      Draft18StreamCodec.encodeProperties(propsWriter, header.subgroupProperties);
-      const propsBytes = propsWriter.toUint8Array();
-      writer.writeVarInt(propsBytes.length);
-      writer.writeBytes(propsBytes);
-    }
 
     return writer.toUint8Array();
   }
@@ -112,22 +124,25 @@ export class Draft18StreamCodec {
 
     const trackAlias = reader.readVarInt();
     const groupId = reader.readVarInt();
-    const subgroupId = reader.readVarInt();
-    const publisherPriority = reader.readByte();
 
-    let firstObject: bigint | undefined;
-    if ((streamType & SubgroupFlags.FIRST_OBJECT) === 0) {
-      firstObject = reader.readVarInt();
+    // Subgroup ID: depends on SUBGROUP_ID_MODE (bits 1-2)
+    const subgroupIdMode = (streamType & SubgroupFlags.SUBGROUP_ID_MODE_MASK) >> 1;
+    let subgroupId: bigint;
+    if (subgroupIdMode === SubgroupIdMode.EXPLICIT) {
+      subgroupId = reader.readVarInt();
+    } else if (subgroupIdMode === SubgroupIdMode.FIRST_OBJECT) {
+      subgroupId = 0n; // Will be set to first object ID later
     } else {
-      firstObject = 0n;
+      subgroupId = 0n;
     }
 
-    let subgroupProperties: Map<number, Uint8Array> | undefined;
-    if ((streamType & SubgroupFlags.SUBGROUP_PROPERTIES) !== 0) {
-      const propsLength = reader.readVarIntNumber();
-      const propsEnd = reader.offset + propsLength;
-      subgroupProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
+    // Publisher Priority: present only when DEFAULT_PRIORITY bit (0x20) is 0
+    let publisherPriority = 128; // default
+    if ((streamType & SubgroupFlags.DEFAULT_PRIORITY) === 0) {
+      publisherPriority = reader.readByte();
     }
+
+    const firstObject = (streamType & SubgroupFlags.FIRST_OBJECT) !== 0 ? 0n : undefined;
 
     return [
       {
@@ -137,7 +152,6 @@ export class Draft18StreamCodec {
         subgroupId,
         publisherPriority,
         firstObject,
-        subgroupProperties,
       },
       reader.offset - offset,
     ];
@@ -171,19 +185,20 @@ export class Draft18StreamCodec {
   /**
    * Encode an object header (within a subgroup stream)
    */
-  static encodeObjectHeader(header: ObjectHeaderDraft18): Uint8Array {
+  static encodeObjectHeader(header: ObjectHeaderDraft18, hasProperties = false): Uint8Array {
     const writer = new Draft18BufferWriter();
 
     writer.writeVarInt(header.objectIdDelta);
 
-    // Encode properties
-    const propsWriter = new Draft18BufferWriter();
-    if (header.objectProperties) {
-      Draft18StreamCodec.encodeProperties(propsWriter, header.objectProperties);
+    if (hasProperties) {
+      const propsWriter = new Draft18BufferWriter();
+      if (header.objectProperties) {
+        Draft18StreamCodec.encodeProperties(propsWriter, header.objectProperties);
+      }
+      const propsBytes = propsWriter.toUint8Array();
+      writer.writeVarInt(propsBytes.length);
+      writer.writeBytes(propsBytes);
     }
-    const propsBytes = propsWriter.toUint8Array();
-    writer.writeVarInt(propsBytes.length);
-    writer.writeBytes(propsBytes);
 
     writer.writeVarInt(header.payloadLength);
 
@@ -192,17 +207,20 @@ export class Draft18StreamCodec {
 
   /**
    * Decode an object header
+   * hasProperties: determined by PROPERTIES bit (0x01) in stream type
    */
-  static decodeObjectHeader(buffer: Uint8Array, offset = 0): [ObjectHeaderDraft18, number] {
+  static decodeObjectHeader(buffer: Uint8Array, offset = 0, hasProperties = false): [ObjectHeaderDraft18, number] {
     const reader = new Draft18BufferReader(buffer, offset);
 
     const objectIdDelta = reader.readVarInt();
 
-    const propsLength = reader.readVarIntNumber();
     let objectProperties: Map<number, Uint8Array> | undefined;
-    if (propsLength > 0) {
-      const propsEnd = reader.offset + propsLength;
-      objectProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
+    if (hasProperties) {
+      const propsLength = reader.readVarIntNumber();
+      if (propsLength > 0) {
+        const propsEnd = reader.offset + propsLength;
+        objectProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
+      }
     }
 
     const payloadLength = reader.readVarInt();

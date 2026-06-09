@@ -2586,13 +2586,14 @@ export class ObjectCodec {
     if (IS_DRAFT_18) {
       const [d18Header, bytesRead] = Draft18StreamCodec.decodeSubgroupHeader(buffer);
       const endOfGroup = (d18Header.streamType & SubgroupFlags.END_OF_GROUP) !== 0;
+      const hasProperties = (d18Header.streamType & SubgroupFlags.PROPERTIES) !== 0;
       const header: SubgroupHeader = {
         trackAlias: d18Header.trackAlias,
         groupId: Number(d18Header.groupId),
         subgroupId: Number(d18Header.subgroupId),
         publisherPriority: d18Header.publisherPriority,
       };
-      return [header, bytesRead, endOfGroup, false]; // draft-18 doesn't use hasExtensions flag
+      return [header, bytesRead, endOfGroup, hasProperties];
     }
 
     const reader = new BufferReader(buffer);
@@ -2825,8 +2826,8 @@ export class ObjectCodec {
     previousObjectId = -1
   ): [number, Uint8Array, ObjectStatus, number] {
     if (IS_DRAFT_18) {
-      // Draft-18: Object ID Delta | Properties Length | Properties | Payload Length | Payload
-      const [objHeader, headerBytesRead] = Draft18StreamCodec.decodeObjectHeader(buffer, offset);
+      // Draft-18: Object ID Delta | [Properties] | Payload Length | [Object Status] | [Payload]
+      const [objHeader, headerBytesRead] = Draft18StreamCodec.decodeObjectHeader(buffer, offset, hasExtensions);
       const isFirstObject = previousObjectId < 0;
       const delta = Number(objHeader.objectIdDelta);
       const objectId = isFirstObject ? delta : (previousObjectId + delta + 1);
