@@ -1215,11 +1215,14 @@ export class MOQTSession {
     };
 
     const encoded = Draft18MessageCodec.encode(subscribeMessage);
+    const subHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent SUBSCRIBE (draft-18)', {
       requestId,
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
+      hex: subHex,
+      length: encoded.length,
     });
 
     const response = await this.sendRequestAndWaitResponse(encoded);
@@ -1277,11 +1280,14 @@ export class MOQTSession {
     };
 
     const encoded = Draft18MessageCodec.encode(publishMessage);
+    const pubHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent PUBLISH (draft-18)', {
       requestId,
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
+      hex: pubHex,
+      length: encoded.length,
     });
 
     const response = await this.sendRequestAndWaitResponse(encoded);

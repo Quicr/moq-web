@@ -567,6 +567,16 @@ export class Draft18MessageCodec {
 
     // Message Parameters (count-prefixed)
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+
+    // FORWARD parameter (0x10): even type = single byte
+    // 0x01 = will forward new objects
+    if (message.forwardState !== false) {
+      params.push({
+        type: RequestParameterDraft18.FORWARD,
+        encode: (w) => { w.writeByte(0x01); },
+      });
+    }
+
     Draft18MessageCodec.encodeMessageParameters(writer, params);
 
     // Track Properties (KVPs to end)
