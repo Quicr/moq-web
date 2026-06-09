@@ -15,7 +15,7 @@ import type {
   TransportState,
   StreamInfo,
 } from './transport-worker-types.js';
-import { getCurrentALPNProtocol, IS_DRAFT_16 } from '@web-moq/core';
+import { getCurrentALPNProtocol, IS_DRAFT_16, IS_DRAFT_18 } from '@web-moq/core';
 
 // Worker state
 let transport: WebTransport | null = null;
@@ -79,10 +79,11 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     const alpnProtocol = getCurrentALPNProtocol();
     console.log('[transport-worker] Version check:', {
       IS_DRAFT_16,
+      IS_DRAFT_18,
       alpnProtocol,
-      willSetProtocols: IS_DRAFT_16,
+      willSetProtocols: IS_DRAFT_16 || IS_DRAFT_18,
     });
-    if (IS_DRAFT_16) {
+    if (IS_DRAFT_16 || IS_DRAFT_18) {
       options.protocols = [alpnProtocol];
     }
     console.log('[transport-worker] WebTransport options:', JSON.stringify(options));
