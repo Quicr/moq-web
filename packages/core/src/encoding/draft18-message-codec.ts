@@ -309,6 +309,16 @@ export class Draft18MessageCodec {
         },
       });
     }
+    if (message.moqtImplementation !== undefined) {
+      options.push({
+        key: SetupOptionDraft18.MOQT_IMPLEMENTATION,
+        encode: (w) => {
+          const bytes = new TextEncoder().encode(message.moqtImplementation!);
+          w.writeVarInt(BigInt(bytes.length));
+          w.writeBytes(bytes);
+        },
+      });
+    }
 
     // Sort by key and write delta-encoded
     options.sort((a, b) => a.key - b.key);

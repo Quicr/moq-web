@@ -1442,6 +1442,7 @@ export interface ClientSetupMessageDraft18 {
   authority?: string;
   maxAuthTokenCacheSize?: number;
   authToken?: Uint8Array;
+  moqtImplementation?: string;
 }
 
 /**
