@@ -329,10 +329,12 @@ export class MediaSession {
       await this.unsubscribe(subscriptionId);
     }
 
-    // Unsubscribe all namespace subscriptions
+    // Clean up namespace subscriptions locally (don't send UNSUBSCRIBE_NAMESPACE
+    // to relay — it may not support this message and would kill the connection)
     for (const [subscriptionId] of this.namespaceConfigs) {
-      await this.unsubscribeNamespace(subscriptionId).catch(() => {});
+      this.session.removeNamespaceSubscription(subscriptionId);
     }
+    this.namespaceConfigs.clear();
 
     // Clean up session events
     for (const cleanup of this.sessionCleanup) {

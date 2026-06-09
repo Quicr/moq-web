@@ -1051,6 +1051,13 @@ export class MOQTSession {
     this.namespaceSubscriptions.delete(subscriptionId);
   }
 
+  removeNamespaceSubscription(subscriptionId: number): void {
+    const subscription = this.namespaceSubscriptions.get(subscriptionId);
+    if (!subscription) return;
+    this.namespaceSubscriptionByRequestId.delete(subscription.requestId);
+    this.namespaceSubscriptions.delete(subscriptionId);
+  }
+
   /**
    * Set own namespace prefix for filtering out self-publishes
    */
