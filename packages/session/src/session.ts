@@ -532,6 +532,25 @@ export class MOQTSession {
   }
 
   /**
+   * Send a request message on a new bidi stream and wait for a response.
+   * Works in both worker and main-thread modes.
+   */
+  private async sendRequestAndWaitResponse(encoded: Uint8Array): Promise<ControlMessageDraft18> {
+    if (this.useWorker && this.transportWorker) {
+      const streamId = await this.transportWorker.createBidiStream();
+      this.transportWorker.writeStream(streamId, encoded);
+      return this.readWorkerBidiResponse(streamId);
+    } else if (this.transport) {
+      const { readable, writable } = await this.transport.createRequestStream();
+      const writer = writable.getWriter();
+      await writer.write(encoded);
+      writer.releaseLock();
+      return this.readRequestResponse(readable, 0n);
+    }
+    throw new Error('No transport available');
+  }
+
+  /**
    * Handle incoming bidi stream from worker (draft-18 server-initiated requests)
    */
   private handleWorkerIncomingBidiStream(streamId: number): void {
@@ -823,9 +842,6 @@ export class MOQTSession {
       log.warn('goAway only supported in draft-18');
       return;
     }
-    if (!this.transport) {
-      throw new Error('Transport not available');
-    }
 
     const goAwayMessage: GoAwayMessageDraft18 = {
       type: MessageTypeDraft18.GOAWAY,
@@ -861,12 +877,11 @@ export class MOQTSession {
     if (!IS_DRAFT_18) {
       throw new Error('fetch() requires draft-18');
     }
-    if (!this.isReady || !this.transport) {
+    if (!this.isReady) {
       throw new Error('Session not ready');
     }
 
     const requestId = this.getNextRequestId();
-    const { readable, writable } = await this.transport.createRequestStream();
 
     const fetchMessage: FetchMessageDraft18 = {
       type: MessageTypeDraft18.FETCH,
@@ -880,10 +895,7 @@ export class MOQTSession {
       endLocation: { group: BigInt(endGroup), object: BigInt(endObject) },
     };
 
-    const writer = writable.getWriter();
-    await writer.write(Draft18MessageCodec.encode(fetchMessage));
-    writer.releaseLock();
-
+    const encoded = Draft18MessageCodec.encode(fetchMessage);
     log.info('Sent FETCH (draft-18)', {
       requestId,
       namespace: namespace.join('/'),
@@ -891,8 +903,7 @@ export class MOQTSession {
       startGroup, startObject, endGroup, endObject,
     });
 
-    // Wait for FETCH_OK or REQUEST_ERROR
-    const response = await this.readRequestResponse(readable, BigInt(requestId));
+    const response = await this.sendRequestAndWaitResponse(encoded);
 
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
@@ -922,12 +933,11 @@ export class MOQTSession {
     if (!IS_DRAFT_18) {
       throw new Error('trackStatus() requires draft-18');
     }
-    if (!this.isReady || !this.transport) {
+    if (!this.isReady) {
       throw new Error('Session not ready');
     }
 
     const requestId = this.getNextRequestId();
-    const { readable, writable } = await this.transport.createRequestStream();
 
     const trackStatusMessage: TrackStatusMessageDraft18 = {
       type: MessageTypeDraft18.TRACK_STATUS,
@@ -936,18 +946,14 @@ export class MOQTSession {
       trackName,
     };
 
-    const writer = writable.getWriter();
-    await writer.write(Draft18MessageCodec.encode(trackStatusMessage));
-    writer.releaseLock();
-
+    const encoded = Draft18MessageCodec.encode(trackStatusMessage);
     log.info('Sent TRACK_STATUS (draft-18)', {
       requestId,
       namespace: namespace.join('/'),
       trackName,
     });
 
-    // Wait for response
-    const response = await this.readRequestResponse(readable, BigInt(requestId));
+    const response = await this.sendRequestAndWaitResponse(encoded);
 
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
@@ -970,12 +976,11 @@ export class MOQTSession {
     if (!IS_DRAFT_18) {
       throw new Error('subscribeTracks() requires draft-18');
     }
-    if (!this.isReady || !this.transport) {
+    if (!this.isReady) {
       throw new Error('Session not ready');
     }
 
     const requestId = this.getNextRequestId();
-    const { readable, writable } = await this.transport.createRequestStream();
 
     const subscribeTracksMessage: SubscribeTracksMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
@@ -985,17 +990,13 @@ export class MOQTSession {
       filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
     };
 
-    const writer = writable.getWriter();
-    await writer.write(Draft18MessageCodec.encode(subscribeTracksMessage));
-    writer.releaseLock();
-
+    const encoded = Draft18MessageCodec.encode(subscribeTracksMessage);
     log.info('Sent SUBSCRIBE_TRACKS (draft-18)', {
       requestId,
       prefix: namespacePrefix.join('/'),
     });
 
-    // Wait for REQUEST_OK or REQUEST_ERROR
-    const response = await this.readRequestResponse(readable, BigInt(requestId));
+    const response = await this.sendRequestAndWaitResponse(encoded);
 
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
@@ -1028,9 +1029,6 @@ export class MOQTSession {
     if (!IS_DRAFT_18) {
       throw new Error('sendRequestUpdate() requires draft-18');
     }
-    if (!this.transport) {
-      throw new Error('Transport not available');
-    }
 
     const updateMessage: RequestUpdateMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_UPDATE,
@@ -1059,9 +1057,6 @@ export class MOQTSession {
   ): Promise<void> {
     if (!IS_DRAFT_18) {
       throw new Error('sendPublishDone() requires draft-18');
-    }
-    if (!this.transport) {
-      throw new Error('Transport not available');
     }
 
     const publishDone: PublishDoneMessageDraft18 = {
@@ -1209,14 +1204,6 @@ export class MOQTSession {
     trackAlias: bigint,
     _options?: SubscribeOptions
   ): Promise<void> {
-    if (!this.transport) {
-      throw new Error('Transport not available');
-    }
-
-    // Create bidirectional stream for this request
-    const { readable, writable } = await this.transport.createRequestStream();
-
-    // Build SUBSCRIBE message
     const subscribeMessage: SubscribeMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE,
       requestId: BigInt(requestId),
@@ -1227,25 +1214,15 @@ export class MOQTSession {
       parameters: new Map(),
     };
 
-    const subscribeBytes = Draft18MessageCodec.encode(subscribeMessage);
-
-    const hexBytes = Array.from(subscribeBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('SUBSCRIBE bytes (draft-18)', { length: subscribeBytes.length, hex: hexBytes });
-
-    // Send SUBSCRIBE on the bidi stream
-    const writer = writable.getWriter();
-    await writer.write(subscribeBytes);
-    writer.releaseLock();
-
-    log.info('Sent SUBSCRIBE message (draft-18)', {
+    const encoded = Draft18MessageCodec.encode(subscribeMessage);
+    log.info('Sent SUBSCRIBE (draft-18)', {
       requestId,
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
     });
 
-    // Wait for response (SUBSCRIBE_OK or REQUEST_ERROR)
-    const response = await this.readRequestResponse(readable, BigInt(requestId));
+    const response = await this.sendRequestAndWaitResponse(encoded);
 
     if (response.type === MessageTypeDraft18.SUBSCRIBE_OK) {
       const subscribeOk = response as SubscribeOkMessageDraft18;
@@ -1275,12 +1252,6 @@ export class MOQTSession {
     trackAlias: bigint,
     options?: PublishOptions
   ): Promise<void> {
-    if (!this.transport) {
-      throw new Error('Transport not available');
-    }
-
-    const { readable, writable } = await this.transport.createRequestStream();
-
     const publishMessage: PublishMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH,
       requestId: BigInt(requestId),
@@ -1291,30 +1262,19 @@ export class MOQTSession {
       largestLocation: { group: 0n, object: 0n },
     };
 
-    const publishBytes = Draft18MessageCodec.encode(publishMessage);
-
-    const hexBytes = Array.from(publishBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('PUBLISH bytes (draft-18)', { length: publishBytes.length, hex: hexBytes });
-
-    const writer = writable.getWriter();
-    await writer.write(publishBytes);
-    writer.releaseLock();
-
-    log.info('Sent PUBLISH message (draft-18)', {
+    const encoded = Draft18MessageCodec.encode(publishMessage);
+    log.info('Sent PUBLISH (draft-18)', {
       requestId,
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
     });
 
-    // Wait for response (REQUEST_OK or REQUEST_ERROR)
-    const response = await this.readRequestResponse(readable, BigInt(requestId));
+    const response = await this.sendRequestAndWaitResponse(encoded);
 
     if (response.type === MessageTypeDraft18.REQUEST_OK) {
       log.info('Received REQUEST_OK for PUBLISH (draft-18)', { requestId });
-      // Forward state is managed via REQUEST_UPDATE messages on bidi stream
       if (!options?.skipForwardWait) {
-        // In draft-18, forward state starts as true since we set forwardState=true
         log.info('PUBLISH accepted, starting immediately (draft-18)');
       }
     } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
@@ -1597,11 +1557,6 @@ export class MOQTSession {
     namespacePrefix: string[],
     subscriptionId: number
   ): Promise<void> {
-    if (!this.transport) {
-      throw new Error('Transport not available');
-    }
-
-    const { readable, writable } = await this.transport.createRequestStream();
     const prefixStr = namespacePrefix.join('/');
 
     const subscribeNsMessage: SubscribeNamespaceMessageDraft18 = {
@@ -1610,16 +1565,36 @@ export class MOQTSession {
       trackNamespacePrefix: namespacePrefix,
     };
 
-    const writer = writable.getWriter();
-    await writer.write(Draft18MessageCodec.encode(subscribeNsMessage));
-    writer.releaseLock();
+    const encoded = Draft18MessageCodec.encode(subscribeNsMessage);
 
-    log.info('Sent SUBSCRIBE_NAMESPACE (draft-18)', { namespacePrefix: prefixStr, requestId });
+    if (this.useWorker && this.transportWorker) {
+      const streamId = await this.transportWorker.createBidiStream();
+      this.transportWorker.writeStream(streamId, encoded);
+      log.info('Sent SUBSCRIBE_NAMESPACE (draft-18) via worker', { namespacePrefix: prefixStr, requestId, streamId });
 
-    // Read responses: REQUEST_OK, then NAMESPACE messages, then NAMESPACE_DONE
-    this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
-      log.error('Error reading namespace subscription stream (draft-18)', { error: (err as Error).message });
-    });
+      // Create a ReadableStream for the bidi response
+      const readable = new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          this.incomingBidiControllers.set(streamId, controller);
+        },
+      });
+      this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
+      this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
+        log.error('Error reading namespace subscription stream (draft-18)', { error: (err as Error).message });
+      });
+    } else if (this.transport) {
+      const { readable, writable } = await this.transport.createRequestStream();
+      const writer = writable.getWriter();
+      await writer.write(encoded);
+      writer.releaseLock();
+      log.info('Sent SUBSCRIBE_NAMESPACE (draft-18)', { namespacePrefix: prefixStr, requestId });
+
+      this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
+        log.error('Error reading namespace subscription stream (draft-18)', { error: (err as Error).message });
+      });
+    } else {
+      throw new Error('No transport available');
+    }
   }
 
   /**
