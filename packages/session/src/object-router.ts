@@ -8,7 +8,7 @@
  * appropriate subscriptions.
  */
 
-import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16 } from '@web-moq/core';
+import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16, IS_DRAFT_18 } from '@web-moq/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 
 const log = Logger.create('moqt:session:object-router');
@@ -144,9 +144,9 @@ export class ObjectRouter {
 
         // Parse header if not yet done
         if (!headerParsed && viewLength > 0) {
-          if (IS_DRAFT_16) {
-            // Draft-16: Stream starts with Type (0x10-0x3D range)
-            log.info('Incoming stream first bytes (draft-16)', {
+          if (IS_DRAFT_18 || IS_DRAFT_16) {
+            // Draft-16/18: Stream starts with Type (0x10+ range)
+            log.info('Incoming stream first bytes', {
               viewLength,
               preview: Array.from(bufferView.slice(0, Math.min(20, viewLength))).map(b => b.toString(16).padStart(2, '0')).join(' '),
             });
@@ -155,7 +155,7 @@ export class ObjectRouter {
               [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = ObjectCodec.decodeSubgroupHeader(bufferView);
               headerParsed = true;
 
-              log.info('Decoded subgroup header (draft-16)', {
+              log.info('Decoded subgroup header', {
                 trackAlias: subgroupHeader.trackAlias,
                 groupId: subgroupHeader.groupId,
                 subgroupId: subgroupHeader.subgroupId,
@@ -165,7 +165,7 @@ export class ObjectRouter {
 
               bufferOffset += headerBytes;
             } catch (decodeErr) {
-              log.warn('Failed to decode subgroup header (draft-16)', {
+              log.warn('Failed to decode subgroup header', {
                 error: (decodeErr as Error).message,
                 bufferLength: bufferView.length,
                 totalBytesReceived,

@@ -34,7 +34,9 @@
 
 import { Logger } from '../utils/logger.js';
 import { BufferReader, BufferWriter, VarInt } from './varint.js';
-import { IS_DRAFT_16 } from '../version/constants.js';
+import { IS_DRAFT_16, IS_DRAFT_18 } from '../version/constants.js';
+import { Draft18StreamCodec, SubgroupFlags } from './draft18-stream-codec.js';
+import type { SubgroupHeaderDraft18, ObjectHeaderDraft18, ObjectDatagramDraft18 } from '../messages/types.js';
 import {
   MessageType,
   DataStreamType,
@@ -2305,6 +2307,20 @@ export class ObjectCodec {
    * @returns Encoded bytes
    */
   static encodeDatagramHeader(header: ObjectHeader): Uint8Array {
+    if (IS_DRAFT_18) {
+      const datagram: ObjectDatagramDraft18 = {
+        trackAlias: typeof header.trackAlias === 'bigint' ? header.trackAlias : BigInt(header.trackAlias),
+        groupId: BigInt(header.groupId),
+        objectId: BigInt(header.objectId),
+        publisherPriority: header.publisherPriority,
+        payload: new Uint8Array(0),
+      };
+      // Encode header only (without payload) - encode full then strip payload
+      const full = Draft18StreamCodec.encodeObjectDatagram(datagram);
+      // The payload is empty so full IS the header
+      return full;
+    }
+
     const writer = new BufferWriter();
 
     if (IS_DRAFT_16) {
@@ -2344,6 +2360,22 @@ export class ObjectCodec {
    * @returns Tuple of [decoded header, bytes consumed]
    */
   static decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
+    if (IS_DRAFT_18) {
+      const [datagram, bytesRead] = Draft18StreamCodec.decodeObjectDatagram(buffer);
+      const header: ObjectHeader = {
+        trackAlias: datagram.trackAlias,
+        groupId: Number(datagram.groupId),
+        subgroupId: 0,
+        objectId: Number(datagram.objectId),
+        publisherPriority: datagram.publisherPriority,
+        objectStatus: ObjectStatus.NORMAL,
+      };
+      // bytesRead includes the payload (remainder of buffer), we need just the header length
+      // Header length = bytesRead - payload.length
+      const headerLength = bytesRead - datagram.payload.length;
+      return [header, headerLength];
+    }
+
     const reader = new BufferReader(buffer);
     const datagramType = reader.readVarIntNumber();
 
@@ -2487,6 +2519,23 @@ export class ObjectCodec {
    * @returns Tuple of [encoded bytes, hasExtensions flag]
    */
   static encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
+    if (IS_DRAFT_18) {
+      let streamType = SubgroupFlags.BASE_TYPE;
+      if (endOfGroup) {
+        streamType |= SubgroupFlags.END_OF_GROUP;
+      }
+      const d18Header: SubgroupHeaderDraft18 = {
+        streamType,
+        trackAlias: typeof header.trackAlias === 'bigint' ? header.trackAlias : BigInt(header.trackAlias),
+        groupId: BigInt(header.groupId),
+        subgroupId: BigInt(header.subgroupId),
+        publisherPriority: header.publisherPriority,
+        firstObject: 0n,
+      };
+      const encoded = Draft18StreamCodec.encodeSubgroupHeader(d18Header);
+      return [encoded, false]; // draft-18 uses properties, not extensions flag
+    }
+
     const writer = new BufferWriter();
     let hasExtensions: boolean;
 
@@ -2534,6 +2583,18 @@ export class ObjectCodec {
    * @returns Tuple of [decoded header, bytes consumed, endOfGroup flag, hasExtensions flag]
    */
   static decodeSubgroupHeader(buffer: Uint8Array): [SubgroupHeader, number, boolean, boolean] {
+    if (IS_DRAFT_18) {
+      const [d18Header, bytesRead] = Draft18StreamCodec.decodeSubgroupHeader(buffer);
+      const endOfGroup = (d18Header.streamType & SubgroupFlags.END_OF_GROUP) !== 0;
+      const header: SubgroupHeader = {
+        trackAlias: d18Header.trackAlias,
+        groupId: Number(d18Header.groupId),
+        subgroupId: Number(d18Header.subgroupId),
+        publisherPriority: d18Header.publisherPriority,
+      };
+      return [header, bytesRead, endOfGroup, false]; // draft-18 doesn't use hasExtensions flag
+    }
+
     const reader = new BufferReader(buffer);
 
     if (IS_DRAFT_16) {
@@ -2680,6 +2741,25 @@ export class ObjectCodec {
     previousObjectId = -1,
     hasExtensions = false
   ): Uint8Array {
+    if (IS_DRAFT_18) {
+      // Draft-18: Object ID Delta | Properties Length | Properties | Payload Length
+      // Delta encoding: first object delta = objectId, subsequent = objectId - previousObjectId - 1
+      const isFirstObject = previousObjectId < 0;
+      const objectIdDelta = isFirstObject ? objectId : (objectId - previousObjectId - 1);
+
+      const objHeader: ObjectHeaderDraft18 = {
+        objectIdDelta: BigInt(objectIdDelta),
+        payloadLength: BigInt(payload.length),
+      };
+      const headerBytes = Draft18StreamCodec.encodeObjectHeader(objHeader);
+
+      // Combine header + payload
+      const result = new Uint8Array(headerBytes.length + payload.length);
+      result.set(headerBytes);
+      result.set(payload, headerBytes.length);
+      return result;
+    }
+
     const writer = new BufferWriter();
 
     if (IS_DRAFT_16) {
@@ -2744,6 +2824,18 @@ export class ObjectCodec {
     useRemainingAsPayload = false,
     previousObjectId = -1
   ): [number, Uint8Array, ObjectStatus, number] {
+    if (IS_DRAFT_18) {
+      // Draft-18: Object ID Delta | Properties Length | Properties | Payload Length | Payload
+      const [objHeader, headerBytesRead] = Draft18StreamCodec.decodeObjectHeader(buffer, offset);
+      const isFirstObject = previousObjectId < 0;
+      const delta = Number(objHeader.objectIdDelta);
+      const objectId = isFirstObject ? delta : (previousObjectId + delta + 1);
+      const payloadLength = Number(objHeader.payloadLength);
+      const payload = buffer.subarray(offset + headerBytesRead, offset + headerBytesRead + payloadLength);
+      const totalConsumed = headerBytesRead + payloadLength;
+      return [objectId, payload, ObjectStatus.NORMAL, totalConsumed];
+    }
+
     const reader = new BufferReader(buffer, offset);
 
     const objectIdDelta = reader.readVarIntNumber();

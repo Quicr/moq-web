@@ -14,7 +14,7 @@ import type { GroupOrder } from '@web-moq/core';
 /**
  * Session state
  */
-export type SessionState = 'none' | 'setup' | 'ready' | 'error';
+export type SessionState = 'none' | 'setup' | 'ready' | 'closing' | 'error';
 
 /**
  * Session event types
@@ -29,7 +29,9 @@ export type SessionEventType =
   | 'namespace-acknowledged'
   | 'incoming-publish'
   | 'forward-paused'
-  | 'forward-resumed';
+  | 'forward-resumed'
+  | 'goaway'
+  | 'publish-blocked';
 
 /**
  * Options for subscribing to a track

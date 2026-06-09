@@ -42,12 +42,25 @@ import {
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
   type PublishMessage,
-  type PublishMessageDraft18 as _PublishMessageDraft18,
+  type PublishMessageDraft18,
   type SubscribeMessage,
   type SubscribeMessageDraft18,
   type SubscribeOkMessage,
   type SubscribeOkMessageDraft18,
   type RequestErrorMessageDraft18,
+  type RequestOkMessageDraft18,
+  type RequestUpdateMessageDraft18,
+  type FetchMessageDraft18,
+  type FetchOkMessageDraft18 as _FetchOkMessageDraft18,
+  type GoAwayMessageDraft18,
+  type TrackStatusMessageDraft18,
+  type PublishDoneMessageDraft18,
+  type PublishNamespaceMessageDraft18,
+  type SubscribeNamespaceMessageDraft18,
+  type SubscribeTracksMessageDraft18,
+  type PublishBlockedMessageDraft18,
+  type NamespaceMessageDraft18,
+  type NamespaceDoneMessageDraft18,
   type PublishNamespaceMessage,
   type PublishNamespaceOkMessage,
   type SubscribeNamespaceOkMessage,
@@ -182,6 +195,9 @@ export class MOQTSession {
   private namespaceSubscriptionStreams = new Map<number, number>();
   /** Our own namespace prefix for filtering out self-publishes */
   private ownNamespacePrefix: string | null = null;
+
+  /** Pending fetch callbacks, keyed by requestId */
+  private pendingFetches = new Map<number, (data: Uint8Array, groupId: number, objectId: number) => void>();
 
   /**
    * Create a new MOQTSession
@@ -728,6 +744,271 @@ export class MOQTSession {
     log.info('MOQT session ready');
   }
 
+  // ============================================================================
+  // Draft-18 Protocol Operations
+  // ============================================================================
+
+  /**
+   * Send GOAWAY to signal graceful session termination (draft-18)
+   */
+  async goAway(newSessionUri?: string): Promise<void> {
+    if (!IS_DRAFT_18) {
+      log.warn('goAway only supported in draft-18');
+      return;
+    }
+    if (!this.transport) {
+      throw new Error('Transport not available');
+    }
+
+    const goAwayMessage: GoAwayMessageDraft18 = {
+      type: MessageTypeDraft18.GOAWAY,
+      newSessionUri,
+    };
+
+    const bytes = Draft18MessageCodec.encode(goAwayMessage);
+    await this.doSendControl(bytes);
+    this.setState('closing');
+    log.info('Sent GOAWAY', { newSessionUri });
+  }
+
+  /**
+   * Fetch objects from a track (draft-18)
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param startGroup - Start group ID
+   * @param startObject - Start object ID
+   * @param endGroup - End group ID
+   * @param endObject - End object ID
+   * @param onObject - Callback for fetched objects
+   */
+  async fetch(
+    namespace: string[],
+    trackName: string,
+    startGroup: number,
+    startObject: number,
+    endGroup: number,
+    endObject: number,
+    onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
+  ): Promise<void> {
+    if (!IS_DRAFT_18) {
+      throw new Error('fetch() requires draft-18');
+    }
+    if (!this.isReady || !this.transport) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+    const { readable, writable } = await this.transport.createRequestStream();
+
+    const fetchMessage: FetchMessageDraft18 = {
+      type: MessageTypeDraft18.FETCH,
+      requestId: BigInt(requestId),
+      joiningFlag: false,
+      trackNamespace: namespace,
+      trackName,
+      subscriberPriority: 128,
+      groupOrder: GroupOrder.ASCENDING,
+      startLocation: { group: BigInt(startGroup), object: BigInt(startObject) },
+      endLocation: { group: BigInt(endGroup), object: BigInt(endObject) },
+    };
+
+    const writer = writable.getWriter();
+    await writer.write(Draft18MessageCodec.encode(fetchMessage));
+    writer.releaseLock();
+
+    log.info('Sent FETCH (draft-18)', {
+      requestId,
+      namespace: namespace.join('/'),
+      trackName,
+      startGroup, startObject, endGroup, endObject,
+    });
+
+    // Wait for FETCH_OK or REQUEST_ERROR
+    const response = await this.readRequestResponse(readable, BigInt(requestId));
+
+    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      throw new Error(`FETCH failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+    }
+
+    log.info('Received FETCH_OK (draft-18)', { requestId });
+
+    // Objects arrive on a unidirectional fetch stream (type 0x05) with our requestId
+    // The transport will emit them via 'unidirectional-stream' events
+    // Register a temporary handler keyed by requestId
+    if (onObject) {
+      this.pendingFetches.set(requestId, onObject);
+    }
+  }
+
+  /**
+   * Query track status (draft-18)
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   */
+  async trackStatus(
+    namespace: string[],
+    trackName: string
+  ): Promise<void> {
+    if (!IS_DRAFT_18) {
+      throw new Error('trackStatus() requires draft-18');
+    }
+    if (!this.isReady || !this.transport) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+    const { readable, writable } = await this.transport.createRequestStream();
+
+    const trackStatusMessage: TrackStatusMessageDraft18 = {
+      type: MessageTypeDraft18.TRACK_STATUS,
+      requestId: BigInt(requestId),
+      trackNamespace: namespace,
+      trackName,
+    };
+
+    const writer = writable.getWriter();
+    await writer.write(Draft18MessageCodec.encode(trackStatusMessage));
+    writer.releaseLock();
+
+    log.info('Sent TRACK_STATUS (draft-18)', {
+      requestId,
+      namespace: namespace.join('/'),
+      trackName,
+    });
+
+    // Wait for response
+    const response = await this.readRequestResponse(readable, BigInt(requestId));
+
+    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      throw new Error(`TRACK_STATUS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+    }
+
+    log.info('TRACK_STATUS response received (draft-18)', { requestId });
+  }
+
+  /**
+   * Subscribe to tracks matching a namespace prefix (draft-18)
+   *
+   * @param namespacePrefix - Namespace prefix to match
+   * @param onObject - Callback for objects on matching tracks
+   */
+  async subscribeTracks(
+    namespacePrefix: string[],
+    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void
+  ): Promise<number> {
+    if (!IS_DRAFT_18) {
+      throw new Error('subscribeTracks() requires draft-18');
+    }
+    if (!this.isReady || !this.transport) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+    const { readable, writable } = await this.transport.createRequestStream();
+
+    const subscribeTracksMessage: SubscribeTracksMessageDraft18 = {
+      type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+      requestId: BigInt(requestId),
+      trackNamespacePrefix: namespacePrefix,
+      forwardState: true,
+      filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+    };
+
+    const writer = writable.getWriter();
+    await writer.write(Draft18MessageCodec.encode(subscribeTracksMessage));
+    writer.releaseLock();
+
+    log.info('Sent SUBSCRIBE_TRACKS (draft-18)', {
+      requestId,
+      prefix: namespacePrefix.join('/'),
+    });
+
+    // Wait for REQUEST_OK or REQUEST_ERROR
+    const response = await this.readRequestResponse(readable, BigInt(requestId));
+
+    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      throw new Error(`SUBSCRIBE_TRACKS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+    }
+
+    // Store the namespace subscription for incoming PUBLISH messages
+    const subscriptionId = requestId;
+    const subscription: NamespaceSubscriptionInfo = {
+      subscriptionId,
+      requestId,
+      namespacePrefix,
+      tracks: new Map(),
+      onObject,
+    };
+    this.namespaceSubscriptions.set(subscriptionId, subscription);
+    this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
+
+    log.info('SUBSCRIBE_TRACKS accepted (draft-18)', { requestId });
+    return subscriptionId;
+  }
+
+  /**
+   * Send REQUEST_UPDATE to change forward state on a subscription (draft-18)
+   *
+   * @param requestId - Original request ID of the subscription
+   * @param forwardState - New forward state (true = send objects, false = pause)
+   */
+  async sendRequestUpdate(requestId: number, forwardState: boolean): Promise<void> {
+    if (!IS_DRAFT_18) {
+      throw new Error('sendRequestUpdate() requires draft-18');
+    }
+    if (!this.transport) {
+      throw new Error('Transport not available');
+    }
+
+    const updateMessage: RequestUpdateMessageDraft18 = {
+      type: MessageTypeDraft18.REQUEST_UPDATE,
+      requestId: BigInt(requestId),
+      forwardState,
+    };
+
+    // REQUEST_UPDATE is sent on the setup/control stream
+    const bytes = Draft18MessageCodec.encode(updateMessage);
+    await this.doSendControl(bytes);
+    log.info('Sent REQUEST_UPDATE (draft-18)', { requestId, forwardState });
+  }
+
+  /**
+   * Send PUBLISH_DONE to signal end of publishing on a track (draft-18)
+   *
+   * @param requestId - Request ID of the PUBLISH
+   * @param finalGroup - Final group ID
+   * @param finalObject - Final object ID
+   */
+  async sendPublishDone(
+    requestId: number,
+    finalGroup: number,
+    finalObject: number,
+    reasonPhrase?: string
+  ): Promise<void> {
+    if (!IS_DRAFT_18) {
+      throw new Error('sendPublishDone() requires draft-18');
+    }
+    if (!this.transport) {
+      throw new Error('Transport not available');
+    }
+
+    const publishDone: PublishDoneMessageDraft18 = {
+      type: MessageTypeDraft18.PUBLISH_DONE,
+      requestId: BigInt(requestId),
+      finalLocation: { group: BigInt(finalGroup), object: BigInt(finalObject) },
+      reasonPhrase,
+    };
+
+    const bytes = Draft18MessageCodec.encode(publishDone);
+    await this.doSendControl(bytes);
+    log.info('Sent PUBLISH_DONE (draft-18)', { requestId, finalGroup, finalObject });
+  }
+
   /**
    * Close the session
    */
@@ -918,6 +1199,69 @@ export class MOQTSession {
   }
 
   /**
+   * Draft-18: Publish using per-request bidirectional stream
+   */
+  private async publishDraft18(
+    requestId: number,
+    namespace: string[],
+    trackName: string,
+    trackAlias: bigint,
+    options?: PublishOptions
+  ): Promise<void> {
+    if (!this.transport) {
+      throw new Error('Transport not available');
+    }
+
+    const { readable, writable } = await this.transport.createRequestStream();
+
+    const publishMessage: PublishMessageDraft18 = {
+      type: MessageTypeDraft18.PUBLISH,
+      requestId: BigInt(requestId),
+      trackAlias,
+      trackNamespace: namespace,
+      trackName,
+      forwardState: true,
+      largestLocation: { group: 0n, object: 0n },
+    };
+
+    const publishBytes = Draft18MessageCodec.encode(publishMessage);
+
+    const hexBytes = Array.from(publishBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log.info('PUBLISH bytes (draft-18)', { length: publishBytes.length, hex: hexBytes });
+
+    const writer = writable.getWriter();
+    await writer.write(publishBytes);
+    writer.releaseLock();
+
+    log.info('Sent PUBLISH message (draft-18)', {
+      requestId,
+      trackAlias: trackAlias.toString(),
+      namespace: namespace.join('/'),
+      trackName,
+    });
+
+    // Wait for response (REQUEST_OK or REQUEST_ERROR)
+    const response = await this.readRequestResponse(readable, BigInt(requestId));
+
+    if (response.type === MessageTypeDraft18.REQUEST_OK) {
+      log.info('Received REQUEST_OK for PUBLISH (draft-18)', { requestId });
+      // Forward state is managed via REQUEST_UPDATE messages on bidi stream
+      if (!options?.skipForwardWait) {
+        // In draft-18, forward state starts as true since we set forwardState=true
+        log.info('PUBLISH accepted, starting immediately (draft-18)');
+      }
+    } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      log.error('Received REQUEST_ERROR for PUBLISH (draft-18)', {
+        requestId: error.requestId.toString(),
+        errorCode: error.errorCode,
+        reasonPhrase: error.reasonPhrase,
+      });
+      throw new Error(`PUBLISH failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+    }
+  }
+
+  /**
    * Read response from a request bidi stream (draft-18)
    */
   private async readRequestResponse(
@@ -978,18 +1322,28 @@ export class MOQTSession {
 
     log.info('Unsubscribing', { subscriptionId });
 
-    // Send UNSUBSCRIBE message
-    const unsubscribeMessage = {
-      type: MessageType.UNSUBSCRIBE as const,
-      requestId: subscription.requestId,
-    };
+    if (IS_DRAFT_18) {
+      // Draft-18: Send REQUEST_UPDATE with forwardState=false to pause,
+      // or just remove locally (stream closure signals termination)
+      try {
+        await this.sendRequestUpdate(subscription.requestId, false);
+      } catch (err) {
+        log.error('Failed to send REQUEST_UPDATE for unsubscribe', { error: (err as Error).message });
+      }
+    } else {
+      // Draft-14/16: Send UNSUBSCRIBE message
+      const unsubscribeMessage = {
+        type: MessageType.UNSUBSCRIBE as const,
+        requestId: subscription.requestId,
+      };
 
-    try {
-      const unsubscribeBytes = MessageCodec.encode(unsubscribeMessage);
-      await this.doSendControl(unsubscribeBytes);
-      log.info('Sent UNSUBSCRIBE message', { requestId: subscription.requestId });
-    } catch (err) {
-      log.error('Failed to send UNSUBSCRIBE message', { error: (err as Error).message });
+      try {
+        const unsubscribeBytes = MessageCodec.encode(unsubscribeMessage);
+        await this.doSendControl(unsubscribeBytes);
+        log.info('Sent UNSUBSCRIBE message', { requestId: subscription.requestId });
+      } catch (err) {
+        log.error('Failed to send UNSUBSCRIBE message', { error: (err as Error).message });
+      }
     }
 
     // Remove from manager
@@ -1033,46 +1387,42 @@ export class MOQTSession {
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
 
-    // Build SUBSCRIBE_NAMESPACE message
-    // Note: In draft-16, subscriber priority is not a valid parameter for SUBSCRIBE_NAMESPACE
-    const message = {
-      type: MessageType.SUBSCRIBE_NAMESPACE as const,
-      requestId,
-      namespacePrefix,
-      subscribeOptions: 0x00, // Request PUBLISH messages
-    };
-
-    const bytes = MessageCodec.encode(message);
-
-    // Draft-16: SUBSCRIBE_NAMESPACE must be sent on a new bidirectional stream
-    if (IS_DRAFT_16) {
-      if (this.useWorker && this.transportWorker) {
-        // Worker mode: create bidi stream via worker
-        const streamId = await this.transportWorker.createBidiStream();
-        this.transportWorker.writeStream(streamId, bytes, false);
-
-        // Store stream ID for receiving responses
-        this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
-
-        log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { namespacePrefix: prefixStr, requestId, streamId });
-      } else if (this.transport) {
-        // Main thread mode: create bidi stream directly
-        const bidiStream = await this.transport.createBidirectionalStream();
-        const writer = bidiStream.writable.getWriter();
-        await writer.write(bytes);
-        writer.releaseLock();
-
-        // Start reading responses on this bidi stream
-        this.readNamespaceSubscriptionStream(bidiStream.readable, subscriptionId).catch(err => {
-          log.error('Error reading namespace subscription stream', { error: (err as Error).message });
-        });
-
-        log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream', { namespacePrefix: prefixStr, requestId });
-      }
+    if (IS_DRAFT_18) {
+      // Draft-18: Send SUBSCRIBE_NAMESPACE on per-request bidi stream
+      await this.subscribeNamespaceDraft18(requestId, namespacePrefix, subscriptionId);
     } else {
-      // Draft-14: send on control stream
-      await this.doSendControl(bytes);
-      log.info('Sent SUBSCRIBE_NAMESPACE on control stream', { namespacePrefix: prefixStr, requestId });
+      // Build SUBSCRIBE_NAMESPACE message
+      const message = {
+        type: MessageType.SUBSCRIBE_NAMESPACE as const,
+        requestId,
+        namespacePrefix,
+        subscribeOptions: 0x00,
+      };
+
+      const bytes = MessageCodec.encode(message);
+
+      // Draft-16: SUBSCRIBE_NAMESPACE must be sent on a new bidirectional stream
+      if (IS_DRAFT_16) {
+        if (this.useWorker && this.transportWorker) {
+          const streamId = await this.transportWorker.createBidiStream();
+          this.transportWorker.writeStream(streamId, bytes, false);
+          this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
+          log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { namespacePrefix: prefixStr, requestId, streamId });
+        } else if (this.transport) {
+          const bidiStream = await this.transport.createBidirectionalStream();
+          const writer = bidiStream.writable.getWriter();
+          await writer.write(bytes);
+          writer.releaseLock();
+          this.readNamespaceSubscriptionStream(bidiStream.readable, subscriptionId).catch(err => {
+            log.error('Error reading namespace subscription stream', { error: (err as Error).message });
+          });
+          log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream', { namespacePrefix: prefixStr, requestId });
+        }
+      } else {
+        // Draft-14: send on control stream
+        await this.doSendControl(bytes);
+        log.info('Sent SUBSCRIBE_NAMESPACE on control stream', { namespacePrefix: prefixStr, requestId });
+      }
     }
 
     return subscriptionId;
@@ -1169,6 +1519,174 @@ export class MOQTSession {
       log.error('Namespace subscription stream error', { error: (err as Error).message });
     } finally {
       reader.releaseLock();
+    }
+  }
+
+  /**
+   * Draft-18: Subscribe to namespace on per-request bidi stream
+   */
+  private async subscribeNamespaceDraft18(
+    requestId: number,
+    namespacePrefix: string[],
+    subscriptionId: number
+  ): Promise<void> {
+    if (!this.transport) {
+      throw new Error('Transport not available');
+    }
+
+    const { readable, writable } = await this.transport.createRequestStream();
+    const prefixStr = namespacePrefix.join('/');
+
+    const subscribeNsMessage: SubscribeNamespaceMessageDraft18 = {
+      type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
+      requestId: BigInt(requestId),
+      trackNamespacePrefix: namespacePrefix,
+    };
+
+    const writer = writable.getWriter();
+    await writer.write(Draft18MessageCodec.encode(subscribeNsMessage));
+    writer.releaseLock();
+
+    log.info('Sent SUBSCRIBE_NAMESPACE (draft-18)', { namespacePrefix: prefixStr, requestId });
+
+    // Read responses: REQUEST_OK, then NAMESPACE messages, then NAMESPACE_DONE
+    this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
+      log.error('Error reading namespace subscription stream (draft-18)', { error: (err as Error).message });
+    });
+  }
+
+  /**
+   * Read namespace subscription responses (draft-18)
+   */
+  private async readNamespaceSubscriptionStreamDraft18(
+    readable: ReadableStream<Uint8Array>,
+    subscriptionId: number
+  ): Promise<void> {
+    const reader = readable.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalLength = 0;
+    let offset = 0;
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value || value.length === 0) continue;
+
+        chunks.push(value);
+        totalLength += value.length;
+
+        const availableBytes = totalLength - offset;
+        if (availableBytes === 0) continue;
+
+        // Build buffer from chunks
+        let buffer: Uint8Array;
+        if (chunks.length === 1 && offset === 0) {
+          buffer = chunks[0];
+        } else {
+          buffer = new Uint8Array(availableBytes);
+          let writePos = 0;
+          let skip = offset;
+          for (const chunk of chunks) {
+            if (skip >= chunk.length) { skip -= chunk.length; continue; }
+            const src = skip > 0 ? chunk.subarray(skip) : chunk;
+            buffer.set(src, writePos);
+            writePos += src.length;
+            skip = 0;
+          }
+        }
+
+        // Decode messages
+        let consumed = 0;
+        while (consumed < buffer.length) {
+          try {
+            const view = buffer.subarray(consumed);
+            const [message, bytesRead] = Draft18MessageCodec.decode(view);
+            consumed += bytesRead;
+
+            log.info('Received message on namespace subscription stream (draft-18)', {
+              type: MessageTypeDraft18[message.type],
+              subscriptionId,
+            });
+
+            this.routeMessageDraft18(message, subscriptionId);
+          } catch (err) {
+            if ((err as Error).message?.includes('Incomplete') || (err as Error).message?.includes('buffer')) {
+              break;
+            }
+            throw err;
+          }
+        }
+
+        offset += consumed;
+        if (offset > 4096) {
+          const remaining = totalLength - offset;
+          if (remaining === 0) {
+            chunks.length = 0; totalLength = 0; offset = 0;
+          } else {
+            const leftover = buffer.subarray(consumed);
+            chunks.length = 0;
+            chunks.push(new Uint8Array(leftover));
+            totalLength = leftover.length;
+            offset = 0;
+          }
+        }
+      }
+    } catch (err) {
+      log.error('Namespace subscription stream error (draft-18)', { error: (err as Error).message });
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /**
+   * Route a draft-18 message received on a namespace subscription stream
+   */
+  private routeMessageDraft18(message: ControlMessageDraft18, subscriptionId: number): void {
+    switch (message.type) {
+      case MessageTypeDraft18.REQUEST_OK: {
+        log.info('Namespace subscription accepted (draft-18)', { subscriptionId });
+        break;
+      }
+
+      case MessageTypeDraft18.REQUEST_ERROR: {
+        const error = message as RequestErrorMessageDraft18;
+        log.error('Namespace subscription rejected (draft-18)', {
+          errorCode: error.errorCode,
+          reasonPhrase: error.reasonPhrase,
+        });
+        this.namespaceSubscriptions.delete(subscriptionId);
+        this.emit('error', new Error(`Namespace subscription failed: ${error.reasonPhrase}`));
+        break;
+      }
+
+      case MessageTypeDraft18.NAMESPACE: {
+        const nsMsg = message as NamespaceMessageDraft18;
+        const nsStr = nsMsg.trackNamespace.join('/');
+        log.info('Received NAMESPACE announcement (draft-18)', { namespace: nsStr, subscriptionId });
+        break;
+      }
+
+      case MessageTypeDraft18.NAMESPACE_DONE: {
+        const nsDone = message as NamespaceDoneMessageDraft18;
+        log.info('Received NAMESPACE_DONE (draft-18)', {
+          finalNamespace: nsDone.finalNamespace.join('/'),
+          subscriptionId,
+        });
+        break;
+      }
+
+      case MessageTypeDraft18.PUBLISH: {
+        // Server sends PUBLISH to announce a track under the subscribed namespace
+        const pubMsg = message as PublishMessageDraft18;
+        this.handleIncomingPublishDraft18(pubMsg, new WritableStream()).catch(err => {
+          log.error('Error handling PUBLISH from namespace stream', { error: (err as Error).message });
+        });
+        break;
+      }
+
+      default:
+        log.warn('Unhandled message on namespace subscription stream', { type: message.type });
     }
   }
 
@@ -1307,53 +1825,57 @@ export class MOQTSession {
     };
     this.publicationManager.add(publication);
 
-    // Send PUBLISH message
-    const publishMessage: PublishMessage = {
-      type: MessageType.PUBLISH,
-      requestId,
-      fullTrackName: { namespace, trackName },
-      trackAlias,
-      groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
-      contentExists: false,
-      forward: 1,
-      parameters,
-    };
-
-    log.info('PUBLISH with parameters', {
-      deliveryTimeout,
-      priority,
-      hasDeliveryTimeoutParam: parameters.has(RequestParameter.DELIVERY_TIMEOUT),
-    });
-
-    const publishBytes = MessageCodec.encode(publishMessage);
-
-    const hexBytes = Array.from(publishBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('PUBLISH bytes', { length: publishBytes.length, hex: hexBytes });
-
-    await this.doSendControl(publishBytes);
-    log.info('Sent PUBLISH message', {
-      requestId,
-      trackAlias: trackAlias.toString(),
-      namespace: namespace.join('/'),
-      trackName,
-    });
-
-    // Wait for PUBLISH_OK
-    const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
-    log.info('Received PUBLISH_OK', {
-      requestId,
-      forward: publishOkResult.forward,
-    });
-
-    // If forward=0, wait for SUBSCRIBE_UPDATE (unless skipForwardWait is set)
-    if (publishOkResult.forward === 0 && !options?.skipForwardWait) {
-      log.info('Forward=0, waiting for subscriber (SUBSCRIBE_UPDATE with forward=1)');
-      await this.publicationManager.waitForForward(requestId);
-      log.info('Forward enabled by subscriber, can start sending data');
-    } else if (publishOkResult.forward === 0) {
-      log.info('Forward=0 but skipForwardWait=true, starting immediately');
+    if (IS_DRAFT_18) {
+      await this.publishDraft18(requestId, namespace, trackName, trackAlias, options);
     } else {
-      log.info('Forward=1, subscriber already exists - starting immediately');
+      // Send PUBLISH message
+      const publishMessage: PublishMessage = {
+        type: MessageType.PUBLISH,
+        requestId,
+        fullTrackName: { namespace, trackName },
+        trackAlias,
+        groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
+        contentExists: false,
+        forward: 1,
+        parameters,
+      };
+
+      log.info('PUBLISH with parameters', {
+        deliveryTimeout,
+        priority,
+        hasDeliveryTimeoutParam: parameters.has(RequestParameter.DELIVERY_TIMEOUT),
+      });
+
+      const publishBytes = MessageCodec.encode(publishMessage);
+
+      const hexBytes = Array.from(publishBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log.info('PUBLISH bytes', { length: publishBytes.length, hex: hexBytes });
+
+      await this.doSendControl(publishBytes);
+      log.info('Sent PUBLISH message', {
+        requestId,
+        trackAlias: trackAlias.toString(),
+        namespace: namespace.join('/'),
+        trackName,
+      });
+
+      // Wait for PUBLISH_OK
+      const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
+      log.info('Received PUBLISH_OK', {
+        requestId,
+        forward: publishOkResult.forward,
+      });
+
+      // If forward=0, wait for SUBSCRIBE_UPDATE (unless skipForwardWait is set)
+      if (publishOkResult.forward === 0 && !options?.skipForwardWait) {
+        log.info('Forward=0, waiting for subscriber (SUBSCRIBE_UPDATE with forward=1)');
+        await this.publicationManager.waitForForward(requestId);
+        log.info('Forward enabled by subscriber, can start sending data');
+      } else if (publishOkResult.forward === 0) {
+        log.info('Forward=0 but skipForwardWait=true, starting immediately');
+      } else {
+        log.info('Forward=1, subscriber already exists - starting immediately');
+      }
     }
 
     log.info('Publishing started', { trackAlias: trackAlias.toString() });
@@ -1425,46 +1947,92 @@ export class MOQTSession {
     };
     this.announcedNamespaces.set(namespaceStr, announceInfo);
 
-    // Send PUBLISH_NAMESPACE message
     const requestId = this.getNextRequestId();
-    const publishNamespaceMessage: PublishNamespaceMessage = {
-      type: MessageType.PUBLISH_NAMESPACE,
-      requestId,
-      namespace,
+
+    if (IS_DRAFT_18) {
+      // Draft-18: Send PUBLISH_NAMESPACE on per-request bidi stream
+      await this.announceNamespaceDraft18(requestId, namespace, namespaceStr, announceInfo);
+    } else {
+      // Draft-14/16: Send on control stream
+      const publishNamespaceMessage: PublishNamespaceMessage = {
+        type: MessageType.PUBLISH_NAMESPACE,
+        requestId,
+        namespace,
+      };
+
+      const bytes = MessageCodec.encode(publishNamespaceMessage);
+      const hexBytes = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log.info('PUBLISH_NAMESPACE bytes', { length: bytes.length, hex: hexBytes, namespace: namespaceStr, requestId });
+
+      this.announceRequestIdToNamespace.set(requestId, namespaceStr);
+
+      await this.doSendControl(bytes);
+      log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId });
+
+      // Wait for PUBLISH_NAMESPACE_OK with timeout
+      const timeout = 10000;
+      const startTime = Date.now();
+
+      return new Promise<void>((resolve, reject) => {
+        const checkAcknowledged = () => {
+          const info = this.announcedNamespaces.get(namespaceStr);
+          if (info?.acknowledged) {
+            resolve();
+            return;
+          }
+
+          if (Date.now() - startTime > timeout) {
+            this.announcedNamespaces.delete(namespaceStr);
+            reject(new Error(`Timeout waiting for PUBLISH_NAMESPACE_OK for ${namespaceStr}`));
+            return;
+          }
+
+          setTimeout(checkAcknowledged, 50);
+        };
+        checkAcknowledged();
+      });
+    }
+  }
+
+  /**
+   * Draft-18: Announce namespace on per-request bidi stream
+   */
+  private async announceNamespaceDraft18(
+    requestId: number,
+    namespace: string[],
+    namespaceStr: string,
+    announceInfo: AnnouncedNamespaceInfo
+  ): Promise<void> {
+    if (!this.transport) {
+      throw new Error('Transport not available');
+    }
+
+    const { readable, writable } = await this.transport.createRequestStream();
+
+    const publishNsMessage: PublishNamespaceMessageDraft18 = {
+      type: MessageTypeDraft18.PUBLISH_NAMESPACE,
+      requestId: BigInt(requestId),
+      trackNamespacePrefix: namespace,
     };
 
-    const bytes = MessageCodec.encode(publishNamespaceMessage);
-    const hexBytes = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('PUBLISH_NAMESPACE bytes', { length: bytes.length, hex: hexBytes, namespace: namespaceStr, requestId });
+    const writer = writable.getWriter();
+    await writer.write(Draft18MessageCodec.encode(publishNsMessage));
+    writer.releaseLock();
 
-    // Store requestId -> namespace mapping for draft-16 response handling
-    this.announceRequestIdToNamespace.set(requestId, namespaceStr);
+    log.info('Sent PUBLISH_NAMESPACE (draft-18)', { namespace: namespaceStr, requestId });
 
-    await this.doSendControl(bytes);
-    log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId });
+    // Wait for REQUEST_OK or REQUEST_ERROR
+    const response = await this.readRequestResponse(readable, BigInt(requestId));
 
-    // Wait for PUBLISH_NAMESPACE_OK with timeout
-    const timeout = 10000;
-    const startTime = Date.now();
-
-    return new Promise<void>((resolve, reject) => {
-      const checkAcknowledged = () => {
-        const info = this.announcedNamespaces.get(namespaceStr);
-        if (info?.acknowledged) {
-          resolve();
-          return;
-        }
-
-        if (Date.now() - startTime > timeout) {
-          this.announcedNamespaces.delete(namespaceStr);
-          reject(new Error(`Timeout waiting for PUBLISH_NAMESPACE_OK for ${namespaceStr}`));
-          return;
-        }
-
-        setTimeout(checkAcknowledged, 50);
-      };
-      checkAcknowledged();
-    });
+    if (response.type === MessageTypeDraft18.REQUEST_OK) {
+      announceInfo.acknowledged = true;
+      this.emit('namespace-acknowledged', { namespace });
+      log.info('PUBLISH_NAMESPACE accepted (draft-18)', { namespace: namespaceStr });
+    } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      this.announcedNamespaces.delete(namespaceStr);
+      throw new Error(`Namespace announcement failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+    }
   }
 
   /**
@@ -2174,24 +2742,29 @@ export class MOQTSession {
 
     log.info('Pausing subscription', { subscriptionId });
 
-    const subscribeUpdateMessage = {
-      type: MessageType.SUBSCRIBE_UPDATE as const,
-      requestId: this.getNextRequestId(),
-      subscriptionRequestId: subscription.requestId,
-      startLocation: { groupId: 0, objectId: 0 },
-      endGroup: 0,
-      subscriberPriority: 128,
-      forward: 0,
-    };
-
-    try {
-      const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
-      await this.doSendControl(updateBytes);
+    if (IS_DRAFT_18) {
+      await this.sendRequestUpdate(subscription.requestId, false);
       subscription.paused = true;
-      log.info('Sent SUBSCRIBE_UPDATE (pause)', { subscriptionId, requestId: subscribeUpdateMessage.requestId });
-    } catch (err) {
-      log.error('Failed to send SUBSCRIBE_UPDATE (pause)', { error: (err as Error).message });
-      throw err;
+    } else {
+      const subscribeUpdateMessage = {
+        type: MessageType.SUBSCRIBE_UPDATE as const,
+        requestId: this.getNextRequestId(),
+        subscriptionRequestId: subscription.requestId,
+        startLocation: { groupId: 0, objectId: 0 },
+        endGroup: 0,
+        subscriberPriority: 128,
+        forward: 0,
+      };
+
+      try {
+        const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
+        await this.doSendControl(updateBytes);
+        subscription.paused = true;
+        log.info('Sent SUBSCRIBE_UPDATE (pause)', { subscriptionId, requestId: subscribeUpdateMessage.requestId });
+      } catch (err) {
+        log.error('Failed to send SUBSCRIBE_UPDATE (pause)', { error: (err as Error).message });
+        throw err;
+      }
     }
   }
 
@@ -2212,24 +2785,29 @@ export class MOQTSession {
 
     log.info('Resuming subscription', { subscriptionId });
 
-    const subscribeUpdateMessage = {
-      type: MessageType.SUBSCRIBE_UPDATE as const,
-      requestId: this.getNextRequestId(),
-      subscriptionRequestId: subscription.requestId,
-      startLocation: { groupId: 0, objectId: 0 },
-      endGroup: 0,
-      subscriberPriority: 128,
-      forward: 1,
-    };
-
-    try {
-      const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
-      await this.doSendControl(updateBytes);
+    if (IS_DRAFT_18) {
+      await this.sendRequestUpdate(subscription.requestId, true);
       subscription.paused = false;
-      log.info('Sent SUBSCRIBE_UPDATE (resume)', { subscriptionId, requestId: subscribeUpdateMessage.requestId });
-    } catch (err) {
-      log.error('Failed to send SUBSCRIBE_UPDATE (resume)', { error: (err as Error).message });
-      throw err;
+    } else {
+      const subscribeUpdateMessage = {
+        type: MessageType.SUBSCRIBE_UPDATE as const,
+        requestId: this.getNextRequestId(),
+        subscriptionRequestId: subscription.requestId,
+        startLocation: { groupId: 0, objectId: 0 },
+        endGroup: 0,
+        subscriberPriority: 128,
+        forward: 1,
+      };
+
+      try {
+        const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
+        await this.doSendControl(updateBytes);
+        subscription.paused = false;
+        log.info('Sent SUBSCRIBE_UPDATE (resume)', { subscriptionId, requestId: subscribeUpdateMessage.requestId });
+      } catch (err) {
+        log.error('Failed to send SUBSCRIBE_UPDATE (resume)', { error: (err as Error).message });
+        throw err;
+      }
     }
   }
 
@@ -2391,9 +2969,14 @@ export class MOQTSession {
             type: MessageTypeDraft18[message.type],
           });
 
-          // Handle setup callback
+          // Handle setup callback (used during initial setup)
           if (this.onSetupMessage) {
             this.onSetupMessage(message);
+          }
+
+          // Route post-setup messages (GOAWAY, REQUEST_UPDATE on setup stream)
+          if (this._state === 'ready' || this._state === 'closing') {
+            this.routeSetupStreamMessage(message);
           }
         } catch (err) {
           if ((err as Error).message?.includes('Incomplete') ||
@@ -2415,12 +2998,519 @@ export class MOQTSession {
   }
 
   /**
+   * Route messages received on the setup stream after connection established (draft-18)
+   */
+  private routeSetupStreamMessage(message: ControlMessageDraft18): void {
+    switch (message.type) {
+      case MessageTypeDraft18.GOAWAY:
+        this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
+        break;
+
+      case MessageTypeDraft18.REQUEST_UPDATE: {
+        const update = message as RequestUpdateMessageDraft18;
+        if (update.forwardState) {
+          this.publicationManager.resolveAllForward();
+          this.emit('forward-resumed', { requestId: Number(update.requestId) });
+        } else {
+          this.emit('forward-paused', { subscriptionRequestId: Number(update.requestId) });
+        }
+        break;
+      }
+
+      case MessageTypeDraft18.PUBLISH_BLOCKED:
+        this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
+        break;
+
+      case MessageTypeDraft18.PUBLISH_DONE:
+        this.handleIncomingPublishDoneDraft18(message as PublishDoneMessageDraft18);
+        break;
+
+      default:
+        // SERVER_SETUP messages are ignored post-setup
+        if (message.type !== MessageTypeDraft18.SERVER_SETUP) {
+          log.warn('Unhandled message on setup stream', { type: MessageTypeDraft18[message.type] });
+        }
+    }
+  }
+
+  /**
    * Handle incoming bidirectional stream (draft-18 server-initiated requests)
    */
-  private handleIncomingBidiStream(_stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): void {
+  private handleIncomingBidiStream(stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): void {
     log.info('Handling incoming bidi stream (draft-18)');
-    // TODO: Read the request message, route to appropriate handler, send response
-    // Full implementation in task #9
+    this.processIncomingBidiStream(stream).catch(err => {
+      log.error('Error processing incoming bidi stream', { error: (err as Error).message });
+    });
+  }
+
+  /**
+   * Process incoming bidi stream: read request, dispatch, respond
+   */
+  private async processIncomingBidiStream(stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): Promise<void> {
+    const reader = stream.readable.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalLength = 0;
+
+    try {
+      // Read until we have a complete message
+      let message: ControlMessageDraft18 | null = null;
+      while (!message) {
+        const { value, done } = await reader.read();
+        if (done) {
+          log.warn('Incoming bidi stream closed before message received');
+          return;
+        }
+        chunks.push(value);
+        totalLength += value.length;
+
+        const buffer = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          buffer.set(chunk, offset);
+          offset += chunk.length;
+        }
+
+        try {
+          const [decoded] = Draft18MessageCodec.decode(buffer);
+          message = decoded;
+        } catch (err) {
+          if ((err as Error).message?.includes('Incomplete') || (err as Error).message?.includes('buffer')) {
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      log.info('Received message on incoming bidi stream', { type: MessageTypeDraft18[message.type] });
+
+      // Dispatch based on message type
+      switch (message.type) {
+        case MessageTypeDraft18.SUBSCRIBE:
+          await this.handleIncomingSubscribeDraft18(message as SubscribeMessageDraft18, stream.writable);
+          break;
+
+        case MessageTypeDraft18.PUBLISH:
+          await this.handleIncomingPublishDraft18(message as PublishMessageDraft18, stream.writable);
+          break;
+
+        case MessageTypeDraft18.FETCH:
+          await this.handleIncomingFetchDraft18(message as FetchMessageDraft18, stream.writable);
+          break;
+
+        case MessageTypeDraft18.TRACK_STATUS:
+          await this.handleIncomingTrackStatusDraft18(message as TrackStatusMessageDraft18, stream.writable);
+          break;
+
+        case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
+          await this.handleIncomingSubscribeNamespaceDraft18(message as SubscribeNamespaceMessageDraft18, stream.writable, reader);
+          break;
+
+        case MessageTypeDraft18.PUBLISH_NAMESPACE:
+          await this.handleIncomingPublishNamespaceDraft18(message as PublishNamespaceMessageDraft18, stream.writable);
+          break;
+
+        case MessageTypeDraft18.SUBSCRIBE_TRACKS:
+          await this.handleIncomingSubscribeTracksDraft18(message as SubscribeTracksMessageDraft18, stream.writable);
+          break;
+
+        case MessageTypeDraft18.REQUEST_UPDATE:
+          await this.handleIncomingRequestUpdateDraft18(message as RequestUpdateMessageDraft18, stream.writable);
+          break;
+
+        case MessageTypeDraft18.PUBLISH_DONE:
+          this.handleIncomingPublishDoneDraft18(message as PublishDoneMessageDraft18);
+          break;
+
+        case MessageTypeDraft18.GOAWAY:
+          this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
+          break;
+
+        case MessageTypeDraft18.PUBLISH_BLOCKED:
+          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
+          break;
+
+        default:
+          log.warn('Unhandled message type on incoming bidi stream', { type: message.type });
+          await this.sendRequestErrorOnStream(stream.writable, 0n, 0x01, 'Unsupported message type');
+      }
+    } catch (err) {
+      log.error('Error reading incoming bidi stream', { error: (err as Error).message });
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /**
+   * Handle incoming SUBSCRIBE on bidi stream (we are the publisher)
+   */
+  private async handleIncomingSubscribeDraft18(
+    message: SubscribeMessageDraft18,
+    writable: WritableStream<Uint8Array>
+  ): Promise<void> {
+    const namespace = message.trackNamespace;
+    const trackName = message.trackName;
+    const fullTrackNameStr = [...namespace, trackName].join('/');
+
+    log.info('Received SUBSCRIBE (draft-18 bidi)', {
+      requestId: message.requestId.toString(),
+      namespace: namespace.join('/'),
+      trackName,
+    });
+
+    // Check if this matches any announced namespace
+    const announceInfo = this.matchesAnnouncedNamespace(namespace);
+
+    if (!announceInfo) {
+      log.warn('SUBSCRIBE does not match any announced namespace', { namespace: namespace.join('/') });
+      await this.sendRequestErrorOnStream(writable, message.requestId, 0x01, 'No matching namespace');
+      return;
+    }
+
+    // Assign track alias
+    const trackAlias = BigInt(this.nextIncomingTrackAlias++);
+
+    // Send SUBSCRIBE_OK
+    const subscribeOk: SubscribeOkMessageDraft18 = {
+      type: MessageTypeDraft18.SUBSCRIBE_OK,
+      requestId: message.requestId,
+      largestLocation: { group: 0n, object: 0n },
+    };
+    const responseBytes = Draft18MessageCodec.encode(subscribeOk);
+    const writer = writable.getWriter();
+    await writer.write(responseBytes);
+    writer.releaseLock();
+
+    // Create publication entry
+    const publication: InternalPublication = {
+      trackAlias,
+      namespace,
+      trackName,
+      priority: announceInfo.options.priority ?? 128,
+      deliveryMode: announceInfo.options.deliveryMode ?? 'stream',
+      audioDeliveryMode: announceInfo.options.audioDeliveryMode ?? 'datagram',
+      requestId: Number(message.requestId),
+      cleanupHandlers: [],
+    };
+    this.publicationManager.add(publication);
+
+    // Add to subscribers map
+    const subscriber: IncomingSubscriber = {
+      requestId: Number(message.requestId),
+      fullTrackName: { namespace, trackName },
+      trackAlias,
+      subscriberPriority: 128,
+      groupOrder: GroupOrder.ASCENDING,
+      active: true,
+    };
+    announceInfo.subscribers.set(Number(message.requestId), subscriber);
+
+    // Emit event
+    this.emit('incoming-subscribe', {
+      requestId: Number(message.requestId),
+      namespace,
+      trackName,
+      trackAlias,
+    } as IncomingSubscribeEvent);
+
+    log.info('Accepted SUBSCRIBE (draft-18)', { trackAlias: trackAlias.toString(), fullTrackName: fullTrackNameStr });
+  }
+
+  /**
+   * Handle incoming PUBLISH on bidi stream (we are the subscriber)
+   */
+  private async handleIncomingPublishDraft18(
+    message: PublishMessageDraft18,
+    writable: WritableStream<Uint8Array>
+  ): Promise<void> {
+    const namespace = message.trackNamespace;
+    const trackName = message.trackName;
+    const fullTrackNameStr = [...namespace, trackName].join('/');
+    const namespaceStr = namespace.join('/');
+
+    log.info('Received PUBLISH (draft-18 bidi)', {
+      requestId: message.requestId.toString(),
+      namespace: namespaceStr,
+      trackName,
+      trackAlias: message.trackAlias.toString(),
+    });
+
+    // Check if this is our own publish
+    if (this.ownNamespacePrefix && namespaceStr.startsWith(this.ownNamespacePrefix)) {
+      log.debug('Ignoring own PUBLISH', { namespace: namespaceStr });
+      return;
+    }
+
+    // Find matching namespace subscription
+    let matchingSubscription: NamespaceSubscriptionInfo | undefined;
+    for (const sub of this.namespaceSubscriptions.values()) {
+      const prefix = sub.namespacePrefix.join('/');
+      if (namespaceStr.startsWith(prefix)) {
+        matchingSubscription = sub;
+        break;
+      }
+    }
+
+    if (!matchingSubscription) {
+      log.warn('PUBLISH does not match any namespace subscription', { publishNamespace: namespaceStr });
+      await this.sendRequestErrorOnStream(writable, message.requestId, 0x01, 'No matching subscription');
+      return;
+    }
+
+    // Send REQUEST_OK to accept
+    const requestOk: RequestOkMessageDraft18 = {
+      type: MessageTypeDraft18.REQUEST_OK,
+      requestId: message.requestId,
+    };
+    const responseBytes = Draft18MessageCodec.encode(requestOk);
+    const writer = writable.getWriter();
+    await writer.write(responseBytes);
+    writer.releaseLock();
+
+    // Register as subscription for object routing
+    const subscriptionId = this.getNextRequestId();
+    const subscription: InternalSubscription = {
+      subscriptionId,
+      requestId: Number(message.requestId),
+      namespace,
+      trackName,
+      trackAlias: message.trackAlias,
+      paused: false,
+      onObject: matchingSubscription.onObject,
+    };
+    this.subscriptionManager.add(subscription);
+
+    // Store track info
+    const trackInfo: IncomingPublishInfo = {
+      requestId: Number(message.requestId),
+      namespace,
+      trackName,
+      trackAlias: message.trackAlias,
+      groupOrder: GroupOrder.ASCENDING,
+      acknowledged: true,
+    };
+    matchingSubscription.tracks.set(fullTrackNameStr, trackInfo);
+
+    // Emit event
+    this.emit('incoming-publish', {
+      namespaceSubscriptionId: matchingSubscription.subscriptionId,
+      subscriptionId,
+      requestId: Number(message.requestId),
+      namespace,
+      trackName,
+      trackAlias: message.trackAlias,
+      groupOrder: GroupOrder.ASCENDING,
+    } as IncomingPublishEvent);
+
+    log.info('Accepted PUBLISH (draft-18)', { trackAlias: message.trackAlias.toString(), fullTrackName: fullTrackNameStr });
+  }
+
+  /**
+   * Handle incoming FETCH on bidi stream
+   */
+  private async handleIncomingFetchDraft18(
+    message: FetchMessageDraft18,
+    writable: WritableStream<Uint8Array>
+  ): Promise<void> {
+    log.info('Received FETCH (draft-18)', { requestId: message.requestId.toString() });
+    // For now, respond with REQUEST_ERROR since we don't cache objects
+    await this.sendRequestErrorOnStream(writable, message.requestId, 0x01, 'Fetch not supported');
+  }
+
+  /**
+   * Handle incoming TRACK_STATUS on bidi stream
+   */
+  private async handleIncomingTrackStatusDraft18(
+    message: TrackStatusMessageDraft18,
+    writable: WritableStream<Uint8Array>
+  ): Promise<void> {
+    log.info('Received TRACK_STATUS (draft-18)', {
+      requestId: message.requestId.toString(),
+      namespace: message.trackNamespace.join('/'),
+      trackName: message.trackName,
+    });
+    // Respond with REQUEST_ERROR - we don't track status
+    await this.sendRequestErrorOnStream(writable, message.requestId, 0x01, 'Track status not available');
+  }
+
+  /**
+   * Handle incoming SUBSCRIBE_NAMESPACE on bidi stream (we are the publisher)
+   */
+  private async handleIncomingSubscribeNamespaceDraft18(
+    message: SubscribeNamespaceMessageDraft18,
+    writable: WritableStream<Uint8Array>,
+    _reader: ReadableStreamDefaultReader<Uint8Array>
+  ): Promise<void> {
+    const prefix = message.trackNamespacePrefix.join('/');
+    log.info('Received SUBSCRIBE_NAMESPACE (draft-18)', {
+      requestId: message.requestId.toString(),
+      prefix,
+    });
+
+    // Send REQUEST_OK
+    const requestOk: RequestOkMessageDraft18 = {
+      type: MessageTypeDraft18.REQUEST_OK,
+      requestId: message.requestId,
+    };
+    const writer = writable.getWriter();
+    await writer.write(Draft18MessageCodec.encode(requestOk));
+
+    // Send NAMESPACE messages for matching announced namespaces
+    for (const [, announceInfo] of this.announcedNamespaces) {
+      const nsStr = announceInfo.namespace.join('/');
+      if (nsStr.startsWith(prefix)) {
+        const nsMsg: NamespaceMessageDraft18 = {
+          type: MessageTypeDraft18.NAMESPACE,
+          trackNamespace: announceInfo.namespace,
+        };
+        await writer.write(Draft18MessageCodec.encode(nsMsg));
+      }
+    }
+
+    // Send NAMESPACE_DONE
+    const nsDone: NamespaceDoneMessageDraft18 = {
+      type: MessageTypeDraft18.NAMESPACE_DONE,
+      finalNamespace: message.trackNamespacePrefix,
+    };
+    await writer.write(Draft18MessageCodec.encode(nsDone));
+    writer.releaseLock();
+  }
+
+  /**
+   * Handle incoming PUBLISH_NAMESPACE on bidi stream (we are the subscriber)
+   */
+  private async handleIncomingPublishNamespaceDraft18(
+    message: PublishNamespaceMessageDraft18,
+    writable: WritableStream<Uint8Array>
+  ): Promise<void> {
+    const prefix = message.trackNamespacePrefix.join('/');
+    log.info('Received PUBLISH_NAMESPACE (draft-18)', {
+      requestId: message.requestId.toString(),
+      prefix,
+    });
+
+    // Accept with REQUEST_OK
+    const requestOk: RequestOkMessageDraft18 = {
+      type: MessageTypeDraft18.REQUEST_OK,
+      requestId: message.requestId,
+    };
+    const responseBytes = Draft18MessageCodec.encode(requestOk);
+    const writer = writable.getWriter();
+    await writer.write(responseBytes);
+    writer.releaseLock();
+
+    log.info('Accepted PUBLISH_NAMESPACE (draft-18)', { prefix });
+  }
+
+  /**
+   * Handle incoming SUBSCRIBE_TRACKS on bidi stream
+   */
+  private async handleIncomingSubscribeTracksDraft18(
+    message: SubscribeTracksMessageDraft18,
+    writable: WritableStream<Uint8Array>
+  ): Promise<void> {
+    const prefix = message.trackNamespacePrefix.join('/');
+    log.info('Received SUBSCRIBE_TRACKS (draft-18)', {
+      requestId: message.requestId.toString(),
+      prefix,
+    });
+
+    // Accept with REQUEST_OK
+    const requestOk: RequestOkMessageDraft18 = {
+      type: MessageTypeDraft18.REQUEST_OK,
+      requestId: message.requestId,
+    };
+    const responseBytes = Draft18MessageCodec.encode(requestOk);
+    const writer = writable.getWriter();
+    await writer.write(responseBytes);
+    writer.releaseLock();
+
+    // Emit incoming-subscribe for each track we publish under this prefix
+    for (const [, pub] of this.publicationManager) {
+      const pubNs = pub.namespace.join('/');
+      if (pubNs.startsWith(prefix)) {
+        this.emit('incoming-subscribe', {
+          requestId: Number(message.requestId),
+          namespace: pub.namespace,
+          trackName: pub.trackName,
+          trackAlias: pub.trackAlias,
+        } as IncomingSubscribeEvent);
+      }
+    }
+  }
+
+  /**
+   * Handle incoming REQUEST_UPDATE on bidi stream
+   */
+  private async handleIncomingRequestUpdateDraft18(
+    message: RequestUpdateMessageDraft18,
+    _writable: WritableStream<Uint8Array>
+  ): Promise<void> {
+    log.info('Received REQUEST_UPDATE (draft-18)', {
+      requestId: message.requestId.toString(),
+      forwardState: message.forwardState,
+    });
+
+    if (message.forwardState) {
+      this.publicationManager.resolveAllForward();
+      this.emit('forward-resumed', { requestId: Number(message.requestId) });
+    } else {
+      this.emit('forward-paused', { subscriptionRequestId: Number(message.requestId) });
+    }
+  }
+
+  /**
+   * Handle incoming PUBLISH_DONE
+   */
+  private handleIncomingPublishDoneDraft18(message: PublishDoneMessageDraft18): void {
+    log.info('Received PUBLISH_DONE (draft-18)', {
+      requestId: message.requestId.toString(),
+      finalGroup: message.finalLocation.group.toString(),
+      finalObject: message.finalLocation.object.toString(),
+    });
+
+    // Find and remove the subscription by requestId
+    const sub = this.subscriptionManager.findByRequestId(Number(message.requestId));
+    if (sub) {
+      this.subscriptionManager.remove(sub.subscriptionId);
+      log.info('Subscription removed after PUBLISH_DONE', { subscriptionId: sub.subscriptionId });
+    }
+  }
+
+  /**
+   * Handle incoming GOAWAY
+   */
+  private handleIncomingGoAwayDraft18(message: GoAwayMessageDraft18): void {
+    log.info('Received GOAWAY (draft-18)', { newSessionUri: message.newSessionUri });
+    this.emit('goaway', { newSessionUri: message.newSessionUri });
+    this.setState('closing');
+  }
+
+  /**
+   * Handle incoming PUBLISH_BLOCKED
+   */
+  private handleIncomingPublishBlockedDraft18(message: PublishBlockedMessageDraft18): void {
+    log.info('Received PUBLISH_BLOCKED (draft-18)', { trackAlias: message.trackAlias.toString() });
+    this.emit('publish-blocked', { trackAlias: message.trackAlias });
+  }
+
+  /**
+   * Send REQUEST_ERROR on a bidi stream
+   */
+  private async sendRequestErrorOnStream(
+    writable: WritableStream<Uint8Array>,
+    requestId: bigint,
+    errorCode: number,
+    reasonPhrase: string
+  ): Promise<void> {
+    const errorMsg: RequestErrorMessageDraft18 = {
+      type: MessageTypeDraft18.REQUEST_ERROR,
+      requestId,
+      errorCode,
+      reasonPhrase,
+    };
+    const writer = writable.getWriter();
+    await writer.write(Draft18MessageCodec.encode(errorMsg));
+    writer.releaseLock();
   }
 
   /**

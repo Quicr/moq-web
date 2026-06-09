@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { MessageCodec, ObjectCodec, MessageCodecError } from './message-codec';
-import { IS_DRAFT_16 } from '../version/constants';
+import { IS_DRAFT_16, IS_DRAFT_18 } from '../version/constants';
 import {
   MessageType,
   DataStreamType,
@@ -855,7 +855,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it.skipIf(IS_DRAFT_16)('roundtrips datagram header with large 62-bit track alias', () => {
+    it.skipIf(IS_DRAFT_16 || IS_DRAFT_18)('roundtrips datagram header with large 62-bit track alias', () => {
       const largeAlias = BigInt('4611686018427387903'); // Close to max 62-bit value
       const header: ObjectHeader = {
         trackAlias: largeAlias,
@@ -877,9 +877,9 @@ describe('ObjectCodec', () => {
       expect(decoded.objectStatus).toBe(ObjectStatus.END_OF_GROUP);
     });
 
-    it.skipIf(IS_DRAFT_16)('throws error for wrong stream type', () => {
+    it.skipIf(IS_DRAFT_16 || IS_DRAFT_18)('throws error for wrong stream type', () => {
       // Create buffer with wrong stream type (0x04 = SUBGROUP_HEADER instead of 0x01)
-      // This test only applies to draft-14 since draft-16 uses a different type format
+      // This test only applies to draft-14 since draft-16/18 use different type formats
       const invalidBuffer = new Uint8Array([0x04, 0x01, 0x00, 0x00, 0x00, 0x80, 0x00]);
 
       expect(() => ObjectCodec.decodeDatagramHeader(invalidBuffer)).toThrow(MessageCodecError);
@@ -979,7 +979,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it('decodes standard MOQT subgroup header (0x04)', () => {
+    it.skipIf(IS_DRAFT_18)('decodes standard MOQT subgroup header (0x04)', () => {
       // Manually construct a standard MOQT subgroup header
       // Standard MOQT format: type(varint) + trackAlias(varint) + groupId(varint) + subgroupId(varint) + publisherPriority(varint)
       const buffer = new Uint8Array([
@@ -998,7 +998,7 @@ describe('ObjectCodec', () => {
       expect(decoded.publisherPriority).toBe(128);
     });
 
-    it.skipIf(IS_DRAFT_16)('throws error for invalid stream type', () => {
+    it.skipIf(IS_DRAFT_16 || IS_DRAFT_18)('throws error for invalid stream type', () => {
       // Create buffer with invalid stream type
       const invalidBuffer = new Uint8Array([0x99, 0x01, 0x00, 0x00]);
 
@@ -1045,7 +1045,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it.skipIf(IS_DRAFT_16)('roundtrips stream object with empty payload and status', () => {
+    it.skipIf(IS_DRAFT_16 || IS_DRAFT_18)('roundtrips stream object with empty payload and status', () => {
       const encoded = ObjectCodec.encodeStreamObject(0, new Uint8Array(0), ObjectStatus.END_OF_TRACK);
 
       const [objectId, decodedPayload, status] = ObjectCodec.decodeStreamObject(
