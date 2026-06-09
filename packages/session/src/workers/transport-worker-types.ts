@@ -57,11 +57,13 @@ export type TransportWorkerResponse =
   | { type: 'disconnected'; reason?: string }
   | { type: 'state-change'; state: TransportState }
   | { type: 'control-message'; data: Uint8Array }
+  | { type: 'setup-message'; data: Uint8Array }
   | { type: 'datagram'; data: Uint8Array }
   | { type: 'stream-created'; id: number; streamId: number }
   | { type: 'bidi-stream-created'; id: number; streamId: number }
   | { type: 'bidi-stream-data'; streamId: number; data: Uint8Array }
   | { type: 'incoming-stream'; streamId: number }
+  | { type: 'incoming-bidi-stream'; streamId: number }
   | { type: 'stream-data'; streamId: number; data: Uint8Array }
   | { type: 'stream-closed'; streamId: number }
   | { type: 'error'; message: string; code?: number };

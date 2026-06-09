@@ -417,10 +417,23 @@ export class MOQTSession {
   private setupWorkerHandlers(): void {
     if (!this.transportWorker) return;
 
-    // Control messages from worker
-    this.transportWorker.on('control-message', ({ data }) => {
-      this.handleControlMessage(data);
-    });
+    if (IS_DRAFT_18) {
+      // Draft-18: Setup messages come on dedicated setup stream
+      this.transportWorker.on('setup-message', ({ data }) => {
+        this.handleSetupMessage(data);
+      });
+
+      // Draft-18: Incoming bidi streams for server-initiated requests
+      this.transportWorker.on('incoming-bidi-stream', ({ streamId }) => {
+        log.info('Received incoming-bidi-stream from worker', { streamId });
+        this.handleWorkerIncomingBidiStream(streamId);
+      });
+    } else {
+      // Draft-14/16: Control messages from worker
+      this.transportWorker.on('control-message', ({ data }) => {
+        this.handleControlMessage(data);
+      });
+    }
 
     // Datagrams from worker
     this.transportWorker.on('datagram', ({ data }) => {
@@ -494,6 +507,39 @@ export class MOQTSession {
     this.workerStreamBuffers.delete(streamId);
     this.workerStreamReaders.delete(streamId);
     this.bidiStreamChunks.delete(streamId);
+    // Close any pending incoming bidi stream readable controller
+    const controller = this.incomingBidiControllers.get(streamId);
+    if (controller) {
+      try { controller.close(); } catch { /* already closed */ }
+      this.incomingBidiControllers.delete(streamId);
+    }
+  }
+
+  /** Controllers for incoming bidi streams from worker (draft-18) */
+  private incomingBidiControllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+
+  /**
+   * Handle incoming bidi stream from worker (draft-18 server-initiated requests)
+   */
+  private handleWorkerIncomingBidiStream(streamId: number): void {
+    // Create a ReadableStream that receives data from bidi-stream-data events
+    const readable = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        this.incomingBidiControllers.set(streamId, controller);
+      },
+    });
+
+    // Create a WritableStream that sends data back via worker
+    const writable = new WritableStream<Uint8Array>({
+      write: (chunk) => {
+        this.transportWorker!.writeStream(streamId, chunk);
+      },
+      close: () => {
+        this.transportWorker!.writeStream(streamId, new Uint8Array(0), true);
+      },
+    });
+
+    this.handleIncomingBidiStream({ readable, writable });
   }
 
   /** Chunked buffers for bidi stream data - avoids copying on each receive */
@@ -514,6 +560,12 @@ export class MOQTSession {
     }
 
     if (subscriptionId === undefined) {
+      // Check if it's an incoming bidi stream (draft-18 server-initiated)
+      const controller = this.incomingBidiControllers.get(streamId);
+      if (controller) {
+        try { controller.enqueue(data); } catch { /* stream closed */ }
+        return;
+      }
       log.warn('Received bidi stream data for unknown stream', { streamId });
       return;
     }
