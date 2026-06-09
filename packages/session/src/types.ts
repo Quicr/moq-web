@@ -39,6 +39,16 @@ export interface SubscribeOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
+  /** Filter type (default: LATEST_GROUP) */
+  filterType?: number;
+  /** Start group for ABSOLUTE_START/ABSOLUTE_RANGE */
+  startGroup?: number;
+  /** Start object for ABSOLUTE_START/ABSOLUTE_RANGE */
+  startObject?: number;
+  /** End group for ABSOLUTE_RANGE */
+  endGroup?: number;
+  /** End object for ABSOLUTE_RANGE */
+  endObject?: number;
 }
 
 /**

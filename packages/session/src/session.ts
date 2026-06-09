@@ -781,6 +781,7 @@ export class MOQTSession {
     this.subscriptionManager.add(subscription);
 
     // Send SUBSCRIBE message
+    const filterType = (options?.filterType ?? FilterType.LATEST_GROUP) as FilterType;
     const subscribeMessage: SubscribeMessage = {
       type: MessageType.SUBSCRIBE,
       requestId,
@@ -788,7 +789,10 @@ export class MOQTSession {
       fullTrackName: { namespace, trackName },
       subscriberPriority: options?.priority ?? 128,
       groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
-      filterType: FilterType.LATEST_GROUP,
+      filterType,
+      startGroup: options?.startGroup,
+      startObject: options?.startObject,
+      endGroup: options?.endGroup,
       parameters: new Map(),
     };
 
