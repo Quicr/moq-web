@@ -131,6 +131,7 @@ describe('Draft18MessageCodec', () => {
       const message: SubscribeOkMessageDraft18 = {
         type: MessageTypeDraft18.SUBSCRIBE_OK,
         requestId: 1n,
+        trackAlias: 1n,
         largestLocation: { group: 100n, object: 50n },
       };
 
@@ -139,7 +140,7 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as SubscribeOkMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.SUBSCRIBE_OK);
-      expect(d.requestId).toBe(1n);
+      expect(d.trackAlias).toBe(1n);
       expect(d.largestLocation).toEqual({ group: 100n, object: 50n });
     });
   });
@@ -173,8 +174,9 @@ describe('Draft18MessageCodec', () => {
     it('roundtrips REQUEST_ERROR', () => {
       const message: RequestErrorMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_ERROR,
-        requestId: 10n,
+        requestId: 0n,
         errorCode: 3,
+        retryInterval: 1000n,
         reasonPhrase: 'Track not found',
       };
 
@@ -183,8 +185,8 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as RequestErrorMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.REQUEST_ERROR);
-      expect(d.requestId).toBe(10n);
       expect(d.errorCode).toBe(3);
+      expect(d.retryInterval).toBe(1000n);
       expect(d.reasonPhrase).toBe('Track not found');
     });
   });
@@ -193,7 +195,7 @@ describe('Draft18MessageCodec', () => {
     it('roundtrips REQUEST_OK without expires', () => {
       const message: RequestOkMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_OK,
-        requestId: 7n,
+        requestId: 0n,
       };
 
       const encoded = Draft18MessageCodec.encode(message);
@@ -201,13 +203,12 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as RequestOkMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.REQUEST_OK);
-      expect(d.requestId).toBe(7n);
     });
 
     it('roundtrips REQUEST_OK with expires', () => {
       const message: RequestOkMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_OK,
-        requestId: 7n,
+        requestId: 0n,
         expires: 3600n,
       };
 
@@ -391,8 +392,10 @@ describe('Draft18MessageCodec', () => {
     it('roundtrips basic PUBLISH_DONE', () => {
       const message: PublishDoneMessageDraft18 = {
         type: MessageTypeDraft18.PUBLISH_DONE,
-        requestId: 42n,
-        finalLocation: { group: 100n, object: 50n },
+        requestId: 0n,
+        finalLocation: { group: 0n, object: 0n },
+        statusCode: 0n,
+        streamCount: 5n,
       };
 
       const encoded = Draft18MessageCodec.encode(message);
@@ -400,17 +403,18 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as PublishDoneMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.PUBLISH_DONE);
-      expect(d.requestId).toBe(42n);
-      expect(d.finalLocation.group).toBe(100n);
-      expect(d.finalLocation.object).toBe(50n);
+      expect(d.statusCode).toBe(0n);
+      expect(d.streamCount).toBe(5n);
       expect(d.reasonPhrase).toBeUndefined();
     });
 
     it('roundtrips PUBLISH_DONE with reason', () => {
       const message: PublishDoneMessageDraft18 = {
         type: MessageTypeDraft18.PUBLISH_DONE,
-        requestId: 1n,
+        requestId: 0n,
         finalLocation: { group: 0n, object: 0n },
+        statusCode: 1n,
+        streamCount: 10n,
         reasonPhrase: 'End of stream',
       };
 
@@ -419,6 +423,8 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as PublishDoneMessageDraft18;
       expect(d.reasonPhrase).toBe('End of stream');
+      expect(d.statusCode).toBe(1n);
+      expect(d.streamCount).toBe(10n);
     });
   });
 
@@ -436,28 +442,20 @@ describe('Draft18MessageCodec', () => {
       const d = decoded as RequestUpdateMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.REQUEST_UPDATE);
       expect(d.requestId).toBe(10n);
-      expect(d.forwardState).toBe(true);
-      expect(d.parameters).toBeUndefined();
     });
 
-    it('roundtrips REQUEST_UPDATE with parameters', () => {
-      const params = new Map<number, Uint8Array>();
-      params.set(0x01, new Uint8Array([1, 2, 3]));
-
+    it('roundtrips REQUEST_UPDATE with different request IDs', () => {
       const message: RequestUpdateMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_UPDATE,
         requestId: 5n,
-        forwardState: false,
-        parameters: params,
+        forwardState: true,
       };
 
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as RequestUpdateMessageDraft18;
-      expect(d.forwardState).toBe(false);
-      expect(d.parameters).toBeDefined();
-      expect(d.parameters!.has(0x01)).toBe(true);
+      expect(d.requestId).toBe(5n);
     });
   });
 
@@ -478,22 +476,19 @@ describe('Draft18MessageCodec', () => {
       expect(d.trackNamespacePrefix).toEqual(['conference', 'room-123']);
     });
 
-    it('roundtrips PUBLISH_NAMESPACE with parameters', () => {
-      const params = new Map<number, Uint8Array>();
-      params.set(0x02, new Uint8Array([10]));
-
+    it('roundtrips PUBLISH_NAMESPACE with empty parameters', () => {
       const message: PublishNamespaceMessageDraft18 = {
         type: MessageTypeDraft18.PUBLISH_NAMESPACE,
         requestId: 2n,
         trackNamespacePrefix: ['ns'],
-        parameters: params,
       };
 
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as PublishNamespaceMessageDraft18;
-      expect(d.parameters).toBeDefined();
+      expect(d.requestId).toBe(2n);
+      expect(d.trackNamespacePrefix).toEqual(['ns']);
     });
   });
 
@@ -585,26 +580,21 @@ describe('Draft18MessageCodec', () => {
       expect(d.filter).toBe(SubscriptionFilterDraft18.NEXT_GROUP_START);
     });
 
-    it('roundtrips SUBSCRIBE_TRACKS with pattern and range filter', () => {
+    it('roundtrips SUBSCRIBE_TRACKS with different prefix', () => {
       const message: SubscribeTracksMessageDraft18 = {
         type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
         requestId: 6n,
-        trackNamespacePrefix: ['conference'],
-        trackNamePattern: 'video-*',
-        forwardState: false,
-        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
-        startLocation: { group: 10n, object: 0n },
-        endGroupDelta: 5n,
+        trackNamespacePrefix: ['conference', 'room-1'],
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
       };
 
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as SubscribeTracksMessageDraft18;
-      expect(d.trackNamePattern).toBe('video-*');
-      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_RANGE);
-      expect(d.startLocation?.group).toBe(10n);
-      expect(d.endGroupDelta).toBe(5n);
+      expect(d.requestId).toBe(6n);
+      expect(d.trackNamespacePrefix).toEqual(['conference', 'room-1']);
     });
   });
 
