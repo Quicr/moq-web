@@ -407,6 +407,15 @@ export class Draft18MessageCodec {
     // Build parameters list including subscription filter
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
+    // FORWARD parameter (0x10): even type = single byte value
+    // 0x01 = forward new objects to subscriber
+    if (message.forwardState !== false) {
+      params.push({
+        type: RequestParameterDraft18.FORWARD,
+        encode: (w) => { w.writeByte(0x01); },
+      });
+    }
+
     if (message.filter !== undefined) {
       params.push({
         type: RequestParameterDraft18.SUBSCRIPTION_FILTER,
