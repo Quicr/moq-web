@@ -112,10 +112,6 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
       const setupStream = await transport.createUnidirectionalStream();
       log('Draft-18 setup stream created', { streamId: (setupStream as any).id ?? (setupStream as any).streamId ?? 'unknown' });
       setupWriter = setupStream.getWriter();
-      const streamTypeBytes = MOQTVarInt.encode(BigInt(StreamTypeDraft18.SETUP));
-      const hex = Array.from(streamTypeBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      log('Writing stream type prefix', { hex, length: streamTypeBytes.length });
-      await setupWriter.write(streamTypeBytes);
       log('Draft-18 setup stream established');
     } else {
       // Draft-14/16: Single bidirectional control stream
@@ -195,6 +191,7 @@ function cleanup(): void {
   controlWriter = null;
   controlReader = null;
   setupWriter = null;
+  setupStreamTypeSent = false;
   datagramWriter = null;
   outgoingStreams.clear();
   nextStreamId = 0;
@@ -436,6 +433,8 @@ function handleConnectionClosed(): void {
 /**
  * Send data on control stream
  */
+let setupStreamTypeSent = false;
+
 async function sendControl(data: Uint8Array): Promise<void> {
   if (IS_DRAFT_18) {
     if (!setupWriter) {
@@ -443,10 +442,21 @@ async function sendControl(data: Uint8Array): Promise<void> {
       return;
     }
     try {
-      const hex = Array.from(data.subarray(0, Math.min(32, data.length)))
+      let toWrite: Uint8Array;
+      if (!setupStreamTypeSent) {
+        // First write: prepend stream type (0x2F00) to the message
+        const streamTypeBytes = MOQTVarInt.encode(BigInt(StreamTypeDraft18.SETUP));
+        toWrite = new Uint8Array(streamTypeBytes.length + data.length);
+        toWrite.set(streamTypeBytes, 0);
+        toWrite.set(data, streamTypeBytes.length);
+        setupStreamTypeSent = true;
+      } else {
+        toWrite = data;
+      }
+      const hex = Array.from(toWrite.subarray(0, Math.min(32, toWrite.length)))
         .map(b => b.toString(16).padStart(2, '0')).join(' ');
-      log('sendControl (draft-18)', { length: data.length, hex });
-      await setupWriter.write(data);
+      log('sendControl (draft-18)', { length: toWrite.length, hex, firstMessage: !setupStreamTypeSent });
+      await setupWriter.write(toWrite);
       log('sendControl written successfully');
     } catch (err) {
       log('sendControl error', { error: (err as Error).message });
