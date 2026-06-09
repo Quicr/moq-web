@@ -8,7 +8,6 @@ import {
   Version,
   GroupOrder,
   SubscriptionFilterDraft18,
-  RoleDraft18,
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
   type SubscribeMessageDraft18,
@@ -31,26 +30,22 @@ import {
 } from '../messages/types';
 
 describe('Draft18MessageCodec', () => {
-  describe('CLIENT_SETUP', () => {
-    it('roundtrips basic CLIENT_SETUP', () => {
+  describe('SETUP', () => {
+    it('roundtrips empty SETUP (WebTransport, no options)', () => {
       const message: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
-        supportedVersions: [Version.DRAFT_18],
       };
 
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded, bytesRead] = Draft18MessageCodec.decode(encoded);
 
-      expect(decoded.type).toBe(MessageTypeDraft18.CLIENT_SETUP);
-      expect((decoded as ClientSetupMessageDraft18).supportedVersions).toEqual([Version.DRAFT_18]);
+      expect(decoded.type).toBe(MessageTypeDraft18.SERVER_SETUP);
       expect(bytesRead).toBe(encoded.length);
     });
 
-    it('roundtrips CLIENT_SETUP with all options', () => {
+    it('roundtrips SETUP with options', () => {
       const message: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
-        supportedVersions: [Version.DRAFT_18, Version.DRAFT_17],
-        role: RoleDraft18.BOTH,
         path: '/moq',
         authority: 'relay.example.com',
         maxAuthTokenCacheSize: 100,
@@ -60,37 +55,19 @@ describe('Draft18MessageCodec', () => {
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded, bytesRead] = Draft18MessageCodec.decode(encoded);
 
-      const d = decoded as ClientSetupMessageDraft18;
-      expect(d.type).toBe(MessageTypeDraft18.CLIENT_SETUP);
-      expect(d.supportedVersions).toEqual([Version.DRAFT_18, Version.DRAFT_17]);
-      expect(d.role).toBe(RoleDraft18.BOTH);
+      const d = decoded as ServerSetupMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.SERVER_SETUP);
       expect(d.path).toBe('/moq');
       expect(d.authority).toBe('relay.example.com');
       expect(d.maxAuthTokenCacheSize).toBe(100);
-      expect(d.authToken).toEqual(new Uint8Array([1, 2, 3, 4]));
       expect(bytesRead).toBe(encoded.length);
     });
   });
 
-  describe('SERVER_SETUP', () => {
-    it('roundtrips basic SERVER_SETUP', () => {
-      const message: ServerSetupMessageDraft18 = {
-        type: MessageTypeDraft18.SERVER_SETUP,
-        selectedVersion: Version.DRAFT_18,
-      };
-
-      const encoded = Draft18MessageCodec.encode(message);
-      const [decoded] = Draft18MessageCodec.decode(encoded);
-
-      expect(decoded.type).toBe(MessageTypeDraft18.SERVER_SETUP);
-      expect((decoded as ServerSetupMessageDraft18).selectedVersion).toBe(Version.DRAFT_18);
-    });
-
-    it('roundtrips SERVER_SETUP with options', () => {
-      const message: ServerSetupMessageDraft18 = {
-        type: MessageTypeDraft18.SERVER_SETUP,
-        selectedVersion: Version.DRAFT_18,
-        role: RoleDraft18.SUBSCRIBER,
+  describe('SETUP decode', () => {
+    it('decodes SETUP with path option', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
         path: '/test',
       };
 
@@ -98,8 +75,8 @@ describe('Draft18MessageCodec', () => {
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as ServerSetupMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.SERVER_SETUP);
       expect(d.selectedVersion).toBe(Version.DRAFT_18);
-      expect(d.role).toBe(RoleDraft18.SUBSCRIBER);
       expect(d.path).toBe('/test');
     });
   });

@@ -13,4 +13,4 @@
  * MOQT_VERSION=draft-16 bun run build
  * ```
  */
-declare const __MOQT_VERSION__: 'draft-14' | 'draft-16';
+declare const __MOQT_VERSION__: 'draft-14' | 'draft-16' | 'draft-18';

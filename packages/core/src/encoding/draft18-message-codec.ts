@@ -16,7 +16,6 @@ import {
   Version,
   GroupOrder,
   SubscriptionFilterDraft18,
-  RoleDraft18,
   SetupOptionDraft18,
   type ControlMessageDraft18,
   type ClientSetupMessageDraft18,
@@ -67,11 +66,8 @@ export class Draft18MessageCodec {
     const payloadWriter = new Draft18BufferWriter();
 
     switch (message.type) {
-      case MessageTypeDraft18.CLIENT_SETUP:
-        Draft18MessageCodec.encodeClientSetup(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.SERVER_SETUP:
-        Draft18MessageCodec.encodeServerSetup(payloadWriter, message);
+      case MessageTypeDraft18.SETUP:
+        Draft18MessageCodec.encodeSetup(payloadWriter, message as ClientSetupMessageDraft18);
         break;
       case MessageTypeDraft18.SUBSCRIBE:
         Draft18MessageCodec.encodeSubscribe(payloadWriter, message);
@@ -130,32 +126,44 @@ export class Draft18MessageCodec {
 
     const payload = payloadWriter.toUint8Array();
 
-    // Draft-18: Message Type (varint) + Payload (no length prefix for control messages)
-    const writer = new Draft18BufferWriter();
-    writer.writeVarInt(message.type);
-    writer.writeBytes(payload);
+    // Draft-18 framing: Message Type (MOQT varint) | Message Length (16-bit) | Message Payload
+    const typeBytes = MOQTVarInt.encode(BigInt(message.type));
+    const result = new Uint8Array(typeBytes.length + 2 + payload.length);
+    result.set(typeBytes, 0);
+    result[typeBytes.length] = (payload.length >> 8) & 0xFF;
+    result[typeBytes.length + 1] = payload.length & 0xFF;
+    result.set(payload, typeBytes.length + 2);
 
-    return writer.toUint8Array();
+    return result;
   }
 
   /**
    * Decode a draft-18 control message from bytes
    */
   static decode(buffer: Uint8Array, offset = 0): [ControlMessageDraft18, number] {
-    const reader = new Draft18BufferReader(buffer, offset);
-    const startOffset = reader.offset;
+    // Draft-18 framing: Message Type (MOQT varint) | Message Length (16-bit) | Message Payload
+    const [typeValue, typeBytesRead] = MOQTVarInt.decodeNumber(buffer, offset);
+    const messageType = typeValue as MessageTypeDraft18;
 
-    const messageType = reader.readVarIntNumber() as MessageTypeDraft18;
-    log.trace('Decoding draft-18 message', { type: MessageTypeDraft18[messageType] ?? messageType });
+    if (buffer.length < offset + typeBytesRead + 2) {
+      throw new Draft18CodecError('Incomplete message: missing length field');
+    }
+    const payloadLength = (buffer[offset + typeBytesRead] << 8) | buffer[offset + typeBytesRead + 1];
+    const headerSize = typeBytesRead + 2;
+
+    if (buffer.length < offset + headerSize + payloadLength) {
+      throw new Draft18CodecError('Incomplete message: not enough payload bytes');
+    }
+
+    const reader = new Draft18BufferReader(buffer, offset + headerSize);
+
+    log.trace('Decoding draft-18 message', { type: MessageTypeDraft18[messageType] ?? messageType, payloadLength });
 
     let message: ControlMessageDraft18;
 
     switch (messageType) {
-      case MessageTypeDraft18.CLIENT_SETUP:
-        message = Draft18MessageCodec.decodeClientSetup(reader);
-        break;
-      case MessageTypeDraft18.SERVER_SETUP:
-        message = Draft18MessageCodec.decodeServerSetup(reader);
+      case MessageTypeDraft18.SETUP:
+        message = Draft18MessageCodec.decodeSetup(reader, payloadLength);
         break;
       case MessageTypeDraft18.SUBSCRIBE:
         message = Draft18MessageCodec.decodeSubscribe(reader);
@@ -170,7 +178,9 @@ export class Draft18MessageCodec {
         message = Draft18MessageCodec.decodeRequestError(reader);
         break;
       case MessageTypeDraft18.REQUEST_OK:
+      case MessageTypeDraft18.PUBLISH_OK:
         message = Draft18MessageCodec.decodeRequestOk(reader);
+        (message as RequestOkMessageDraft18).type = messageType as MessageTypeDraft18.REQUEST_OK;
         break;
       case MessageTypeDraft18.FETCH:
         message = Draft18MessageCodec.decodeFetch(reader);
@@ -212,151 +222,100 @@ export class Draft18MessageCodec {
         throw new Draft18CodecError(`Unknown message type: ${messageType}`, messageType);
     }
 
-    return [message, reader.offset - startOffset];
+    return [message, headerSize + payloadLength];
   }
 
   // ============================================================================
-  // Setup Messages
+  // Setup Message (draft-18: single SETUP, no separate CLIENT/SERVER)
   // ============================================================================
 
-  private static encodeClientSetup(writer: Draft18BufferWriter, message: ClientSetupMessageDraft18): void {
-    // Number of Supported Versions + Versions[]
-    writer.writeVarInt(message.supportedVersions.length);
-    for (const version of message.supportedVersions) {
-      writer.writeVarInt(version);
-    }
-
-    // Setup Options Length + Options
-    const optionsWriter = new Draft18BufferWriter();
-    Draft18MessageCodec.encodeSetupOptions(optionsWriter, message);
-    const options = optionsWriter.toUint8Array();
-    writer.writeVarInt(options.length);
-    writer.writeBytes(options);
-  }
-
-  private static decodeClientSetup(reader: Draft18BufferReader): ClientSetupMessageDraft18 {
-    const versionCount = reader.readVarIntNumber();
-    const supportedVersions: Version[] = [];
-    for (let i = 0; i < versionCount; i++) {
-      supportedVersions.push(reader.readVarIntNumber() as Version);
-    }
-
-    const optionsLength = reader.readVarIntNumber();
-    const optionsEnd = reader.offset + optionsLength;
-    const { role, path, authority, maxAuthTokenCacheSize, authToken } =
-      Draft18MessageCodec.decodeSetupOptions(reader, optionsEnd);
-
-    return {
-      type: MessageTypeDraft18.CLIENT_SETUP,
-      supportedVersions,
-      role,
-      path,
-      authority,
-      maxAuthTokenCacheSize,
-      authToken,
-    };
-  }
-
-  private static encodeServerSetup(writer: Draft18BufferWriter, message: ServerSetupMessageDraft18): void {
-    // Selected Version
-    writer.writeVarInt(message.selectedVersion);
-
-    // Setup Options Length + Options
-    const optionsWriter = new Draft18BufferWriter();
-    Draft18MessageCodec.encodeSetupOptions(optionsWriter, message);
-    const options = optionsWriter.toUint8Array();
-    writer.writeVarInt(options.length);
-    writer.writeBytes(options);
-  }
-
-  private static decodeServerSetup(reader: Draft18BufferReader): ServerSetupMessageDraft18 {
-    const selectedVersion = reader.readVarIntNumber() as Version;
-
-    const optionsLength = reader.readVarIntNumber();
-    const optionsEnd = reader.offset + optionsLength;
-    const { role, path, authority, maxAuthTokenCacheSize } =
-      Draft18MessageCodec.decodeSetupOptions(reader, optionsEnd);
-
-    return {
-      type: MessageTypeDraft18.SERVER_SETUP,
-      selectedVersion,
-      role,
-      path,
-      authority,
-      maxAuthTokenCacheSize,
-    };
-  }
-
-  private static encodeSetupOptions(
-    writer: Draft18BufferWriter,
-    message: ClientSetupMessageDraft18 | ServerSetupMessageDraft18
-  ): void {
-    let previousKey = 0;
-
-    if (message.role !== undefined) {
-      writer.writeVarInt(SetupOptionDraft18.ROLE - previousKey);
-      previousKey = SetupOptionDraft18.ROLE;
-      writer.writeVarInt(message.role);
-    }
+  /**
+   * Encode SETUP message payload.
+   * Draft-18 SETUP body is just Setup Options as Key-Value-Pairs.
+   * No version list, no role — version is negotiated via ALPN.
+   */
+  private static encodeSetup(writer: Draft18BufferWriter, message: ClientSetupMessageDraft18): void {
+    // Setup Options are KVPs directly in the payload (delta-encoded keys)
+    // Collect options to encode, sorted by key value for delta encoding
+    const options: Array<{ key: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
     if (message.path !== undefined) {
-      writer.writeVarInt(SetupOptionDraft18.PATH - previousKey);
-      previousKey = SetupOptionDraft18.PATH;
-      const bytes = new TextEncoder().encode(message.path);
-      writer.writeVarInt(bytes.length);
-      writer.writeBytes(bytes);
+      options.push({
+        key: SetupOptionDraft18.PATH,
+        encode: (w) => {
+          const bytes = new TextEncoder().encode(message.path!);
+          w.writeVarInt(BigInt(bytes.length));
+          w.writeBytes(bytes);
+        },
+      });
     }
-
-    if (message.authority !== undefined) {
-      writer.writeVarInt(SetupOptionDraft18.AUTHORITY - previousKey);
-      previousKey = SetupOptionDraft18.AUTHORITY;
-      const bytes = new TextEncoder().encode(message.authority);
-      writer.writeVarInt(bytes.length);
-      writer.writeBytes(bytes);
+    if (message.authToken !== undefined) {
+      options.push({
+        key: SetupOptionDraft18.AUTHORIZATION_TOKEN,
+        encode: (w) => {
+          w.writeVarInt(BigInt(message.authToken!.length));
+          w.writeBytes(message.authToken!);
+        },
+      });
     }
-
     if (message.maxAuthTokenCacheSize !== undefined) {
-      writer.writeVarInt(SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE - previousKey);
-      previousKey = SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE;
-      writer.writeVarInt(message.maxAuthTokenCacheSize);
+      options.push({
+        key: SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE,
+        encode: (w) => {
+          w.writeVarInt(BigInt(message.maxAuthTokenCacheSize!));
+        },
+      });
+    }
+    if (message.authority !== undefined) {
+      options.push({
+        key: SetupOptionDraft18.AUTHORITY,
+        encode: (w) => {
+          const bytes = new TextEncoder().encode(message.authority!);
+          w.writeVarInt(BigInt(bytes.length));
+          w.writeBytes(bytes);
+        },
+      });
     }
 
-    if ('authToken' in message && message.authToken !== undefined) {
-      writer.writeVarInt(SetupOptionDraft18.AUTH_TOKEN - previousKey);
-      writer.writeVarInt(message.authToken.length);
-      writer.writeBytes(message.authToken);
+    // Sort by key and write delta-encoded
+    options.sort((a, b) => a.key - b.key);
+    let previousKey = 0;
+    for (const opt of options) {
+      writer.writeVarInt(BigInt(opt.key - previousKey));
+      previousKey = opt.key;
+      opt.encode(writer);
     }
   }
 
-  private static decodeSetupOptions(
-    reader: Draft18BufferReader,
-    endOffset: number
-  ): {
-    role?: RoleDraft18;
-    path?: string;
-    authority?: string;
-    maxAuthTokenCacheSize?: number;
-    authToken?: Uint8Array;
-  } {
-    let role: RoleDraft18 | undefined;
+  /**
+   * Decode SETUP message. Body is Setup Options as KVPs bounded by message length.
+   */
+  private static decodeSetup(reader: Draft18BufferReader, payloadLength: number): ServerSetupMessageDraft18 {
+    const endOffset = reader.offset + payloadLength;
+
+    // Parse Setup Options (KVPs with delta-encoded keys)
     let path: string | undefined;
     let authority: string | undefined;
     let maxAuthTokenCacheSize: number | undefined;
-    let authToken: Uint8Array | undefined;
-
     let previousKey = 0;
+
     while (reader.offset < endOffset) {
       const deltaKey = reader.readVarIntNumber();
       const key = previousKey + deltaKey;
       previousKey = key;
 
       switch (key) {
-        case SetupOptionDraft18.ROLE:
-          role = reader.readVarIntNumber() as RoleDraft18;
-          break;
         case SetupOptionDraft18.PATH: {
           const length = reader.readVarIntNumber();
           path = new TextDecoder().decode(reader.readBytes(length));
+          break;
+        }
+        case SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE:
+          maxAuthTokenCacheSize = reader.readVarIntNumber();
+          break;
+        case SetupOptionDraft18.AUTHORIZATION_TOKEN: {
+          const length = reader.readVarIntNumber();
+          reader.skip(length);
           break;
         }
         case SetupOptionDraft18.AUTHORITY: {
@@ -364,26 +323,31 @@ export class Draft18MessageCodec {
           authority = new TextDecoder().decode(reader.readBytes(length));
           break;
         }
-        case SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE:
-          maxAuthTokenCacheSize = reader.readVarIntNumber();
-          break;
-        case SetupOptionDraft18.AUTH_TOKEN: {
+        case SetupOptionDraft18.MOQT_IMPLEMENTATION: {
           const length = reader.readVarIntNumber();
-          authToken = reader.readBytes(length);
+          reader.skip(length);
           break;
         }
         default:
-          // Skip unknown options
+          // Skip unknown options per KVP rules
           if (key % 2 === 0) {
+            // Even key: value is a varint
             reader.readVarInt();
           } else {
+            // Odd key: length-prefixed bytes
             const length = reader.readVarIntNumber();
             reader.skip(length);
           }
       }
     }
 
-    return { role, path, authority, maxAuthTokenCacheSize, authToken };
+    return {
+      type: MessageTypeDraft18.SERVER_SETUP,
+      selectedVersion: Version.DRAFT_18,
+      path,
+      authority,
+      maxAuthTokenCacheSize,
+    };
   }
 
   // ============================================================================
