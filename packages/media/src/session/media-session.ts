@@ -329,6 +329,11 @@ export class MediaSession {
       await this.unsubscribe(subscriptionId);
     }
 
+    // Unsubscribe all namespace subscriptions
+    for (const [subscriptionId] of this.namespaceConfigs) {
+      await this.unsubscribeNamespace(subscriptionId).catch(() => {});
+    }
+
     // Clean up session events
     for (const cleanup of this.sessionCleanup) {
       cleanup();
