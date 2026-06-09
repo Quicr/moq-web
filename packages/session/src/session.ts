@@ -26,6 +26,7 @@ import {
   FilterType,
   ObjectStatus,
   RequestParameter,
+  RequestErrorCode,
   SetupParameter,
   BufferWriter,
   Logger,
@@ -40,6 +41,7 @@ import {
   type PublishNamespaceOkMessage,
   type SubscribeNamespaceOkMessage,
   type SubscribeNamespaceErrorMessage,
+  type PublishDoneMessage,
   type MOQTMessage,
   type ControlMessage,
   type ObjectHeader,
@@ -1477,13 +1479,14 @@ export class MOQTSession {
       return;
     }
 
-    // Find matching namespace subscription
+    // Find most specific (longest prefix) matching namespace subscription
     let matchingSubscription: NamespaceSubscriptionInfo | undefined;
+    let longestMatch = -1;
     for (const sub of this.namespaceSubscriptions.values()) {
       const prefix = sub.namespacePrefix.join('/');
-      if (namespaceStr.startsWith(prefix)) {
+      if (namespaceStr.startsWith(prefix) && prefix.length > longestMatch) {
         matchingSubscription = sub;
-        break;
+        longestMatch = prefix.length;
       }
     }
 
@@ -1645,6 +1648,18 @@ export class MOQTSession {
 
     // Close any active GOP stream
     await this.closeVideoGOPStream(key);
+
+    // Send PUBLISH_DONE to notify the relay/subscribers
+    const publishDone: PublishDoneMessage = {
+      type: MessageType.PUBLISH_DONE,
+      requestId: publication.requestId,
+      statusCode: RequestErrorCode.INTERNAL_ERROR,
+      reasonPhrase: '',
+      contentExists: false,
+    };
+    const bytes = MessageCodec.encode(publishDone);
+    await this.doSendControl(bytes).catch(() => {});
+    log.info('Sent PUBLISH_DONE', { trackAlias: key, requestId: publication.requestId });
 
     // Remove from manager (this also runs cleanup handlers)
     this.publicationManager.remove(key);
