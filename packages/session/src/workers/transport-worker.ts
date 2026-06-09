@@ -257,6 +257,7 @@ async function listenForDatagrams(): Promise<void> {
 async function listenForIncomingStreams(): Promise<void> {
   if (!transport) return;
 
+  log('Starting incoming unidirectional stream listener');
   const reader = transport.incomingUnidirectionalStreams.getReader();
   try {
     // eslint-disable-next-line no-constant-condition
@@ -267,6 +268,7 @@ async function listenForIncomingStreams(): Promise<void> {
         break;
       }
 
+      log('Received incoming unidirectional stream');
       if (IS_DRAFT_18) {
         handleDraft18IncomingStream(stream);
       } else {
@@ -292,13 +294,18 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
   try {
     const { value: firstChunk, done } = await reader.read();
     if (done || !firstChunk || firstChunk.length === 0) {
+      log('Draft-18 incoming stream: empty or done', { done, length: firstChunk?.length });
       reader.releaseLock();
       return;
     }
 
+    const hex = Array.from(firstChunk.subarray(0, Math.min(32, firstChunk.length)))
+      .map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log('Draft-18 incoming uni stream first bytes', { length: firstChunk.length, hex });
+
     const [streamType, bytesRead] = MOQTVarInt.decode(firstChunk);
     const streamTypeNum = Number(streamType);
-    log('Draft-18 incoming uni stream', { streamType: `0x${streamTypeNum.toString(16)}` });
+    log('Draft-18 incoming uni stream', { streamType: `0x${streamTypeNum.toString(16)}`, bytesRead });
 
     if (streamTypeNum === StreamTypeDraft18.SETUP) {
       // Setup stream from server — forward remaining bytes + continue reading as setup messages
@@ -369,6 +376,7 @@ async function handleIncomingStreamData(
 async function listenForIncomingBidiStreams(): Promise<void> {
   if (!transport) return;
 
+  log('Starting incoming bidirectional stream listener');
   const reader = transport.incomingBidirectionalStreams.getReader();
   try {
     // eslint-disable-next-line no-constant-condition
