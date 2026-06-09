@@ -743,12 +743,13 @@ export class MOQTSession {
 
     if (IS_DRAFT_18) {
       // Draft-18: Single SETUP message with no version/role (negotiated via ALPN)
-      // Setup can happen in parallel — don't need to wait for server's SETUP
+      // On the setup stream, message type is implicit (stream type = 0x2F00)
+      // Wire format: Length (16-bit) | Setup Options
       const clientSetup: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
       };
 
-      const setupBytes = Draft18MessageCodec.encode(clientSetup);
+      const setupBytes = Draft18MessageCodec.encodeSetupStream(clientSetup);
 
       const hexBytes = Array.from(setupBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
       log.info('SETUP bytes (draft-18)', {
@@ -3010,11 +3011,11 @@ export class MOQTSession {
         this.setupBufferOffset = 0;
       }
 
-      // Try to decode messages
+      // Try to decode messages (setup stream has no message type prefix)
       while (this.setupBufferOffset < this.setupBuffer.length) {
         try {
           const view = this.setupBuffer.subarray(this.setupBufferOffset);
-          const [message, bytesRead] = Draft18MessageCodec.decode(view);
+          const [message, bytesRead] = Draft18MessageCodec.decodeSetupStream(view);
 
           this.setupBufferOffset += bytesRead;
 
