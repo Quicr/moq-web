@@ -225,6 +225,39 @@ export class Draft18MessageCodec {
     return [message, headerSize + payloadLength];
   }
 
+  /**
+   * Decode a SETUP message from the setup stream.
+   * On the setup stream, the message type is implicit (stream type = 0x2F00),
+   * so the wire format is just: Length (16-bit BE) | Setup Options
+   */
+  static decodeSetupStream(buffer: Uint8Array, offset = 0): [ServerSetupMessageDraft18, number] {
+    if (buffer.length < offset + 2) {
+      throw new Draft18CodecError('Incomplete setup message: missing length field');
+    }
+    const payloadLength = (buffer[offset] << 8) | buffer[offset + 1];
+    if (buffer.length < offset + 2 + payloadLength) {
+      throw new Draft18CodecError('Incomplete setup message: not enough payload bytes');
+    }
+    const reader = new Draft18BufferReader(buffer, offset + 2);
+    const message = Draft18MessageCodec.decodeSetup(reader, payloadLength);
+    return [message, 2 + payloadLength];
+  }
+
+  /**
+   * Encode a SETUP message for the setup stream.
+   * No message type prefix — just Length (16-bit BE) | Setup Options
+   */
+  static encodeSetupStream(message: ClientSetupMessageDraft18): Uint8Array {
+    const payloadWriter = new Draft18BufferWriter();
+    Draft18MessageCodec.encodeSetup(payloadWriter, message);
+    const payload = payloadWriter.toUint8Array();
+    const result = new Uint8Array(2 + payload.length);
+    result[0] = (payload.length >> 8) & 0xFF;
+    result[1] = payload.length & 0xFF;
+    result.set(payload, 2);
+    return result;
+  }
+
   // ============================================================================
   // Setup Message (draft-18: single SETUP, no separate CLIENT/SERVER)
   // ============================================================================
