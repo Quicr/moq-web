@@ -14,6 +14,8 @@ import { useStore } from '../../store';
 const getMoqtVersionInfo = () => {
   const version = __MOQT_VERSION__;
   switch (version) {
+    case 'draft-18':
+      return { label: 'Draft-18', color: 'bg-green-500', textColor: 'text-green-700 dark:text-green-300' };
     case 'draft-16':
       return { label: 'Draft-16', color: 'bg-purple-500', textColor: 'text-purple-700 dark:text-purple-300' };
     case 'draft-14':

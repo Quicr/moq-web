@@ -28,7 +28,6 @@ import {
   ObjectStatus,
   RequestParameter,
   SetupParameter,
-  RoleDraft18,
   SubscriptionFilterDraft18,
   BufferWriter,
   Logger,
@@ -743,26 +742,26 @@ export class MOQTSession {
     }
 
     if (IS_DRAFT_18) {
-      // Draft-18: Use Draft18MessageCodec and send on setup stream
+      // Draft-18: Single SETUP message with no version/role (negotiated via ALPN)
+      // Setup can happen in parallel — don't need to wait for server's SETUP
       const clientSetup: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
-        supportedVersions: [Version.DRAFT_18],
-        role: RoleDraft18.BOTH,
       };
 
       const setupBytes = Draft18MessageCodec.encode(clientSetup);
 
       const hexBytes = Array.from(setupBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      log.info('CLIENT_SETUP bytes (draft-18)', {
+      log.info('SETUP bytes (draft-18)', {
         length: setupBytes.length,
         hex: hexBytes,
         alpnProtocol: getCurrentALPNProtocol(),
       });
 
       await this.doSendControl(setupBytes);
-      log.info('Sent CLIENT_SETUP (draft-18)');
+      log.info('Sent SETUP (draft-18)');
 
-      // Wait for SERVER_SETUP on incoming setup stream
+      // Draft-18: Setup can happen in parallel, but wait for server's SETUP
+      // to confirm session establishment
       await this.waitForServerSetupDraft18();
     } else {
       // Draft-14/16: Use MessageCodec and send on control stream

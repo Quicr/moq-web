@@ -175,25 +175,28 @@ export enum MessageType {
  * These are sent on bidirectional streams or the control stream.
  */
 export enum MessageTypeDraft18 {
-  CLIENT_SETUP = 0x01,
-  SERVER_SETUP = 0x02,
+  REQUEST_UPDATE = 0x02,
   SUBSCRIBE = 0x03,
   SUBSCRIBE_OK = 0x04,
-  PUBLISH = 0x05,
-  PUBLISH_DONE = 0x06,
-  REQUEST_ERROR = 0x08,
-  REQUEST_OK = 0x09,
-  REQUEST_UPDATE = 0x0a,
-  TRACK_STATUS = 0x0b,
-  GOAWAY = 0x0c,
-  FETCH = 0x0d,
-  FETCH_OK = 0x0e,
-  PUBLISH_NAMESPACE = 0x10,
-  SUBSCRIBE_NAMESPACE = 0x11,
-  NAMESPACE = 0x12,
-  NAMESPACE_DONE = 0x13,
-  SUBSCRIBE_TRACKS = 0x14,
-  PUBLISH_BLOCKED = 0x15,
+  REQUEST_ERROR = 0x05,
+  PUBLISH_NAMESPACE = 0x06,
+  REQUEST_OK = 0x07,
+  NAMESPACE = 0x08,
+  PUBLISH_DONE = 0x0B,
+  TRACK_STATUS = 0x0D,
+  NAMESPACE_DONE = 0x0E,
+  PUBLISH_BLOCKED = 0x0F,
+  GOAWAY = 0x10,
+  FETCH = 0x16,
+  FETCH_OK = 0x18,
+  PUBLISH = 0x1D,
+  PUBLISH_OK = 0x1E,
+  SUBSCRIBE_NAMESPACE = 0x50,
+  SUBSCRIBE_TRACKS = 0x51,
+  SETUP = 0x2F00,
+  // Aliases used in session code (SETUP is single message in draft-18)
+  CLIENT_SETUP = 0x2F00,
+  SERVER_SETUP = 0x2F00,
 }
 
 /**
@@ -209,15 +212,15 @@ export enum StreamTypeDraft18 {
  * Draft-18 Setup Option Types
  */
 export enum SetupOptionDraft18 {
-  ROLE = 0x00,
   PATH = 0x01,
-  AUTHORITY = 0x02,
-  MAX_AUTH_TOKEN_CACHE_SIZE = 0x03,
-  AUTH_TOKEN = 0x04,
+  AUTHORIZATION_TOKEN = 0x03,
+  MAX_AUTH_TOKEN_CACHE_SIZE = 0x04,
+  AUTHORITY = 0x05,
+  MOQT_IMPLEMENTATION = 0x07,
 }
 
 /**
- * Draft-18 Role Values
+ * Draft-18 Role (deprecated — draft-18 has no role in SETUP, kept for compatibility)
  */
 export enum RoleDraft18 {
   PUBLISHER = 0x01,
@@ -1433,8 +1436,8 @@ export function isSetupMessage(
  */
 export interface ClientSetupMessageDraft18 {
   type: MessageTypeDraft18.CLIENT_SETUP;
-  supportedVersions: Version[];
-  role?: RoleDraft18;
+  supportedVersions?: Version[];
+  role?: number;
   path?: string;
   authority?: string;
   maxAuthTokenCacheSize?: number;
@@ -1442,12 +1445,12 @@ export interface ClientSetupMessageDraft18 {
 }
 
 /**
- * Draft-18 SERVER_SETUP message
+ * Draft-18 SERVER_SETUP (same as SETUP — single message type in draft-18)
  */
 export interface ServerSetupMessageDraft18 {
   type: MessageTypeDraft18.SERVER_SETUP;
-  selectedVersion: Version;
-  role?: RoleDraft18;
+  selectedVersion?: Version;
+  role?: number;
   path?: string;
   authority?: string;
   maxAuthTokenCacheSize?: number;
