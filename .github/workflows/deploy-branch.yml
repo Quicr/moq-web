@@ -6,7 +6,7 @@ on:
       branch:
         description: 'Branch to deploy'
         required: true
-        default: 'jitter-overhaul'
+        default: 'draft-18'
 
 permissions:
   contents: read
@@ -44,7 +44,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build branch
-        run: pnpm run build
+        run: |
+          if [[ "${{ github.event.inputs.branch }}" == *"draft-18"* ]]; then
+            pnpm run build:draft-18
+          else
+            pnpm run build
+          fi
         env:
           BASE_URL: /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/
 
