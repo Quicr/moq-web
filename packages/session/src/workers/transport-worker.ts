@@ -257,18 +257,18 @@ async function listenForDatagrams(): Promise<void> {
 async function listenForIncomingStreams(): Promise<void> {
   if (!transport) return;
 
-  log('Starting incoming unidirectional stream listener');
+  console.log('[transport-worker] Starting incoming unidirectional stream listener');
   const reader = transport.incomingUnidirectionalStreams.getReader();
   try {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const { value: stream, done } = await reader.read();
       if (done) {
-        log('Incoming streams ended');
+        console.log('[transport-worker] Incoming streams ended');
         break;
       }
 
-      log('Received incoming unidirectional stream');
+      console.log('[transport-worker] Received incoming unidirectional stream');
       if (IS_DRAFT_18) {
         handleDraft18IncomingStream(stream);
       } else {
@@ -294,18 +294,18 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
   try {
     const { value: firstChunk, done } = await reader.read();
     if (done || !firstChunk || firstChunk.length === 0) {
-      log('Draft-18 incoming stream: empty or done', { done, length: firstChunk?.length });
+      console.log('[transport-worker] Draft-18 incoming stream: empty or done', { done, length: firstChunk?.length });
       reader.releaseLock();
       return;
     }
 
     const hex = Array.from(firstChunk.subarray(0, Math.min(32, firstChunk.length)))
       .map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log('Draft-18 incoming uni stream first bytes', { length: firstChunk.length, hex });
+    console.log('[transport-worker] Draft-18 incoming uni stream first bytes', { length: firstChunk.length, hex });
 
     const [streamType, bytesRead] = MOQTVarInt.decode(firstChunk);
     const streamTypeNum = Number(streamType);
-    log('Draft-18 incoming uni stream', { streamType: `0x${streamTypeNum.toString(16)}`, bytesRead });
+    console.log('[transport-worker] Draft-18 stream type decoded', { streamType: `0x${streamTypeNum.toString(16)}`, bytesRead, isSetup: streamTypeNum === StreamTypeDraft18.SETUP });
 
     if (streamTypeNum === StreamTypeDraft18.SETUP) {
       // Setup stream from server — forward remaining bytes + continue reading as setup messages
@@ -325,23 +325,26 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
       // Data stream (subgroup) — forward full chunk including stream type byte
       // (object router's decodeSubgroupHeader reads stream type as first field)
       const streamId = nextStreamId++;
-      log('Incoming data stream', { streamId, streamType: `0x${streamTypeNum.toString(16)}` });
+      console.log('[transport-worker] Incoming DATA stream', { streamId, streamType: `0x${streamTypeNum.toString(16)}`, chunkSize: firstChunk.length });
       respond({ type: 'incoming-stream', streamId });
 
       // Send full first chunk (stream type byte is part of the subgroup header)
       const data = new Uint8Array(firstChunk);
       respond({ type: 'stream-data', streamId, data }, [data.buffer]);
       // Continue forwarding data
+      let totalForwarded = firstChunk.length;
       while (true) {
         const { value, done: d } = await reader.read();
         if (d) break;
+        totalForwarded += value.length;
         const d2 = new Uint8Array(value);
         respond({ type: 'stream-data', streamId, data: d2 }, [d2.buffer]);
       }
+      console.log('[transport-worker] Data stream ended', { streamId, totalForwarded });
       respond({ type: 'stream-closed', streamId });
     }
   } catch (err) {
-    log('Draft-18 stream error', { error: (err as Error).message });
+    console.log('[transport-worker] Draft-18 stream error', { error: (err as Error).message });
   }
 }
 
