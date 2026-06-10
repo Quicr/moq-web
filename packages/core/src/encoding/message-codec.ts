@@ -36,6 +36,7 @@ import { Logger } from '../utils/logger.js';
 import { BufferReader, BufferWriter, VarInt } from './varint.js';
 import { IS_DRAFT_16, IS_DRAFT_18 } from '../version/constants.js';
 import { Draft18StreamCodec, SubgroupFlags } from './draft18-stream-codec.js';
+import { MOQTVarInt } from './moqt-varint.js';
 import type { SubgroupHeaderDraft18, ObjectHeaderDraft18, ObjectDatagramDraft18 } from '../messages/types.js';
 import {
   MessageType,
@@ -2832,9 +2833,23 @@ export class ObjectCodec {
       const delta = Number(objHeader.objectIdDelta);
       const objectId = isFirstObject ? delta : (previousObjectId + delta + 1);
       const payloadLength = Number(objHeader.payloadLength);
-      const payload = buffer.subarray(offset + headerBytesRead, offset + headerBytesRead + payloadLength);
-      const totalConsumed = headerBytesRead + payloadLength;
-      return [objectId, payload, ObjectStatus.NORMAL, totalConsumed];
+
+      if (payloadLength === 0) {
+        // payloadLength=0 means Object Status follows instead of payload
+        if (offset + headerBytesRead >= buffer.length) {
+          throw new Error(`Incomplete object: need status byte after zero-length payload`);
+        }
+        const [statusVal, statusBytes] = MOQTVarInt.decodeNumber(buffer, offset + headerBytesRead);
+        const status = statusVal as ObjectStatus;
+        return [objectId, new Uint8Array(0), status, headerBytesRead + statusBytes];
+      }
+
+      const totalNeeded = headerBytesRead + payloadLength;
+      if (offset + totalNeeded > buffer.length) {
+        throw new Error(`Incomplete object: need ${totalNeeded} bytes, have ${buffer.length - offset}`);
+      }
+      const payload = buffer.subarray(offset + headerBytesRead, offset + totalNeeded);
+      return [objectId, payload, ObjectStatus.NORMAL, totalNeeded];
     }
 
     const reader = new BufferReader(buffer, offset);
