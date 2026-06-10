@@ -370,12 +370,11 @@ export class SubscribePipeline {
     });
 
     this.decodeWorkerClient.on('error', (response) => {
-      log.error('Decode worker error', {
+      log.warn('Decode worker error (will recover on next keyframe)', {
         channelId: this.channelId,
         message: response.message,
         diagnostics: response.diagnostics,
       });
-      this.emit('error', new DecodeError(response.message, response.diagnostics));
     });
 
     // Forward latency stats if enabled

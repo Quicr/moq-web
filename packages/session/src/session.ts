@@ -504,6 +504,11 @@ export class MOQTSession {
    */
   private handleWorkerStreamClosed(streamId: number): void {
     this.workerStreamBuffers.delete(streamId);
+    // Close the ReadableStream controller so object-router gets done=true
+    const reader = this.workerStreamReaders.get(streamId);
+    if (reader) {
+      try { reader.controller.close(); } catch { /* already closed */ }
+    }
     this.workerStreamReaders.delete(streamId);
     this.bidiStreamChunks.delete(streamId);
     // Close any pending incoming bidi stream readable controller
