@@ -3246,10 +3246,11 @@ export class MOQTSession {
     // Assign track alias
     const trackAlias = BigInt(this.nextIncomingTrackAlias++);
 
-    // Send SUBSCRIBE_OK
+    // Send SUBSCRIBE_OK with the track alias we'll use on data streams
     const subscribeOk: SubscribeOkMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_OK,
       requestId: message.requestId,
+      trackAlias,
       largestLocation: { group: 0n, object: 0n },
     };
     const responseBytes = Draft18MessageCodec.encode(subscribeOk);
