@@ -262,12 +262,14 @@ export class ObjectRouter {
 
               if (subscription) {
                 const timestamp = performance.now() * 1000;
-                this.deliverObject(subscription, payload, subgroupHeader.groupId, objectId, timestamp);
+                // Copy payload to avoid detaching the shared buffer when transferred via postMessage
+                const payloadCopy = new Uint8Array(payload);
+                this.deliverObject(subscription, payloadCopy, subgroupHeader.groupId, objectId, timestamp);
 
                 log.trace('Processed stream object', {
                   groupId: subgroupHeader.groupId,
                   objectId,
-                  payloadSize: payload.length,
+                  payloadSize: payloadCopy.length,
                 });
               } else {
                 log.warn('Received stream object for unknown track alias', {
