@@ -2744,7 +2744,7 @@ export class ObjectCodec {
     hasExtensions = false
   ): Uint8Array {
     if (IS_DRAFT_18) {
-      // Draft-18: Object ID Delta | Properties Length | Properties | Payload Length
+      // Draft-18: Object ID Delta | [Properties] | Payload Length | [Object Status] | [Payload]
       // Delta encoding: first object delta = objectId, subsequent = objectId - previousObjectId - 1
       const isFirstObject = previousObjectId < 0;
       const objectIdDelta = isFirstObject ? objectId : (objectId - previousObjectId - 1);
@@ -2753,7 +2753,16 @@ export class ObjectCodec {
         objectIdDelta: BigInt(objectIdDelta),
         payloadLength: BigInt(payload.length),
       };
-      const headerBytes = Draft18StreamCodec.encodeObjectHeader(objHeader);
+      const headerBytes = Draft18StreamCodec.encodeObjectHeader(objHeader, hasExtensions);
+
+      if (payload.length === 0 && status !== ObjectStatus.NORMAL) {
+        // payloadLength=0 means Object Status varint follows
+        const statusBytes = MOQTVarInt.encode(status);
+        const result = new Uint8Array(headerBytes.length + statusBytes.length);
+        result.set(headerBytes);
+        result.set(statusBytes, headerBytes.length);
+        return result;
+      }
 
       // Combine header + payload
       const result = new Uint8Array(headerBytes.length + payload.length);
