@@ -1573,7 +1573,6 @@ export interface SubgroupHeaderDraft18 {
   subgroupId: bigint;
   publisherPriority: number;
   firstObject?: bigint;
-  subgroupProperties?: Map<number, Uint8Array>;
 }
 
 /**

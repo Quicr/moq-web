@@ -332,7 +332,6 @@ export interface WireSubgroupHeader {
   subgroupId: bigint;
   publisherPriority?: number;
   firstObject?: bigint;
-  subgroupProperties?: Map<number, Uint8Array>;
 }
 
 export interface WireObjectHeader {
