@@ -1375,8 +1375,7 @@ export class MOQTSession {
     log.info('Unsubscribing', { subscriptionId });
 
     if (IS_DRAFT_18) {
-      // Draft-18: Send REQUEST_UPDATE with forwardState=false to pause,
-      // or just remove locally (stream closure signals termination)
+      // Draft-18: Send REQUEST_UPDATE with forwardState=false to unsubscribe
       try {
         await this.sendRequestUpdate(subscription.requestId, false);
       } catch (err) {
