@@ -2631,22 +2631,13 @@ export class MOQTSession {
 
     try {
       if (metadata.isKeyframe) {
-        // Close existing stream with END_OF_GROUP marker
+        // Close existing stream — END_OF_GROUP is signaled by the header bit,
+        // so just close the stream without writing a status object
         const existing = this.activeVideoStreams.get(aliasKey);
         if (existing) {
           try {
-            // Send END_OF_GROUP marker as the last object
-            const endOfGroupObject = ObjectCodec.encodeStreamObject(
-              existing.previousObjectId + 1, // Next object ID
-              new Uint8Array(0), // Empty payload
-              ObjectStatus.END_OF_GROUP,
-              existing.previousObjectId,
-              existing.hasExtensions
-            );
-            await this.doWriteStream({ writer: existing.writer, streamId: existing.streamId }, endOfGroupObject);
-
             await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
-            log.info('Closed previous GOP stream with END_OF_GROUP', {
+            log.info('Closed previous GOP stream', {
               trackAlias: aliasKey,
               previousGroupId: existing.groupId,
               objectCount: existing.objectCount,
