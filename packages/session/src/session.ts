@@ -171,6 +171,8 @@ export class MOQTSession {
   private ownNamespacePrefix: string | null = null;
   /** Authorization token for CLIENT_SETUP */
   private authToken: string | null = null;
+  /** Token type for AUTHORIZATION_TOKEN parameter (default: C4M = 0x63346d) */
+  private authTokenType: number = 0x63346d;
 
   /**
    * Create a new MOQTSession
@@ -223,8 +225,9 @@ export class MOQTSession {
    * Set authorization token to include in CLIENT_SETUP.
    * Must be called before setup().
    */
-  setAuthToken(token: string): void {
+  setAuthToken(token: string, tokenType?: number): void {
     this.authToken = token;
+    if (tokenType !== undefined) this.authTokenType = tokenType;
   }
 
   /**
@@ -658,10 +661,11 @@ export class MOQTSession {
     setupParams.set(SetupParameter.MAX_REQUEST_ID, 1000);
     if (this.authToken) {
       // Encode as: token_type (varint) || token_value (bytes)
-      // C4M token type = 0x63346d
-      const tokenBytes = new TextEncoder().encode(this.authToken);
+      const tokenBytes = this.authTokenType === 0x0002
+        ? base64UrlDecodeToBytes(this.authToken)
+        : new TextEncoder().encode(this.authToken);
       const tokenWriter = new BufferWriter();
-      tokenWriter.writeVarInt(0x63346d);
+      tokenWriter.writeVarInt(this.authTokenType);
       tokenWriter.writeBytes(tokenBytes);
       setupParams.set(SetupParameter.AUTHORIZATION_TOKEN, tokenWriter.toUint8Array());
     }
@@ -2643,4 +2647,11 @@ export class MOQTSession {
       }
     }
   }
+}
+
+function base64UrlDecodeToBytes(str: string): Uint8Array {
+  const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+  const binary = atob(base64 + padding);
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
