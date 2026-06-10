@@ -107,6 +107,17 @@ export class Draft18StreamCodec {
     // Publisher Priority (present because DEFAULT_PRIORITY bit is 0)
     writer.writeByte(header.publisherPriority);
 
+    // Subgroup Properties (present when PROPERTIES bit is set)
+    if ((streamType & SubgroupFlags.PROPERTIES) !== 0) {
+      const propsWriter = new Draft18BufferWriter();
+      if (header.subgroupProperties) {
+        Draft18StreamCodec.encodeProperties(propsWriter, header.subgroupProperties);
+      }
+      const propsBytes = propsWriter.toUint8Array();
+      writer.writeVarInt(propsBytes.length);
+      writer.writeBytes(propsBytes);
+    }
+
     return writer.toUint8Array();
   }
 
@@ -142,6 +153,16 @@ export class Draft18StreamCodec {
       publisherPriority = reader.readByte();
     }
 
+    // Subgroup Properties: present when PROPERTIES bit (0x01) is set
+    let subgroupProperties: Map<number, Uint8Array> | undefined;
+    if ((streamType & SubgroupFlags.PROPERTIES) !== 0) {
+      const propsLength = reader.readVarIntNumber();
+      if (propsLength > 0) {
+        const propsEnd = reader.offset + propsLength;
+        subgroupProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
+      }
+    }
+
     const firstObject = (streamType & SubgroupFlags.FIRST_OBJECT) !== 0 ? 0n : undefined;
 
     return [
@@ -152,6 +173,7 @@ export class Draft18StreamCodec {
         subgroupId,
         publisherPriority,
         firstObject,
+        subgroupProperties,
       },
       reader.offset - offset,
     ];
