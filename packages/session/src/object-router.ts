@@ -22,7 +22,8 @@ export type ObjectCallback = (
   data: Uint8Array,
   groupId: number,
   objectId: number,
-  timestamp: number
+  timestamp: number,
+  extensions?: Map<number, Uint8Array>
 ) => void;
 
 /**
@@ -288,7 +289,7 @@ export class ObjectRouter {
           while (bufferOffset < buffer.length) {
             try {
               const view = buffer.subarray(bufferOffset);
-              const [objectId, payload, status, bytesConsumed] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, false, previousObjectId);
+              const [objectId, payload, status, bytesConsumed, extensions] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, false, previousObjectId);
               previousObjectId = objectId; // Update for next delta decode
               objectCount++;
 
@@ -329,7 +330,7 @@ export class ObjectRouter {
 
               if (subscription) {
                 const timestamp = performance.now() * 1000;
-                this.deliverObject(subscription, payload, subgroupHeader.groupId, objectId, timestamp);
+                this.deliverObject(subscription, payload, subgroupHeader.groupId, objectId, timestamp, extensions);
 
                 log.trace('Processed stream object', {
                   groupId: subgroupHeader.groupId,
@@ -444,7 +445,8 @@ export class ObjectRouter {
     data: Uint8Array,
     groupId: number,
     objectId: number,
-    timestamp: number
+    timestamp: number,
+    extensions?: Map<number, Uint8Array>
   ): void {
     // Detect gaps in object delivery
     const last = this.lastDelivered.get(subscription.subscriptionId);
@@ -480,12 +482,12 @@ export class ObjectRouter {
 
     // Call subscription's object handler if set
     if (subscription.onObject) {
-      subscription.onObject(data, groupId, objectId, timestamp);
+      subscription.onObject(data, groupId, objectId, timestamp, extensions);
     }
 
     // Call global callback
     if (this.onObject) {
-      this.onObject(subscription, data, groupId, objectId, timestamp);
+      this.onObject(subscription, data, groupId, objectId, timestamp, extensions);
     }
   }
 

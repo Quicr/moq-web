@@ -19,7 +19,7 @@ const log = Logger.create('moqt:session:subscription-manager');
  */
 export interface InternalSubscription extends SubscriptionInfo {
   /** Object handler callback */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, extensions?: Map<number, Uint8Array>) => void;
   /** End of group callback - called when END_OF_GROUP status is received */
   onEndOfGroup?: (groupId: number) => void;
 }
