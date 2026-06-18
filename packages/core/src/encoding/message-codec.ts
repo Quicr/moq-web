@@ -2845,7 +2845,7 @@ export class ObjectCodec {
    * @param hasExtensions - Whether objects have extensions (from header type EXTENSIONS bit)
    * @param useRemainingAsPayload - Use remaining buffer as payload (draft-14 LAPS)
    * @param previousObjectId - Previous object ID for delta decoding (draft-16), -1 for first object
-   * @returns Tuple of [objectId, payload, status, bytesConsumed]
+   * @returns Tuple of [objectId, payload, status, bytesConsumed, extensions?]
    */
   static decodeStreamObject(
     buffer: Uint8Array,
@@ -2853,7 +2853,7 @@ export class ObjectCodec {
     hasExtensions = true,
     useRemainingAsPayload = false,
     previousObjectId = -1
-  ): [number, Uint8Array, ObjectStatus, number] {
+  ): [number, Uint8Array, ObjectStatus, number, Map<number, Uint8Array>?] {
     const reader = new BufferReader(buffer, offset);
 
     const objectIdDelta = reader.readVarIntNumber();
@@ -2874,11 +2874,11 @@ export class ObjectCodec {
       // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | [Payload]
       // Extension length field is ONLY present when EXTENSIONS bit is set in subgroup header type
       // Types with Ext suffix (0x11, 0x19, etc.) have extensions; others (0x10, 0x18, etc.) don't
+      let extensions: Map<number, Uint8Array> | undefined;
       if (hasExtensions) {
         const extensionLength = reader.readVarIntNumber();
         if (extensionLength > 0) {
-          // Skip extension bytes (TODO: parse KVPs if needed)
-          reader.readBytes(extensionLength);
+          extensions = this.parseExtensionKVPs(reader, extensionLength);
         }
       }
 
@@ -2888,23 +2888,23 @@ export class ObjectCodec {
         status = reader.readVarIntNumber() as ObjectStatus;
       }
       const payload = reader.readBytes(payloadLength);
-      return [objectId, payload, status, reader.offset - offset];
+      return [objectId, payload, status, reader.offset - offset, extensions];
     }
 
     // Draft-14 LAPS format handling
     // LAPS formats with extensions (0x11, 0x13, 0x15, etc.) have an extension length field
+    let extensions: Map<number, Uint8Array> | undefined;
     if (hasExtensions) {
       const extensionLength = reader.readVarIntNumber();
       if (extensionLength > 0) {
-        // Skip extension bytes
-        reader.readBytes(extensionLength);
+        extensions = this.parseExtensionKVPs(reader, extensionLength);
       }
     }
 
     // For LAPS streams that don't include payload_length, use remaining bytes
     if (useRemainingAsPayload) {
       const payload = reader.readBytes(reader.remaining);
-      return [objectId, payload, ObjectStatus.NORMAL, reader.offset - offset];
+      return [objectId, payload, ObjectStatus.NORMAL, reader.offset - offset, extensions];
     }
 
     const payloadLength = reader.readVarIntNumber();
@@ -2916,7 +2916,19 @@ export class ObjectCodec {
     }
 
     const payload = reader.readBytes(payloadLength);
-    return [objectId, payload, status, reader.offset - offset];
+    return [objectId, payload, status, reader.offset - offset, extensions];
+  }
+
+  private static parseExtensionKVPs(reader: BufferReader, totalLength: number): Map<number, Uint8Array> {
+    const extensions = new Map<number, Uint8Array>();
+    const endOffset = reader.offset + totalLength;
+    while (reader.offset < endOffset) {
+      const key = reader.readVarIntNumber();
+      const valueLength = reader.readVarIntNumber();
+      const value = reader.readBytes(valueLength);
+      extensions.set(key, value);
+    }
+    return extensions;
   }
 
   /**

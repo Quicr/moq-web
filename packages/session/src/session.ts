@@ -810,7 +810,7 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
     options?: SubscribeOptions,
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
+    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, extensions?: Map<number, Uint8Array>) => void,
     onEndOfGroup?: (groupId: number) => void
   ): Promise<number> {
     if (!this.isReady) {
@@ -1386,7 +1386,7 @@ export class MOQTSession {
    */
   setSubscriptionCallback(
     subscriptionId: number,
-    onObject: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void
+    onObject: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, extensions?: Map<number, Uint8Array>) => void
   ): void {
     const subscription = this.subscriptionManager.get(subscriptionId);
     if (subscription) {

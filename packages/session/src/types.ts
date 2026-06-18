@@ -255,7 +255,7 @@ export interface SubscribeNamespaceOptions {
   /** Subscriber priority (0-255, default 128) */
   priority?: number;
   /** Callback for received objects from tracks under this namespace */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, extensions?: Map<number, Uint8Array>) => void;
 }
 
 /**
@@ -271,7 +271,7 @@ export interface NamespaceSubscriptionInfo {
   /** Tracks discovered under this namespace */
   tracks: Map<string, IncomingPublishInfo>;
   /** Callback for received objects from tracks under this namespace */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, extensions?: Map<number, Uint8Array>) => void;
 }
 
 /**
