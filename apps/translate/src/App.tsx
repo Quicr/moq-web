@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import { EzDubsWebClient, type RemoteParticipant, type SessionConfig } from './moq-client';
+import { EzDubsWebClient, type RemoteParticipant, type SessionConfig, type TranscriptEntry } from './moq-client';
 import { AudioCapturePipeline, AudioPlaybackPipeline } from './audio-pipeline';
 
 const LANGUAGES = [
@@ -31,6 +31,7 @@ function App() {
   const [status, setStatus] = useState('Ready');
   const [participants, setParticipants] = useState<RemoteParticipant[]>([]);
   const [audioStats, setAudioStats] = useState({ sent: 0, received: 0 });
+  const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
 
   const clientRef = useRef<EzDubsWebClient | null>(null);
   const captureRef = useRef<AudioCapturePipeline | null>(null);
@@ -67,6 +68,22 @@ function App() {
         setParticipants(prev => {
           if (prev.find(x => x.id === p.id)) return prev;
           return [...prev, p];
+        });
+      });
+      client.setOnTranscriptReceived((t) => {
+        setTranscripts(prev => {
+          if (t.isFinal) {
+            // Replace the last interim entry from same participant
+            const filtered = prev.filter(
+              e => !(e.participantId === t.participantId && !e.isFinal)
+            );
+            return [...filtered, t].slice(-50);
+          }
+          // Interim: replace any existing interim from same participant
+          const filtered = prev.filter(
+            e => !(e.participantId === t.participantId && !e.isFinal)
+          );
+          return [...filtered, t].slice(-50);
         });
       });
 
@@ -111,6 +128,7 @@ function App() {
     setConnected(false);
     setPublishing(false);
     setParticipants([]);
+    setTranscripts([]);
     statsRef.current = { sent: 0, received: 0 };
     setAudioStats({ sent: 0, received: 0 });
     timestampRef.current = 0;
@@ -297,6 +315,24 @@ function App() {
                 ))}
               </ul>
             )}
+          </div>
+        )}
+
+        {/* Transcripts */}
+        {connected && transcripts.length > 0 && (
+          <div className="bg-gray-800 rounded-lg p-4 space-y-2">
+            <h2 className="text-lg font-semibold">Transcripts</h2>
+            <div className="max-h-48 overflow-y-auto space-y-1">
+              {transcripts.map((t, i) => (
+                <div key={i} className={`text-sm ${t.isFinal ? 'text-gray-200' : 'text-gray-400 italic'}`}>
+                  <span className="font-medium text-blue-400">{t.participantId}</span>
+                  <span className="text-gray-500 text-xs ml-1">
+                    [{t.language}{t.isTranslation ? ' translated' : ''}]
+                  </span>
+                  <span className="ml-2">{t.text}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
