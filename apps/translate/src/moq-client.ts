@@ -25,7 +25,18 @@ export interface RemoteParticipant {
   trackName: string;
 }
 
+export interface TranscriptEntry {
+  participantId: string;
+  language: string;
+  text: string;
+  isFinal: boolean;
+  isTranslation: boolean;
+  startTimeMs: number;
+  endTimeMs: number;
+}
+
 export type OnAudioReceived = (participantId: string, data: Uint8Array, groupId: number, objectId: number, metadata?: EzDubsMetadata) => void;
+export type OnTranscriptReceived = (transcript: TranscriptEntry) => void;
 export type OnParticipantDiscovered = (participant: RemoteParticipant) => void;
 export type OnStatusChange = (status: string) => void;
 
@@ -35,6 +46,7 @@ export class EzDubsWebClient {
   private config: SessionConfig;
   private publishTrackAlias: bigint | null = null;
   private onAudioReceived: OnAudioReceived | null = null;
+  private onTranscriptReceived: OnTranscriptReceived | null = null;
   private onParticipantDiscovered: OnParticipantDiscovered | null = null;
   private onStatusChange: OnStatusChange | null = null;
   private groupId = 0;
@@ -47,6 +59,7 @@ export class EzDubsWebClient {
   }
 
   setOnAudioReceived(cb: OnAudioReceived) { this.onAudioReceived = cb; }
+  setOnTranscriptReceived(cb: OnTranscriptReceived) { this.onTranscriptReceived = cb; }
   setOnParticipantDiscovered(cb: OnParticipantDiscovered) { this.onParticipantDiscovered = cb; }
   setOnStatusChange(cb: OnStatusChange) { this.onStatusChange = cb; }
 
@@ -126,6 +139,37 @@ export class EzDubsWebClient {
     });
   }
 
+  async subscribeTranscripts(): Promise<void> {
+    if (!this.session) throw new Error('Not connected');
+
+    // Transcript tracks live under the server namespace, discovered via the same server sub-ns.
+    // The track names are "transcript/<lang>". We subscribe to the server namespace
+    // and handle transcript objects in the incoming-publish handler.
+    // The server output subscription already covers this — we just need to handle
+    // transcript track data here when it arrives via the server namespace.
+    this.status('Transcript subscription active (via server namespace)');
+  }
+
+  private handleTranscriptObject(data: Uint8Array) {
+    if (data.length === 0) return;
+    try {
+      const json = new TextDecoder().decode(data);
+      const obj = JSON.parse(json);
+      const entry: TranscriptEntry = {
+        participantId: obj.participant_id ?? '',
+        language: obj.language ?? '',
+        text: obj.text ?? '',
+        isFinal: obj.is_final ?? false,
+        isTranslation: obj.is_translation ?? false,
+        startTimeMs: obj.start_time_ms ?? 0,
+        endTimeMs: obj.end_time_ms ?? 0,
+      };
+      this.onTranscriptReceived?.(entry);
+    } catch {
+      // Ignore malformed transcript objects
+    }
+  }
+
   async disconnect(): Promise<void> {
     if (this.transport) {
       await this.transport.close();
@@ -161,7 +205,12 @@ export class EzDubsWebClient {
 
     const srvPrefix = this.getServerSubNamespace();
     if (this.matchesPrefix(ns, srvPrefix)) {
-      this.status(`Server track discovered: ${nsStr}/${event.trackName}`);
+      const trackName = event.trackName;
+      if (trackName.startsWith('transcript/')) {
+        this.status(`Transcript track discovered: ${nsStr}/${trackName}`);
+      } else {
+        this.status(`Server track discovered: ${nsStr}/${trackName}`);
+      }
       return;
     }
 
@@ -176,6 +225,13 @@ export class EzDubsWebClient {
 
   private handleServerObject(data: Uint8Array, _groupId: number, _objectId: number, extensions?: Map<number, Uint8Array>) {
     if (data.length === 0) return;
+
+    // Detect transcript objects: they start with '{' (JSON)
+    if (data[0] === 0x7B) {
+      this.handleTranscriptObject(data);
+      return;
+    }
+
     const metadata = this.parseMetadata(extensions);
     this.onAudioReceived?.('server', data, _groupId, _objectId, metadata);
   }
