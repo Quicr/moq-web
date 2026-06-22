@@ -141,11 +141,18 @@ export class EzDubsWebClient {
     if (!this.session) throw new Error('Not connected');
 
     const prefix = this.getServerSubNamespace();
-    this.status(`Subscribing to server output: ${prefix.join('/')}`);
+    const targetLang = this.config.targetLanguage || this.config.sourceLanguage;
+    this.status(`Subscribing to server output for ${targetLang}: ${prefix.join('/')}`);
 
-    // Don't set onObject here — we'll selectively set callbacks per track
-    // in handleIncomingPublish based on target language filtering
-    await this.session.subscribeNamespace(prefix);
+    await this.session.subscribeNamespace(prefix, {
+      onObject: (data, groupId, objectId, _timestamp, extensions) => {
+        this.handleServerObject(data, groupId, objectId, extensions);
+      },
+      trackFilter: (trackName: string) => {
+        const wanted = trackName === `mix/${targetLang}/audio` || trackName === `transcript/${targetLang}`;
+        return wanted;
+      },
+    });
   }
 
   async subscribeTranscripts(): Promise<void> {
@@ -231,26 +238,7 @@ export class EzDubsWebClient {
 
     const srvPrefix = this.getServerSubNamespace();
     if (this.matchesPrefix(ns, srvPrefix)) {
-      const trackName = event.trackName;
-      const targetLang = this.config.targetLanguage || this.config.sourceLanguage;
-      const wantAudioTrack = `mix/${targetLang}/audio`;
-      const wantTranscriptTrack = `transcript/${targetLang}`;
-
-      if (trackName === wantAudioTrack) {
-        this.status(`Subscribing to audio: ${nsStr}/${trackName}`);
-        this.session?.setSubscriptionCallback(event.subscriptionId,
-          (data, groupId, objectId, _timestamp, extensions) => {
-            this.handleServerObject(data, groupId, objectId, extensions);
-          });
-      } else if (trackName === wantTranscriptTrack) {
-        this.status(`Subscribing to transcript: ${nsStr}/${trackName}`);
-        this.session?.setSubscriptionCallback(event.subscriptionId,
-          (data) => {
-            this.handleTranscriptObject(data);
-          });
-      } else {
-        this.status(`Ignoring server track: ${trackName} (want ${targetLang})`);
-      }
+      this.status(`Server track: ${event.trackName}`);
       return;
     }
 
