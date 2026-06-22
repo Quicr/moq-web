@@ -87,11 +87,17 @@ export class EzDubsWebClient {
   async startPublishing(): Promise<void> {
     if (!this.session) throw new Error('Not connected');
 
-    const namespace = this.getClientInputNamespace();
+    // Publish to passthrough namespace (direct relay forwarding to other web listeners)
+    const passthroughNs = [
+      ...this.config.namespacePrefix,
+      this.config.sessionId,
+      'client', 'passthrough',
+      this.config.participantId,
+    ];
     const trackName = 'audio';
 
-    this.status(`Publishing to ${namespace.join('/')}/${trackName}`);
-    this.publishTrackAlias = await this.session.publish(namespace, trackName, {
+    this.status(`Publishing to ${passthroughNs.join('/')}/${trackName}`);
+    this.publishTrackAlias = await this.session.publish(passthroughNs, trackName, {
       priority: 128,
       deliveryTimeout: 2000,
       deliveryMode: 'stream',
