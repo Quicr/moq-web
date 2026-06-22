@@ -87,17 +87,18 @@ export class EzDubsWebClient {
   async startPublishing(): Promise<void> {
     if (!this.session) throw new Error('Not connected');
 
-    // Publish to passthrough namespace (direct relay forwarding to other web listeners)
-    const passthroughNs = [
+    // Publish to client/in namespace (translation server subscribes to this)
+    const inputNs = [
       ...this.config.namespacePrefix,
       this.config.sessionId,
-      'client', 'passthrough',
+      'client', 'in',
       this.config.participantId,
+      this.config.sourceLanguage,
     ];
     const trackName = 'audio';
 
-    this.status(`Publishing to ${passthroughNs.join('/')}/${trackName}`);
-    this.publishTrackAlias = await this.session.publish(passthroughNs, trackName, {
+    this.status(`Publishing to ${inputNs.join('/')}/${trackName}`);
+    this.publishTrackAlias = await this.session.publish(inputNs, trackName, {
       priority: 128,
       deliveryTimeout: 2000,
       deliveryMode: 'stream',
@@ -125,8 +126,9 @@ export class EzDubsWebClient {
   async subscribePassthrough(): Promise<void> {
     if (!this.session) throw new Error('Not connected');
 
-    const prefix = this.getPassthroughSubNamespace();
-    this.status(`Subscribing to passthrough: ${prefix.join('/')}`);
+    // Subscribe to client/in prefix (same namespace the translation server subscribes to)
+    const prefix = this.getClientInputSubNamespace();
+    this.status(`Subscribing to client/in: ${prefix.join('/')}`);
 
     await this.session.subscribeNamespace(prefix, {
       onObject: (data, groupId, objectId, _timestamp, extensions) => {
@@ -195,6 +197,24 @@ export class EzDubsWebClient {
     const ns = event.namespace;
     const nsStr = ns.join('/');
 
+    // Check client/in prefix: [...prefix, sessionId, "client", "in", participantId, lang]
+    const inPrefix = this.getClientInputSubNamespace();
+    if (ns.length >= inPrefix.length + 1 && this.matchesPrefix(ns, inPrefix)) {
+      const participantId = ns[inPrefix.length];
+      if (participantId === this.config.participantId) return;
+
+      const participant: RemoteParticipant = {
+        id: participantId,
+        namespace: ns,
+        trackName: event.trackName,
+      };
+      this.discoveredParticipants.set(participantId, participant);
+      this.onParticipantDiscovered?.(participant);
+      this.status(`Discovered participant: ${participantId}`);
+      return;
+    }
+
+    // Also check passthrough prefix for backward compatibility
     const ptPrefix = this.getPassthroughSubNamespace();
     if (ns.length === ptPrefix.length + 1 && this.matchesPrefix(ns, ptPrefix)) {
       const participantId = ns[ns.length - 1];
@@ -287,6 +307,14 @@ export class EzDubsWebClient {
       ...this.config.namespacePrefix,
       this.config.sessionId,
       'client', 'passthrough',
+    ];
+  }
+
+  private getClientInputSubNamespace(): string[] {
+    return [
+      ...this.config.namespacePrefix,
+      this.config.sessionId,
+      'client', 'in',
     ];
   }
 
