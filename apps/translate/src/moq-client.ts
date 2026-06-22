@@ -101,7 +101,8 @@ export class EzDubsWebClient {
     this.publishTrackAlias = await this.session.publish(inputNs, trackName, {
       priority: 128,
       deliveryTimeout: 2000,
-      deliveryMode: 'datagram',
+      deliveryMode: 'stream',
+      audioDeliveryMode: 'stream',
     });
     this.status('Publishing started');
   }
