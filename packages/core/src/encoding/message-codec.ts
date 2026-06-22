@@ -1408,15 +1408,15 @@ export class MessageCodec {
 
     // Draft-16 (REQUEST_ERROR): trackAlias comes BEFORE reasonPhrase
     // Draft-14 (SUBSCRIBE_ERROR): trackAlias comes AFTER reasonPhrase
-    let trackAlias: number;
+    let trackAlias: number | bigint;
     let reasonPhrase: string;
 
     if (IS_DRAFT_16) {
-      trackAlias = reader.readVarIntNumber();
+      trackAlias = reader.readVarInt();
       reasonPhrase = reader.readString();
     } else {
       reasonPhrase = reader.readString();
-      trackAlias = reader.hasMore ? reader.readVarIntNumber() : 0;
+      trackAlias = reader.hasMore ? reader.readVarInt() : BigInt(0);
     }
 
     return {
@@ -1458,7 +1458,7 @@ export class MessageCodec {
     const requestId = reader.readVarIntNumber();
 
     // Draft-16: PUBLISH_DONE has trackAlias after requestId
-    const trackAlias = IS_DRAFT_16 ? reader.readVarIntNumber() : 0;
+    const trackAlias = IS_DRAFT_16 ? reader.readVarInt() : BigInt(0);
 
     const statusCode = reader.readVarIntNumber() as RequestErrorCode;
     const reasonPhrase = reader.readString();
@@ -1565,7 +1565,7 @@ export class MessageCodec {
       // Request ID, Full Track Name, Track Alias, Parameters, [Track Extensions]
       const requestId = reader.readVarIntNumber();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
-      const trackAlias = reader.readVarIntNumber();
+      const trackAlias = reader.readVarInt();
       const parameters = MessageCodec.decodeRequestParameters(reader);
 
       // Read track extensions only if there are at least 2 bytes remaining (minimum for valid extension)
