@@ -100,6 +100,7 @@ function App() {
       if (mode !== 'speaker') {
         const playback = new AudioPlaybackPipeline(48000);
         await playback.start(48000, 1);
+        await playback.resume();
         playbackRef.current = playback;
 
         client.setOnAudioReceived((_participantId, data, _groupId, _objectId) => {
