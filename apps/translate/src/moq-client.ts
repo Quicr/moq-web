@@ -1,4 +1,3 @@
-import { MOQTransport } from '@web-moq/core';
 import { MOQTSession } from '@web-moq/session';
 import type { IncomingPublishEvent } from '@web-moq/session';
 
@@ -41,7 +40,6 @@ export type OnParticipantDiscovered = (participant: RemoteParticipant) => void;
 export type OnStatusChange = (status: string) => void;
 
 export class EzDubsWebClient {
-  private transport: MOQTransport | null = null;
   private session: MOQTSession | null = null;
   private config: SessionConfig;
   private publishTrackAlias: bigint | null = null;
@@ -70,11 +68,14 @@ export class EzDubsWebClient {
   async connect(): Promise<void> {
     this.status('Connecting...');
 
-    this.transport = new MOQTransport();
-    await this.transport.connect(this.config.relayUrl);
+    const worker = new Worker(
+      new URL('@web-moq/session/worker', import.meta.url),
+      { type: 'module' }
+    );
+    this.session = new MOQTSession({ worker });
+    await this.session.connect(this.config.relayUrl);
     this.status('Transport connected, setting up session...');
 
-    this.session = new MOQTSession(this.transport);
     await this.session.setup();
     this.status('Session ready');
 
@@ -171,9 +172,8 @@ export class EzDubsWebClient {
   }
 
   async disconnect(): Promise<void> {
-    if (this.transport) {
-      await this.transport.close();
-      this.transport = null;
+    if (this.session) {
+      await this.session.close();
       this.session = null;
       this.publishTrackAlias = null;
     }

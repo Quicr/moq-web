@@ -1205,8 +1205,9 @@ export class MOQTSession {
         const streamId = await this.transportWorker.createBidiStream();
         this.transportWorker.writeStream(streamId, bytes, false);
 
-        // Store stream ID for receiving responses
+        // Store stream ID for receiving responses and sending PUBLISH_OK
         this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
+        subscription.workerStreamId = streamId;
 
         log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { namespacePrefix: prefixStr, requestId, streamId });
       } else if (this.transport) {
@@ -1215,6 +1216,9 @@ export class MOQTSession {
         const writer = bidiStream.writable.getWriter();
         await writer.write(bytes);
         writer.releaseLock();
+
+        // Store writable for sending PUBLISH_OK back on same stream (Draft-16 requirement)
+        subscription.streamWritable = bidiStream.writable;
 
         // Start reading responses on this bidi stream
         this.readNamespaceSubscriptionStream(bidiStream.readable, subscriptionId).catch(err => {
@@ -1839,8 +1843,14 @@ export class MOQTSession {
     };
     matchingSubscription.tracks.set(fullTrackNameStr, trackInfo);
 
-    // Send PUBLISH_OK to accept the track
-    await this.sendPublishOk(message.requestId, message.groupOrder);
+    // Send PUBLISH_OK on the same bidi stream (Draft-16 requirement)
+    if (IS_DRAFT_16 && matchingSubscription.streamWritable) {
+      await this.sendPublishOkOnStream(message.requestId, message.groupOrder, matchingSubscription.streamWritable);
+    } else if (IS_DRAFT_16 && this.useWorker && this.transportWorker && matchingSubscription.workerStreamId !== undefined) {
+      await this.sendPublishOkViaWorker(message.requestId, message.groupOrder, matchingSubscription.workerStreamId);
+    } else {
+      await this.sendPublishOk(message.requestId, message.groupOrder);
+    }
     trackInfo.acknowledged = true;
 
     // Register this as a subscription so objects can be routed
@@ -1876,7 +1886,7 @@ export class MOQTSession {
   }
 
   /**
-   * Send PUBLISH_OK response
+   * Send PUBLISH_OK response on the control stream (Draft-14 fallback)
    */
   private async sendPublishOk(requestId: number, groupOrder: GroupOrder): Promise<void> {
     const publishOk = {
@@ -1890,7 +1900,45 @@ export class MOQTSession {
 
     const bytes = MessageCodec.encode(publishOk);
     await this.doSendControl(bytes);
-    log.info('Sent PUBLISH_OK', { requestId });
+    log.info('Sent PUBLISH_OK on control stream', { requestId });
+  }
+
+  /**
+   * Send PUBLISH_OK response on the namespace subscription bidi stream (Draft-16)
+   */
+  private async sendPublishOkOnStream(requestId: number, groupOrder: GroupOrder, writable: WritableStream<Uint8Array>): Promise<void> {
+    const publishOk = {
+      type: MessageType.PUBLISH_OK as const,
+      requestId,
+      forward: 1,
+      subscriberPriority: 128,
+      groupOrder,
+      filterType: FilterType.LATEST_GROUP,
+    };
+
+    const bytes = MessageCodec.encode(publishOk);
+    const writer = writable.getWriter();
+    await writer.write(bytes);
+    writer.releaseLock();
+    log.info('Sent PUBLISH_OK on bidi stream', { requestId });
+  }
+
+  /**
+   * Send PUBLISH_OK response via worker bidi stream (Draft-16, worker mode)
+   */
+  private async sendPublishOkViaWorker(requestId: number, groupOrder: GroupOrder, streamId: number): Promise<void> {
+    const publishOk = {
+      type: MessageType.PUBLISH_OK as const,
+      requestId,
+      forward: 1,
+      subscriberPriority: 128,
+      groupOrder,
+      filterType: FilterType.LATEST_GROUP,
+    };
+
+    const bytes = MessageCodec.encode(publishOk);
+    this.transportWorker!.writeStream(streamId, bytes, false);
+    log.info('Sent PUBLISH_OK on bidi stream (worker)', { requestId, streamId });
   }
 
   /**
