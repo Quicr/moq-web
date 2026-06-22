@@ -54,7 +54,15 @@ jobs:
           BASE_URL: /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/
 
       - name: Save branch build
-        run: mkdir -p branch-build && mv packages/client/dist branch-build/${{ github.event.inputs.branch }}
+        run: |
+          mkdir -p branch-build/${{ github.event.inputs.branch }}
+          cp -r packages/client/dist/* branch-build/${{ github.event.inputs.branch }}/
+          for app_dir in apps/*/dist; do
+            if [ -d "$app_dir" ]; then
+              app_name=$(echo "$app_dir" | cut -d'/' -f2)
+              cp -r "$app_dir" "branch-build/${{ github.event.inputs.branch }}/apps/$app_name"
+            fi
+          done
 
       - name: Checkout main for full build
         uses: actions/checkout@v4
