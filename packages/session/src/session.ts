@@ -33,6 +33,7 @@ import {
   IS_DRAFT_16,
   getCurrentALPNProtocol,
   DataStreamType,
+  computeTrackAlias,
   type ClientSetupMessage,
   type ServerSetupMessage,
   type PublishMessage,
@@ -180,8 +181,6 @@ export class MOQTSession {
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
   /** Request ID to namespace mapping (for draft-16 PUBLISH_NAMESPACE_OK) */
   private announceRequestIdToNamespace = new Map<number, string>();
-  /** Next track alias for incoming subscriptions (announce flow) */
-  private nextIncomingTrackAlias = BigInt(1000);
   /** Namespace subscriptions (for subscribe namespace flow) */
   private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
   /** Request ID to namespace subscription mapping */
@@ -1418,19 +1417,9 @@ export class MOQTSession {
       throw new Error('Session not ready');
     }
 
-    // Check for existing subscription with same track name to use its alias
     const requestId = this.getNextRequestId();
-    let trackAlias = BigInt(requestId);
+    const trackAlias = computeTrackAlias(namespace, trackName);
     const fullTrackName = [...namespace, trackName].join('/');
-
-    const existingSub = this.subscriptionManager.getByTrackName(namespace, trackName);
-    if (existingSub && existingSub.trackAlias !== undefined) {
-      trackAlias = existingSub.trackAlias;
-      log.info('Using track alias from existing subscription', {
-        trackAlias: trackAlias.toString(),
-        fullTrackName,
-      });
-    }
     const priority = options?.priority ?? 128;
     const deliveryTimeout = options?.deliveryTimeout ?? 5000;
     const deliveryMode = options?.deliveryMode ?? 'stream';
@@ -1725,8 +1714,8 @@ export class MOQTSession {
       return;
     }
 
-    // Assign track alias for this subscriber
-    const trackAlias = this.nextIncomingTrackAlias++;
+    // Assign track alias using CityHash64 (publisher assigns alias in draft-16)
+    const trackAlias = computeTrackAlias(namespace, trackName);
 
     // Create subscriber info
     const subscriber: IncomingSubscriber = {
