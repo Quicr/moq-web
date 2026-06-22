@@ -49,9 +49,8 @@ export class AudioCapturePipeline {
     source.connect(analyser);
 
     // Use ScriptProcessor for encoding (AudioWorklet would be better but more complex)
-    const bufferSize = 960; // 20ms at 48kHz, will be resampled
     const scriptNode = this.audioContext.createScriptProcessor(
-      bufferSize > 256 ? bufferSize : 4096,
+      1024,
       this.config.channels,
       this.config.channels
     );
