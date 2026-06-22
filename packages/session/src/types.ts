@@ -272,6 +272,10 @@ export interface NamespaceSubscriptionInfo {
   tracks: Map<string, IncomingPublishInfo>;
   /** Callback for received objects from tracks under this namespace */
   onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, extensions?: Map<number, Uint8Array>) => void;
+  /** Writable side of the bidi stream (Draft-16: PUBLISH_OK must go back on the same stream) */
+  streamWritable?: WritableStream<Uint8Array>;
+  /** Stream ID for worker mode bidi stream */
+  workerStreamId?: number;
 }
 
 /**
