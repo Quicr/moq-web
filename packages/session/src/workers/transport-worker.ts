@@ -21,6 +21,7 @@ import { getCurrentALPNProtocol, IS_DRAFT_16 } from '@web-moq/core';
 let transport: WebTransport | null = null;
 let controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let controlReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+let datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let currentState: TransportState = 'disconnected';
 let debug = false;
 
@@ -108,6 +109,7 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     const controlStream = await transport.createBidirectionalStream();
     controlWriter = controlStream.writable.getWriter();
     controlReader = controlStream.readable.getReader();
+    datagramWriter = transport.datagrams.writable.getWriter();
     log('Control stream established');
 
     // Start listeners
@@ -139,7 +141,8 @@ async function disconnect(code?: number, reason?: string): Promise<void> {
   setState('closing');
 
   try {
-    // Close control stream
+    // Close writers
+    await datagramWriter?.close().catch(() => {});
     await controlWriter?.close().catch(() => {});
     controlReader?.cancel().catch(() => {});
 
@@ -169,6 +172,7 @@ function cleanup(): void {
   transport = null;
   controlWriter = null;
   controlReader = null;
+  datagramWriter = null;
   outgoingStreams.clear();
   nextStreamId = 0;
 }
@@ -328,15 +332,13 @@ async function sendControl(data: Uint8Array): Promise<void> {
  * Send datagram
  */
 async function sendDatagram(data: Uint8Array): Promise<void> {
-  if (!transport) {
+  if (!datagramWriter) {
     respond({ type: 'error', message: 'Not connected' });
     return;
   }
 
   try {
-    const writer = transport.datagrams.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
+    await datagramWriter.write(data);
   } catch (err) {
     respond({ type: 'error', message: (err as Error).message });
   }
