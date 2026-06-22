@@ -68,7 +68,7 @@ function App() {
 
       // Step 2: Connect to MOQ relay
       const config: SessionConfig = {
-        relayUrl: info.relayUrl.replace('moq://', 'https://').replace(':33435', ':33435/moq'),
+        relayUrl: info.relayUrl.replace('moq://', 'https://') + '/relay',
         namespacePrefix: info.namespacePrefix,
         sessionId: info.sessionId,
         participantId: `web-${myLanguage}-${Date.now().toString(36)}`,
