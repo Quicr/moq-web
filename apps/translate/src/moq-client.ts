@@ -143,11 +143,9 @@ export class EzDubsWebClient {
     const prefix = this.getServerSubNamespace();
     this.status(`Subscribing to server output: ${prefix.join('/')}`);
 
-    await this.session.subscribeNamespace(prefix, {
-      onObject: (data, groupId, objectId, _timestamp, extensions) => {
-        this.handleServerObject(data, groupId, objectId, extensions);
-      },
-    });
+    // Don't set onObject here — we'll selectively set callbacks per track
+    // in handleIncomingPublish based on target language filtering
+    await this.session.subscribeNamespace(prefix);
   }
 
   async subscribeTranscripts(): Promise<void> {
@@ -234,10 +232,24 @@ export class EzDubsWebClient {
     const srvPrefix = this.getServerSubNamespace();
     if (this.matchesPrefix(ns, srvPrefix)) {
       const trackName = event.trackName;
-      if (trackName.startsWith('transcript/')) {
-        this.status(`Transcript track discovered: ${nsStr}/${trackName}`);
+      const targetLang = this.config.targetLanguage || this.config.sourceLanguage;
+      const wantAudioTrack = `mix/${targetLang}/audio`;
+      const wantTranscriptTrack = `transcript/${targetLang}`;
+
+      if (trackName === wantAudioTrack) {
+        this.status(`Subscribing to audio: ${nsStr}/${trackName}`);
+        this.session?.setSubscriptionCallback(event.subscriptionId,
+          (data, groupId, objectId, _timestamp, extensions) => {
+            this.handleServerObject(data, groupId, objectId, extensions);
+          });
+      } else if (trackName === wantTranscriptTrack) {
+        this.status(`Subscribing to transcript: ${nsStr}/${trackName}`);
+        this.session?.setSubscriptionCallback(event.subscriptionId,
+          (data) => {
+            this.handleTranscriptObject(data);
+          });
       } else {
-        this.status(`Server track discovered: ${nsStr}/${trackName}`);
+        this.status(`Ignoring server track: ${trackName} (want ${targetLang})`);
       }
       return;
     }
