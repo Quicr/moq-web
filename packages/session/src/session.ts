@@ -1182,6 +1182,7 @@ export class MOQTSession {
       namespacePrefix,
       tracks: new Map(),
       onObject: _options?.onObject,
+      trackFilter: _options?.trackFilter,
     };
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
@@ -1820,6 +1821,12 @@ export class MOQTSession {
       ));
 
       // Continue anyway - we'll accept the PUBLISH but routing will be broken
+    }
+
+    // Apply track filter — reject tracks we don't want
+    if (matchingSubscription.trackFilter && !matchingSubscription.trackFilter(trackName, namespace)) {
+      log.info('Rejecting PUBLISH (filtered)', { trackName, namespace: namespaceStr });
+      return;
     }
 
     // Store track info
