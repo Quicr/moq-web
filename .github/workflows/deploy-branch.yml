@@ -60,7 +60,8 @@ jobs:
           for app_dir in apps/*/dist; do
             if [ -d "$app_dir" ]; then
               app_name=$(echo "$app_dir" | cut -d'/' -f2)
-              cp -r "$app_dir" "branch-build/${{ github.event.inputs.branch }}/apps/$app_name"
+              mkdir -p "branch-build/${{ github.event.inputs.branch }}/apps/$app_name"
+              cp -r "$app_dir"/* "branch-build/${{ github.event.inputs.branch }}/apps/$app_name/"
             fi
           done
 
