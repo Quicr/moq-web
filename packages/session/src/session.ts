@@ -612,7 +612,7 @@ export class MOQTSession {
           streamId,
         });
 
-        this.routeMessage(message);
+        this.routeMessage(message, true);
       } catch (err) {
         if ((err as Error).message?.includes('Incomplete') ||
             (err as Error).message?.includes('buffer')) {
@@ -1296,7 +1296,7 @@ export class MOQTSession {
               subscriptionId,
             });
 
-            this.routeMessage(message);
+            this.routeMessage(message, true);
           } catch (err) {
             if ((err as Error).message?.includes('Incomplete') ||
                 (err as Error).message?.includes('buffer')) {
@@ -1775,8 +1775,9 @@ export class MOQTSession {
 
   /**
    * Handle incoming PUBLISH message (subscribe namespace flow - we are the subscriber)
+   * @param receivedOnBidiStream - true if PUBLISH arrived on namespace subscription bidi stream
    */
-  private async handleIncomingPublish(message: PublishMessage): Promise<void> {
+  private async handleIncomingPublish(message: PublishMessage, receivedOnBidiStream = false): Promise<void> {
     const { namespace, trackName } = message.fullTrackName;
     const fullTrackNameStr = [...namespace, trackName].join('/');
     const namespaceStr = namespace.join('/');
@@ -1843,10 +1844,10 @@ export class MOQTSession {
     };
     matchingSubscription.tracks.set(fullTrackNameStr, trackInfo);
 
-    // Send PUBLISH_OK on the same bidi stream (Draft-16 requirement)
-    if (IS_DRAFT_16 && matchingSubscription.streamWritable) {
+    // Send PUBLISH_OK on the same stream where PUBLISH was received
+    if (receivedOnBidiStream && IS_DRAFT_16 && matchingSubscription.streamWritable) {
       await this.sendPublishOkOnStream(message.requestId, message.groupOrder, matchingSubscription.streamWritable);
-    } else if (IS_DRAFT_16 && this.useWorker && this.transportWorker && matchingSubscription.workerStreamId !== undefined) {
+    } else if (receivedOnBidiStream && IS_DRAFT_16 && this.useWorker && this.transportWorker && matchingSubscription.workerStreamId !== undefined) {
       await this.sendPublishOkViaWorker(message.requestId, message.groupOrder, matchingSubscription.workerStreamId);
     } else {
       await this.sendPublishOk(message.requestId, message.groupOrder);
@@ -3193,7 +3194,7 @@ export class MOQTSession {
   /**
    * Route decoded message to appropriate handler
    */
-  private routeMessage(message: ControlMessage): void {
+  private routeMessage(message: ControlMessage, fromBidiStream = false): void {
     switch (message.type) {
       case MessageType.PUBLISH_OK: {
         const publishOk = message as {
@@ -3514,7 +3515,7 @@ export class MOQTSession {
       case MessageType.PUBLISH: {
         // Handle incoming PUBLISH (subscribe namespace flow - we are the subscriber)
         const publishMessage = message as PublishMessage;
-        this.handleIncomingPublish(publishMessage).catch(err => {
+        this.handleIncomingPublish(publishMessage, fromBidiStream).catch(err => {
           log.error('Error handling incoming PUBLISH', { error: (err as Error).message });
         });
         break;
