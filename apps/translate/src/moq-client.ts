@@ -260,6 +260,9 @@ export class EzDubsWebClient {
       return;
     }
 
+    // Skip DTX silence frames (1-3 bytes) — they produce silence and can cause decoder clicks
+    if (data.length <= 3) return;
+
     const metadata = this.parseMetadata(extensions);
     this.onAudioReceived?.('server', data, _groupId, _objectId, metadata);
   }

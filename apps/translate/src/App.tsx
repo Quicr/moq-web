@@ -113,7 +113,6 @@ function App() {
 
       // Subscribe only for listener and interactive modes
       if (mode !== 'speaker') {
-        await client.subscribePassthrough();
         await client.subscribeServerOutput();
       }
 
