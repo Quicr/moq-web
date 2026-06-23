@@ -24,6 +24,7 @@ interface ParticipantTranscripts {
 
 function App() {
   const [meetingId, setMeetingId] = useState('test-web-1');
+  const [displayName, setDisplayName] = useState('');
   const [myLanguage, setMyLanguage] = useState('en');
   const [mode, setMode] = useState<'interactive' | 'speaker' | 'listener'>('interactive');
   const [serverHost, setServerHost] = useState('moq-ws.s2s.ezdubs.amer.cint.vcra.co');
@@ -90,7 +91,8 @@ function App() {
       const wtUrl = info.relayUrl
         .replace('moq://', 'https://')
         .replace('relay.us-west-2.m10x.org', 'conf.quicr.ctgpoc.com');
-      const participantId = `web-${myLanguage}-${Date.now().toString(36)}`;
+      const name = displayName.trim() || `anon-${Date.now().toString(36)}`;
+      const participantId = `${name}-${myLanguage}`;
       setMyParticipantId(participantId);
 
       const config: SessionConfig = {
@@ -276,6 +278,16 @@ function App() {
                     value={meetingId}
                     onChange={e => setMeetingId(e.target.value)}
                     placeholder="enter session identifier"
+                    className="input-field"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-mono text-gray-500 mb-2 uppercase tracking-[0.2em]">name</label>
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={e => setDisplayName(e.target.value)}
+                    placeholder="your name"
                     className="input-field"
                   />
                 </div>
