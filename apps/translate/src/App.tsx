@@ -229,13 +229,39 @@ function App() {
 
         {/* Title */}
         <div className="text-center pt-6 pb-2">
+          <div className="flex justify-center mb-3">
+            <svg width="80" height="60" viewBox="0 0 80 60" fill="none" xmlns="http://www.w3.org/2000/svg" className="opacity-90">
+              <rect x="20" y="25" width="40" height="30" rx="2" stroke="url(#boxGrad)" strokeWidth="1.5" fill="rgba(124,58,237,0.05)" />
+              <path d="M20 25 L40 18 L60 25" stroke="url(#boxGrad)" strokeWidth="1.5" fill="rgba(168,85,247,0.08)" />
+              <path d="M40 18 L40 25" stroke="url(#boxGrad)" strokeWidth="1" strokeDasharray="2 2" />
+              <path d="M12 32 C12 28 14 26 15 24 C14 22 15 20 16 19 C17 17 15 15 17 14 C19 13 18 15 19 14 C20 12 19 13 20 14 C21 12 22 14 21 15 C23 15 22 17 21 18 C22 19 23 21 22 23 C23 25 21 27 20 28 C19 30 18 31 17 33" stroke="#a78bfa" strokeWidth="1.2" fill="rgba(167,139,250,0.1)" strokeLinecap="round" />
+              <path d="M62 30 C63 27 65 25 66 23 C67 21 66 19 67 18 C68 16 70 17 70 15 C70 13 72 14 71 16 C73 15 73 17 72 18 C73 19 74 21 73 23 C74 25 72 27 71 29 C70 31 69 32 68 33" stroke="#f59e0b" strokeWidth="1.2" fill="rgba(245,158,11,0.1)" strokeLinecap="round" />
+              <path d="M67 21 L69 22" stroke="#f59e0b" strokeWidth="0.8" opacity="0.6" />
+              <path d="M66 24 L68 25" stroke="#f59e0b" strokeWidth="0.8" opacity="0.6" />
+              <path d="M6 35 Q10 33 14 35" stroke="#06d6a0" strokeWidth="1" fill="none" opacity="0.7" />
+              <path d="M3 38 Q8 35 14 38" stroke="#06d6a0" strokeWidth="1" fill="none" opacity="0.5" />
+              <path d="M66 35 Q70 33 74 35" stroke="#3b82f6" strokeWidth="1" fill="none" opacity="0.7" />
+              <path d="M66 38 Q71 35 77 38" stroke="#3b82f6" strokeWidth="1" fill="none" opacity="0.5" />
+              <path d="M66 41 Q72 38 79 41" stroke="#7c3aed" strokeWidth="1" fill="none" opacity="0.4" />
+              <path d="M38 22 L40 19 L42 22 L40 21 Z" fill="#fbbf24" opacity="0.8" />
+              <circle cx="35" cy="20" r="0.8" fill="#fbbf24" opacity="0.6" />
+              <circle cx="45" cy="20" r="0.8" fill="#fbbf24" opacity="0.6" />
+              <defs>
+                <linearGradient id="boxGrad" x1="20" y1="18" x2="60" y2="55">
+                  <stop offset="0%" stopColor="#7c3aed" />
+                  <stop offset="50%" stopColor="#06d6a0" />
+                  <stop offset="100%" stopColor="#3b82f6" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
           <h1 className="text-4xl font-mono font-bold tracking-tight title-glow">
             <span className="bg-gradient-to-r from-emerald-400 via-purple-400 to-blue-400 bg-clip-text text-transparent">
               Transmoqrify
             </span>
           </h1>
-          <p className="text-[11px] font-mono text-gray-600 mt-2 tracking-[0.2em]">
-            speech, unbounded
+          <p className="text-[11px] font-mono text-gray-500 mt-2 tracking-[0.15em] italic">
+            "it's a scientific fact"
           </p>
         </div>
 
