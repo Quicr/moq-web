@@ -48,7 +48,6 @@ export class AudioCapturePipeline {
     const analyser = this.audioContext.createAnalyser();
     source.connect(analyser);
 
-    // Use ScriptProcessor for encoding (AudioWorklet would be better but more complex)
     const scriptNode = this.audioContext.createScriptProcessor(
       1024,
       this.config.channels,
@@ -91,12 +90,15 @@ export class AudioCapturePipeline {
 
 export class AudioPlaybackPipeline {
   private audioContext: AudioContext;
+  private gainNode: GainNode;
   private decoder: OpusDecoder | null = null;
   private nextPlayTime = 0;
-  private frameDuration = 0.02; // 20ms default
+  private rampDuration = 0.005; // 5ms crossfade ramp
 
   constructor(sampleRate: number) {
     this.audioContext = new AudioContext({ sampleRate });
+    this.gainNode = this.audioContext.createGain();
+    this.gainNode.connect(this.audioContext.destination);
   }
 
   async start(sampleRate: number, channels: number): Promise<void> {
@@ -110,12 +112,12 @@ export class AudioPlaybackPipeline {
       this.playAudioData(audioData);
     });
 
-    this.nextPlayTime = this.audioContext.currentTime + 0.1; // 100ms buffer
+    this.nextPlayTime = this.audioContext.currentTime + 0.1;
   }
 
   decode(opusFrame: Uint8Array, timestamp: number): void {
     if (!this.decoder) return;
-    this.decoder.decode(opusFrame, timestamp, 20_000); // 20ms duration
+    this.decoder.decode(opusFrame, timestamp, 20_000);
   }
 
   private playAudioData(audioData: AudioData): void {
@@ -132,12 +134,20 @@ export class AudioPlaybackPipeline {
 
     const source = this.audioContext.createBufferSource();
     source.buffer = buffer;
-    source.connect(this.audioContext.destination);
+
+    // Per-source gain for smooth fade-in/out at boundaries
+    const sourceGain = this.audioContext.createGain();
+    source.connect(sourceGain);
+    sourceGain.connect(this.gainNode);
 
     const now = this.audioContext.currentTime;
     if (this.nextPlayTime < now) {
-      this.nextPlayTime = now + 0.05; // re-sync with 50ms buffer
+      // Gap in audio — resync with short fade-in to avoid clicks
+      this.nextPlayTime = now + 0.03;
+      sourceGain.gain.setValueAtTime(0, this.nextPlayTime);
+      sourceGain.gain.linearRampToValueAtTime(1, this.nextPlayTime + this.rampDuration);
     }
+
     source.start(this.nextPlayTime);
     this.nextPlayTime += buffer.duration;
   }

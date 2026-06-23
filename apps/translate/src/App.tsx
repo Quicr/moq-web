@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { EzDubsWebClient, type RemoteParticipant, type SessionConfig, type TranscriptEntry } from './moq-client';
 import { AudioCapturePipeline, AudioPlaybackPipeline } from './audio-pipeline';
 import { negotiateMOQSession, type MOQSessionInfo } from './ws-negotiate';
@@ -16,8 +16,11 @@ const LANGUAGES = [
   { code: 'ar', label: 'Arabic' },
 ];
 
+interface ParticipantTranscripts {
+  [participantId: string]: TranscriptEntry[];
+}
+
 function App() {
-  // Join config
   const [meetingId, setMeetingId] = useState('test-web-1');
   const [myLanguage, setMyLanguage] = useState('en');
   const [mode, setMode] = useState<'interactive' | 'speaker' | 'listener'>('interactive');
@@ -25,20 +28,21 @@ function App() {
   const [serverPort, setServerPort] = useState('443');
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // State
   const [connected, setConnected] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [status, setStatus] = useState('Ready to join');
   const [participants, setParticipants] = useState<RemoteParticipant[]>([]);
   const [audioStats, setAudioStats] = useState({ sent: 0, received: 0 });
-  const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
+  const [transcriptsByParticipant, setTranscriptsByParticipant] = useState<ParticipantTranscripts>({});
   const [moqInfo, setMoqInfo] = useState<MOQSessionInfo | null>(null);
+  const [myParticipantId, setMyParticipantId] = useState('');
 
   const clientRef = useRef<EzDubsWebClient | null>(null);
   const captureRef = useRef<AudioCapturePipeline | null>(null);
   const playbackRef = useRef<AudioPlaybackPipeline | null>(null);
   const statsRef = useRef({ sent: 0, received: 0 });
   const timestampRef = useRef(0);
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
   const updateStats = useCallback((key: 'sent' | 'received') => {
     statsRef.current[key]++;
@@ -47,6 +51,22 @@ function App() {
     }
   }, []);
 
+  const handleTranscript = useCallback((t: TranscriptEntry) => {
+    setTranscriptsByParticipant(prev => {
+      const pid = t.participantId || 'unknown';
+      const existing = prev[pid] || [];
+      const filtered = existing.filter(e => e.isFinal || e.participantId !== t.participantId);
+      if (!t.isFinal) {
+        return { ...prev, [pid]: [...filtered, t] };
+      }
+      return { ...prev, [pid]: [...filtered, t].slice(-20) };
+    });
+  }, []);
+
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [transcriptsByParticipant]);
+
   const handleJoin = async () => {
     if (!meetingId.trim()) {
       setStatus('Meeting ID required');
@@ -54,7 +74,6 @@ function App() {
     }
 
     try {
-      // Step 1: WS negotiation to get relay URL
       setStatus('Negotiating session...');
       const info = await negotiateMOQSession({
         host: serverHost,
@@ -66,15 +85,17 @@ function App() {
       setMoqInfo(info);
       setStatus(`Got relay: ${info.relayUrl}`);
 
-      // Step 2: Connect to MOQ relay
       const wtUrl = info.relayUrl
         .replace('moq://', 'https://')
         .replace('relay.us-west-2.m10x.org', 'conf.quicr.ctgpoc.com');
+      const participantId = `web-${myLanguage}-${Date.now().toString(36)}`;
+      setMyParticipantId(participantId);
+
       const config: SessionConfig = {
         relayUrl: wtUrl.endsWith('/relay') ? wtUrl : wtUrl + '/relay',
         namespacePrefix: info.namespacePrefix,
         sessionId: info.sessionId,
-        participantId: `web-${myLanguage}-${Date.now().toString(36)}`,
+        participantId,
         sourceLanguage: myLanguage,
         targetLanguage: myLanguage,
       };
@@ -87,16 +108,8 @@ function App() {
           return [...prev, p];
         });
       });
-      client.setOnTranscriptReceived((t) => {
-        setTranscripts(prev => {
-          const filtered = prev.filter(
-            e => !(e.participantId === t.participantId && !e.isFinal)
-          );
-          return [...filtered, t].slice(-50);
-        });
-      });
+      client.setOnTranscriptReceived(handleTranscript);
 
-      // Set up playback (listener and interactive modes)
       if (mode !== 'speaker') {
         const playback = new AudioPlaybackPipeline(48000);
         await playback.start(48000, 1);
@@ -112,15 +125,12 @@ function App() {
 
       await client.connect();
 
-      // Subscribe only for listener and interactive modes
-      if (mode !== 'speaker') {
-        await client.subscribeServerOutput();
-      }
+      // Subscribe to server output (audio + transcripts) for all modes
+      await client.subscribeServerOutput();
 
       clientRef.current = client;
       setConnected(true);
 
-      // Auto-start mic for speaker and interactive modes
       if (mode !== 'listener') {
         setStatus('Connected - starting mic...');
         try {
@@ -167,8 +177,9 @@ function App() {
     setConnected(false);
     setPublishing(false);
     setParticipants([]);
-    setTranscripts([]);
+    setTranscriptsByParticipant({});
     setMoqInfo(null);
+    setMyParticipantId('');
     statsRef.current = { sent: 0, received: 0 };
     setAudioStats({ sent: 0, received: 0 });
     timestampRef.current = 0;
@@ -210,13 +221,14 @@ function App() {
     }
   };
 
+  const participantIds = Object.keys(transcriptsByParticipant);
+
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
-      <div className="max-w-xl mx-auto space-y-4">
-        <h1 className="text-2xl font-bold text-center">EzDubs Translate</h1>
+      <div className="max-w-3xl mx-auto space-y-4">
+        <h1 className="text-2xl font-bold text-center">MoQXlate</h1>
 
         {!connected ? (
-          /* Join Screen */
           <div className="bg-gray-800 rounded-lg p-5 space-y-4">
             <div className="space-y-3">
               <div>
@@ -261,7 +273,6 @@ function App() {
               </div>
             </div>
 
-            {/* Advanced settings (collapsed by default) */}
             <div>
               <button
                 onClick={() => setShowAdvanced(!showAdvanced)}
@@ -301,15 +312,15 @@ function App() {
             </button>
           </div>
         ) : (
-          /* In-meeting Screen */
           <>
-            {/* Meeting header */}
             <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
               <div>
                 <span className="text-sm text-gray-400">Meeting: </span>
                 <span className="font-medium">{meetingId}</span>
                 <span className="text-sm text-gray-400 ml-3">Lang: </span>
                 <span className="font-medium">{LANGUAGES.find(l => l.code === myLanguage)?.label}</span>
+                <span className="text-sm text-gray-400 ml-3">Mode: </span>
+                <span className="font-medium capitalize">{mode}</span>
               </div>
               <button
                 onClick={handleLeave}
@@ -319,7 +330,6 @@ function App() {
               </button>
             </div>
 
-            {/* Mic button (not shown for listener mode) */}
             {mode !== 'listener' && (
               <div className="flex justify-center">
                 <button
@@ -335,50 +345,51 @@ function App() {
               </div>
             )}
 
-            {/* Stats */}
             <div className="text-center text-xs text-gray-500">
               Sent: {audioStats.sent} | Received: {audioStats.received}
               {participants.length > 0 && ` | Participants: ${participants.length}`}
             </div>
 
-            {/* Transcripts */}
-            {transcripts.length > 0 && (
-              <div className="bg-gray-800 rounded-lg p-4 space-y-1">
-                <h2 className="text-sm font-semibold text-gray-400 mb-2">Transcripts</h2>
-                <div className="max-h-64 overflow-y-auto space-y-1">
-                  {transcripts.map((t, i) => (
-                    <div key={i} className={`text-sm ${t.isFinal ? 'text-gray-200' : 'text-gray-400 italic'}`}>
-                      <span className={`font-medium ${t.isTranslation ? 'text-blue-400' : 'text-green-400'}`}>
-                        [{t.language}{t.isTranslation ? ' translated' : ''}]
-                      </span>
-                      <span className="ml-2">{t.text}</span>
+            {/* Per-participant transcript panes */}
+            {participantIds.length > 0 && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {participantIds.map(pid => {
+                  const entries = transcriptsByParticipant[pid] || [];
+                  const isMe = pid.includes(myParticipantId) || pid.includes(`participant-${myLanguage}`);
+                  const displayName = isMe ? 'You' : pid.replace('participant-', '').replace('virtual-listener-', '');
+                  const hasTranslation = entries.some(e => e.isTranslation);
+
+                  return (
+                    <div key={pid} className="bg-gray-800 rounded-lg p-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="w-2 h-2 bg-green-400 rounded-full" />
+                        <h3 className="text-sm font-semibold text-gray-300">
+                          {displayName}
+                          {hasTranslation && <span className="ml-1 text-xs text-blue-400">(translated)</span>}
+                        </h3>
+                      </div>
+                      <div className="max-h-48 overflow-y-auto space-y-1">
+                        {entries.map((t, i) => (
+                          <div key={i} className={`text-sm ${t.isFinal ? 'text-gray-200' : 'text-gray-400 italic'}`}>
+                            <span className={`text-xs ${t.isTranslation ? 'text-blue-400' : 'text-green-400'}`}>
+                              [{t.language}]
+                            </span>
+                            <span className="ml-1">{t.text}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             )}
 
-            {/* Participants */}
-            {participants.length > 0 && (
-              <div className="bg-gray-800 rounded-lg p-4">
-                <h2 className="text-sm font-semibold text-gray-400 mb-2">Participants</h2>
-                <div className="space-y-1">
-                  {participants.map(p => (
-                    <div key={p.id} className="text-sm flex items-center gap-2">
-                      <span className="w-2 h-2 bg-green-400 rounded-full" />
-                      {p.id}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            <div ref={transcriptEndRef} />
           </>
         )}
 
-        {/* Status bar */}
         <div className="text-center text-xs text-gray-500 font-mono">{status}</div>
 
-        {/* Debug: MOQ info */}
         {moqInfo && showAdvanced && (
           <div className="text-xs text-gray-600 font-mono">
             Relay: {moqInfo.relayUrl} | NS: {moqInfo.namespacePrefix.join('/')} | Session: {moqInfo.sessionId}

@@ -149,7 +149,7 @@ export class EzDubsWebClient {
         this.handleServerObject(data, groupId, objectId, extensions);
       },
       trackFilter: (trackName: string) => {
-        const wanted = trackName === `mix/${targetLang}/audio` || trackName === `transcript/${targetLang}`;
+        const wanted = trackName === `mix/${targetLang}/audio` || trackName.startsWith('transcript/');
         return wanted;
       },
     });
