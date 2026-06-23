@@ -402,8 +402,8 @@ function App() {
                             {displayName}
                           </h3>
                         </div>
-                        <div className="max-h-52 overflow-y-auto space-y-2">
-                          {entries.map((t, i) => (
+                        <div className="max-h-52 overflow-y-auto space-y-2 flex flex-col-reverse">
+                          {[...entries].reverse().map((t, i) => (
                             <div key={i} className={`transcript-text ${t.isFinal ? 'text-gray-200' : 'text-gray-500 italic'}`}>
                               <span className={t.isTranslation ? 'lang-tag-translated' : 'lang-tag-source'}>
                                 {t.language}
