@@ -30,7 +30,7 @@ function App() {
 
   const [connected, setConnected] = useState(false);
   const [publishing, setPublishing] = useState(false);
-  const [status, setStatus] = useState('Ready to join');
+  const [status, setStatus] = useState('idle');
   const [participants, setParticipants] = useState<RemoteParticipant[]>([]);
   const [audioStats, setAudioStats] = useState({ sent: 0, received: 0 });
   const [transcriptsByParticipant, setTranscriptsByParticipant] = useState<ParticipantTranscripts>({});
@@ -69,12 +69,12 @@ function App() {
 
   const handleJoin = async () => {
     if (!meetingId.trim()) {
-      setStatus('Meeting ID required');
+      setStatus('err: session_id required');
       return;
     }
 
     try {
-      setStatus('Negotiating session...');
+      setStatus('negotiating...');
       const info = await negotiateMOQSession({
         host: serverHost,
         port: serverPort,
@@ -83,7 +83,7 @@ function App() {
         sampleRate: 48000,
       });
       setMoqInfo(info);
-      setStatus(`Got relay: ${info.relayUrl}`);
+      setStatus(`relay: ${info.relayUrl.split('//')[1]}`);
 
       const wtUrl = info.relayUrl
         .replace('moq://', 'https://')
@@ -124,15 +124,13 @@ function App() {
       }
 
       await client.connect();
-
-      // Subscribe to server output (audio + transcripts) for all modes
       await client.subscribeServerOutput();
 
       clientRef.current = client;
       setConnected(true);
 
       if (mode !== 'listener') {
-        setStatus('Connected - starting mic...');
+        setStatus('opening mic...');
         try {
           if (playbackRef.current) await playbackRef.current.resume();
           await client.startPublishing();
@@ -149,15 +147,15 @@ function App() {
           await capture.start();
           captureRef.current = capture;
           setPublishing(true);
-          setStatus(mode === 'speaker' ? 'Publishing audio' : 'Connected - speaking');
+          setStatus('streaming');
         } catch (err) {
-          setStatus(`Mic error: ${(err as Error).message}`);
+          setStatus(`mic_err: ${(err as Error).message}`);
         }
       } else {
-        setStatus('Listening...');
+        setStatus('listening');
       }
     } catch (err) {
-      setStatus(`Failed: ${(err as Error).message}`);
+      setStatus(`fail: ${(err as Error).message}`);
     }
   };
 
@@ -183,7 +181,7 @@ function App() {
     statsRef.current = { sent: 0, received: 0 };
     setAudioStats({ sent: 0, received: 0 });
     timestampRef.current = 0;
-    setStatus('Ready to join');
+    setStatus('idle');
   };
 
   const handleToggleMic = async () => {
@@ -195,7 +193,7 @@ function App() {
         captureRef.current = null;
       }
       setPublishing(false);
-      setStatus('Mic off');
+      setStatus('mic_off');
     } else {
       try {
         await playbackRef.current?.resume();
@@ -214,9 +212,9 @@ function App() {
         await capture.start();
         captureRef.current = capture;
         setPublishing(true);
-        setStatus('Speaking...');
+        setStatus('streaming');
       } catch (err) {
-        setStatus(`Mic error: ${(err as Error).message}`);
+        setStatus(`mic_err: ${(err as Error).message}`);
       }
     }
   };
@@ -224,159 +222,173 @@ function App() {
   const participantIds = Object.keys(transcriptsByParticipant);
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-6">
-      <div className="max-w-3xl mx-auto space-y-4">
-        <h1 className="text-2xl font-bold text-center">MoQXlate</h1>
+    <div className="scene p-6">
+      <div className="max-w-3xl mx-auto space-y-6 relative z-10">
+
+        {/* Title */}
+        <div className="text-center pt-6 pb-2">
+          <h1 className="text-4xl font-mono font-bold tracking-tight title-glow">
+            <span className="bg-gradient-to-r from-emerald-400 via-purple-400 to-blue-400 bg-clip-text text-transparent">
+              MoQXlate
+            </span>
+          </h1>
+          <p className="text-[10px] font-mono text-gray-600 mt-2 tracking-[0.3em] uppercase">
+            draft-16 / webtransport / opus 48kHz
+          </p>
+        </div>
 
         {!connected ? (
-          <div className="bg-gray-800 rounded-lg p-5 space-y-4">
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">Meeting ID</label>
-                <input
-                  type="text"
-                  value={meetingId}
-                  onChange={e => setMeetingId(e.target.value)}
-                  placeholder="Enter meeting ID"
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-lg"
-                />
+          <div className="card">
+            <div className="card-inner space-y-5">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-mono text-gray-500 mb-2 uppercase tracking-[0.2em]">session_id</label>
+                  <input
+                    type="text"
+                    value={meetingId}
+                    onChange={e => setMeetingId(e.target.value)}
+                    placeholder="enter session identifier"
+                    className="input-field"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-mono text-gray-500 mb-2 uppercase tracking-[0.2em]">source_lang</label>
+                  <select
+                    value={myLanguage}
+                    onChange={e => setMyLanguage(e.target.value)}
+                    className="select-field"
+                  >
+                    {LANGUAGES.map(l => (
+                      <option key={l.code} value={l.code}>{l.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-mono text-gray-500 mb-2 uppercase tracking-[0.2em]">mode</label>
+                  <div className="flex gap-2">
+                    {(['interactive', 'speaker', 'listener'] as const).map(m => (
+                      <button
+                        key={m}
+                        onClick={() => setMode(m)}
+                        className={mode === m ? 'mode-btn-active' : 'mode-btn-inactive'}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
+
               <div>
-                <label className="block text-sm text-gray-400 mb-1">I speak</label>
-                <select
-                  value={myLanguage}
-                  onChange={e => setMyLanguage(e.target.value)}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-lg"
+                <button
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="text-[10px] font-mono text-gray-600 hover:text-purple-400 transition-colors uppercase tracking-[0.15em]"
                 >
-                  {LANGUAGES.map(l => (
-                    <option key={l.code} value={l.code}>{l.label}</option>
-                  ))}
-                </select>
+                  [{showAdvanced ? '-' : '+'}] advanced
+                </button>
+                {showAdvanced && (
+                  <div className="grid grid-cols-2 gap-3 mt-3">
+                    <div>
+                      <label className="block text-[10px] font-mono text-gray-600 mb-1 uppercase tracking-wider">relay_host</label>
+                      <input
+                        type="text"
+                        value={serverHost}
+                        onChange={e => setServerHost(e.target.value)}
+                        className="input-field !text-sm !py-2"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-mono text-gray-600 mb-1 uppercase tracking-wider">port</label>
+                      <input
+                        type="text"
+                        value={serverPort}
+                        onChange={e => setServerPort(e.target.value)}
+                        className="input-field !text-sm !py-2"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">Mode</label>
-                <div className="flex gap-2">
-                  {(['interactive', 'speaker', 'listener'] as const).map(m => (
-                    <button
-                      key={m}
-                      onClick={() => setMode(m)}
-                      className={`flex-1 px-3 py-2 rounded text-sm capitalize ${
-                        mode === m
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                      }`}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
 
-            <div>
-              <button
-                onClick={() => setShowAdvanced(!showAdvanced)}
-                className="text-xs text-gray-500 hover:text-gray-300"
-              >
-                {showAdvanced ? 'Hide' : 'Show'} advanced settings
+              <button onClick={handleJoin} className="btn-primary">
+                Connect
               </button>
-              {showAdvanced && (
-                <div className="grid grid-cols-2 gap-2 mt-2">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Server Host</label>
-                    <input
-                      type="text"
-                      value={serverHost}
-                      onChange={e => setServerHost(e.target.value)}
-                      className="w-full bg-gray-700 rounded px-2 py-1 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Server Port</label>
-                    <input
-                      type="text"
-                      value={serverPort}
-                      onChange={e => setServerPort(e.target.value)}
-                      className="w-full bg-gray-700 rounded px-2 py-1 text-sm"
-                    />
-                  </div>
-                </div>
-              )}
             </div>
-
-            <button
-              onClick={handleJoin}
-              className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium text-lg"
-            >
-              Join Meeting
-            </button>
           </div>
         ) : (
           <>
-            <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
-              <div>
-                <span className="text-sm text-gray-400">Meeting: </span>
-                <span className="font-medium">{meetingId}</span>
-                <span className="text-sm text-gray-400 ml-3">Lang: </span>
-                <span className="font-medium">{LANGUAGES.find(l => l.code === myLanguage)?.label}</span>
-                <span className="text-sm text-gray-400 ml-3">Mode: </span>
-                <span className="font-medium capitalize">{mode}</span>
+            {/* Session bar */}
+            <div className="card-glow">
+              <div className="card-glow-inner p-4 flex items-center justify-between">
+                <div className="font-mono text-sm space-x-2">
+                  <span className="text-gray-600">$</span>
+                  <span className="text-emerald-400">{meetingId}</span>
+                  <span className="text-gray-700">::</span>
+                  <span className="text-purple-400">{myLanguage}</span>
+                  <span className="text-gray-700">::</span>
+                  <span className="text-blue-400">{mode}</span>
+                </div>
+                <button onClick={handleLeave} className="btn-danger">
+                  kill
+                </button>
               </div>
-              <button
-                onClick={handleLeave}
-                className="px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-sm"
-              >
-                Leave
-              </button>
             </div>
 
+            {/* Mic */}
             {mode !== 'listener' && (
-              <div className="flex justify-center">
+              <div className="flex justify-center py-4">
                 <button
                   onClick={handleToggleMic}
-                  className={`w-20 h-20 rounded-full flex items-center justify-center text-2xl font-bold transition-colors ${
-                    publishing
-                      ? 'bg-red-500 hover:bg-red-600 animate-pulse'
-                      : 'bg-green-600 hover:bg-green-700'
-                  }`}
+                  className={publishing ? 'mic-on' : 'mic-off'}
                 >
-                  {publishing ? 'ON' : 'MIC'}
+                  <span className="font-mono text-base tracking-wider">
+                    {publishing ? 'TX' : 'MIC'}
+                  </span>
                 </button>
               </div>
             )}
 
-            <div className="text-center text-xs text-gray-500">
-              Sent: {audioStats.sent} | Received: {audioStats.received}
-              {participants.length > 0 && ` | Participants: ${participants.length}`}
+            {/* Stats */}
+            <div className="stats-bar">
+              tx:{audioStats.sent} / rx:{audioStats.received}
+              {participants.length > 0 && ` / peers:${participants.length}`}
             </div>
 
-            {/* Per-participant transcript panes */}
+            {/* Transcript panes */}
             {participantIds.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {participantIds.map(pid => {
                   const entries = transcriptsByParticipant[pid] || [];
                   const isMe = pid.includes(myParticipantId) || pid.includes(`participant-${myLanguage}`);
-                  const displayName = isMe ? 'You' : pid.replace('participant-', '').replace('virtual-listener-', '');
-                  const hasTranslation = entries.some(e => e.isTranslation);
+                  const displayName = isMe ? 'self' : pid.replace('participant-', '').replace('virtual-listener-', '');
 
                   return (
-                    <div key={pid} className="bg-gray-800 rounded-lg p-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="w-2 h-2 bg-green-400 rounded-full" />
-                        <h3 className="text-sm font-semibold text-gray-300">
-                          {displayName}
-                          {hasTranslation && <span className="ml-1 text-xs text-blue-400">(translated)</span>}
-                        </h3>
-                      </div>
-                      <div className="max-h-48 overflow-y-auto space-y-1">
-                        {entries.map((t, i) => (
-                          <div key={i} className={`text-sm ${t.isFinal ? 'text-gray-200' : 'text-gray-400 italic'}`}>
-                            <span className={`text-xs ${t.isTranslation ? 'text-blue-400' : 'text-green-400'}`}>
-                              [{t.language}]
-                            </span>
-                            <span className="ml-1">{t.text}</span>
-                          </div>
-                        ))}
+                    <div key={pid} className="transcript-pane">
+                      <div className="transcript-pane-inner">
+                        <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/5">
+                          <span className={`w-2 h-2 rounded-full ${isMe
+                            ? 'bg-emerald-400 shadow-[0_0_8px_rgba(6,214,160,0.6)]'
+                            : 'bg-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.6)]'
+                          }`} />
+                          <h3 className="text-[11px] font-mono text-gray-400 uppercase tracking-[0.15em]">
+                            {displayName}
+                          </h3>
+                        </div>
+                        <div className="max-h-52 overflow-y-auto space-y-2">
+                          {entries.map((t, i) => (
+                            <div key={i} className={`transcript-text ${t.isFinal ? 'text-gray-200' : 'text-gray-500 italic'}`}>
+                              <span className={t.isTranslation ? 'lang-tag-translated' : 'lang-tag-source'}>
+                                {t.language}
+                              </span>
+                              <span className="ml-2">{t.text}</span>
+                            </div>
+                          ))}
+                          {entries.length === 0 && (
+                            <div className="text-[11px] font-mono text-gray-700 italic">
+                              awaiting speech...
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -388,11 +400,14 @@ function App() {
           </>
         )}
 
-        <div className="text-center text-xs text-gray-500 font-mono">{status}</div>
+        {/* Status */}
+        <div className="status-bar">
+          <span className="text-emerald-600">&gt;</span> {status}
+        </div>
 
         {moqInfo && showAdvanced && (
-          <div className="text-xs text-gray-600 font-mono">
-            Relay: {moqInfo.relayUrl} | NS: {moqInfo.namespacePrefix.join('/')} | Session: {moqInfo.sessionId}
+          <div className="text-[10px] font-mono text-gray-700 text-center tracking-wide">
+            relay={moqInfo.relayUrl} ns={moqInfo.namespacePrefix.join('/')} sid={moqInfo.sessionId}
           </div>
         )}
       </div>
