@@ -273,13 +273,22 @@ function App() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-[10px] font-mono text-gray-500 mb-2 uppercase tracking-[0.2em]">session_id</label>
-                  <input
-                    type="text"
-                    value={meetingId}
-                    onChange={e => setMeetingId(e.target.value)}
-                    placeholder="enter session identifier"
-                    className="input-field"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={meetingId}
+                      onChange={e => setMeetingId(e.target.value)}
+                      placeholder="enter or generate"
+                      className="input-field"
+                    />
+                    <button
+                      onClick={() => setMeetingId(`s-${Date.now().toString(36)}`)}
+                      className="px-3 py-2 rounded-xl text-xs font-mono border border-white/10 hover:border-purple-400/50 text-gray-400 hover:text-purple-300 transition-all whitespace-nowrap"
+                      title="Generate random session ID"
+                    >
+                      gen
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="block text-[10px] font-mono text-gray-500 mb-2 uppercase tracking-[0.2em]">name</label>
