@@ -8,12 +8,14 @@ const LANGUAGES = [
   { code: 'es', label: 'Spanish' },
   { code: 'fr', label: 'French' },
   { code: 'de', label: 'German' },
+  { code: 'hi', label: 'Hindi' },
   { code: 'ja', label: 'Japanese' },
   { code: 'zh', label: 'Chinese' },
   { code: 'ko', label: 'Korean' },
   { code: 'pt', label: 'Portuguese' },
   { code: 'it', label: 'Italian' },
   { code: 'ar', label: 'Arabic' },
+  { code: 'no', label: 'Norwegian' },
 ];
 
 interface ParticipantTranscripts {
