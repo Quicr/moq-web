@@ -231,7 +231,7 @@ function App() {
         <div className="text-center pt-6 pb-2">
           <h1 className="text-4xl font-mono font-bold tracking-tight title-glow">
             <span className="bg-gradient-to-r from-emerald-400 via-purple-400 to-blue-400 bg-clip-text text-transparent">
-              Vāc
+              Stele
             </span>
           </h1>
           <p className="text-[11px] font-mono text-gray-600 mt-2 tracking-[0.2em]">
