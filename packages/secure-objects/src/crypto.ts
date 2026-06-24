@@ -28,9 +28,12 @@ const textEncoder = new TextEncoder();
 
 /**
  * Convert Uint8Array to ArrayBuffer for WebCrypto API compatibility.
- * Handles the TypeScript strict mode issue with SharedArrayBuffer.
+ * Avoids copying when the array owns its full underlying buffer.
  */
 function toArrayBuffer(arr: Uint8Array): ArrayBuffer {
+  if (arr.byteOffset === 0 && arr.byteLength === arr.buffer.byteLength) {
+    return arr.buffer as ArrayBuffer;
+  }
   return arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength) as ArrayBuffer;
 }
 
