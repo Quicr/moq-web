@@ -238,7 +238,7 @@ describe('Performance', () => {
       const frameSize = 64 * 1024;
       const plaintext = new Uint8Array(frameSize);
 
-      for (let i = 0; i < 100; i++) {
+      for (let i = 1; i <= 100; i++) {
         const encrypted = await ctx.encrypt(plaintext, { groupId: BigInt(i), objectId: i });
         await ctx.decrypt(encrypted.ciphertext, { groupId: BigInt(i), objectId: i });
       }
