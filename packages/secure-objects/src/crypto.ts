@@ -384,6 +384,8 @@ export class SecureObjectsContext {
     }
   }
 
+  private static readonly MAX_CTR_PLAINTEXT_LENGTH = (2 ** 32 - 1) * 16;
+
   /**
    * AES-CTR-HMAC encryption (encrypt-then-MAC).
    */
@@ -394,6 +396,10 @@ export class SecureObjectsContext {
   ): Promise<Uint8Array> {
     if (!this.context.hmacKey) {
       throw new Error('HMAC key not available for CTR-HMAC cipher suite');
+    }
+
+    if (plaintext.length > SecureObjectsContext.MAX_CTR_PLAINTEXT_LENGTH) {
+      throw new Error('Plaintext exceeds maximum AES-CTR length (counter would wrap)');
     }
 
     // AES-CTR encryption
