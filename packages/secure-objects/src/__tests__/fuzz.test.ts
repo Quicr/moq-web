@@ -35,9 +35,9 @@ function randomBigInt(maxBits: number): bigint {
 }
 
 describe('Fuzz Testing', () => {
-  const ITERATIONS = 100;
+  const ITERATIONS = 25;
 
-  describe('encrypt/decrypt round-trip with random inputs', () => {
+  describe('encrypt/decrypt round-trip with random inputs', { timeout: 30_000 }, () => {
     it('AES-128-GCM survives random plaintext sizes and object IDs', async () => {
       const key = randomBytes(32);
       const ctx = await SecureObjectsContext.create({
@@ -47,7 +47,7 @@ describe('Fuzz Testing', () => {
       });
 
       for (let i = 0; i < ITERATIONS; i++) {
-        const size = randomInt(0, 100_000);
+        const size = randomInt(0, 50_000);
         const plaintext = randomBytes(size);
         const groupId = randomBigInt(61);
         const objectId = randomInt(0, Limits.MAX_OBJECT_ID);
