@@ -21,6 +21,11 @@ const KEY_LABEL_PREFIX = 'MOQ 1.0 Secure Objects Secret key';
 const SALT_LABEL_PREFIX = 'MOQ 1.0 Secret salt';
 
 /**
+ * Fixed application-specific salt for HKDF-Extract domain separation.
+ */
+const HKDF_SALT = new TextEncoder().encode('MOQ Secure Objects v1');
+
+/**
  * Text encoder for label construction.
  */
 const textEncoder = new TextEncoder();
@@ -150,7 +155,7 @@ export async function deriveEncryptionKey(
 
   // Convert label to ArrayBuffer for WebCrypto API
   const labelBuffer = toArrayBuffer(label);
-  const emptySalt = new ArrayBuffer(0);
+  const salt = toArrayBuffer(HKDF_SALT);
 
   if (params.aeadAlgorithm === 'AES-GCM') {
     // Derive AES-GCM key directly
@@ -158,7 +163,7 @@ export async function deriveEncryptionKey(
       {
         name: 'HKDF',
         hash: params.hashAlgorithm,
-        salt: emptySalt,
+        salt,
         info: labelBuffer,
       },
       baseKey,
@@ -176,7 +181,7 @@ export async function deriveEncryptionKey(
       {
         name: 'HKDF',
         hash: params.hashAlgorithm,
-        salt: emptySalt,
+        salt,
         info: labelBuffer,
       },
       baseKey,
@@ -215,14 +220,14 @@ export async function deriveHmacKey(
 
   // Convert to ArrayBuffer for WebCrypto API
   const labelBuffer = toArrayBuffer(label);
-  const emptySalt = new ArrayBuffer(0);
+  const salt = toArrayBuffer(HKDF_SALT);
 
   // Derive full key material
   const keyBits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: params.hashAlgorithm,
-      salt: emptySalt,
+      salt,
       info: labelBuffer,
     },
     baseKey,
@@ -257,14 +262,14 @@ export async function deriveSalt(
 
   // Convert to ArrayBuffer for WebCrypto API
   const labelBuffer = toArrayBuffer(label);
-  const emptySalt = new ArrayBuffer(0);
+  const hkdfSalt = toArrayBuffer(HKDF_SALT);
 
   // Derive salt bytes
   const saltBits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: params.hashAlgorithm,
-      salt: emptySalt,
+      salt: hkdfSalt,
       info: labelBuffer,
     },
     baseKey,
