@@ -110,11 +110,17 @@ function constructLabel(
   return label;
 }
 
+const MIN_KEY_LENGTH = 16;
+
 /**
  * Derive the MOQ secret using HKDF-Extract.
  * moq_secret = HKDF-Extract("", track_base_key)
  */
 async function deriveSecret(trackBaseKey: Uint8Array): Promise<CryptoKey> {
+  if (trackBaseKey.length < MIN_KEY_LENGTH) {
+    throw new Error(`trackBaseKey must be at least ${MIN_KEY_LENGTH} bytes (got ${trackBaseKey.length})`);
+  }
+
   // Import track_base_key as HKDF key material
   const baseKey = await crypto.subtle.importKey(
     'raw',
