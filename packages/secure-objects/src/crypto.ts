@@ -353,6 +353,11 @@ export class SecureObjectsContext {
 
     // Parse decrypted data: payload_length (varint) + payload + [encrypted_properties]
     const { value: payloadLength, bytesRead } = this.readVarInt(decryptedWithProperties);
+
+    if (bytesRead + payloadLength > decryptedWithProperties.length) {
+      throw new Error('Decrypted payload length exceeds available data');
+    }
+
     const plaintext = decryptedWithProperties.slice(bytesRead, bytesRead + payloadLength);
 
     let encryptedProperties: Uint8Array | undefined;
