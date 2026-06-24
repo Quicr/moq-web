@@ -206,13 +206,15 @@ export async function deriveEncryptionKey(
 
     // First 16 bytes for AES-CTR
     const aesKeyBytes = new Uint8Array(keyBits, 0, 16);
-    return crypto.subtle.importKey(
+    const key = await crypto.subtle.importKey(
       'raw',
       toArrayBuffer(aesKeyBytes),
       { name: 'AES-CTR' },
       false,
       ['encrypt', 'decrypt']
     );
+    new Uint8Array(keyBits).fill(0);
+    return key;
   }
 }
 
@@ -252,13 +254,15 @@ export async function deriveHmacKey(
 
   // Last 32 bytes for HMAC-SHA256
   const hmacKeyBytes = new Uint8Array(keyBits, 16, 32);
-  return crypto.subtle.importKey(
+  const key = await crypto.subtle.importKey(
     'raw',
     toArrayBuffer(hmacKeyBytes),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign', 'verify']
   );
+  new Uint8Array(keyBits).fill(0);
+  return key;
 }
 
 /**
