@@ -157,6 +157,7 @@ export function constructAAD(components: AADComponents): Uint8Array {
 export class SecureObjectsContext {
   private readonly context: EncryptionContext;
   private readonly params;
+  private readonly usedNonces = new Set<string>();
 
   private constructor(context: EncryptionContext) {
     this.context = context;
@@ -227,6 +228,12 @@ export class SecureObjectsContext {
     objectId: ObjectIdentifier,
     encryptedProperties?: Uint8Array
   ): Promise<EncryptedObject> {
+    const nonceKey = `${objectId.groupId}:${objectId.objectId}`;
+    if (this.usedNonces.has(nonceKey)) {
+      throw new Error('Nonce reuse detected: this (groupId, objectId) pair has already been used for encryption with this context');
+    }
+    this.usedNonces.add(nonceKey);
+
     const nonce = constructNonce(this.context.salt, objectId);
 
     const aad = constructAAD({
