@@ -67,36 +67,38 @@ export function constructNonce(
 }
 
 /**
- * Encode a value as a varint (MOQT-style).
- * For simplicity, supports values up to 2^30 - 1.
+ * Encode a value as a varint (MOQT-style QUIC variable-length integer).
  */
 function encodeVarInt(value: number | bigint): Uint8Array {
-  const n = typeof value === 'bigint' ? Number(value) : value;
+  const n = BigInt(value);
 
-  if (n < 0x40) {
-    return new Uint8Array([n]);
-  } else if (n < 0x4000) {
-    return new Uint8Array([0x40 | (n >> 8), n & 0xff]);
-  } else if (n < 0x40000000) {
+  if (n < 0x40n) {
+    return new Uint8Array([Number(n)]);
+  } else if (n < 0x4000n) {
     return new Uint8Array([
-      0x80 | (n >> 24),
-      (n >> 16) & 0xff,
-      (n >> 8) & 0xff,
-      n & 0xff,
+      0x40 | Number((n >> 8n) & 0x3fn),
+      Number(n & 0xffn),
     ]);
-  } else {
-    // 8-byte varint for larger values
+  } else if (n < 0x40000000n) {
+    return new Uint8Array([
+      0x80 | Number((n >> 24n) & 0x3fn),
+      Number((n >> 16n) & 0xffn),
+      Number((n >> 8n) & 0xffn),
+      Number(n & 0xffn),
+    ]);
+  } else if (n < 0x4000000000000000n) {
     const bytes = new Uint8Array(8);
-    const bigN = BigInt(n);
-    bytes[0] = 0xc0 | Number((bigN >> 56n) & 0x3fn);
-    bytes[1] = Number((bigN >> 48n) & 0xffn);
-    bytes[2] = Number((bigN >> 40n) & 0xffn);
-    bytes[3] = Number((bigN >> 32n) & 0xffn);
-    bytes[4] = Number((bigN >> 24n) & 0xffn);
-    bytes[5] = Number((bigN >> 16n) & 0xffn);
-    bytes[6] = Number((bigN >> 8n) & 0xffn);
-    bytes[7] = Number(bigN & 0xffn);
+    bytes[0] = 0xc0 | Number((n >> 56n) & 0x3fn);
+    bytes[1] = Number((n >> 48n) & 0xffn);
+    bytes[2] = Number((n >> 40n) & 0xffn);
+    bytes[3] = Number((n >> 32n) & 0xffn);
+    bytes[4] = Number((n >> 24n) & 0xffn);
+    bytes[5] = Number((n >> 16n) & 0xffn);
+    bytes[6] = Number((n >> 8n) & 0xffn);
+    bytes[7] = Number(n & 0xffn);
     return bytes;
+  } else {
+    throw new Error(`Value ${n} exceeds maximum varint range (2^62 - 1)`);
   }
 }
 
@@ -524,10 +526,19 @@ export class SecureObjectsContext {
       };
     } else {
       if (buffer.length < 8) throw new Error('Buffer too short');
-      // For 8-byte varints, we may lose precision for very large values
-      const high = ((firstByte & 0x3f) << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
-      const low = (buffer[4] << 24) | (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
-      return { value: high * 0x100000000 + (low >>> 0), bytesRead: 8 };
+      const n =
+        (BigInt(firstByte & 0x3f) << 56n) |
+        (BigInt(buffer[1]) << 48n) |
+        (BigInt(buffer[2]) << 40n) |
+        (BigInt(buffer[3]) << 32n) |
+        (BigInt(buffer[4]) << 24n) |
+        (BigInt(buffer[5]) << 16n) |
+        (BigInt(buffer[6]) << 8n) |
+        BigInt(buffer[7]);
+      if (n > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('Varint value exceeds safe integer range for payload length');
+      }
+      return { value: Number(n), bytesRead: 8 };
     }
   }
 }

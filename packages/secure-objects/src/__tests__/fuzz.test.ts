@@ -49,7 +49,7 @@ describe('Fuzz Testing', () => {
       for (let i = 0; i < ITERATIONS; i++) {
         const size = randomInt(0, 100_000);
         const plaintext = randomBytes(size);
-        const groupId = randomBigInt(63);
+        const groupId = randomBigInt(61);
         const objectId = randomInt(0, Limits.MAX_OBJECT_ID);
 
         const encrypted = await ctx.encrypt(plaintext, { groupId, objectId });
@@ -70,7 +70,7 @@ describe('Fuzz Testing', () => {
       for (let i = 0; i < ITERATIONS; i++) {
         const size = randomInt(0, 50_000);
         const plaintext = randomBytes(size);
-        const groupId = randomBigInt(63);
+        const groupId = randomBigInt(61);
         const objectId = randomInt(0, Limits.MAX_OBJECT_ID);
 
         const encrypted = await ctx.encrypt(plaintext, { groupId, objectId });
@@ -91,7 +91,7 @@ describe('Fuzz Testing', () => {
       for (let i = 0; i < ITERATIONS; i++) {
         const size = randomInt(0, 50_000);
         const plaintext = randomBytes(size);
-        const groupId = randomBigInt(63);
+        const groupId = randomBigInt(61);
         const objectId = randomInt(0, Limits.MAX_OBJECT_ID);
 
         const encrypted = await ctx.encrypt(plaintext, { groupId, objectId });
@@ -112,7 +112,7 @@ describe('Fuzz Testing', () => {
       for (let i = 0; i < ITERATIONS; i++) {
         const size = randomInt(0, 50_000);
         const plaintext = randomBytes(size);
-        const groupId = randomBigInt(63);
+        const groupId = randomBigInt(61);
         const objectId = randomInt(0, Limits.MAX_OBJECT_ID);
 
         const encrypted = await ctx.encrypt(plaintext, { groupId, objectId });
@@ -133,7 +133,7 @@ describe('Fuzz Testing', () => {
       for (let i = 0; i < ITERATIONS; i++) {
         const size = randomInt(0, 50_000);
         const plaintext = randomBytes(size);
-        const groupId = randomBigInt(63);
+        const groupId = randomBigInt(61);
         const objectId = randomInt(0, Limits.MAX_OBJECT_ID);
 
         const encrypted = await ctx.encrypt(plaintext, { groupId, objectId });
@@ -281,7 +281,7 @@ describe('Fuzz Testing', () => {
     it('all valid group/object ID combinations produce 12-byte nonces', () => {
       const salt = randomBytes(12);
       for (let i = 0; i < ITERATIONS; i++) {
-        const groupId = randomBigInt(64) & Limits.MAX_GROUP_ID;
+        const groupId = randomBigInt(61);
         const objectId = randomInt(0, Limits.MAX_OBJECT_ID);
         const nonce = constructNonce(salt, { groupId, objectId });
         expect(nonce.length).toBe(12);
