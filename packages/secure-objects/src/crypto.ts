@@ -155,9 +155,11 @@ export function constructAAD(components: AADComponents): Uint8Array {
  * encrypting and decrypting MOQT objects.
  */
 export class SecureObjectsContext {
+  private static readonly MAX_INVOCATIONS = 2 ** 32;
   private readonly context: EncryptionContext;
   private readonly params;
   private readonly usedNonces = new Set<string>();
+  private encryptionCount = 0;
 
   private constructor(context: EncryptionContext) {
     this.context = context;
@@ -228,6 +230,11 @@ export class SecureObjectsContext {
     objectId: ObjectIdentifier,
     encryptedProperties?: Uint8Array
   ): Promise<EncryptedObject> {
+    if (this.encryptionCount >= SecureObjectsContext.MAX_INVOCATIONS) {
+      throw new Error('Encryption limit reached: this context has exceeded 2^32 invocations and must be rotated');
+    }
+    this.encryptionCount++;
+
     const nonceKey = `${objectId.groupId}:${objectId.objectId}`;
     if (this.usedNonces.has(nonceKey)) {
       throw new Error('Nonce reuse detected: this (groupId, objectId) pair has already been used for encryption with this context');
