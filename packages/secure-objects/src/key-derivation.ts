@@ -39,26 +39,42 @@ function toArrayBuffer(arr: Uint8Array): ArrayBuffer {
 }
 
 /**
+ * Encode a value as a QUIC-style varint.
+ */
+function encodeVarInt(value: number): Uint8Array {
+  if (value < 0x40) {
+    return new Uint8Array([value]);
+  } else if (value < 0x4000) {
+    return new Uint8Array([0x40 | (value >> 8), value & 0xff]);
+  } else if (value < 0x40000000) {
+    return new Uint8Array([
+      0x80 | (value >> 24),
+      (value >> 16) & 0xff,
+      (value >> 8) & 0xff,
+      value & 0xff,
+    ]);
+  } else {
+    throw new Error(`Length value ${value} exceeds varint 4-byte range`);
+  }
+}
+
+/**
  * Serialize a track name for use in key derivation labels.
  * Format: namespace tuple count (varint) + each tuple as length-prefixed bytes + track name length + track name bytes
  */
 export function serializeTrackName(track: TrackIdentifier): Uint8Array {
   const parts: Uint8Array[] = [];
 
-  // Encode namespace tuple count as varint (simplified - single byte for small counts)
-  parts.push(new Uint8Array([track.namespace.length]));
+  parts.push(encodeVarInt(track.namespace.length));
 
-  // Encode each namespace tuple as length-prefixed bytes
   for (const tuple of track.namespace) {
     const tupleBytes = textEncoder.encode(tuple);
-    // Length as varint (simplified for small lengths)
-    parts.push(new Uint8Array([tupleBytes.length]));
+    parts.push(encodeVarInt(tupleBytes.length));
     parts.push(tupleBytes);
   }
 
-  // Encode track name as length-prefixed bytes
   const trackNameBytes = textEncoder.encode(track.trackName);
-  parts.push(new Uint8Array([trackNameBytes.length]));
+  parts.push(encodeVarInt(trackNameBytes.length));
   parts.push(trackNameBytes);
 
   // Concatenate all parts
