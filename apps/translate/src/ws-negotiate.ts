@@ -8,7 +8,7 @@ export interface NegotiateConfig {
 
 export interface MOQSessionInfo {
   relayUrl: string;
-  namespacePrefix: string[];
+  app: string;
   sessionId: string;
   transport: string;
   endpointId: string;
@@ -170,12 +170,13 @@ function decodeStreamingS2SResponse(data: Uint8Array): MOQSessionInfo | null {
   const moqInfo = decodeFields(moqInfoFields[0]);
 
   const relayUrl = decodeStringField(moqInfo, 1) ?? '';
-  const namespacePrefix = decodeRepeatedStringField(moqInfo, 2);
+  const namespacePrefixParts = decodeRepeatedStringField(moqInfo, 2);
+  const app = namespacePrefixParts.length > 0 ? namespacePrefixParts[0] : 'ezdubs';
   const sessionId = decodeStringField(moqInfo, 3) ?? '';
   const transport = decodeStringField(moqInfo, 4) ?? '';
   const endpointId = decodeStringField(moqInfo, 5) ?? '';
 
-  return { relayUrl, namespacePrefix, sessionId, transport, endpointId };
+  return { relayUrl, app, sessionId, transport, endpointId };
 }
 
 type FieldMap = Map<number, Uint8Array>;

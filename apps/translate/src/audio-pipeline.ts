@@ -142,8 +142,7 @@ export class AudioPlaybackPipeline {
 
     const now = this.audioContext.currentTime;
     if (this.nextPlayTime < now) {
-      // Gap in audio — resync with short fade-in to avoid clicks
-      this.nextPlayTime = now + 0.03;
+      this.nextPlayTime = now + 0.01;
       sourceGain.gain.setValueAtTime(0, this.nextPlayTime);
       sourceGain.gain.linearRampToValueAtTime(1, this.nextPlayTime + this.rampDuration);
     }

@@ -97,7 +97,7 @@ function App() {
 
       const config: SessionConfig = {
         relayUrl: wtUrl.endsWith('/relay') ? wtUrl : wtUrl + '/relay',
-        namespacePrefix: info.namespacePrefix,
+        app: info.app,
         sessionId: info.sessionId,
         participantId,
         sourceLanguage: myLanguage,
@@ -122,7 +122,9 @@ function App() {
 
         client.setOnAudioReceived((_participantId, data, _groupId, _objectId) => {
           timestampRef.current += 20_000;
-          playback.decode(data, timestampRef.current);
+          if (data.length > 3) {
+            playback.decode(data, timestampRef.current);
+          }
           updateStats('received');
         });
       }
@@ -456,7 +458,7 @@ function App() {
 
         {moqInfo && showAdvanced && (
           <div className="text-[10px] font-mono text-gray-700 text-center tracking-wide">
-            relay={moqInfo.relayUrl} ns={moqInfo.namespacePrefix.join('/')} sid={moqInfo.sessionId}
+            relay={moqInfo.relayUrl} ns={moqInfo.app} sid={moqInfo.sessionId}
           </div>
         )}
       </div>
