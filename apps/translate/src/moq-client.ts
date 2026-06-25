@@ -11,7 +11,7 @@ export interface EzDubsMetadata {
 
 export interface SessionConfig {
   relayUrl: string;
-  namespacePrefix: string[];
+  app: string;
   sessionId: string;
   participantId: string;
   sourceLanguage: string;
@@ -87,15 +87,9 @@ export class EzDubsWebClient {
   async startPublishing(): Promise<void> {
     if (!this.session) throw new Error('Not connected');
 
-    // Publish to client/in namespace (translation server subscribes to this)
-    const inputNs = [
-      ...this.config.namespacePrefix,
-      this.config.sessionId,
-      'client', 'in',
-      this.config.participantId,
-      this.config.sourceLanguage,
-    ];
-    const trackName = 'audio';
+    // Publish to input namespace: [app, sessionId, "in", participantId, sourceLanguage]
+    const inputNs = this.getClientInputNamespace();
+    const trackName = 'opus-48000-1';
 
     this.status(`Publishing to ${inputNs.join('/')}/${trackName}`);
     this.publishTrackAlias = await this.session.publish(inputNs, trackName, {
@@ -260,9 +254,6 @@ export class EzDubsWebClient {
       return;
     }
 
-    // Skip DTX silence frames (1-3 bytes) — they produce silence and can cause decoder clicks
-    if (data.length <= 3) return;
-
     const metadata = this.parseMetadata(extensions);
     this.onAudioReceived?.('server', data, _groupId, _objectId, metadata);
   }
@@ -289,17 +280,17 @@ export class EzDubsWebClient {
     return true;
   }
 
-  // Namespace layout (matches C++ client):
-  // Client input:       [prefix..., session_id, "client", "in", participant_id, source_language]
-  // Passthrough:        [prefix..., session_id, "client", "passthrough", participant_id]
-  // Passthrough sub-ns: [prefix..., session_id, "client", "passthrough"]
-  // Server sub-ns:      [prefix..., session_id, "server"]
+  // Namespace layout:
+  // Client input:       [app, session_id, "in", participant_id, source_language]
+  // Passthrough:        [app, session_id, "passthrough", participant_id]
+  // Passthrough sub-ns: [app, session_id, "passthrough"]
+  // Server sub-ns:      [app, session_id, "server"]
 
   private getClientInputNamespace(): string[] {
     return [
-      ...this.config.namespacePrefix,
+      this.config.app,
       this.config.sessionId,
-      'client', 'in',
+      'in',
       this.config.participantId,
       this.config.sourceLanguage,
     ];
@@ -307,23 +298,23 @@ export class EzDubsWebClient {
 
   getPassthroughSubNamespace(): string[] {
     return [
-      ...this.config.namespacePrefix,
+      this.config.app,
       this.config.sessionId,
-      'client', 'passthrough',
+      'passthrough',
     ];
   }
 
   private getClientInputSubNamespace(): string[] {
     return [
-      ...this.config.namespacePrefix,
+      this.config.app,
       this.config.sessionId,
-      'client', 'in',
+      'in',
     ];
   }
 
   private getServerSubNamespace(): string[] {
     return [
-      ...this.config.namespacePrefix,
+      this.config.app,
       this.config.sessionId,
       'server',
     ];
