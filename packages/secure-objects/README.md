@@ -1,4 +1,4 @@
-# @web-moq/secure-objects
+# @moq-web/secure-objects
 
 WebCrypto-based end-to-end encryption for Media over QUIC Transport (MOQT).
 
@@ -15,13 +15,13 @@ Implements [draft-ietf-moq-secure-objects](https://datatracker.ietf.org/doc/draf
 ## Installation
 
 ```bash
-pnpm add @web-moq/secure-objects
+npm install @moq-web/secure-objects
 ```
 
 ## Quick Start
 
 ```typescript
-import { SecureObjectsContext, CipherSuite } from '@web-moq/secure-objects';
+import { SecureObjectsContext, CipherSuite } from '@moq-web/secure-objects';
 
 // Create encryption context with a track base key
 const ctx = await SecureObjectsContext.create({
@@ -117,7 +117,7 @@ const isValid = await ctx.verifyAAD(ciphertext, { groupId, objectId });
 Keys are derived using HKDF with track-specific labels:
 
 ```
-moq_secret = HKDF-Extract("", track_base_key)
+moq_secret = HKDF-Extract("MOQ Secure Objects v1", track_base_key)
 encryption_key = HKDF-Expand(moq_secret, key_label, key_length)
 salt = HKDF-Expand(moq_secret, salt_label, 12)
 ```
@@ -160,9 +160,12 @@ Frame processing time is well under 1ms for typical video frame sizes.
 ## Security Considerations
 
 - **Key Management**: Track base keys must be distributed securely out-of-band
+- **Minimum Key Length**: Track base keys must be at least 16 bytes (128 bits)
 - **Key Rotation**: Use different `keyId` values for key rotation epochs
-- **Limits**: Respect AEAD operation limits per key (see draft-irtf-cfrg-aead-limits)
+- **Nonce Reuse Protection**: The context tracks used (groupId, objectId) pairs and throws on reuse
+- **Invocation Limit**: Contexts enforce a 2^32 encryption limit per key; rotate keys before exhaustion
 - **Constant Time**: HMAC verification uses constant-time comparison
+- **Key Zeroization**: Intermediate key material is zeroed after import
 
 ## License
 
