@@ -664,8 +664,12 @@ export class MOQTSession {
       // alias_type 3 = USE_VALUE (inline token, no caching)
       let tokenBytes: Uint8Array;
       if (this.authTokenType === 0x63346d) {
-        // C4M: dot-separated base64url parts → reassemble as COSE_Sign1 CBOR
-        tokenBytes = coseSign1FromDotToken(this.authToken);
+        // C4M: base64url-encoded COSE_Sign1 CBOR (or legacy dot-separated)
+        if (this.authToken.includes('.')) {
+          tokenBytes = coseSign1FromDotToken(this.authToken);
+        } else {
+          tokenBytes = base64UrlDecodeToBytes(this.authToken);
+        }
       } else if (this.authTokenType === 0x0002 || this.authTokenType === 0xda7a) {
         tokenBytes = base64UrlDecodeToBytes(this.authToken);
       } else {

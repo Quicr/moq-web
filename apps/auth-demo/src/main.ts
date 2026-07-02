@@ -209,11 +209,26 @@ const COSE_ALG: Record<number, string> = { [-7]: 'ES256', [-35]: 'ES384', [-36]:
 
 function decodeC4mToken(token: string): DecodedToken | null {
   try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
+    let headerBytes: Uint8Array;
+    let payloadBytes: Uint8Array;
 
-    const headerBytes = base64UrlDecode(parts[0]);
-    const payloadBytes = base64UrlDecode(parts[1]);
+    if (token.includes('.')) {
+      // Legacy dot-separated format: base64url(header).base64url(payload).base64url(sig)
+      const parts = token.split('.');
+      if (parts.length !== 3) return null;
+      headerBytes = base64UrlDecode(parts[0]);
+      payloadBytes = base64UrlDecode(parts[1]);
+    } else {
+      // Standard COSE_Sign1: base64url(CBOR array [protected, unprotected, payload, sig])
+      const coseBytes = base64UrlDecode(token);
+      const cose = decodeCbor(coseBytes).value;
+      if (!Array.isArray(cose) || cose.length < 4) return null;
+      // cose[0] = protected header (bstr containing CBOR map)
+      // cose[2] = payload (bstr containing CBOR map)
+      if (!(cose[0] instanceof Uint8Array) || !(cose[2] instanceof Uint8Array)) return null;
+      headerBytes = cose[0];
+      payloadBytes = cose[2];
+    }
 
     const headerRaw = decodeCbor(headerBytes).value;
     const payloadRaw = decodeCbor(payloadBytes).value;
@@ -239,12 +254,10 @@ function decodeC4mToken(token: string): DecodedToken | null {
 
     // Extract scopes from moqt authorization claims (key varies)
     const scopes: string[] = [];
-    // Look for authorization data in non-standard claim keys
     for (const [, v] of Object.entries(payload)) {
       if (Array.isArray(v)) {
         for (const item of v) {
           if (item && typeof item === 'object') {
-            // Look for actions array or scope-like data
             for (const [, sv] of Object.entries(item as Record<string, any>)) {
               if (Array.isArray(sv)) {
                 for (const s of sv) {
