@@ -9,7 +9,8 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "noEmit": true
+    "noEmit": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"]
   },
   "include": ["src"]
 }

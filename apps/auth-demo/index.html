@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MoQ C4M Auth Debug Room</title>
+  <title>MoQ C4M Auth Demo</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -50,15 +50,8 @@
       z-index: 100;
     }
 
-    .header h1 {
-      font-size: 18px;
-      font-weight: 600;
-    }
-
-    .header .subtitle {
-      font-size: 12px;
-      color: var(--text-dim);
-    }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .header .subtitle { font-size: 12px; color: var(--text-dim); }
 
     .badge {
       display: inline-flex;
@@ -76,31 +69,41 @@
     .badge-red { background: var(--red-bg); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
     .badge-yellow { background: var(--yellow-bg); color: var(--yellow); border: 1px solid rgba(245,158,11,0.3); }
 
-    .layout {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1px;
-      background: var(--border);
-      min-height: calc(100vh - 60px);
+    .global-config {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
     }
 
-    @media (max-width: 1024px) {
-      .layout { grid-template-columns: 1fr; }
+    .global-config label { font-size: 12px; color: var(--text-dim); font-weight: 500; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      min-height: calc(100vh - 110px);
     }
+
+    @media (max-width: 1200px) { .layout { grid-template-columns: 1fr; } }
 
     .panel {
       background: var(--bg);
-      padding: 20px;
+      padding: 16px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 12px;
     }
 
     .panel-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
+      gap: 8px;
     }
 
     .panel-title {
@@ -111,10 +114,6 @@
       font-weight: 600;
     }
 
-    .panel-title .icon {
-      font-size: 18px;
-    }
-
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -123,54 +122,42 @@
     }
 
     .card-header {
-      padding: 12px 16px;
+      padding: 10px 14px;
       border-bottom: 1px solid var(--border);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.5px;
       color: var(--text-dim);
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
 
-    .card-body {
-      padding: 16px;
-    }
-
-    .config-row {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
+    .card-body { padding: 12px 14px; }
 
     input, select {
       background: var(--surface-2);
       border: 1px solid var(--border);
       color: var(--text);
-      padding: 8px 12px;
+      padding: 7px 10px;
       border-radius: var(--radius-sm);
-      font-size: 13px;
+      font-size: 12px;
       font-family: inherit;
       outline: none;
       transition: border-color 0.2s;
     }
 
-    input:focus, select:focus {
-      border-color: var(--accent);
-    }
-
-    input[type="text"] { flex: 1; min-width: 200px; }
+    input:focus, select:focus { border-color: var(--accent); }
+    input[type="text"] { flex: 1; min-width: 120px; }
 
     button {
       background: var(--accent);
       color: white;
       border: none;
-      padding: 8px 16px;
+      padding: 7px 14px;
       border-radius: var(--radius-sm);
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 500;
       cursor: pointer;
       transition: background 0.2s;
@@ -180,17 +167,14 @@
 
     button:hover { background: var(--accent-dim); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-
     button.btn-green { background: var(--green); }
     button.btn-green:hover { background: #059669; }
     button.btn-red { background: var(--red); }
     button.btn-red:hover { background: #dc2626; }
-    button.btn-outline {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--text);
-    }
+    button.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
     button.btn-outline:hover { background: var(--surface-2); }
+
+    .config-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
     .video-container {
       position: relative;
@@ -215,75 +199,37 @@
       flex-direction: column;
       gap: 8px;
       background: rgba(0,0,0,0.7);
-      font-size: 13px;
+      font-size: 12px;
       color: var(--text-dim);
     }
 
-    .video-overlay .icon { font-size: 40px; }
+    .video-overlay .icon { font-size: 32px; }
     .video-overlay.hidden { display: none; }
 
-    .video-status {
-      position: absolute;
-      top: 8px;
-      left: 8px;
-      display: flex;
-      gap: 6px;
-    }
-
-    .token-inspector {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11px;
-      line-height: 1.6;
-      max-height: 200px;
-      overflow-y: auto;
-      padding: 12px;
-      background: var(--surface-2);
-      border-radius: var(--radius-sm);
-    }
-
-    .token-part {
-      margin-bottom: 8px;
-    }
-
-    .token-label {
-      color: var(--text-dim);
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 2px;
-    }
-
-    .token-value {
-      color: var(--text);
-      word-break: break-all;
-    }
-
-    .token-value .key { color: var(--blue); }
-    .token-value .string { color: var(--green); }
-    .token-value .number { color: var(--yellow); }
-    .token-value .expired { color: var(--red); text-decoration: line-through; }
+    .video-status { position: absolute; top: 6px; left: 6px; display: flex; gap: 4px; }
 
     .timeline {
+      max-height: 200px;
+      overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 0;
     }
 
     .timeline-event {
       display: flex;
       align-items: flex-start;
-      gap: 12px;
-      padding: 8px 0;
-      font-size: 12px;
+      gap: 8px;
+      padding: 5px 0;
+      font-size: 11px;
       position: relative;
     }
 
     .timeline-event::before {
       content: '';
       position: absolute;
-      left: 9px;
-      top: 26px;
-      bottom: -8px;
+      left: 8px;
+      top: 22px;
+      bottom: -5px;
       width: 1px;
       background: var(--border);
     }
@@ -291,14 +237,13 @@
     .timeline-event:last-child::before { display: none; }
 
     .timeline-dot {
-      width: 20px;
-      height: 20px;
+      width: 17px;
+      height: 17px;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
-      font-size: 10px;
     }
 
     .timeline-dot.send { background: var(--accent); color: white; }
@@ -307,161 +252,110 @@
     .timeline-dot.wait { background: var(--yellow); color: white; }
 
     .timeline-content { flex: 1; }
-    .timeline-label { font-weight: 500; }
-    .timeline-detail { color: var(--text-dim); margin-top: 2px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
-    .timeline-time { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+    .timeline-label { font-weight: 500; font-size: 11px; }
+    .timeline-detail { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 10px; margin-top: 1px; }
+    .timeline-time { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 9px; }
 
-    .error-box {
-      background: var(--red-bg);
-      border: 1px solid rgba(239,68,68,0.3);
-      border-radius: var(--radius-sm);
-      padding: 12px;
-      font-size: 12px;
-      color: var(--red);
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-    }
-
-    .error-box .icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
-
-    .success-box {
-      background: var(--green-bg);
-      border: 1px solid rgba(16,185,129,0.3);
-      border-radius: var(--radius-sm);
-      padding: 12px;
-      font-size: 12px;
-      color: var(--green);
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-    }
-
-    .success-box .icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
-
-    .status-line {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      padding: 8px 12px;
+    .token-inspector {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      line-height: 1.5;
+      max-height: 140px;
+      overflow-y: auto;
+      padding: 8px;
       background: var(--surface-2);
       border-radius: var(--radius-sm);
     }
 
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-
-    .status-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-    .status-dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
-    .status-dot.yellow { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
-    .status-dot.gray { background: var(--text-dim); }
-
-    .global-config {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 12px 24px;
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-
-    .global-config label {
-      font-size: 12px;
-      color: var(--text-dim);
-      font-weight: 500;
-    }
+    .token-part { margin-bottom: 6px; }
+    .token-label { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 1px; }
+    .token-value { color: var(--text); word-break: break-all; }
+    .token-value .key { color: var(--blue); }
+    .token-value .string { color: var(--green); }
+    .token-value .number { color: var(--yellow); }
 
     .token-raw {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 10px;
+      font-size: 9px;
       word-break: break-all;
       color: var(--text-dim);
-      padding: 8px;
+      padding: 6px;
       background: var(--bg);
       border-radius: 4px;
-      max-height: 60px;
+      max-height: 40px;
       overflow-y: auto;
-      margin-top: 8px;
+      margin-top: 4px;
     }
 
     .scope-chip {
       display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 2px 8px;
+      padding: 1px 6px;
       border-radius: 4px;
-      font-size: 10px;
+      font-size: 9px;
       font-family: 'JetBrains Mono', monospace;
       background: var(--surface-2);
       border: 1px solid var(--border);
-      margin: 2px;
+      margin: 1px;
     }
 
     .scope-chip.publish { border-color: rgba(99,102,241,0.5); color: var(--accent); }
     .scope-chip.subscribe { border-color: rgba(16,185,129,0.5); color: var(--green); }
+
+    .status-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 6px 10px;
+      background: var(--surface-2);
+      border-radius: var(--radius-sm);
+    }
+
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .status-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
   </style>
 </head>
 <body>
   <header class="header">
     <span class="material-icons-outlined" style="color: var(--accent)">shield</span>
     <div>
-      <h1>MoQ C4M Auth Debug Room</h1>
-      <div class="subtitle">Common Access Token authorization — success vs. denial with live video</div>
+      <h1>MoQ C4M Auth Demo</h1>
+      <div class="subtitle">3 users: Publisher + Authorized Subscriber + Denied Subscriber</div>
     </div>
   </header>
 
   <div class="global-config">
     <label>Relay:</label>
-    <input type="text" id="relay-url" value="https://suhas-build-vm.akaleapi.net:443/moq-relay" style="width: 340px">
+    <input type="text" id="relay-url" value="https://suhas-build-vm.akaleapi.net:443/moq-relay" style="width: 300px">
     <label>Token Service:</label>
-    <input type="text" id="token-service-url" value="https://api.mocha-net.dev/v1" style="width: 240px">
+    <input type="text" id="token-service-url" value="https://api.mocha-net.dev/v1" style="width: 200px">
     <label>Room:</label>
-    <input type="text" id="room-id" value="auth-demo" style="width: 120px">
+    <input type="text" id="room-id" value="auth-demo" style="width: 100px">
   </div>
 
   <div class="layout">
-    <!-- LEFT: Authorized User -->
-    <div class="panel" id="panel-authorized">
+    <!-- Panel 1: Publisher -->
+    <div class="panel">
       <div class="panel-header">
         <div class="panel-title">
-          <span class="material-icons-outlined icon" style="color: var(--green)">verified_user</span>
-          User A — Authorized (IDP)
+          <span class="material-icons-outlined" style="color: var(--accent); font-size:18px">upload</span>
+          Publisher (IDP Authorized)
         </div>
-        <span class="badge badge-green" id="status-a">DISCONNECTED</span>
+        <span class="badge badge-yellow" id="status-pub">IDLE</span>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">login</span>
-          Identity Provider
+          <span class="material-icons-outlined" style="font-size:13px">login</span>
+          Google Sign-In
         </div>
         <div class="card-body">
-          <div id="google-signin-container">
-            <div id="g_id_onload"
-              data-client_id="671105403127-u8qe711ovdobtgh2hsfb91u6m7k3qgu9.apps.googleusercontent.com"
-              data-callback="handleGoogleCredential"
-              data-auto_prompt="false">
-            </div>
-            <div class="g_id_signin"
-              data-type="standard"
-              data-shape="rectangular"
-              data-theme="filled_black"
-              data-text="signin_with"
-              data-size="large"
-              data-logo_alignment="left">
-            </div>
-          </div>
-          <div id="google-user-info" style="display:none">
+          <div id="google-signin-pub"></div>
+          <div id="google-user-pub" style="display:none">
             <div class="status-line">
               <div class="status-dot green"></div>
-              <span id="google-user-name">Signed in</span>
-              <button class="btn-outline" id="btn-google-logout" style="margin-left:auto; padding:4px 10px; font-size:11px">Sign out</button>
+              <span id="google-name-pub">Signed in</span>
             </div>
           </div>
         </div>
@@ -469,140 +363,206 @@
 
       <div class="card">
         <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">key</span>
-          Token (C4M via moat)
+          <span class="material-icons-outlined" style="font-size:13px">videocam</span>
+          Video (Local Camera)
         </div>
+        <div class="card-body" style="padding: 6px">
+          <div class="video-container">
+            <video id="video-pub" autoplay playsinline muted></video>
+            <div class="video-overlay" id="overlay-pub">
+              <span class="material-icons-outlined icon">videocam_off</span>
+              <span>Not publishing</span>
+            </div>
+            <div class="video-status" id="video-status-pub"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-body">
           <div class="config-row">
-            <select id="token-mode-a">
-              <option value="real-pubsub">Mint Token (pub+sub)</option>
-              <option value="real-sub">Mint Token (sub only)</option>
-              <option value="real-pub">Mint Token (pub only)</option>
-              <option value="custom">Custom Token (paste)</option>
-            </select>
-            <button id="btn-get-token-a" class="btn-green">Mint Token</button>
-            <button id="btn-connect-a">Connect</button>
-            <button id="btn-disconnect-a" class="btn-outline" disabled>Disconnect</button>
-          </div>
-          <input type="text" id="custom-token-a" placeholder="Paste a custom token here..." style="display:none; margin-top: 8px; width: 100%">
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">videocam</span>
-          Video
-        </div>
-        <div class="card-body" style="padding: 8px">
-          <div class="video-container">
-            <video id="video-a" autoplay playsinline muted></video>
-            <div class="video-overlay" id="video-overlay-a">
-              <span class="material-icons-outlined icon">videocam_off</span>
-              <span>Camera inactive</span>
-            </div>
-            <div class="video-status" id="video-status-a"></div>
+            <button id="btn-publish" class="btn-green" disabled>Publish Video</button>
+            <button id="btn-stop-pub" class="btn-outline" disabled>Stop</button>
           </div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">token</span>
-          Token Inspector
+          <span class="material-icons-outlined" style="font-size:13px">timeline</span>
+          Timeline
         </div>
         <div class="card-body">
-          <div class="token-inspector" id="token-inspector-a">
-            <div style="color: var(--text-dim)">No token yet — click "Get Token"</div>
-          </div>
+          <div class="timeline" id="timeline-pub"></div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">timeline</span>
-          Connection Timeline
+          <span class="material-icons-outlined" style="font-size:13px">token</span>
+          Token
         </div>
         <div class="card-body">
-          <div class="timeline" id="timeline-a"></div>
+          <div class="token-inspector" id="token-pub">
+            <span style="color:var(--text-dim)">Sign in to mint token</span>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- RIGHT: Denied User -->
-    <div class="panel" id="panel-denied">
+    <!-- Panel 2: Authorized Subscriber -->
+    <div class="panel">
       <div class="panel-header">
         <div class="panel-title">
-          <span class="material-icons-outlined icon" style="color: var(--red)">gpp_bad</span>
-          User B — Denied
+          <span class="material-icons-outlined" style="color: var(--green); font-size:18px">download</span>
+          Subscriber (IDP Authorized)
         </div>
-        <span class="badge badge-red" id="status-b">DISCONNECTED</span>
+        <span class="badge badge-yellow" id="status-sub">IDLE</span>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">key</span>
-          Token Configuration
+          <span class="material-icons-outlined" style="font-size:13px">login</span>
+          Google Sign-In
+        </div>
+        <div class="card-body">
+          <div id="google-signin-sub"></div>
+          <div id="google-user-sub" style="display:none">
+            <div class="status-line">
+              <div class="status-dot green"></div>
+              <span id="google-name-sub">Signed in</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="material-icons-outlined" style="font-size:13px">live_tv</span>
+          Video (From Relay)
+        </div>
+        <div class="card-body" style="padding: 6px">
+          <div class="video-container">
+            <video id="video-sub" autoplay playsinline></video>
+            <div class="video-overlay" id="overlay-sub">
+              <span class="material-icons-outlined icon">tv_off</span>
+              <span>Not subscribed</span>
+            </div>
+            <div class="video-status" id="video-status-sub"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-body">
+          <div class="config-row">
+            <button id="btn-subscribe" class="btn-green" disabled>Subscribe</button>
+            <button id="btn-stop-sub" class="btn-outline" disabled>Stop</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="material-icons-outlined" style="font-size:13px">timeline</span>
+          Timeline
+        </div>
+        <div class="card-body">
+          <div class="timeline" id="timeline-sub"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="material-icons-outlined" style="font-size:13px">token</span>
+          Token
+        </div>
+        <div class="card-body">
+          <div class="token-inspector" id="token-sub">
+            <span style="color:var(--text-dim)">Sign in to mint token</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel 3: Denied Subscriber -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="material-icons-outlined" style="color: var(--red); font-size:18px">block</span>
+          Subscriber (DENIED)
+        </div>
+        <span class="badge badge-yellow" id="status-denied">IDLE</span>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="material-icons-outlined" style="font-size:13px">warning</span>
+          Invalid Token Mode
         </div>
         <div class="card-body">
           <div class="config-row">
-            <select id="token-mode-b">
-              <option value="expired">Expired Token (exp in past)</option>
-              <option value="bad-sig">Bad Signature (invalid ES256)</option>
-              <option value="wrong-scope">Wrong Scope (wrong namespace)</option>
-              <option value="guest">Guest Token (no IDP)</option>
-              <option value="garbage">Garbage Token</option>
+            <select id="denied-mode">
+              <option value="wrong-scope">Wrong Scope (different room)</option>
+              <option value="expired">Expired Token</option>
+              <option value="bad-sig">Bad Signature</option>
               <option value="no-token">No Token</option>
-              <option value="custom">Custom Token (paste)</option>
+              <option value="guest">Guest (no IDP)</option>
             </select>
-            <button id="btn-get-token-b" class="btn-red">Get Token</button>
-            <button id="btn-connect-b">Connect</button>
-            <button id="btn-disconnect-b" class="btn-outline" disabled>Disconnect</button>
           </div>
-          <input type="text" id="custom-token-b" placeholder="Paste a custom token here..." style="display:none; margin-top: 8px; width: 100%">
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">videocam</span>
-          Video
+          <span class="material-icons-outlined" style="font-size:13px">live_tv</span>
+          Video (From Relay)
         </div>
-        <div class="card-body" style="padding: 8px">
+        <div class="card-body" style="padding: 6px">
           <div class="video-container">
-            <video id="video-b" autoplay playsinline muted></video>
-            <div class="video-overlay" id="video-overlay-b">
-              <span class="material-icons-outlined icon">videocam_off</span>
-              <span>Camera inactive</span>
+            <video id="video-denied" autoplay playsinline></video>
+            <div class="video-overlay" id="overlay-denied">
+              <span class="material-icons-outlined icon">tv_off</span>
+              <span>Not subscribed</span>
             </div>
-            <div class="video-status" id="video-status-b"></div>
+            <div class="video-status" id="video-status-denied"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-body">
+          <div class="config-row">
+            <button id="btn-subscribe-denied" class="btn-red">Try Subscribe</button>
+            <button id="btn-stop-denied" class="btn-outline" disabled>Stop</button>
           </div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">token</span>
-          Token Inspector
+          <span class="material-icons-outlined" style="font-size:13px">timeline</span>
+          Timeline
         </div>
         <div class="card-body">
-          <div class="token-inspector" id="token-inspector-b">
-            <div style="color: var(--text-dim)">No token yet — click "Get Token"</div>
-          </div>
+          <div class="timeline" id="timeline-denied"></div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:14px">timeline</span>
-          Connection Timeline
+          <span class="material-icons-outlined" style="font-size:13px">token</span>
+          Token
         </div>
         <div class="card-body">
-          <div class="timeline" id="timeline-b"></div>
+          <div class="token-inspector" id="token-denied">
+            <span style="color:var(--text-dim)">Select mode and click "Try Subscribe"</span>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <script type="module" src="/src/main.ts"></script>
+  <script type="module" src="./src/main.ts"></script>
 </body>
 </html>

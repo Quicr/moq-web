@@ -40,6 +40,16 @@ importers:
         version: 8.56.0(eslint@10.0.1(jiti@1.21.7))(typescript@5.9.3)
 
   apps/auth-demo:
+    dependencies:
+      '@web-moq/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@web-moq/media':
+        specifier: workspace:*
+        version: link:../../packages/media
+      '@web-moq/session':
+        specifier: workspace:*
+        version: link:../../packages/session
     devDependencies:
       '@vitejs/plugin-basic-ssl':
         specifier: 2.1.4

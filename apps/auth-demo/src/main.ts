@@ -1,35 +1,18 @@
 /**
- * MoQ C4M Auth Debug Room
+ * MoQ C4M Auth Demo — 3 panels
  *
- * Demonstrates C4M authorization flows:
- * - Panel A: Google IDP sign-in → moat session → ES256-signed C4M token → relay accepts
- * - Panel B: Invalid tokens (expired, bad-sig, wrong-scope, guest) → relay denies
+ * 1. Publisher: Google IDP → moat token (publish scope) → publishes video via relay
+ * 2. Authorized Subscriber: Google IDP → moat token (subscribe scope) → subscribes OK
+ * 3. Denied Subscriber: Invalid token → relay rejects subscribe
  */
+
+import { MOQTransport } from '@web-moq/core';
+import { MOQTSession } from '@web-moq/session';
+import { MediaSession, type MediaConfig } from '@web-moq/media';
 
 // ============================================================================
 // Types
 // ============================================================================
-
-interface PanelState {
-  id: 'a' | 'b';
-  token: string | null;
-  tokenDecoded: DecodedToken | null;
-  transport: WebTransport | null;
-  stream: MediaStream | null;
-  timeline: TimelineEvent[];
-  status: 'disconnected' | 'connecting' | 'connected' | 'denied' | 'error';
-}
-
-interface DecodedToken {
-  raw: string;
-  header: Record<string, unknown>;
-  payload: Record<string, unknown>;
-  signature: string;
-  isExpired: boolean;
-  expiresAt: Date | null;
-  issuedAt: Date | null;
-  scopes: string[];
-}
 
 interface TimelineEvent {
   time: Date;
@@ -38,24 +21,39 @@ interface TimelineEvent {
   detail?: string;
 }
 
-interface GoogleUser {
-  name: string;
-  email: string;
-  picture: string;
-  idToken: string;
+interface DecodedToken {
+  header: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  raw: string;
+  scopes: string[];
+  isExpired: boolean;
 }
+
+// ============================================================================
+// Config
+// ============================================================================
+
+const GOOGLE_CLIENT_ID = '671105403127-u8qe711ovdobtgh2hsfb91u6m7k3qgu9.apps.googleusercontent.com';
+
+const MEDIA_CONFIG: MediaConfig = {
+  videoBitrate: 1_500_000,
+  audioBitrate: 64_000,
+  videoResolution: '480p',
+  keyframeInterval: 2,
+  deliveryTimeout: 5000,
+  deliveryMode: 'stream',
+  audioEnabled: false,
+};
 
 // ============================================================================
 // State
 // ============================================================================
 
-const panels: Record<string, PanelState> = {
-  a: { id: 'a', token: null, tokenDecoded: null, transport: null, stream: null, timeline: [], status: 'disconnected' },
-  b: { id: 'b', token: null, tokenDecoded: null, transport: null, stream: null, timeline: [], status: 'disconnected' },
-};
+let pubMoatSession: string | null = null;
+let subMoatSession: string | null = null;
 
-let googleUser: GoogleUser | null = null;
-let moatSessionToken: string | null = null;
+let pubMediaSession: MediaSession | null = null;
+let subMediaSession: MediaSession | null = null;
 
 // ============================================================================
 // DOM Helpers
@@ -77,615 +75,533 @@ function getRoomId(): string {
   return (document.getElementById('room-id') as HTMLInputElement).value.trim();
 }
 
+function getNamespace(): string[] {
+  return ['mocha', getRoomId()];
+}
+
 // ============================================================================
-// Google Sign-In
+// Timeline
 // ============================================================================
 
-// Expose globally for Google's callback
-(window as any).handleGoogleCredential = function (response: any) {
-  const idToken = response.credential;
-  const payload = JSON.parse(atob(idToken.split('.')[1]));
-
-  googleUser = {
-    name: payload.name || payload.email,
-    email: payload.email,
-    picture: payload.picture || '',
-    idToken,
+function addEvent(panelId: string, ev: TimelineEvent) {
+  const el = $(`timeline-${panelId}`);
+  const timeStr = ev.time.toLocaleTimeString('en-US', {
+    hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+    fractionalSecondDigits: 3,
+  } as Intl.DateTimeFormatOptions);
+  const icons: Record<string, string> = {
+    send: 'arrow_upward', recv: 'arrow_downward', error: 'close', wait: 'hourglass_empty',
   };
-
-  // Exchange Google ID token for moat session
-  exchangeGoogleForMoatSession(idToken);
-};
-
-async function exchangeGoogleForMoatSession(idToken: string) {
-  const baseUrl = getTokenServiceUrl();
-  const panel = panels.a;
-
-  addTimelineEvent(panel, { time: new Date(), type: 'send', label: 'Google → moat', detail: `POST ${baseUrl}/auth/google` });
-
-  try {
-    const res = await fetch(`${baseUrl}/auth/google`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${idToken}`,
-      },
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`moat Google login failed: ${res.status} ${text}`);
-    }
-
-    const data = await res.json();
-    moatSessionToken = data.session_token;
-
-    addTimelineEvent(panel, {
-      time: new Date(),
-      type: 'recv',
-      label: 'moat session OK',
-      detail: `user_id=${data.user_id}, provider=google`,
-    });
-
-    // Update UI
-    $('google-signin-container').style.display = 'none';
-    $('google-user-info').style.display = 'block';
-    $('google-user-name').textContent = `${googleUser!.name} (${googleUser!.email})`;
-  } catch (err: any) {
-    addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Google login failed', detail: err.message });
-    moatSessionToken = null;
-  }
+  const html = `
+    <div class="timeline-event">
+      <div class="timeline-dot ${ev.type}">
+        <span class="material-icons-outlined" style="font-size:9px">${icons[ev.type]}</span>
+      </div>
+      <div class="timeline-content">
+        <div class="timeline-label">${ev.label}</div>
+        ${ev.detail ? `<div class="timeline-detail">${escapeHtml(ev.detail)}</div>` : ''}
+      </div>
+      <div class="timeline-time">${timeStr}</div>
+    </div>`;
+  el.insertAdjacentHTML('beforeend', html);
+  el.scrollTop = el.scrollHeight;
 }
 
-function googleLogout() {
-  googleUser = null;
-  moatSessionToken = null;
-  $('google-signin-container').style.display = 'block';
-  $('google-user-info').style.display = 'none';
-  panels.a.timeline = [];
-  renderTimeline(panels.a);
+function setStatus(panelId: string, text: string, cls: string) {
+  const el = $(`status-${panelId}`);
+  el.textContent = text;
+  el.className = `badge badge-${cls}`;
 }
 
 // ============================================================================
-// Token Operations
+// Token helpers
 // ============================================================================
 
-function decodeJwtLike(token: string): DecodedToken | null {
+function decodeJwt(token: string): DecodedToken | null {
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
-
     const header = JSON.parse(atob(parts[0].replace(/-/g, '+').replace(/_/g, '/')));
     const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-    const signature = parts[2];
-
     const exp = payload.exp ? new Date(payload.exp * 1000) : null;
-    const iat = payload.iat ? new Date(payload.iat * 1000) : null;
     const isExpired = exp ? exp < new Date() : false;
-
     const scopes: string[] = [];
     if (payload.moqt && Array.isArray(payload.moqt)) {
       for (const scope of payload.moqt) {
-        if (scope.actions) {
-          scopes.push(...scope.actions.map((a: string) => a));
-        }
+        if (scope.actions) scopes.push(...scope.actions);
       }
     }
-    if (payload.scopes) {
-      scopes.push(...payload.scopes);
-    }
-
-    return { raw: token, header, payload, signature, isExpired, expiresAt: exp, issuedAt: iat, scopes };
+    return { header, payload, raw: token, scopes, isExpired };
   } catch {
     return null;
   }
 }
 
-function generateMockExpiredToken(): string {
-  const header = { alg: 'HS256', typ: 'CAT' };
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: 'moat-demo',
-    aud: ['moq-relay'],
-    sub: 'demo-user-expired',
-    iat: now - 7200,
-    exp: now - 3600,
-    moqt: [{ actions: ['publish', 'subscribe'], namespace: `mocha/${getRoomId()}` }],
-  };
-  return encodeFakeJwt(header, payload);
-}
-
-function generateBadSignatureToken(): string {
-  const header = { alg: 'ES256', typ: 'CAT' };
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: 'https://api.mocha-net.dev',
-    aud: ['moq-relay'],
-    sub: 'demo-user-badsig',
-    iat: now,
-    exp: now + 3600,
-    moqt: [{ actions: ['publish', 'subscribe'], namespace: `mocha/${getRoomId()}` }],
-  };
-  const h = btoa(JSON.stringify(header)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const p = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const sig = 'INVALID_SIGNATURE_AAABBBCCC111222333_NOT_ES256';
-  return `${h}.${p}.${sig}`;
-}
-
-function generateWrongScopeToken(): string {
-  const header = { alg: 'HS256', typ: 'CAT' };
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: 'moat-demo',
-    aud: ['moq-relay'],
-    sub: 'demo-user-wrongscope',
-    iat: now,
-    exp: now + 3600,
-    moqt: [{ actions: ['subscribe'], namespace: `mocha/wrong-room-xyz` }],
-  };
-  return encodeFakeJwt(header, payload);
-}
-
-function generateGuestToken(): string {
-  const header = { alg: 'HS256', typ: 'CAT' };
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: 'moat-anonymous',
-    aud: ['moq-relay'],
-    sub: `guest-${Date.now().toString(36)}`,
-    iat: now,
-    exp: now + 300,
-    moqt: [{ actions: ['subscribe'], namespace: `mocha/${getRoomId()}` }],
-  };
-  return encodeFakeJwt(header, payload);
-}
-
-function encodeFakeJwt(header: object, payload: object): string {
-  const h = btoa(JSON.stringify(header)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const p = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const fakeBytes = new Uint8Array(32);
-  crypto.getRandomValues(fakeBytes);
-  const sig = btoa(String.fromCharCode(...fakeBytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  return `${h}.${p}.${sig}`;
-}
-
-async function ensureRoomExists(roomId: string): Promise<void> {
-  const baseUrl = getTokenServiceUrl();
-  const res = await fetch(`${baseUrl}/rooms`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: roomId,
-      namespace_prefix: `mocha/${roomId}`,
-      visibility: 'public',
-    }),
-  });
-  // 409 = already exists, which is fine
-  if (!res.ok && res.status !== 409) {
-    const text = await res.text();
-    throw new Error(`Room creation failed: ${res.status} ${text}`);
-  }
-}
-
-async function mintMoatToken(role: 'publisher' | 'subscriber' | 'pubsub'): Promise<string> {
-  if (!moatSessionToken) {
-    throw new Error('Sign in with Google first to get a moat session');
-  }
-
-  const baseUrl = getTokenServiceUrl();
-  const roomId = getRoomId();
-
-  await ensureRoomExists(roomId);
-
-  const res = await fetch(`${baseUrl}/token`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${moatSessionToken}`,
-    },
-    body: JSON.stringify({ room_id: roomId, role: role === 'pubsub' ? undefined : role }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Token mint failed: ${res.status} ${text}`);
-  }
-
-  const data = await res.json();
-  return data.token;
-}
-
-// ============================================================================
-// Timeline / UI Updates
-// ============================================================================
-
-function addTimelineEvent(panel: PanelState, event: TimelineEvent) {
-  panel.timeline.push(event);
-  renderTimeline(panel);
-}
-
-function renderTimeline(panel: PanelState) {
-  const el = $(`timeline-${panel.id}`);
-  el.innerHTML = panel.timeline.map(ev => {
-    const timeStr = ev.time.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 } as Intl.DateTimeFormatOptions);
-    return `
-      <div class="timeline-event">
-        <div class="timeline-dot ${ev.type}">
-          <span class="material-icons-outlined" style="font-size:10px">
-            ${ev.type === 'send' ? 'arrow_upward' : ev.type === 'recv' ? 'arrow_downward' : ev.type === 'error' ? 'close' : 'hourglass_empty'}
-          </span>
-        </div>
-        <div class="timeline-content">
-          <div class="timeline-label">${ev.label}</div>
-          ${ev.detail ? `<div class="timeline-detail">${escapeHtml(ev.detail)}</div>` : ''}
-        </div>
-        <div class="timeline-time">${timeStr}</div>
-      </div>
-    `;
-  }).join('');
-  el.scrollTop = el.scrollHeight;
-}
-
-function renderTokenInspector(panel: PanelState) {
-  const el = $(`token-inspector-${panel.id}`);
-
-  if (!panel.token) {
-    el.innerHTML = '<div style="color: var(--text-dim)">No token yet</div>';
-    return;
-  }
-
-  const decoded = panel.tokenDecoded;
+function renderToken(panelId: string, token: string) {
+  const el = $(`token-${panelId}`);
+  const decoded = decodeJwt(token);
   if (!decoded) {
-    el.innerHTML = `
-      <div class="token-part">
-        <div class="token-label">Raw Token (not decodable)</div>
-        <div class="token-raw">${escapeHtml(panel.token)}</div>
-      </div>
-    `;
+    el.innerHTML = `<div class="token-raw">${escapeHtml(token)}</div>`;
     return;
   }
-
-  const expClass = decoded.isExpired ? 'expired' : '';
-  const expLabel = decoded.isExpired ? ' (EXPIRED)' : '';
-
   el.innerHTML = `
     <div class="token-part">
-      <div class="token-label">Header</div>
-      <div class="token-value">${syntaxHighlight(decoded.header)}</div>
+      <div class="token-label">Algorithm</div>
+      <div class="token-value">${decoded.header.alg} ${decoded.header.alg === 'ES256' ? '(valid)' : '(invalid/fake)'}</div>
     </div>
     <div class="token-part">
-      <div class="token-label">Payload</div>
-      <div class="token-value">${syntaxHighlight(decoded.payload)}</div>
-    </div>
-    <div class="token-part">
-      <div class="token-label">Expiry</div>
-      <div class="token-value ${expClass}">
-        ${decoded.expiresAt ? decoded.expiresAt.toISOString() + expLabel : 'none'}
-      </div>
+      <div class="token-label">Subject</div>
+      <div class="token-value">${decoded.payload.sub || 'none'}</div>
     </div>
     <div class="token-part">
       <div class="token-label">Scopes</div>
-      <div>
-        ${decoded.scopes.length > 0
-          ? decoded.scopes.map(s => `<span class="scope-chip ${s.includes('pub') ? 'publish' : 'subscribe'}">${s}</span>`).join('')
-          : '<span style="color:var(--text-dim)">none</span>'
-        }
-      </div>
+      <div>${decoded.scopes.map(s => `<span class="scope-chip ${s.includes('pub') ? 'publish' : 'subscribe'}">${s}</span>`).join('')}</div>
     </div>
     <div class="token-part">
-      <div class="token-label">Signature Algorithm</div>
-      <div class="token-value">${decoded.header.alg || 'unknown'} ${decoded.header.alg === 'ES256' ? '<span style="color:var(--green)">(asymmetric - valid)</span>' : '<span style="color:var(--yellow)">(symmetric/fake)</span>'}</div>
+      <div class="token-label">Namespace</div>
+      <div class="token-value">${JSON.stringify((decoded.payload.moqt as any)?.[0]?.namespace || 'n/a')}</div>
     </div>
-    <div class="token-part">
-      <div class="token-label">Raw</div>
-      <div class="token-raw">${escapeHtml(decoded.raw)}</div>
-    </div>
+    <div class="token-raw">${escapeHtml(decoded.raw.slice(0, 80))}...</div>
   `;
 }
-
-function updateStatus(panel: PanelState) {
-  const el = $(`status-${panel.id}`);
-  const labels: Record<string, [string, string]> = {
-    disconnected: ['DISCONNECTED', 'badge-yellow'],
-    connecting: ['CONNECTING...', 'badge-yellow'],
-    connected: ['CONNECTED', 'badge-green'],
-    denied: ['DENIED', 'badge-red'],
-    error: ['ERROR', 'badge-red'],
-  };
-  const [text, cls] = labels[panel.status] || ['UNKNOWN', 'badge-yellow'];
-  el.textContent = text;
-  el.className = `badge ${cls}`;
-
-  const disconnBtn = $(`btn-disconnect-${panel.id}`) as HTMLButtonElement;
-  disconnBtn.disabled = panel.status !== 'connected' && panel.status !== 'connecting';
-}
-
-// ============================================================================
-// WebTransport Connection
-// ============================================================================
-
-async function connectToRelay(panel: PanelState) {
-  if (panel.token === null) {
-    addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'No token available', detail: 'Get a token first' });
-    return;
-  }
-
-  panel.status = 'connecting';
-  updateStatus(panel);
-
-  const relayUrl = getRelayUrl();
-
-  addTimelineEvent(panel, { time: new Date(), type: 'send', label: 'WebTransport CONNECT', detail: relayUrl });
-
-  try {
-    const url = panel.token
-      ? `${relayUrl}?token=${encodeURIComponent(panel.token)}`
-      : relayUrl;
-
-    addTimelineEvent(panel, { time: new Date(), type: 'wait', label: 'QUIC Handshake + TLS', detail: 'Establishing WebTransport session...' });
-
-    const transport = new WebTransport(url);
-    panel.transport = transport;
-
-    await transport.ready;
-
-    addTimelineEvent(panel, { time: new Date(), type: 'recv', label: 'WebTransport Ready', detail: 'QUIC connection established' });
-
-    addTimelineEvent(panel, { time: new Date(), type: 'send', label: 'CLIENT_SETUP', detail: `token_type=0x63346d (c4m), token=${panel.token ? panel.token.slice(0, 20) + '...' : 'none'}` });
-
-    panel.status = 'connected';
-    updateStatus(panel);
-    addTimelineEvent(panel, { time: new Date(), type: 'recv', label: 'SERVER_SETUP', detail: 'Session established - authorized' });
-
-    await startCamera(panel);
-
-    transport.closed.then((info) => {
-      addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Transport closed', detail: `reason: ${(info as any)?.reason || 'unknown'}, code: ${(info as any)?.closeCode || 'n/a'}` });
-      panel.status = 'disconnected';
-      updateStatus(panel);
-      stopCamera(panel);
-    }).catch((err) => {
-      addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Transport closed (error)', detail: err.message });
-      panel.status = 'error';
-      updateStatus(panel);
-      stopCamera(panel);
-    });
-
-  } catch (err: any) {
-    const msg = err.message || String(err);
-
-    if (msg.includes('403') || msg.includes('401') || msg.includes('denied') || msg.includes('unauthorized')) {
-      panel.status = 'denied';
-      addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Authorization DENIED', detail: msg });
-    } else if (msg.includes('close') || msg.includes('rejected')) {
-      panel.status = 'denied';
-      addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Connection Rejected', detail: `Relay refused connection: ${msg}` });
-    } else {
-      panel.status = 'error';
-      addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Connection Failed', detail: msg });
-    }
-
-    updateStatus(panel);
-  }
-}
-
-function disconnect(panel: PanelState) {
-  if (panel.transport) {
-    try {
-      panel.transport.close();
-    } catch { /* ignore */ }
-    panel.transport = null;
-  }
-  stopCamera(panel);
-  panel.status = 'disconnected';
-  updateStatus(panel);
-  addTimelineEvent(panel, { time: new Date(), type: 'send', label: 'Disconnected', detail: 'User initiated disconnect' });
-}
-
-// ============================================================================
-// Camera
-// ============================================================================
-
-async function startCamera(panel: PanelState) {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, facingMode: 'user' },
-      audio: true,
-    });
-    panel.stream = stream;
-
-    const video = $(`video-${panel.id}`) as HTMLVideoElement;
-    video.srcObject = stream;
-
-    const overlay = $(`video-overlay-${panel.id}`);
-    overlay.classList.add('hidden');
-
-    const statusEl = $(`video-status-${panel.id}`);
-    statusEl.innerHTML = '<span class="badge badge-green" style="font-size:9px">LIVE</span>';
-
-    addTimelineEvent(panel, { time: new Date(), type: 'recv', label: 'Camera started', detail: `${stream.getVideoTracks()[0]?.getSettings().width}x${stream.getVideoTracks()[0]?.getSettings().height}` });
-  } catch (err: any) {
-    addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Camera failed', detail: err.message });
-  }
-}
-
-function stopCamera(panel: PanelState) {
-  if (panel.stream) {
-    panel.stream.getTracks().forEach(t => t.stop());
-    panel.stream = null;
-  }
-  const video = $(`video-${panel.id}`) as HTMLVideoElement;
-  video.srcObject = null;
-  const overlay = $(`video-overlay-${panel.id}`);
-  overlay.classList.remove('hidden');
-  const statusEl = $(`video-status-${panel.id}`);
-  statusEl.innerHTML = '';
-}
-
-// ============================================================================
-// Utilities
-// ============================================================================
 
 function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function syntaxHighlight(obj: unknown): string {
-  const json = JSON.stringify(obj, null, 2);
-  return json.replace(/(".*?")(\s*:\s*)/g, '<span class="key">$1</span>$2')
-    .replace(/:\s*(".*?")/g, ': <span class="string">$1</span>')
-    .replace(/:\s*(\d+)/g, ': <span class="number">$1</span>')
-    .replace(/:\s*(true|false|null)/g, ': <span class="number">$1</span>');
+// ============================================================================
+// Moat API
+// ============================================================================
+
+async function moatGoogleLogin(idToken: string, panelId: string): Promise<string> {
+  const baseUrl = getTokenServiceUrl();
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'POST /auth/google', detail: 'Exchange Google ID token for moat session' });
+
+  const res = await fetch(`${baseUrl}/auth/google`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
+  });
+  if (!res.ok) throw new Error(`Google login failed: ${res.status}`);
+  const data = await res.json();
+
+  addEvent(panelId, { time: new Date(), type: 'recv', label: 'Session OK', detail: `user=${data.user_id}` });
+  return data.session_token;
+}
+
+async function ensureRoom(): Promise<void> {
+  const baseUrl = getTokenServiceUrl();
+  const roomId = getRoomId();
+  const res = await fetch(`${baseUrl}/rooms`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: roomId, namespace_prefix: `mocha/${roomId}`, visibility: 'public' }),
+  });
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`Room creation failed: ${res.status}`);
+  }
+}
+
+async function mintToken(sessionToken: string, role: string, panelId: string): Promise<string> {
+  const baseUrl = getTokenServiceUrl();
+  const roomId = getRoomId();
+
+  await ensureRoom();
+
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'POST /token', detail: `role=${role}, room=${roomId}` });
+
+  const res = await fetch(`${baseUrl}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionToken}` },
+    body: JSON.stringify({ room_id: roomId, role: role === 'pubsub' ? undefined : role }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Token mint failed: ${res.status} ${text}`);
+  }
+  const data = await res.json();
+
+  addEvent(panelId, { time: new Date(), type: 'recv', label: 'Token minted (ES256)', detail: `expires_at=${data.expires_at}` });
+  return data.token;
+}
+
+// ============================================================================
+// Fake token generators (for denied panel)
+// ============================================================================
+
+function generateInvalidToken(mode: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const roomId = getRoomId();
+
+  switch (mode) {
+    case 'wrong-scope': {
+      const header = { alg: 'ES256', typ: 'CAT' };
+      const payload = {
+        iss: 'https://api.mocha-net.dev', aud: ['moq-relay'], sub: 'wrong-scope-user',
+        iat: now, exp: now + 3600,
+        moqt: [{ actions: ['subscribe'], namespace: `mocha/WRONG-ROOM-${Date.now().toString(36)}` }],
+      };
+      return fakeJwt(header, payload);
+    }
+    case 'expired': {
+      const header = { alg: 'ES256', typ: 'CAT' };
+      const payload = {
+        iss: 'https://api.mocha-net.dev', aud: ['moq-relay'], sub: 'expired-user',
+        iat: now - 7200, exp: now - 3600,
+        moqt: [{ actions: ['subscribe'], namespace: `mocha/${roomId}` }],
+      };
+      return fakeJwt(header, payload);
+    }
+    case 'bad-sig': {
+      const header = { alg: 'ES256', typ: 'CAT' };
+      const payload = {
+        iss: 'https://api.mocha-net.dev', aud: ['moq-relay'], sub: 'badsig-user',
+        iat: now, exp: now + 3600,
+        moqt: [{ actions: ['subscribe'], namespace: `mocha/${roomId}` }],
+      };
+      const h = btoa(JSON.stringify(header)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+      const p = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+      return `${h}.${p}.INVALID_SIG_xxxxx`;
+    }
+    case 'guest': {
+      const header = { alg: 'HS256', typ: 'CAT' };
+      const payload = {
+        iss: 'anonymous', aud: ['moq-relay'], sub: `guest-${Date.now().toString(36)}`,
+        iat: now, exp: now + 300,
+        moqt: [{ actions: ['subscribe'], namespace: `mocha/${roomId}` }],
+      };
+      return fakeJwt(header, payload);
+    }
+    case 'no-token':
+    default:
+      return '';
+  }
+}
+
+function fakeJwt(header: object, payload: object): string {
+  const h = btoa(JSON.stringify(header)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const p = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const bytes = new Uint8Array(64);
+  crypto.getRandomValues(bytes);
+  const sig = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  return `${h}.${p}.${sig}`;
+}
+
+// ============================================================================
+// MOQT Connection
+// ============================================================================
+
+async function createMediaSession(token: string, panelId: string): Promise<MediaSession> {
+  const relayUrl = getRelayUrl();
+
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'WebTransport CONNECT', detail: relayUrl });
+
+  const transport = new MOQTransport();
+  await transport.connect(relayUrl);
+
+  addEvent(panelId, { time: new Date(), type: 'recv', label: 'WebTransport Ready' });
+
+  const session = new MOQTSession(transport);
+  if (token) {
+    session.setAuthToken(token, 0x63346d);
+  }
+
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'CLIENT_SETUP', detail: `token_type=0x63346d (c4m)` });
+
+  await session.setup();
+
+  addEvent(panelId, { time: new Date(), type: 'recv', label: 'SERVER_SETUP', detail: 'Authorized - session established' });
+
+  const mediaSession = new MediaSession({ session });
+  return mediaSession;
+}
+
+// ============================================================================
+// Publisher flow
+// ============================================================================
+
+async function startPublish() {
+  const panelId = 'pub';
+  try {
+    setStatus(panelId, 'CONNECTING', 'yellow');
+
+    const token = await mintToken(pubMoatSession!, 'publisher', panelId);
+    renderToken(panelId, token);
+
+    pubMediaSession = await createMediaSession(token, panelId);
+
+    // Get camera
+    addEvent(panelId, { time: new Date(), type: 'wait', label: 'getUserMedia', detail: 'Requesting camera...' });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480 },
+      audio: false,
+    });
+
+    const video = $('video-pub') as HTMLVideoElement;
+    video.srcObject = stream;
+    $('overlay-pub').classList.add('hidden');
+    $('video-status-pub').innerHTML = '<span class="badge badge-green" style="font-size:9px">PUBLISHING</span>';
+
+    // Publish via MOQT
+    const ns = getNamespace();
+    addEvent(panelId, { time: new Date(), type: 'send', label: 'PUBLISH', detail: `namespace=[${ns.join('/')}], track=video` });
+
+    await pubMediaSession.publish(ns, 'video', stream, MEDIA_CONFIG);
+
+    addEvent(panelId, { time: new Date(), type: 'recv', label: 'Publishing active', detail: 'Video flowing to relay' });
+    setStatus(panelId, 'PUBLISHING', 'green');
+
+    ($('btn-publish') as HTMLButtonElement).disabled = true;
+    ($('btn-stop-pub') as HTMLButtonElement).disabled = false;
+  } catch (err: any) {
+    addEvent(panelId, { time: new Date(), type: 'error', label: 'Publish failed', detail: err.message });
+    setStatus(panelId, 'ERROR', 'red');
+  }
+}
+
+async function stopPublish() {
+  if (pubMediaSession) {
+    await pubMediaSession.close();
+    pubMediaSession = null;
+  }
+  const video = $('video-pub') as HTMLVideoElement;
+  if (video.srcObject) {
+    (video.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+  $('overlay-pub').classList.remove('hidden');
+  $('video-status-pub').innerHTML = '';
+  setStatus('pub', 'IDLE', 'yellow');
+  ($('btn-publish') as HTMLButtonElement).disabled = false;
+  ($('btn-stop-pub') as HTMLButtonElement).disabled = true;
+  addEvent('pub', { time: new Date(), type: 'send', label: 'Stopped publishing' });
+}
+
+// ============================================================================
+// Authorized subscriber flow
+// ============================================================================
+
+async function startSubscribe() {
+  const panelId = 'sub';
+  try {
+    setStatus(panelId, 'CONNECTING', 'yellow');
+
+    const token = await mintToken(subMoatSession!, 'subscriber', panelId);
+    renderToken(panelId, token);
+
+    subMediaSession = await createMediaSession(token, panelId);
+
+    const ns = getNamespace();
+    addEvent(panelId, { time: new Date(), type: 'send', label: 'SUBSCRIBE', detail: `namespace=[${ns.join('/')}], track=video` });
+
+    const video = $('video-sub') as HTMLVideoElement;
+
+    subMediaSession.on('video-frame', ({ frame }: { subscriptionId: number; frame: VideoFrame }) => {
+      if (!video.srcObject) {
+        const generator = new MediaStreamTrackGenerator({ kind: 'video' });
+        const writable = generator.writable.getWriter();
+        video.srcObject = new MediaStream([generator]);
+        $('overlay-sub').classList.add('hidden');
+        $('video-status-sub').innerHTML = '<span class="badge badge-green" style="font-size:9px">RECEIVING</span>';
+        setStatus(panelId, 'SUBSCRIBED', 'green');
+        addEvent(panelId, { time: new Date(), type: 'recv', label: 'First frame received', detail: `${frame.displayWidth}x${frame.displayHeight}` });
+        (video as any)._frameWriter = writable;
+      }
+      (video as any)._frameWriter?.write(frame).catch(() => {});
+    });
+
+    await subMediaSession.subscribe(ns, 'video', MEDIA_CONFIG, 'video');
+
+    addEvent(panelId, { time: new Date(), type: 'recv', label: 'Subscribe accepted', detail: 'Waiting for video frames...' });
+
+    ($('btn-subscribe') as HTMLButtonElement).disabled = true;
+    ($('btn-stop-sub') as HTMLButtonElement).disabled = false;
+  } catch (err: any) {
+    addEvent(panelId, { time: new Date(), type: 'error', label: 'Subscribe failed', detail: err.message });
+    setStatus(panelId, 'ERROR', 'red');
+  }
+}
+
+async function stopSubscribe() {
+  if (subMediaSession) {
+    await subMediaSession.close();
+    subMediaSession = null;
+  }
+  const video = $('video-sub') as HTMLVideoElement;
+  video.srcObject = null;
+  (video as any)._frameWriter = null;
+  $('overlay-sub').classList.remove('hidden');
+  $('video-status-sub').innerHTML = '';
+  setStatus('sub', 'IDLE', 'yellow');
+  ($('btn-subscribe') as HTMLButtonElement).disabled = false;
+  ($('btn-stop-sub') as HTMLButtonElement).disabled = true;
+  addEvent('sub', { time: new Date(), type: 'send', label: 'Stopped subscribing' });
+}
+
+// ============================================================================
+// Denied subscriber flow
+// ============================================================================
+
+async function trySubscribeDenied() {
+  const panelId = 'denied';
+  const mode = (document.getElementById('denied-mode') as HTMLSelectElement).value;
+
+  try {
+    setStatus(panelId, 'CONNECTING', 'yellow');
+
+    const token = generateInvalidToken(mode);
+    if (token) {
+      renderToken(panelId, token);
+    } else {
+      $(`token-${panelId}`).innerHTML = '<span style="color:var(--red)">No token (empty)</span>';
+    }
+
+    addEvent(panelId, { time: new Date(), type: 'send', label: 'Using invalid token', detail: `mode=${mode}` });
+
+    // Try to connect with the invalid token
+    const relayUrl = getRelayUrl();
+    addEvent(panelId, { time: new Date(), type: 'send', label: 'WebTransport CONNECT', detail: relayUrl });
+
+    const transport = new MOQTransport();
+    await transport.connect(relayUrl);
+
+    addEvent(panelId, { time: new Date(), type: 'recv', label: 'WebTransport Ready', detail: 'QUIC connected (auth not checked yet)' });
+
+    const session = new MOQTSession(transport);
+    if (token) {
+      session.setAuthToken(token, 0x63346d);
+    }
+
+    addEvent(panelId, { time: new Date(), type: 'send', label: 'CLIENT_SETUP', detail: `token_type=0x63346d, token=${token ? token.slice(0, 20) + '...' : '(none)'}` });
+
+    await session.setup();
+
+    // If setup succeeds, try to subscribe — auth might be per-action
+    addEvent(panelId, { time: new Date(), type: 'wait', label: 'SERVER_SETUP received', detail: 'Trying SUBSCRIBE (relay may deny per-action)...' });
+
+    const ns = getNamespace();
+    addEvent(panelId, { time: new Date(), type: 'send', label: 'SUBSCRIBE', detail: `namespace=[${ns.join('/')}], track=video` });
+
+    const mediaSession = new MediaSession({ session });
+    await mediaSession.subscribe(ns, 'video', MEDIA_CONFIG, 'video');
+
+    // If we got here, the relay didn't deny (unexpected)
+    addEvent(panelId, { time: new Date(), type: 'recv', label: 'Subscribe accepted (!)', detail: 'Unexpected - relay should have denied' });
+    setStatus(panelId, 'UNEXPECTED', 'yellow');
+
+    await mediaSession.close();
+  } catch (err: any) {
+    const msg = err.message || String(err);
+    if (msg.includes('403') || msg.includes('401') || msg.includes('denied') || msg.includes('unauthorized') || msg.includes('Unauthorized') || msg.includes('error')) {
+      setStatus(panelId, 'DENIED', 'red');
+      addEvent(panelId, { time: new Date(), type: 'error', label: 'AUTHORIZATION DENIED', detail: msg });
+    } else if (msg.includes('close') || msg.includes('rejected') || msg.includes('session')) {
+      setStatus(panelId, 'DENIED', 'red');
+      addEvent(panelId, { time: new Date(), type: 'error', label: 'Connection rejected', detail: msg });
+    } else {
+      setStatus(panelId, 'ERROR', 'red');
+      addEvent(panelId, { time: new Date(), type: 'error', label: 'Failed', detail: msg });
+    }
+  }
+
+  ($('btn-stop-denied') as HTMLButtonElement).disabled = false;
+}
+
+function resetDenied() {
+  $('overlay-denied').classList.remove('hidden');
+  $('video-status-denied').innerHTML = '';
+  setStatus('denied', 'IDLE', 'yellow');
+  ($('btn-stop-denied') as HTMLButtonElement).disabled = true;
+  $('timeline-denied').innerHTML = '';
+  $('token-denied').innerHTML = '<span style="color:var(--text-dim)">Select mode and click "Try Subscribe"</span>';
+}
+
+// ============================================================================
+// Google Sign-In
+// ============================================================================
+
+function initGoogleSignIn() {
+  const initInterval = setInterval(() => {
+    if (!(window as any).google?.accounts?.id) return;
+    clearInterval(initInterval);
+
+    // Publisher sign-in
+    (window as any).google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: async (response: any) => {
+        try {
+          const idToken = response.credential;
+          const payload = JSON.parse(atob(idToken.split('.')[1]));
+          pubMoatSession = await moatGoogleLogin(idToken, 'pub');
+          $('google-signin-pub').style.display = 'none';
+          $('google-user-pub').style.display = 'block';
+          $('google-name-pub').textContent = payload.name || payload.email;
+          ($('btn-publish') as HTMLButtonElement).disabled = false;
+        } catch (err: any) {
+          addEvent('pub', { time: new Date(), type: 'error', label: 'Google login failed', detail: err.message });
+        }
+      },
+    });
+
+    (window as any).google.accounts.id.renderButton($('google-signin-pub'), {
+      theme: 'filled_black', size: 'medium', width: 220,
+    });
+
+    // For subscriber, we render a second button but reuse the same credential
+    // Google GSI only allows one initialize() call, so we'll use a prompt or manual trigger
+    const subBtn = document.createElement('button');
+    subBtn.className = 'btn-green';
+    subBtn.textContent = 'Sign in with Google';
+    subBtn.style.fontSize = '12px';
+    subBtn.addEventListener('click', () => {
+      (window as any).google.accounts.id.prompt((notification: any) => {
+        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+          // Prompt not shown — try using same session as publisher
+          if (pubMoatSession) {
+            subMoatSession = pubMoatSession;
+            $('google-signin-sub').style.display = 'none';
+            $('google-user-sub').style.display = 'block';
+            $('google-name-sub').textContent = $('google-name-pub').textContent + ' (shared)';
+            ($('btn-subscribe') as HTMLButtonElement).disabled = false;
+            addEvent('sub', { time: new Date(), type: 'recv', label: 'Using shared moat session' });
+          } else {
+            addEvent('sub', { time: new Date(), type: 'error', label: 'Sign in as publisher first' });
+          }
+        }
+      });
+    });
+    $('google-signin-sub').appendChild(subBtn);
+
+    // Also add a "use same session" shortcut
+    const shareBtn = document.createElement('button');
+    shareBtn.className = 'btn-outline';
+    shareBtn.textContent = 'Use Publisher Session';
+    shareBtn.style.fontSize = '11px';
+    shareBtn.style.marginLeft = '6px';
+    shareBtn.addEventListener('click', () => {
+      if (pubMoatSession) {
+        subMoatSession = pubMoatSession;
+        $('google-signin-sub').style.display = 'none';
+        $('google-user-sub').style.display = 'block';
+        $('google-name-sub').textContent = ($('google-name-pub').textContent || 'User') + ' (shared session)';
+        ($('btn-subscribe') as HTMLButtonElement).disabled = false;
+        addEvent('sub', { time: new Date(), type: 'recv', label: 'Reusing publisher moat session' });
+      } else {
+        addEvent('sub', { time: new Date(), type: 'error', label: 'Publisher not signed in yet' });
+      }
+    });
+    $('google-signin-sub').appendChild(shareBtn);
+  }, 200);
 }
 
 // ============================================================================
 // Event Wiring
 // ============================================================================
 
-function setupPanelA() {
-  const panel = panels.a;
+$('btn-publish').addEventListener('click', startPublish);
+$('btn-stop-pub').addEventListener('click', stopPublish);
+$('btn-subscribe').addEventListener('click', startSubscribe);
+$('btn-stop-sub').addEventListener('click', stopSubscribe);
+$('btn-subscribe-denied').addEventListener('click', trySubscribeDenied);
+$('btn-stop-denied').addEventListener('click', resetDenied);
 
-  const modeSelect = $('token-mode-a') as HTMLSelectElement;
-  const customInput = $('custom-token-a') as HTMLInputElement;
-
-  modeSelect.addEventListener('change', () => {
-    customInput.style.display = modeSelect.value === 'custom' ? 'block' : 'none';
-  });
-
-  // Google logout
-  $('btn-google-logout').addEventListener('click', googleLogout);
-
-  // Mint token (requires Google sign-in first)
-  $('btn-get-token-a').addEventListener('click', async () => {
-    const mode = modeSelect.value;
-
-    if (mode !== 'custom' && !moatSessionToken) {
-      addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Not signed in', detail: 'Sign in with Google to mint an ES256 C4M token from moat' });
-      return;
-    }
-
-    addTimelineEvent(panel, { time: new Date(), type: 'send', label: 'Token Mint Request', detail: `POST /token, mode=${mode}` });
-
-    try {
-      let token: string;
-
-      switch (mode) {
-        case 'real-pubsub':
-          token = await mintMoatToken('pubsub');
-          break;
-        case 'real-sub':
-          token = await mintMoatToken('subscriber');
-          break;
-        case 'real-pub':
-          token = await mintMoatToken('publisher');
-          break;
-        case 'custom':
-          token = customInput.value.trim();
-          break;
-        default:
-          token = '';
-      }
-
-      panel.token = token;
-      panel.tokenDecoded = token ? decodeJwtLike(token) : null;
-
-      addTimelineEvent(panel, {
-        time: new Date(),
-        type: 'recv',
-        label: 'Token Minted (ES256)',
-        detail: panel.tokenDecoded
-          ? `iss=${panel.tokenDecoded.payload.iss}, sub=${panel.tokenDecoded.payload.sub}, alg=${panel.tokenDecoded.header.alg}`
-          : token ? 'Not decodable' : 'Empty',
-      });
-
-      renderTokenInspector(panel);
-    } catch (err: any) {
-      addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Token Mint Error', detail: err.message });
-    }
-  });
-
-  $('btn-connect-a').addEventListener('click', () => connectToRelay(panel));
-  $('btn-disconnect-a').addEventListener('click', () => disconnect(panel));
-}
-
-function setupPanelB() {
-  const panel = panels.b;
-
-  const modeSelect = $('token-mode-b') as HTMLSelectElement;
-  const customInput = $('custom-token-b') as HTMLInputElement;
-
-  modeSelect.addEventListener('change', () => {
-    customInput.style.display = modeSelect.value === 'custom' ? 'block' : 'none';
-  });
-
-  $('btn-get-token-b').addEventListener('click', async () => {
-    const mode = modeSelect.value;
-    panel.timeline = [];
-    renderTimeline(panel);
-
-    addTimelineEvent(panel, { time: new Date(), type: 'send', label: 'Token Request', detail: `mode=${mode} (will be rejected by relay)` });
-
-    try {
-      let token: string;
-
-      switch (mode) {
-        case 'expired':
-          token = generateMockExpiredToken();
-          break;
-        case 'bad-sig':
-          token = generateBadSignatureToken();
-          break;
-        case 'wrong-scope':
-          token = generateWrongScopeToken();
-          break;
-        case 'guest':
-          token = generateGuestToken();
-          break;
-        case 'garbage':
-          token = 'this.is.not-a-valid-token-at-all-garbage-data';
-          break;
-        case 'no-token':
-          token = '';
-          break;
-        case 'custom':
-          token = customInput.value.trim();
-          break;
-        default:
-          token = '';
-      }
-
-      panel.token = token;
-      panel.tokenDecoded = token ? decodeJwtLike(token) : null;
-
-      const reason = {
-        'expired': 'Token exp claim is in the past',
-        'bad-sig': 'Signature does not verify with any known key',
-        'wrong-scope': 'Namespace scope does not match requested resource',
-        'guest': 'Guest/anonymous tokens are not accepted (no valid IDP session)',
-        'garbage': 'Not a valid JWT structure',
-        'no-token': 'No authorization token provided',
-      }[mode] || 'Unknown';
-
-      addTimelineEvent(panel, {
-        time: new Date(),
-        type: panel.tokenDecoded?.isExpired ? 'error' : 'recv',
-        label: 'Token Generated (Invalid)',
-        detail: `Reason relay will reject: ${reason}`,
-      });
-
-      renderTokenInspector(panel);
-    } catch (err: any) {
-      addTimelineEvent(panel, { time: new Date(), type: 'error', label: 'Token Error', detail: err.message });
-    }
-  });
-
-  $('btn-connect-b').addEventListener('click', () => connectToRelay(panel));
-  $('btn-disconnect-b').addEventListener('click', () => disconnect(panel));
-}
-
-// ============================================================================
-// Init
-// ============================================================================
-
-setupPanelA();
-setupPanelB();
+initGoogleSignIn();
