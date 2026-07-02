@@ -249,6 +249,24 @@ function encodeFakeJwt(header: object, payload: object): string {
   return `${h}.${p}.${sig}`;
 }
 
+async function ensureRoomExists(roomId: string): Promise<void> {
+  const baseUrl = getTokenServiceUrl();
+  const res = await fetch(`${baseUrl}/rooms`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: roomId,
+      namespace_prefix: `mocha/${roomId}`,
+      visibility: 'public',
+    }),
+  });
+  // 409 = already exists, which is fine
+  if (!res.ok && res.status !== 409) {
+    const text = await res.text();
+    throw new Error(`Room creation failed: ${res.status} ${text}`);
+  }
+}
+
 async function mintMoatToken(role: 'publisher' | 'subscriber' | 'pubsub'): Promise<string> {
   if (!moatSessionToken) {
     throw new Error('Sign in with Google first to get a moat session');
@@ -256,6 +274,8 @@ async function mintMoatToken(role: 'publisher' | 'subscriber' | 'pubsub'): Promi
 
   const baseUrl = getTokenServiceUrl();
   const roomId = getRoomId();
+
+  await ensureRoomExists(roomId);
 
   const res = await fetch(`${baseUrl}/token`, {
     method: 'POST',
