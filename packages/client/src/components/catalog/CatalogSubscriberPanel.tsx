@@ -300,7 +300,7 @@ export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
     });
 
     return unsubscribe;
-  }, [onVideoFrame]);
+  }, [onVideoFrame, session]);
 
   // Handle seek start - clear frame queues to prevent stale frames after seek
   useEffect(() => {
