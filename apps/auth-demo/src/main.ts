@@ -856,4 +856,25 @@ $('btn-stop-sub').addEventListener('click', stopSubscribe);
 $('btn-subscribe-denied').addEventListener('click', trySubscribeDenied);
 $('btn-stop-denied').addEventListener('click', resetDenied);
 
+$('btn-reset-all').addEventListener('click', async () => {
+  // Stop all sessions
+  await stopPublish();
+  await stopSubscribe();
+  resetDenied();
+
+  // Clear timelines and token inspectors
+  for (const p of ['pub', 'sub', 'denied']) {
+    $(`timeline-${p}`).innerHTML = '';
+    $(`token-${p}`).innerHTML = '<span style="color:var(--text-dim)">—</span>';
+  }
+
+  // Re-enable buttons
+  if (pubMoatSession) {
+    ($('btn-publish') as HTMLButtonElement).disabled = false;
+  }
+  if (subMoatSession) {
+    ($('btn-subscribe') as HTMLButtonElement).disabled = false;
+  }
+});
+
 initGoogleSignIn();
