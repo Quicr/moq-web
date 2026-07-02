@@ -48,8 +48,21 @@ jobs:
         env:
           BASE_URL: /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/
 
+      - name: Build auth-demo
+        run: |
+          if [ -d apps/auth-demo ]; then
+            cd apps/auth-demo
+            npm install
+            npx vite build --base /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/auth-demo/
+          fi
+
       - name: Save branch build
-        run: mkdir -p branch-build && mv packages/client/dist branch-build/${{ github.event.inputs.branch }}
+        run: |
+          mkdir -p branch-build
+          mv packages/client/dist branch-build/${{ github.event.inputs.branch }}
+          if [ -d apps/auth-demo/dist ]; then
+            mv apps/auth-demo/dist branch-build/${{ github.event.inputs.branch }}/auth-demo
+          fi
 
       - name: Checkout main for full build
         uses: actions/checkout@v4
