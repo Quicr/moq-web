@@ -2706,16 +2706,16 @@ function coseSign1FromDotToken(token: string): Uint8Array {
     }
   }
 
-  // COSE_Sign1 = CBOR Tag(18) [ bstr(protected), map(unprotected), bstr(payload), bstr(signature) ]
+  // COSE_Sign1 = [ bstr(protected), map(unprotected), bstr(payload), bstr(signature) ]
+  // No CBOR Tag(18) — catapult expects a bare array
   const bProtected = encodeBstr(protectedHeader);
   const bPayload = encodeBstr(payload);
   const bSignature = encodeBstr(signature);
   const emptyMap = new Uint8Array([0xa0]);
 
-  const totalLen = 2 + bProtected.length + emptyMap.length + bPayload.length + bSignature.length;
+  const totalLen = 1 + bProtected.length + emptyMap.length + bPayload.length + bSignature.length;
   const result = new Uint8Array(totalLen);
   let offset = 0;
-  result[offset++] = 0xd2; // Tag(18)
   result[offset++] = 0x84; // Array(4)
   result.set(bProtected, offset); offset += bProtected.length;
   result.set(emptyMap, offset); offset += emptyMap.length;
