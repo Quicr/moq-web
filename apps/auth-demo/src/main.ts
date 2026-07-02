@@ -312,6 +312,7 @@ function decodeJwt(token: string): DecodedToken | null {
 
 function renderToken(panelId: string, token: string) {
   const el = $(`token-${panelId}`);
+  el.style.display = '';
   // Try C4M (CBOR/CWT) first, then JWT
   const decoded = decodeC4mToken(token) || decodeJwt(token);
   if (!decoded) {
