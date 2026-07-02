@@ -264,6 +264,8 @@ export enum RequestParameter {
   DELIVERY_TIMEOUT = 0x02,
   /** Authorization token for the request */
   AUTHORIZATION_TOKEN = 0x03,
+  /** Max cache duration in ms — relay evicts objects after this time */
+  MAX_CACHE_DURATION = 0x04,
   /** Expires parameter */
   EXPIRES = 0x06,
   /** Largest object parameter */

@@ -91,6 +91,8 @@ export interface MediaConfig {
   keyframeInterval?: number;
   /** Delivery timeout in milliseconds (0 = drop immediately) */
   deliveryTimeout?: number;
+  /** Max cache duration in ms — relay evicts objects after this time */
+  maxCacheDuration?: number;
   /** Publisher priority (0 = highest, 255 = lowest) */
   priority?: number;
   /** Delivery mode: 'stream' for reliable ordered delivery, 'datagram' for low-latency unreliable */

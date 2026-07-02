@@ -413,6 +413,7 @@ export class MediaSession {
     const publishOptions: PublishOptions = {
       priority: config.priority ?? 128,
       deliveryTimeout: config.deliveryTimeout ?? 5000,
+      maxCacheDuration: config.maxCacheDuration,
       deliveryMode: config.deliveryMode ?? 'stream',
       audioDeliveryMode: config.audioDeliveryMode ?? 'datagram',
     };
