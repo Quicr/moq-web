@@ -533,8 +533,8 @@ function initGoogleSignIn() {
           const payload = JSON.parse(atob(idToken.split('.')[1]));
           pubMoatSession = await moatGoogleLogin(idToken, 'pub');
           $('google-signin-pub').style.display = 'none';
-          $('google-user-pub').style.display = 'block';
-          $('google-name-pub').textContent = payload.name || payload.email;
+          $('google-user-pub').style.display = 'flex';
+          $('google-user-pub').textContent = payload.name || payload.email;
           ($('btn-publish') as HTMLButtonElement).disabled = false;
         } catch (err: any) {
           addEvent('pub', { time: new Date(), type: 'error', label: 'Google login failed', detail: err.message });
@@ -559,8 +559,8 @@ function initGoogleSignIn() {
           if (pubMoatSession) {
             subMoatSession = pubMoatSession;
             $('google-signin-sub').style.display = 'none';
-            $('google-user-sub').style.display = 'block';
-            $('google-name-sub').textContent = $('google-name-pub').textContent + ' (shared)';
+            $('google-user-sub').style.display = 'flex';
+            $('google-user-sub').textContent = ($('google-user-pub').textContent || 'User') + ' (shared)';
             ($('btn-subscribe') as HTMLButtonElement).disabled = false;
             addEvent('sub', { time: new Date(), type: 'recv', label: 'Using shared moat session' });
           } else {
@@ -581,8 +581,8 @@ function initGoogleSignIn() {
       if (pubMoatSession) {
         subMoatSession = pubMoatSession;
         $('google-signin-sub').style.display = 'none';
-        $('google-user-sub').style.display = 'block';
-        $('google-name-sub').textContent = ($('google-name-pub').textContent || 'User') + ' (shared session)';
+        $('google-user-sub').style.display = 'flex';
+        $('google-user-sub').textContent = ($('google-user-pub').textContent || 'User') + ' (shared)';
         ($('btn-subscribe') as HTMLButtonElement).disabled = false;
         addEvent('sub', { time: new Date(), type: 'recv', label: 'Reusing publisher moat session' });
       } else {
@@ -592,6 +592,41 @@ function initGoogleSignIn() {
     $('google-signin-sub').appendChild(shareBtn);
   }, 200);
 }
+
+// ============================================================================
+// Panel Selection (detail area switching)
+// ============================================================================
+
+let selectedPanel = 'pub';
+
+function selectPanel(panelId: string) {
+  selectedPanel = panelId;
+
+  // Update panel borders
+  document.querySelectorAll('.video-panel').forEach(el => el.classList.remove('selected'));
+  $(`panel-${panelId}`).classList.add('selected');
+
+  // Show/hide timelines and tokens
+  const panels = ['pub', 'sub', 'denied'];
+  for (const p of panels) {
+    $(`timeline-${p}`).style.display = p === panelId ? 'flex' : 'none';
+    $(`token-${p}`).style.display = p === panelId ? 'block' : 'none';
+  }
+
+  // Update label
+  const labels: Record<string, string> = { pub: 'Publisher', sub: 'Subscriber', denied: 'Denied' };
+  $('detail-panel-label').textContent = labels[panelId] || '';
+}
+
+// Click handlers on panels
+document.querySelectorAll('.video-panel').forEach(el => {
+  el.addEventListener('click', (e) => {
+    // Don't select panel if user clicked a button/select/input inside
+    if ((e.target as HTMLElement).closest('button, select, input, .google-row')) return;
+    const panelId = (el as HTMLElement).dataset.panel!;
+    selectPanel(panelId);
+  });
+});
 
 // ============================================================================
 // Event Wiring

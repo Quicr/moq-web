@@ -24,8 +24,8 @@
       --yellow: #f59e0b;
       --yellow-bg: rgba(245, 158, 11, 0.1);
       --blue: #3b82f6;
-      --radius: 12px;
-      --radius-sm: 8px;
+      --radius: 10px;
+      --radius-sm: 6px;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -34,139 +34,66 @@
       font-family: 'Inter', -apple-system, sans-serif;
       background: var(--bg);
       color: var(--text);
-      min-height: 100vh;
-      overflow-x: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
 
     .header {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      padding: 16px 24px;
+      padding: 10px 20px;
       display: flex;
       align-items: center;
-      gap: 12px;
-      position: sticky;
-      top: 0;
-      z-index: 100;
+      gap: 10px;
+      flex-shrink: 0;
     }
 
-    .header h1 { font-size: 18px; font-weight: 600; }
-    .header .subtitle { font-size: 12px; color: var(--text-dim); }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 10px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .badge-green { background: var(--green-bg); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
-    .badge-red { background: var(--red-bg); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
-    .badge-yellow { background: var(--yellow-bg); color: var(--yellow); border: 1px solid rgba(245,158,11,0.3); }
+    .header h1 { font-size: 16px; font-weight: 600; }
+    .header .subtitle { font-size: 11px; color: var(--text-dim); }
 
     .global-config {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      padding: 12px 24px;
+      padding: 8px 20px;
       display: flex;
-      gap: 12px;
+      gap: 10px;
       align-items: center;
       flex-wrap: wrap;
+      flex-shrink: 0;
     }
 
-    .global-config label { font-size: 12px; color: var(--text-dim); font-weight: 500; }
-
-    .layout {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 1px;
-      background: var(--border);
-      min-height: calc(100vh - 110px);
-    }
-
-    @media (max-width: 1200px) { .layout { grid-template-columns: 1fr; } }
-
-    .panel {
-      background: var(--bg);
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .panel-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
-    .panel-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 14px;
-      font-weight: 600;
-    }
-
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-
-    .card-header {
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--border);
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-dim);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .card-body { padding: 12px 14px; }
+    .global-config label { font-size: 11px; color: var(--text-dim); font-weight: 500; }
 
     input, select {
       background: var(--surface-2);
       border: 1px solid var(--border);
       color: var(--text);
-      padding: 7px 10px;
+      padding: 5px 8px;
       border-radius: var(--radius-sm);
-      font-size: 12px;
+      font-size: 11px;
       font-family: inherit;
       outline: none;
-      transition: border-color 0.2s;
     }
 
     input:focus, select:focus { border-color: var(--accent); }
-    input[type="text"] { flex: 1; min-width: 120px; }
 
     button {
       background: var(--accent);
       color: white;
       border: none;
-      padding: 7px 14px;
+      padding: 6px 12px;
       border-radius: var(--radius-sm);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 500;
       cursor: pointer;
-      transition: background 0.2s;
       font-family: inherit;
       white-space: nowrap;
     }
 
     button:hover { background: var(--accent-dim); }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
     button.btn-green { background: var(--green); }
     button.btn-green:hover { background: #059669; }
     button.btn-red { background: var(--red); }
@@ -174,7 +101,53 @@
     button.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
     button.btn-outline:hover { background: var(--surface-2); }
 
-    .config-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .badge {
+      display: inline-flex;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .badge-green { background: var(--green-bg); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
+    .badge-red { background: var(--red-bg); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+    .badge-yellow { background: var(--yellow-bg); color: var(--yellow); border: 1px solid rgba(245,158,11,0.3); }
+
+    /* ---- Top row: 3 video panels ---- */
+    .video-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+
+    .video-panel {
+      background: var(--bg);
+      padding: 10px;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: border-color 0.2s;
+    }
+
+    .video-panel.selected { border-color: var(--accent); }
+
+    .video-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .video-panel-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
 
     .video-container {
       position: relative;
@@ -184,11 +157,7 @@
       aspect-ratio: 16/9;
     }
 
-    .video-container video {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
+    .video-container video { width: 100%; height: 100%; object-fit: cover; }
 
     .video-overlay {
       position: absolute;
@@ -197,48 +166,66 @@
       align-items: center;
       justify-content: center;
       flex-direction: column;
-      gap: 8px;
+      gap: 4px;
       background: rgba(0,0,0,0.7);
-      font-size: 12px;
+      font-size: 11px;
       color: var(--text-dim);
     }
 
-    .video-overlay .icon { font-size: 32px; }
+    .video-overlay .icon { font-size: 28px; }
     .video-overlay.hidden { display: none; }
+    .video-status { position: absolute; top: 4px; left: 4px; }
 
-    .video-status { position: absolute; top: 6px; left: 6px; display: flex; gap: 4px; }
-
-    .timeline {
-      max-height: 200px;
-      overflow-y: auto;
+    .video-controls {
       display: flex;
-      flex-direction: column;
+      gap: 6px;
+      align-items: center;
+      margin-top: 8px;
+      flex-wrap: wrap;
     }
+
+    /* ---- Bottom: detail area ---- */
+    .detail-area {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .detail-pane {
+      background: var(--bg);
+      padding: 12px 16px;
+      overflow-y: auto;
+    }
+
+    .detail-pane h3 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .timeline { display: flex; flex-direction: column; }
 
     .timeline-event {
       display: flex;
       align-items: flex-start;
       gap: 8px;
-      padding: 5px 0;
+      padding: 4px 0;
       font-size: 11px;
-      position: relative;
     }
-
-    .timeline-event::before {
-      content: '';
-      position: absolute;
-      left: 8px;
-      top: 22px;
-      bottom: -5px;
-      width: 1px;
-      background: var(--border);
-    }
-
-    .timeline-event:last-child::before { display: none; }
 
     .timeline-dot {
-      width: 17px;
-      height: 17px;
+      width: 16px;
+      height: 16px;
       border-radius: 50%;
       display: flex;
       align-items: center;
@@ -253,36 +240,27 @@
 
     .timeline-content { flex: 1; }
     .timeline-label { font-weight: 500; font-size: 11px; }
-    .timeline-detail { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 10px; margin-top: 1px; }
-    .timeline-time { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 9px; }
+    .timeline-detail { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+    .timeline-time { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 9px; white-space: nowrap; }
 
     .token-inspector {
       font-family: 'JetBrains Mono', monospace;
       font-size: 10px;
       line-height: 1.5;
-      max-height: 140px;
-      overflow-y: auto;
-      padding: 8px;
-      background: var(--surface-2);
-      border-radius: var(--radius-sm);
     }
 
     .token-part { margin-bottom: 6px; }
-    .token-label { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 1px; }
+    .token-label { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; }
     .token-value { color: var(--text); word-break: break-all; }
-    .token-value .key { color: var(--blue); }
-    .token-value .string { color: var(--green); }
-    .token-value .number { color: var(--yellow); }
 
     .token-raw {
-      font-family: 'JetBrains Mono', monospace;
       font-size: 9px;
       word-break: break-all;
       color: var(--text-dim);
       padding: 6px;
-      background: var(--bg);
+      background: var(--surface-2);
       border-radius: 4px;
-      max-height: 40px;
+      max-height: 60px;
       overflow-y: auto;
       margin-top: 4px;
     }
@@ -301,264 +279,137 @@
     .scope-chip.publish { border-color: rgba(99,102,241,0.5); color: var(--accent); }
     .scope-chip.subscribe { border-color: rgba(16,185,129,0.5); color: var(--green); }
 
-    .status-line {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      padding: 6px 10px;
-      background: var(--surface-2);
-      border-radius: var(--radius-sm);
-    }
-
-    .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-    .status-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-    .status-dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+    .google-row { display: flex; align-items: center; gap: 6px; }
+    .google-user { font-size: 11px; color: var(--green); display: flex; align-items: center; gap: 4px; }
+    .google-user::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 4px var(--green); }
   </style>
 </head>
 <body>
   <header class="header">
-    <span class="material-icons-outlined" style="color: var(--accent)">shield</span>
+    <span class="material-icons-outlined" style="color: var(--accent); font-size: 20px">shield</span>
     <div>
       <h1>MoQ C4M Auth Demo</h1>
-      <div class="subtitle">3 users: Publisher + Authorized Subscriber + Denied Subscriber</div>
+      <div class="subtitle">Publisher + Authorized Subscriber + Denied Subscriber</div>
     </div>
   </header>
 
   <div class="global-config">
     <label>Relay:</label>
-    <input type="text" id="relay-url" value="https://suhas-build-vm.akaleapi.net:443/moq-relay" style="width: 300px">
+    <input type="text" id="relay-url" value="https://suhas-build-vm.akaleapi.net:443/moq-relay" style="width: 280px">
     <label>Token Service:</label>
-    <input type="text" id="token-service-url" value="https://api.mocha-net.dev/v1" style="width: 200px">
+    <input type="text" id="token-service-url" value="https://api.mocha-net.dev/v1" style="width: 180px">
     <label>Room:</label>
-    <input type="text" id="room-id" value="auth-demo" style="width: 100px">
+    <input type="text" id="room-id" value="auth-demo" style="width: 90px">
   </div>
 
-  <div class="layout">
-    <!-- Panel 1: Publisher -->
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">
-          <span class="material-icons-outlined" style="color: var(--accent); font-size:18px">upload</span>
-          Publisher (IDP Authorized)
+  <!-- Top: 3 video panels -->
+  <div class="video-row">
+    <!-- Publisher -->
+    <div class="video-panel selected" id="panel-pub" data-panel="pub">
+      <div class="video-panel-header">
+        <div class="video-panel-title">
+          <span class="material-icons-outlined" style="color: var(--accent); font-size:16px">upload</span>
+          Publisher
         </div>
         <span class="badge badge-yellow" id="status-pub">IDLE</span>
       </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">login</span>
-          Google Sign-In
+      <div class="video-container">
+        <video id="video-pub" autoplay playsinline muted></video>
+        <div class="video-overlay" id="overlay-pub">
+          <span class="material-icons-outlined icon">videocam_off</span>
+          <span>Not publishing</span>
         </div>
-        <div class="card-body">
-          <div id="google-signin-pub"></div>
-          <div id="google-user-pub" style="display:none">
-            <div class="status-line">
-              <div class="status-dot green"></div>
-              <span id="google-name-pub">Signed in</span>
-            </div>
-          </div>
-        </div>
+        <div class="video-status" id="video-status-pub"></div>
       </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">videocam</span>
-          Video (Local Camera)
-        </div>
-        <div class="card-body" style="padding: 6px">
-          <div class="video-container">
-            <video id="video-pub" autoplay playsinline muted></video>
-            <div class="video-overlay" id="overlay-pub">
-              <span class="material-icons-outlined icon">videocam_off</span>
-              <span>Not publishing</span>
-            </div>
-            <div class="video-status" id="video-status-pub"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-body">
-          <div class="config-row">
-            <button id="btn-publish" class="btn-green" disabled>Publish Video</button>
-            <button id="btn-stop-pub" class="btn-outline" disabled>Stop</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">timeline</span>
-          Timeline
-        </div>
-        <div class="card-body">
-          <div class="timeline" id="timeline-pub"></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">token</span>
-          Token
-        </div>
-        <div class="card-body">
-          <div class="token-inspector" id="token-pub">
-            <span style="color:var(--text-dim)">Sign in to mint token</span>
-          </div>
-        </div>
+      <div class="video-controls">
+        <div id="google-signin-pub" class="google-row"></div>
+        <div id="google-user-pub" class="google-user" style="display:none"></div>
+        <button id="btn-publish" class="btn-green" disabled>Publish</button>
+        <button id="btn-stop-pub" class="btn-outline" disabled>Stop</button>
       </div>
     </div>
 
-    <!-- Panel 2: Authorized Subscriber -->
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">
-          <span class="material-icons-outlined" style="color: var(--green); font-size:18px">download</span>
-          Subscriber (IDP Authorized)
+    <!-- Authorized Subscriber -->
+    <div class="video-panel" id="panel-sub" data-panel="sub">
+      <div class="video-panel-header">
+        <div class="video-panel-title">
+          <span class="material-icons-outlined" style="color: var(--green); font-size:16px">download</span>
+          Subscriber (Authorized)
         </div>
         <span class="badge badge-yellow" id="status-sub">IDLE</span>
       </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">login</span>
-          Google Sign-In
+      <div class="video-container">
+        <video id="video-sub" autoplay playsinline></video>
+        <div class="video-overlay" id="overlay-sub">
+          <span class="material-icons-outlined icon">tv_off</span>
+          <span>Not subscribed</span>
         </div>
-        <div class="card-body">
-          <div id="google-signin-sub"></div>
-          <div id="google-user-sub" style="display:none">
-            <div class="status-line">
-              <div class="status-dot green"></div>
-              <span id="google-name-sub">Signed in</span>
-            </div>
-          </div>
-        </div>
+        <div class="video-status" id="video-status-sub"></div>
       </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">live_tv</span>
-          Video (From Relay)
-        </div>
-        <div class="card-body" style="padding: 6px">
-          <div class="video-container">
-            <video id="video-sub" autoplay playsinline></video>
-            <div class="video-overlay" id="overlay-sub">
-              <span class="material-icons-outlined icon">tv_off</span>
-              <span>Not subscribed</span>
-            </div>
-            <div class="video-status" id="video-status-sub"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-body">
-          <div class="config-row">
-            <button id="btn-subscribe" class="btn-green" disabled>Subscribe</button>
-            <button id="btn-stop-sub" class="btn-outline" disabled>Stop</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">timeline</span>
-          Timeline
-        </div>
-        <div class="card-body">
-          <div class="timeline" id="timeline-sub"></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">token</span>
-          Token
-        </div>
-        <div class="card-body">
-          <div class="token-inspector" id="token-sub">
-            <span style="color:var(--text-dim)">Sign in to mint token</span>
-          </div>
-        </div>
+      <div class="video-controls">
+        <div id="google-signin-sub" class="google-row"></div>
+        <div id="google-user-sub" class="google-user" style="display:none"></div>
+        <button id="btn-subscribe" class="btn-green" disabled>Subscribe</button>
+        <button id="btn-stop-sub" class="btn-outline" disabled>Stop</button>
       </div>
     </div>
 
-    <!-- Panel 3: Denied Subscriber -->
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">
-          <span class="material-icons-outlined" style="color: var(--red); font-size:18px">block</span>
-          Subscriber (DENIED)
+    <!-- Denied Subscriber -->
+    <div class="video-panel" id="panel-denied" data-panel="denied">
+      <div class="video-panel-header">
+        <div class="video-panel-title">
+          <span class="material-icons-outlined" style="color: var(--red); font-size:16px">block</span>
+          Subscriber (Denied)
         </div>
         <span class="badge badge-yellow" id="status-denied">IDLE</span>
       </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">warning</span>
-          Invalid Token Mode
+      <div class="video-container">
+        <video id="video-denied" autoplay playsinline></video>
+        <div class="video-overlay" id="overlay-denied">
+          <span class="material-icons-outlined icon">tv_off</span>
+          <span>Will be denied</span>
         </div>
-        <div class="card-body">
-          <div class="config-row">
-            <select id="denied-mode">
-              <option value="wrong-scope">Wrong Scope (different room)</option>
-              <option value="expired">Expired Token</option>
-              <option value="bad-sig">Bad Signature</option>
-              <option value="no-token">No Token</option>
-              <option value="guest">Guest (no IDP)</option>
-            </select>
-          </div>
-        </div>
+        <div class="video-status" id="video-status-denied"></div>
       </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">live_tv</span>
-          Video (From Relay)
-        </div>
-        <div class="card-body" style="padding: 6px">
-          <div class="video-container">
-            <video id="video-denied" autoplay playsinline></video>
-            <div class="video-overlay" id="overlay-denied">
-              <span class="material-icons-outlined icon">tv_off</span>
-              <span>Not subscribed</span>
-            </div>
-            <div class="video-status" id="video-status-denied"></div>
-          </div>
-        </div>
+      <div class="video-controls">
+        <select id="denied-mode" style="font-size:10px">
+          <option value="wrong-scope">Wrong Scope</option>
+          <option value="expired">Expired</option>
+          <option value="bad-sig">Bad Signature</option>
+          <option value="no-token">No Token</option>
+          <option value="guest">Guest</option>
+        </select>
+        <button id="btn-subscribe-denied" class="btn-red">Try Subscribe</button>
+        <button id="btn-stop-denied" class="btn-outline" disabled>Reset</button>
       </div>
+    </div>
+  </div>
 
-      <div class="card">
-        <div class="card-body">
-          <div class="config-row">
-            <button id="btn-subscribe-denied" class="btn-red">Try Subscribe</button>
-            <button id="btn-stop-denied" class="btn-outline" disabled>Stop</button>
-          </div>
-        </div>
+  <!-- Bottom: detail area (timeline + token for selected panel) -->
+  <div class="detail-area">
+    <div class="detail-pane">
+      <h3>
+        <span class="material-icons-outlined" style="font-size:14px">timeline</span>
+        Timeline
+        <span id="detail-panel-label" style="color:var(--accent); font-weight:400; font-size:10px; margin-left:auto">Publisher</span>
+      </h3>
+      <div class="timeline" id="timeline-pub"></div>
+      <div class="timeline" id="timeline-sub" style="display:none"></div>
+      <div class="timeline" id="timeline-denied" style="display:none"></div>
+    </div>
+    <div class="detail-pane">
+      <h3>
+        <span class="material-icons-outlined" style="font-size:14px">token</span>
+        Token Inspector
+      </h3>
+      <div class="token-inspector" id="token-pub">
+        <span style="color:var(--text-dim)">Sign in to mint token</span>
       </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">timeline</span>
-          Timeline
-        </div>
-        <div class="card-body">
-          <div class="timeline" id="timeline-denied"></div>
-        </div>
+      <div class="token-inspector" id="token-sub" style="display:none">
+        <span style="color:var(--text-dim)">Sign in to mint token</span>
       </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="material-icons-outlined" style="font-size:13px">token</span>
-          Token
-        </div>
-        <div class="card-body">
-          <div class="token-inspector" id="token-denied">
-            <span style="color:var(--text-dim)">Select mode and click "Try Subscribe"</span>
-          </div>
-        </div>
+      <div class="token-inspector" id="token-denied" style="display:none">
+        <span style="color:var(--text-dim)">Select mode and try subscribe</span>
       </div>
     </div>
   </div>
