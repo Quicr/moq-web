@@ -44,7 +44,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build branch
-        run: pnpm run build
+        run: pnpm --filter '!@web-moq/auth-demo' run build
         env:
           BASE_URL: /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/
 
@@ -52,7 +52,6 @@ jobs:
         run: |
           if [ -d apps/auth-demo ]; then
             cd apps/auth-demo
-            npm install
             npx vite build --base /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/auth-demo/
           fi
 
