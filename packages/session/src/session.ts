@@ -660,11 +660,13 @@ export class MOQTSession {
     const setupParams = new Map<SetupParameter, number | string | Uint8Array>();
     setupParams.set(SetupParameter.MAX_REQUEST_ID, 1000);
     if (this.authToken) {
-      // Encode as: token_type (varint) || token_value (bytes)
-      const tokenBytes = this.authTokenType === 0x0002
+      // Encode as: alias_type (varint) || token_type (varint) || token_value (bytes)
+      // alias_type 3 = USE_VALUE (inline token, no caching)
+      const tokenBytes = (this.authTokenType === 0x0002 || this.authTokenType === 0xda7a)
         ? base64UrlDecodeToBytes(this.authToken)
         : new TextEncoder().encode(this.authToken);
       const tokenWriter = new BufferWriter();
+      tokenWriter.writeVarInt(3); // AliasType::USE_VALUE
       tokenWriter.writeVarInt(this.authTokenType);
       tokenWriter.writeBytes(tokenBytes);
       setupParams.set(SetupParameter.AUTHORIZATION_TOKEN, tokenWriter.toUint8Array());
@@ -1097,6 +1099,14 @@ export class MOQTSession {
     const subscription = this.subscriptionManager.get(subscriptionId);
     if (subscription) {
       subscription.onObject = onObject;
+      // Flush any objects that arrived before the callback was set
+      if (subscription.pendingObjects && subscription.pendingObjects.length > 0) {
+        const pending = subscription.pendingObjects;
+        subscription.pendingObjects = undefined;
+        for (const obj of pending) {
+          onObject(obj.data, obj.groupId, obj.objectId, obj.timestamp);
+        }
+      }
       log.debug('Updated subscription callback', { subscriptionId });
     } else {
       log.warn('Cannot set callback: subscription not found', { subscriptionId });
@@ -1152,6 +1162,11 @@ export class MOQTSession {
       const writer = new BufferWriter();
       writer.writeVarInt(deliveryTimeout);
       parameters.set(RequestParameter.DELIVERY_TIMEOUT, writer.toUint8Array());
+    }
+    if (options?.maxCacheDuration !== undefined && options.maxCacheDuration > 0) {
+      const writer = new BufferWriter();
+      writer.writeVarInt(options.maxCacheDuration);
+      parameters.set(RequestParameter.MAX_CACHE_DURATION, writer.toUint8Array());
     }
 
     // Create publication

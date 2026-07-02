@@ -117,6 +117,152 @@ function setStatus(panelId: string, text: string, cls: string) {
 // Token helpers
 // ============================================================================
 
+function base64UrlDecode(s: string): Uint8Array {
+  const padded = s + '='.repeat((4 - s.length % 4) % 4);
+  const binary = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function decodeCbor(data: Uint8Array): { value: any; bytesRead: number } {
+  let offset = 0;
+
+  function readByte(): number {
+    return data[offset++];
+  }
+
+  function readUint(additionalInfo: number): number {
+    if (additionalInfo < 24) return additionalInfo;
+    if (additionalInfo === 24) return readByte();
+    if (additionalInfo === 25) {
+      const v = (data[offset] << 8) | data[offset + 1];
+      offset += 2;
+      return v;
+    }
+    if (additionalInfo === 26) {
+      const v = (data[offset] << 24) | (data[offset+1] << 16) | (data[offset+2] << 8) | data[offset+3];
+      offset += 4;
+      return v >>> 0;
+    }
+    return 0;
+  }
+
+  function decode(): any {
+    const initial = readByte();
+    const majorType = initial >> 5;
+    const additionalInfo = initial & 0x1f;
+
+    switch (majorType) {
+      case 0: return readUint(additionalInfo); // unsigned int
+      case 1: return -1 - readUint(additionalInfo); // negative int
+      case 2: { // byte string
+        const len = readUint(additionalInfo);
+        const bytes = data.slice(offset, offset + len);
+        offset += len;
+        return bytes;
+      }
+      case 3: { // text string
+        const len = readUint(additionalInfo);
+        const bytes = data.slice(offset, offset + len);
+        offset += len;
+        return new TextDecoder().decode(bytes);
+      }
+      case 4: { // array
+        const len = readUint(additionalInfo);
+        const arr: any[] = [];
+        for (let i = 0; i < len; i++) arr.push(decode());
+        return arr;
+      }
+      case 5: { // map
+        const len = readUint(additionalInfo);
+        const map: Record<string, any> = {};
+        for (let i = 0; i < len; i++) {
+          const key = decode();
+          const val = decode();
+          map[String(key)] = val;
+        }
+        return map;
+      }
+      case 7: { // simple/float
+        if (additionalInfo === 20) return false;
+        if (additionalInfo === 21) return true;
+        if (additionalInfo === 22) return null;
+        return additionalInfo;
+      }
+      default: return null;
+    }
+  }
+
+  const value = decode();
+  return { value, bytesRead: offset };
+}
+
+// CWT claim keys
+const CWT_CLAIMS: Record<string, string> = {
+  '1': 'iss', '2': 'sub', '3': 'aud', '4': 'exp', '5': 'nbf', '6': 'iat', '7': 'cti',
+};
+const COSE_HEADER: Record<string, string> = {
+  '1': 'alg', '3': 'cty', '4': 'kid', '16': 'token_type',
+};
+const COSE_ALG: Record<number, string> = { [-7]: 'ES256', [-35]: 'ES384', [-36]: 'ES512' };
+
+function decodeC4mToken(token: string): DecodedToken | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+
+    const headerBytes = base64UrlDecode(parts[0]);
+    const payloadBytes = base64UrlDecode(parts[1]);
+
+    const headerRaw = decodeCbor(headerBytes).value;
+    const payloadRaw = decodeCbor(payloadBytes).value;
+
+    if (!headerRaw || !payloadRaw) return null;
+    if (typeof headerRaw !== 'object' || typeof payloadRaw !== 'object') return null;
+
+    // Map numeric keys to named claims
+    const header: Record<string, any> = {};
+    for (const [k, v] of Object.entries(headerRaw)) {
+      const name = COSE_HEADER[k] || k;
+      header[name] = name === 'alg' ? (COSE_ALG[v as number] || v) : v;
+    }
+
+    const payload: Record<string, any> = {};
+    for (const [k, v] of Object.entries(payloadRaw)) {
+      const name = CWT_CLAIMS[k] || k;
+      payload[name] = v;
+    }
+
+    const exp = payload.exp ? new Date(payload.exp * 1000) : null;
+    const isExpired = exp ? exp < new Date() : false;
+
+    // Extract scopes from moqt authorization claims (key varies)
+    const scopes: string[] = [];
+    // Look for authorization data in non-standard claim keys
+    for (const [, v] of Object.entries(payload)) {
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          if (item && typeof item === 'object') {
+            // Look for actions array or scope-like data
+            for (const [, sv] of Object.entries(item as Record<string, any>)) {
+              if (Array.isArray(sv)) {
+                for (const s of sv) {
+                  if (typeof s === 'string') scopes.push(s);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return { header, payload, raw: token, scopes, isExpired };
+  } catch {
+    return null;
+  }
+}
+
 function decodeJwt(token: string): DecodedToken | null {
   try {
     const parts = token.split('.');
@@ -139,30 +285,81 @@ function decodeJwt(token: string): DecodedToken | null {
 
 function renderToken(panelId: string, token: string) {
   const el = $(`token-${panelId}`);
-  const decoded = decodeJwt(token);
+  // Try C4M (CBOR/CWT) first, then JWT
+  const decoded = decodeC4mToken(token) || decodeJwt(token);
   if (!decoded) {
     el.innerHTML = `<div class="token-raw">${escapeHtml(token)}</div>`;
     return;
   }
+
+  const isC4m = decoded.header.token_type !== undefined || decoded.header.alg === 'ES256' && !decoded.header.typ;
+  const formatLabel = isC4m ? 'C4M (CWT/CBOR)' : 'JWT';
+
+  const iss = decoded.payload.iss instanceof Uint8Array
+    ? new TextDecoder().decode(decoded.payload.iss)
+    : decoded.payload.iss;
+  const sub = decoded.payload.sub instanceof Uint8Array
+    ? new TextDecoder().decode(decoded.payload.sub)
+    : decoded.payload.sub;
+  const aud = Array.isArray(decoded.payload.aud)
+    ? decoded.payload.aud.map((a: any) => a instanceof Uint8Array ? new TextDecoder().decode(a) : a).join(', ')
+    : decoded.payload.aud instanceof Uint8Array
+      ? new TextDecoder().decode(decoded.payload.aud)
+      : decoded.payload.aud;
+
+  const exp = decoded.payload.exp ? new Date((decoded.payload.exp as number) * 1000).toISOString() : 'none';
+
   el.innerHTML = `
     <div class="token-part">
+      <div class="token-label">Format</div>
+      <div class="token-value">${formatLabel}</div>
+    </div>
+    <div class="token-part">
       <div class="token-label">Algorithm</div>
-      <div class="token-value">${decoded.header.alg} ${decoded.header.alg === 'ES256' ? '(valid)' : '(invalid/fake)'}</div>
+      <div class="token-value">${decoded.header.alg || 'unknown'} ${decoded.header.alg === 'ES256' ? '(valid asymmetric)' : '(invalid/fake)'}</div>
+    </div>
+    <div class="token-part">
+      <div class="token-label">Issuer</div>
+      <div class="token-value">${escapeHtml(String(iss || 'none'))}</div>
     </div>
     <div class="token-part">
       <div class="token-label">Subject</div>
-      <div class="token-value">${decoded.payload.sub || 'none'}</div>
+      <div class="token-value">${escapeHtml(String(sub || 'none'))}</div>
     </div>
+    <div class="token-part">
+      <div class="token-label">Audience</div>
+      <div class="token-value">${escapeHtml(String(aud || 'none'))}</div>
+    </div>
+    <div class="token-part">
+      <div class="token-label">Expires</div>
+      <div class="token-value">${exp}${decoded.isExpired ? ' <span style="color:var(--red)">(EXPIRED)</span>' : ''}</div>
+    </div>
+    ${decoded.scopes.length ? `
     <div class="token-part">
       <div class="token-label">Scopes</div>
       <div>${decoded.scopes.map(s => `<span class="scope-chip ${s.includes('pub') ? 'publish' : 'subscribe'}">${s}</span>`).join('')}</div>
+    </div>` : ''}
+    <div class="token-part">
+      <div class="token-label">Claims (decoded)</div>
+      <div class="token-raw">${escapeHtml(JSON.stringify(decoded.payload, replacer, 2))}</div>
     </div>
     <div class="token-part">
-      <div class="token-label">Namespace</div>
-      <div class="token-value">${JSON.stringify((decoded.payload.moqt as any)?.[0]?.namespace || 'n/a')}</div>
+      <div class="token-label">Raw Token</div>
+      <div class="token-raw">${escapeHtml(decoded.raw.slice(0, 120))}...</div>
     </div>
-    <div class="token-raw">${escapeHtml(decoded.raw.slice(0, 80))}...</div>
   `;
+}
+
+function replacer(_key: string, value: any): any {
+  if (value instanceof Uint8Array) {
+    // Try to decode as UTF-8 string
+    try {
+      const str = new TextDecoder().decode(value);
+      if (/^[\x20-\x7e]+$/.test(str)) return str;
+    } catch { /* fall through */ }
+    return `<${value.length} bytes>`;
+  }
+  return value;
 }
 
 function escapeHtml(str: string): string {
