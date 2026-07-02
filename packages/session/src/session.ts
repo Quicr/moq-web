@@ -662,9 +662,15 @@ export class MOQTSession {
     if (this.authToken) {
       // Encode as: alias_type (varint) || token_type (varint) || token_value (bytes)
       // alias_type 3 = USE_VALUE (inline token, no caching)
-      const tokenBytes = (this.authTokenType === 0x0002 || this.authTokenType === 0xda7a)
-        ? base64UrlDecodeToBytes(this.authToken)
-        : new TextEncoder().encode(this.authToken);
+      let tokenBytes: Uint8Array;
+      if (this.authTokenType === 0x63346d) {
+        // C4M: dot-separated base64url parts → reassemble as COSE_Sign1 CBOR
+        tokenBytes = coseSign1FromDotToken(this.authToken);
+      } else if (this.authTokenType === 0x0002 || this.authTokenType === 0xda7a) {
+        tokenBytes = base64UrlDecodeToBytes(this.authToken);
+      } else {
+        tokenBytes = new TextEncoder().encode(this.authToken);
+      }
       const tokenWriter = new BufferWriter();
       tokenWriter.writeVarInt(3); // AliasType::USE_VALUE
       tokenWriter.writeVarInt(this.authTokenType);
@@ -2669,4 +2675,52 @@ function base64UrlDecodeToBytes(str: string): Uint8Array {
   const padding = '='.repeat((4 - (base64.length % 4)) % 4);
   const binary = atob(base64 + padding);
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+function coseSign1FromDotToken(token: string): Uint8Array {
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    return new TextEncoder().encode(token);
+  }
+  const protectedHeader = base64UrlDecodeToBytes(parts[0]);
+  const payload = base64UrlDecodeToBytes(parts[1]);
+  const signature = base64UrlDecodeToBytes(parts[2]);
+
+  function encodeBstr(data: Uint8Array): Uint8Array {
+    const n = data.length;
+    if (n < 24) {
+      const out = new Uint8Array(1 + n);
+      out[0] = 0x40 + n;
+      out.set(data, 1);
+      return out;
+    } else if (n < 256) {
+      const out = new Uint8Array(2 + n);
+      out[0] = 0x58; out[1] = n;
+      out.set(data, 2);
+      return out;
+    } else {
+      const out = new Uint8Array(3 + n);
+      out[0] = 0x59; out[1] = n >> 8; out[2] = n & 0xff;
+      out.set(data, 3);
+      return out;
+    }
+  }
+
+  // COSE_Sign1 = CBOR Tag(18) [ bstr(protected), map(unprotected), bstr(payload), bstr(signature) ]
+  const bProtected = encodeBstr(protectedHeader);
+  const bPayload = encodeBstr(payload);
+  const bSignature = encodeBstr(signature);
+  const emptyMap = new Uint8Array([0xa0]);
+
+  const totalLen = 2 + bProtected.length + emptyMap.length + bPayload.length + bSignature.length;
+  const result = new Uint8Array(totalLen);
+  let offset = 0;
+  result[offset++] = 0xd2; // Tag(18)
+  result[offset++] = 0x84; // Array(4)
+  result.set(bProtected, offset); offset += bProtected.length;
+  result.set(emptyMap, offset); offset += emptyMap.length;
+  result.set(bPayload, offset); offset += bPayload.length;
+  result.set(bSignature, offset);
+
+  return result;
 }
