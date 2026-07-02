@@ -726,12 +726,13 @@ async function trySubscribeDenied() {
     await mediaSession.close();
   } catch (err: any) {
     const msg = err.message || String(err);
-    if (msg.includes('403') || msg.includes('401') || msg.includes('denied') || msg.includes('unauthorized') || msg.includes('Unauthorized') || msg.includes('error')) {
+    const isAuthError = msg.includes('403') || msg.includes('401') || msg.includes('denied') ||
+      msg.includes('unauthorized') || msg.includes('Unauthorized') || msg.includes('RESET_STREAM') ||
+      msg.includes('Timeout') || msg.includes('timeout') || msg.includes('Connection lost') ||
+      msg.includes('close') || msg.includes('rejected') || msg.includes('session');
+    if (isAuthError) {
       setStatus(panelId, 'DENIED', 'red');
-      addEvent(panelId, { time: new Date(), type: 'error', label: 'AUTHORIZATION DENIED', detail: msg });
-    } else if (msg.includes('close') || msg.includes('rejected') || msg.includes('session')) {
-      setStatus(panelId, 'DENIED', 'red');
-      addEvent(panelId, { time: new Date(), type: 'error', label: 'Connection rejected', detail: msg });
+      addEvent(panelId, { time: new Date(), type: 'error', label: 'AUTHORIZATION DENIED', detail: `Relay rejected connection: ${msg}` });
     } else {
       setStatus(panelId, 'ERROR', 'red');
       addEvent(panelId, { time: new Date(), type: 'error', label: 'Failed', detail: msg });
