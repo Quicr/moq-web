@@ -85,6 +85,7 @@ function getNamespace(): string[] {
 
 function addEvent(panelId: string, ev: TimelineEvent) {
   const el = $(`timeline-${panelId}`);
+  el.style.display = '';
   const timeStr = ev.time.toLocaleTimeString('en-US', {
     hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
     fractionalSecondDigits: 3,
