@@ -61,6 +61,8 @@ export interface PublishOptions {
   groupOrder?: GroupOrder;
   /** Delivery timeout in milliseconds */
   deliveryTimeout?: number;
+  /** Max cache duration in ms — relay evicts objects after this time (default: no limit) */
+  maxCacheDuration?: number;
   /** Delivery mode: 'stream' for reliable, 'datagram' for low-latency */
   deliveryMode?: 'stream' | 'datagram';
   /** Audio delivery mode when main mode is 'stream' (default: 'datagram' for low latency) */
@@ -77,6 +79,8 @@ export interface ObjectMetadata {
   objectId: number;
   /** Signals the start of a new group (closes previous group's stream, opens new one) */
   newGroup?: boolean;
+  /** Whether this object is a keyframe */
+  isKeyframe?: boolean;
   /** Object type hint (for logging) */
   type?: string;
 }
