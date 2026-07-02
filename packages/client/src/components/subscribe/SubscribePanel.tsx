@@ -53,6 +53,7 @@ export const SubscribePanel: React.FC = () => {
     subscribedTracks,
     availableTracks,
     sessionState,
+    session,
     startSubscription,
     stopSubscription,
     pauseSubscription,
@@ -194,7 +195,7 @@ export const SubscribePanel: React.FC = () => {
       }
       unsubscribe();
     };
-  }, [onVideoFrame]);
+  }, [onVideoFrame, session]);
 
   // Clean up frames when component unmounts
   // Note: VideoRenderer handles closing frames after rendering, but we should
