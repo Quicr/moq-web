@@ -201,6 +201,7 @@ function decodeCbor(data: Uint8Array): { value: any; bytesRead: number } {
 // CWT claim keys
 const CWT_CLAIMS: Record<string, string> = {
   '1': 'iss', '2': 'sub', '3': 'aud', '4': 'exp', '5': 'nbf', '6': 'iat', '7': 'cti',
+  '327': 'moqt', '65000': 'moqt',
 };
 const COSE_HEADER: Record<string, string> = {
   '1': 'alg', '3': 'cty', '4': 'kid', '16': 'token_type',
@@ -252,22 +253,35 @@ function decodeC4mToken(token: string): DecodedToken | null {
     const exp = payload.exp ? new Date(payload.exp * 1000) : null;
     const isExpired = exp ? exp < new Date() : false;
 
-    // Extract scopes from moqt authorization claims (key varies)
+    // Decode MoQT claim: may be bstr-wrapped CBOR or direct array
+    const moqtValue = payload.moqt;
+    let moqtScopes: any[] | null = null;
+    if (moqtValue instanceof Uint8Array) {
+      try { moqtScopes = decodeCbor(moqtValue).value; } catch {}
+    } else if (Array.isArray(moqtValue)) {
+      moqtScopes = moqtValue;
+    }
+
+    const MOQT_ACTIONS: Record<number, string> = {
+      0: 'ClientSetup', 1: 'ServerSetup', 2: 'PublishNamespace',
+      3: 'SubscribeNamespace', 4: 'Subscribe', 5: 'RequestUpdate',
+      6: 'Publish', 7: 'Fetch', 8: 'TrackStatus',
+    };
+
     const scopes: string[] = [];
-    for (const [, v] of Object.entries(payload)) {
-      if (Array.isArray(v)) {
-        for (const item of v) {
-          if (item && typeof item === 'object') {
-            for (const [, sv] of Object.entries(item as Record<string, any>)) {
-              if (Array.isArray(sv)) {
-                for (const s of sv) {
-                  if (typeof s === 'string') scopes.push(s);
-                }
-              }
-            }
-          }
+    if (Array.isArray(moqtScopes)) {
+      for (const scope of moqtScopes) {
+        if (Array.isArray(scope) && Array.isArray(scope[0])) {
+          const actionNames = scope[0].map((a: number) => MOQT_ACTIONS[a] || `action(${a})`);
+          scopes.push(...actionNames);
         }
       }
+      // Replace raw bytes in payload with decoded scopes for display
+      payload.moqt = moqtScopes.map((scope: any) => {
+        if (!Array.isArray(scope)) return scope;
+        const actions = Array.isArray(scope[0]) ? scope[0].map((a: number) => MOQT_ACTIONS[a] || a) : scope[0];
+        return { actions, ns_match: scope[1] ?? null, track_match: scope[2] ?? null };
+      });
     }
 
     return { header, payload, raw: token, scopes, isExpired };
