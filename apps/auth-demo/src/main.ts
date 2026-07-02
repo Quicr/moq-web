@@ -85,7 +85,6 @@ function getNamespace(): string[] {
 
 function addEvent(panelId: string, ev: TimelineEvent) {
   const el = $(`timeline-${panelId}`);
-  el.style.display = '';
   const timeStr = ev.time.toLocaleTimeString('en-US', {
     hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
     fractionalSecondDigits: 3,
@@ -313,7 +312,6 @@ function decodeJwt(token: string): DecodedToken | null {
 
 function renderToken(panelId: string, token: string) {
   const el = $(`token-${panelId}`);
-  el.style.display = '';
   // Try C4M (CBOR/CWT) first, then JWT
   const decoded = decodeC4mToken(token) || decodeJwt(token);
   if (!decoded) {
@@ -834,34 +832,15 @@ function initGoogleSignIn() {
 // Panel Selection (detail area switching)
 // ============================================================================
 
-let selectedPanel = 'pub';
-
-function selectPanel(panelId: string) {
-  selectedPanel = panelId;
-
-  // Update panel borders
-  document.querySelectorAll('.video-panel').forEach(el => el.classList.remove('selected'));
-  $(`panel-${panelId}`).classList.add('selected');
-
-  // Show/hide timelines and tokens
-  const panels = ['pub', 'sub', 'denied'];
-  for (const p of panels) {
-    $(`timeline-${p}`).style.display = p === panelId ? 'flex' : 'none';
-    $(`token-${p}`).style.display = p === panelId ? 'block' : 'none';
-  }
-
-  // Update label
-  const labels: Record<string, string> = { pub: 'Publisher', sub: 'Subscriber', denied: 'Denied' };
-  $('detail-panel-label').textContent = labels[panelId] || '';
-}
-
-// Click handlers on panels
-document.querySelectorAll('.video-panel').forEach(el => {
-  el.addEventListener('click', (e) => {
-    // Don't select panel if user clicked a button/select/input inside
-    if ((e.target as HTMLElement).closest('button, select, input, .google-row')) return;
-    const panelId = (el as HTMLElement).dataset.panel!;
-    selectPanel(panelId);
+// Tab switching within each panel
+document.querySelectorAll('.panel-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const targetId = (tab as HTMLElement).dataset.tab!;
+    const container = tab.closest('.panel-detail')!;
+    container.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+    container.querySelectorAll('.panel-tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(targetId)?.classList.add('active');
   });
 });
 
