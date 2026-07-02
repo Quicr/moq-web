@@ -191,12 +191,23 @@ async function moatGoogleLogin(idToken: string, panelId: string): Promise<string
 async function ensureRoom(): Promise<void> {
   const baseUrl = getTokenServiceUrl();
   const roomId = getRoomId();
+
+  // Check if room already exists
+  const listRes = await fetch(`${baseUrl}/rooms`);
+  if (listRes.ok) {
+    const rooms = await listRes.json();
+    if (rooms.some((r: { name: string }) => r.name === roomId)) {
+      return; // room exists
+    }
+  }
+
+  // Try to create
   const res = await fetch(`${baseUrl}/rooms`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: roomId, namespace_prefix: `mocha/${roomId}`, visibility: 'public' }),
   });
-  if (!res.ok && res.status !== 409) {
+  if (!res.ok && res.status !== 409 && res.status !== 500) {
     throw new Error(`Room creation failed: ${res.status}`);
   }
 }
