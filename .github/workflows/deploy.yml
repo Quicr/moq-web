@@ -60,8 +60,7 @@ jobs:
         run: |
           if [ -d apps/auth-demo ]; then
             cd apps/auth-demo
-            npm install
-            npx vite build --base /${{ github.event.repository.name }}/auth-demo/
+            pnpm vite build --base /${{ github.event.repository.name }}/auth-demo/
           fi
 
       - name: Save draft-16 build
