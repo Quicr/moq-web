@@ -418,6 +418,12 @@ async function generateInvalidToken(mode: string): Promise<string> {
 // MOQT Connection
 // ============================================================================
 
+/** Convert a token string to RequestAuthToken bytes for per-request auth */
+function tokenToRequestAuth(token: string): { tokenBytes: Uint8Array; tokenType: number } | undefined {
+  if (!token) return undefined;
+  return { tokenBytes: base64urlDecode(token), tokenType: 0x63346d };
+}
+
 async function createMediaSession(token: string, panelId: string): Promise<MediaSession> {
   const relayUrl = getRelayUrl();
 
@@ -473,7 +479,10 @@ async function startPublish() {
     const ns = getNamespace();
     addEvent(panelId, { time: new Date(), type: 'send', label: 'PUBLISH', detail: `namespace=[${ns.join('/')}], track=video` });
 
-    await pubMediaSession.publish(ns, 'video', stream, MEDIA_CONFIG);
+    await pubMediaSession.publish(ns, 'video', stream, {
+      ...MEDIA_CONFIG,
+      authToken: tokenToRequestAuth(token),
+    });
 
     addEvent(panelId, { time: new Date(), type: 'recv', label: 'Publishing active', detail: 'Video flowing to relay' });
     setStatus(panelId, 'PUBLISHING', 'green');
@@ -537,7 +546,10 @@ async function startSubscribe() {
       (video as any)._frameWriter?.write(frame).catch(() => {});
     });
 
-    await subMediaSession.subscribe(ns, 'video', MEDIA_CONFIG, 'video');
+    await subMediaSession.subscribe(ns, 'video', {
+      ...MEDIA_CONFIG,
+      authToken: tokenToRequestAuth(token),
+    }, 'video');
 
     addEvent(panelId, { time: new Date(), type: 'recv', label: 'Subscribe accepted', detail: 'Waiting for video frames...' });
 

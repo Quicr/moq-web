@@ -430,6 +430,7 @@ export class MediaSession {
       maxCacheDuration: config.maxCacheDuration,
       deliveryMode: config.deliveryMode ?? 'stream',
       audioDeliveryMode: config.audioDeliveryMode ?? 'datagram',
+      authToken: config.authToken,
     };
 
     // Publish to the session (get track alias)
@@ -741,6 +742,7 @@ export class MediaSession {
       ...options,
       filterType: effectiveFilterType,
       startGroup: options?.startGroup ?? config.startGroup ?? 0,
+      authToken: config.authToken,
     };
 
     // Subscribe via session with object callback and end-of-group handler

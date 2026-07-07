@@ -8,6 +8,7 @@
  */
 
 import type { GroupOrder } from '@web-moq/core';
+import type { RequestAuthToken } from '@web-moq/session';
 
 /**
  * Session state
@@ -153,6 +154,10 @@ export interface MediaConfig {
   arbiterDebug?: boolean;
   /** Minimum frames to buffer before starting VOD playback (default: 30) */
   minBufferFrames?: number;
+
+  // Per-request authorization
+  /** Auth token to include in SUBSCRIBE/PUBLISH request parameters */
+  authToken?: RequestAuthToken;
 
   // Secure Objects (E2E encryption) options
   /** Enable Secure Objects encryption/decryption */
