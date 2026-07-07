@@ -1,7 +1,7 @@
 {
-  "name": "@web-moq/session",
+  "name": "@web-moq/cat",
   "version": "0.1.0",
-  "description": "Generic MOQT session management - protocol layer without media",
+  "description": "Common Access Token (CAT/C4M) for MoQ Transport — CBOR/COSE/CWT token library",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -10,10 +10,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./worker": {
-      "types": "./dist/workers/transport-worker.d.ts",
-      "import": "./dist/workers/transport-worker.js"
     }
   },
   "files": [
@@ -21,16 +17,22 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
     "clean": "rm -rf dist"
   },
-  "dependencies": {
-    "@web-moq/core": "workspace:*",
-    "@web-moq/cat": "workspace:*"
-  },
   "devDependencies": {
     "vitest": "^4.0.18"
-  }
+  },
+  "keywords": [
+    "moqt",
+    "cat",
+    "cose",
+    "cwt",
+    "cbor",
+    "auth",
+    "token"
+  ],
+  "license": "BSD-2-Clause"
 }

@@ -46,6 +46,7 @@ import {
   type ControlMessage,
   type ObjectHeader,
 } from '@web-moq/core';
+import { base64urlDecode, coseSign1Encode, C4M_TOKEN_TYPE } from '@web-moq/cat';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
 import { ObjectRouter } from './object-router.js';
@@ -69,6 +70,7 @@ import type {
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,
+  RequestAuthToken,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -172,7 +174,13 @@ export class MOQTSession {
   /** Authorization token for CLIENT_SETUP */
   private authToken: string | null = null;
   /** Token type for AUTHORIZATION_TOKEN parameter (default: C4M = 0x63346d) */
-  private authTokenType: number = 0x63346d;
+  private authTokenType: number = C4M_TOKEN_TYPE;
+  // @ts-expect-error Reserved for token alias caching support (aliasType 1/2)
+  private tokenAliasCache = new Map<number, { tokenType: number; tokenValue: Uint8Array }>();
+  // @ts-expect-error Reserved for token alias caching support
+  private nextTokenAlias = 0;
+  // @ts-expect-error Reserved for token alias caching support
+  private maxAuthTokenCacheSize = 0;
 
   /**
    * Create a new MOQTSession
@@ -228,6 +236,35 @@ export class MOQTSession {
   setAuthToken(token: string, tokenType?: number): void {
     this.authToken = token;
     if (tokenType !== undefined) this.authTokenType = tokenType;
+  }
+
+  /**
+   * Encode a token string to raw bytes based on token type.
+   * Handles C4M (base64url COSE_Sign1 or legacy dot-separated), other base64url types, and raw strings.
+   */
+  private encodeTokenBytes(token: string, tokenType: number): Uint8Array {
+    if (tokenType === C4M_TOKEN_TYPE) {
+      if (token.includes('.')) {
+        return dotTokenToCoseSign1Bytes(token);
+      }
+      return base64urlDecode(token);
+    }
+    if (tokenType === 0x0002 || tokenType === 0xda7a) {
+      return base64urlDecode(token);
+    }
+    return new TextEncoder().encode(token);
+  }
+
+  /**
+   * Encode a per-request auth token for SUBSCRIBE/PUBLISH/FETCH parameters.
+   */
+  private encodeRequestAuthToken(authToken: RequestAuthToken): Uint8Array {
+    const tokenType = authToken.tokenType ?? C4M_TOKEN_TYPE;
+    return MessageCodec.encodeAuthorizationToken({
+      aliasType: 3, // USE_VALUE
+      tokenType,
+      tokenValue: authToken.tokenBytes,
+    });
   }
 
   /**
@@ -660,26 +697,13 @@ export class MOQTSession {
     const setupParams = new Map<SetupParameter, number | string | Uint8Array>();
     setupParams.set(SetupParameter.MAX_REQUEST_ID, 1000);
     if (this.authToken) {
-      // Encode as: alias_type (varint) || token_type (varint) || token_value (bytes)
-      // alias_type 3 = USE_VALUE (inline token, no caching)
-      let tokenBytes: Uint8Array;
-      if (this.authTokenType === 0x63346d) {
-        // C4M: base64url-encoded COSE_Sign1 CBOR (or legacy dot-separated)
-        if (this.authToken.includes('.')) {
-          tokenBytes = coseSign1FromDotToken(this.authToken);
-        } else {
-          tokenBytes = base64UrlDecodeToBytes(this.authToken);
-        }
-      } else if (this.authTokenType === 0x0002 || this.authTokenType === 0xda7a) {
-        tokenBytes = base64UrlDecodeToBytes(this.authToken);
-      } else {
-        tokenBytes = new TextEncoder().encode(this.authToken);
-      }
-      const tokenWriter = new BufferWriter();
-      tokenWriter.writeVarInt(3); // AliasType::USE_VALUE
-      tokenWriter.writeVarInt(this.authTokenType);
-      tokenWriter.writeBytes(tokenBytes);
-      setupParams.set(SetupParameter.AUTHORIZATION_TOKEN, tokenWriter.toUint8Array());
+      const tokenBytes = this.encodeTokenBytes(this.authToken, this.authTokenType);
+      const authTokenData = MessageCodec.encodeAuthorizationToken({
+        aliasType: 3, // USE_VALUE — inline token, no caching
+        tokenType: this.authTokenType,
+        tokenValue: tokenBytes,
+      });
+      setupParams.set(SetupParameter.AUTHORIZATION_TOKEN, authTokenData);
     }
 
     const clientSetup: ClientSetupMessage = {
@@ -811,6 +835,12 @@ export class MOQTSession {
       endGroup: options?.endGroup,
       parameters: new Map(),
     };
+
+    // Add per-request auth token if provided
+    if (options?.authToken) {
+      const authData = this.encodeRequestAuthToken(options.authToken);
+      subscribeMessage.parameters!.set(RequestParameter.AUTHORIZATION_TOKEN, authData);
+    }
 
     const subscribeBytes = MessageCodec.encode(subscribeMessage);
 
@@ -1177,6 +1207,12 @@ export class MOQTSession {
       const writer = new BufferWriter();
       writer.writeVarInt(options.maxCacheDuration);
       parameters.set(RequestParameter.MAX_CACHE_DURATION, writer.toUint8Array());
+    }
+
+    // Add per-request auth token if provided
+    if (options?.authToken) {
+      const authData = this.encodeRequestAuthToken(options.authToken);
+      parameters.set(RequestParameter.AUTHORIZATION_TOKEN, authData);
     }
 
     // Create publication
@@ -2674,57 +2710,23 @@ export class MOQTSession {
   }
 }
 
-function base64UrlDecodeToBytes(str: string): Uint8Array {
-  const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  const padding = '='.repeat((4 - (base64.length % 4)) % 4);
-  const binary = atob(base64 + padding);
-  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
-}
-
-function coseSign1FromDotToken(token: string): Uint8Array {
+/**
+ * Convert a legacy dot-separated token to COSE_Sign1 CBOR bytes.
+ * Format: base64url(protectedHeader).base64url(payload).base64url(signature)
+ */
+function dotTokenToCoseSign1Bytes(token: string): Uint8Array {
   const parts = token.split('.');
   if (parts.length !== 3) {
     return new TextEncoder().encode(token);
   }
-  const protectedHeader = base64UrlDecodeToBytes(parts[0]);
-  const payload = base64UrlDecodeToBytes(parts[1]);
-  const signature = base64UrlDecodeToBytes(parts[2]);
+  const protectedHeader = base64urlDecode(parts[0]);
+  const payload = base64urlDecode(parts[1]);
+  const signature = base64urlDecode(parts[2]);
 
-  function encodeBstr(data: Uint8Array): Uint8Array {
-    const n = data.length;
-    if (n < 24) {
-      const out = new Uint8Array(1 + n);
-      out[0] = 0x40 + n;
-      out.set(data, 1);
-      return out;
-    } else if (n < 256) {
-      const out = new Uint8Array(2 + n);
-      out[0] = 0x58; out[1] = n;
-      out.set(data, 2);
-      return out;
-    } else {
-      const out = new Uint8Array(3 + n);
-      out[0] = 0x59; out[1] = n >> 8; out[2] = n & 0xff;
-      out.set(data, 3);
-      return out;
-    }
-  }
-
-  // COSE_Sign1 = [ bstr(protected), map(unprotected), bstr(payload), bstr(signature) ]
-  // No CBOR Tag(18) — catapult expects a bare array
-  const bProtected = encodeBstr(protectedHeader);
-  const bPayload = encodeBstr(payload);
-  const bSignature = encodeBstr(signature);
-  const emptyMap = new Uint8Array([0xa0]);
-
-  const totalLen = 1 + bProtected.length + emptyMap.length + bPayload.length + bSignature.length;
-  const result = new Uint8Array(totalLen);
-  let offset = 0;
-  result[offset++] = 0x84; // Array(4)
-  result.set(bProtected, offset); offset += bProtected.length;
-  result.set(emptyMap, offset); offset += emptyMap.length;
-  result.set(bPayload, offset); offset += bPayload.length;
-  result.set(bSignature, offset);
-
-  return result;
+  return coseSign1Encode({
+    protectedHeader,
+    unprotectedHeader: new Map(),
+    payload,
+    signature,
+  });
 }

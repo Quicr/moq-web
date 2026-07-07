@@ -76,6 +76,7 @@ export type {
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,
+  RequestAuthToken,
 } from './types.js';
 
 // Worker API

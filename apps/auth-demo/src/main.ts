@@ -9,6 +9,19 @@
 import { MOQTransport } from '@web-moq/core';
 import { MOQTSession } from '@web-moq/session';
 import { MediaSession, type MediaConfig } from '@web-moq/media';
+import {
+  CatTokenDecoder,
+  CatTokenBuilder,
+  MoqtAction,
+  CoseAlgorithm,
+  base64urlDecode,
+  base64urlEncode,
+  generateTestKeyPair,
+  generateTestCatToken,
+  catTokenToBase64url,
+  type CatToken,
+  type MoqtScope,
+} from '@web-moq/cat';
 
 // ============================================================================
 // Types
@@ -21,7 +34,7 @@ interface TimelineEvent {
   detail?: string;
 }
 
-interface DecodedToken {
+interface DecodedTokenView {
   header: Record<string, unknown>;
   payload: Record<string, unknown>;
   raw: string;
@@ -114,196 +127,61 @@ function setStatus(panelId: string, text: string, cls: string) {
 }
 
 // ============================================================================
-// Token helpers
+// Token helpers (using @web-moq/cat library)
 // ============================================================================
 
-function base64UrlDecode(s: string): Uint8Array {
-  const padded = s + '='.repeat((4 - s.length % 4) % 4);
-  const binary = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-function decodeCbor(data: Uint8Array): { value: any; bytesRead: number } {
-  let offset = 0;
-
-  function readByte(): number {
-    return data[offset++];
-  }
-
-  function readUint(additionalInfo: number): number {
-    if (additionalInfo < 24) return additionalInfo;
-    if (additionalInfo === 24) return readByte();
-    if (additionalInfo === 25) {
-      const v = (data[offset] << 8) | data[offset + 1];
-      offset += 2;
-      return v;
-    }
-    if (additionalInfo === 26) {
-      const v = (data[offset] << 24) | (data[offset+1] << 16) | (data[offset+2] << 8) | data[offset+3];
-      offset += 4;
-      return v >>> 0;
-    }
-    return 0;
-  }
-
-  function decode(): any {
-    const initial = readByte();
-    const majorType = initial >> 5;
-    const additionalInfo = initial & 0x1f;
-
-    switch (majorType) {
-      case 0: return readUint(additionalInfo); // unsigned int
-      case 1: return -1 - readUint(additionalInfo); // negative int
-      case 2: { // byte string
-        const len = readUint(additionalInfo);
-        const bytes = data.slice(offset, offset + len);
-        offset += len;
-        return bytes;
-      }
-      case 3: { // text string
-        const len = readUint(additionalInfo);
-        const bytes = data.slice(offset, offset + len);
-        offset += len;
-        return new TextDecoder().decode(bytes);
-      }
-      case 4: { // array
-        const len = readUint(additionalInfo);
-        const arr: any[] = [];
-        for (let i = 0; i < len; i++) arr.push(decode());
-        return arr;
-      }
-      case 5: { // map
-        const len = readUint(additionalInfo);
-        const map: Record<string, any> = {};
-        for (let i = 0; i < len; i++) {
-          const key = decode();
-          const val = decode();
-          map[String(key)] = val;
-        }
-        return map;
-      }
-      case 7: { // simple/float
-        if (additionalInfo === 20) return false;
-        if (additionalInfo === 21) return true;
-        if (additionalInfo === 22) return null;
-        return additionalInfo;
-      }
-      default: return null;
-    }
-  }
-
-  const value = decode();
-  return { value, bytesRead: offset };
-}
-
-// CWT claim keys
-const CWT_CLAIMS: Record<string, string> = {
-  '1': 'iss', '2': 'sub', '3': 'aud', '4': 'exp', '5': 'nbf', '6': 'iat', '7': 'cti',
-  '327': 'moqt', '65000': 'moqt',
+const MOQT_ACTION_NAMES: Record<number, string> = {
+  0: 'ClientSetup', 1: 'ServerSetup', 2: 'PublishNamespace',
+  3: 'SubscribeNamespace', 4: 'Subscribe', 5: 'RequestUpdate',
+  6: 'Publish', 7: 'Fetch', 8: 'TrackStatus',
 };
-const COSE_HEADER: Record<string, string> = {
-  '1': 'alg', '3': 'cty', '4': 'kid', '16': 'token_type',
-};
-const COSE_ALG: Record<number, string> = { [-7]: 'ES256', [-35]: 'ES384', [-36]: 'ES512' };
 
-function decodeC4mToken(token: string): DecodedToken | null {
+const COSE_ALG_NAMES: Record<number, string> = { [-7]: 'ES256', [-35]: 'ES384', [-36]: 'ES512' };
+
+function decodeTokenForDisplay(token: string): DecodedTokenView | null {
   try {
-    let headerBytes: Uint8Array;
-    let payloadBytes: Uint8Array;
-
+    // Try CWT/COSE (C4M) decoding via library
+    let catToken: CatToken;
     if (token.includes('.')) {
-      // Legacy dot-separated format: base64url(header).base64url(payload).base64url(sig)
-      const parts = token.split('.');
-      if (parts.length !== 3) return null;
-      headerBytes = base64UrlDecode(parts[0]);
-      payloadBytes = base64UrlDecode(parts[1]);
+      catToken = CatTokenDecoder.decodeFromDotSeparated(token);
     } else {
-      // Standard COSE_Sign1: base64url(CBOR array [protected, unprotected, payload, sig])
-      const coseBytes = base64UrlDecode(token);
-      const cose = decodeCbor(coseBytes).value;
-      if (!Array.isArray(cose) || cose.length < 4) return null;
-      // cose[0] = protected header (bstr containing CBOR map)
-      // cose[2] = payload (bstr containing CBOR map)
-      if (!(cose[0] instanceof Uint8Array) || !(cose[2] instanceof Uint8Array)) return null;
-      headerBytes = cose[0];
-      payloadBytes = cose[2];
+      catToken = CatTokenDecoder.decodeFromBase64url(token);
     }
 
-    const headerRaw = decodeCbor(headerBytes).value;
-    const payloadRaw = decodeCbor(payloadBytes).value;
-
-    if (!headerRaw || !payloadRaw) return null;
-    if (typeof headerRaw !== 'object' || typeof payloadRaw !== 'object') return null;
-
-    // Map numeric keys to named claims
-    const header: Record<string, any> = {};
-    for (const [k, v] of Object.entries(headerRaw)) {
-      const name = COSE_HEADER[k] || k;
-      header[name] = name === 'alg' ? (COSE_ALG[v as number] || v) : v;
+    // Convert to display format
+    const header: Record<string, unknown> = {};
+    for (const [k, v] of catToken.header) {
+      if (k === 1) header['alg'] = COSE_ALG_NAMES[v as number] ?? v;
+      else if (k === 3) header['cty'] = v;
+      else if (k === 4) header['kid'] = v;
+      else if (k === 16) header['token_type'] = v;
+      else header[String(k)] = v;
     }
 
-    const payload: Record<string, any> = {};
-    for (const [k, v] of Object.entries(payloadRaw)) {
-      const name = CWT_CLAIMS[k] || k;
-      payload[name] = v;
-    }
-
-    const exp = payload.exp ? new Date(payload.exp * 1000) : null;
-    const isExpired = exp ? exp < new Date() : false;
-
-    // Decode MoQT claim: may be bstr-wrapped CBOR or direct array
-    const moqtValue = payload.moqt;
-    let moqtScopes: any[] | null = null;
-    if (moqtValue instanceof Uint8Array) {
-      try { moqtScopes = decodeCbor(moqtValue).value; } catch {}
-    } else if (Array.isArray(moqtValue)) {
-      moqtScopes = moqtValue;
-    }
-
-    const MOQT_ACTIONS: Record<number, string> = {
-      0: 'ClientSetup', 1: 'ServerSetup', 2: 'PublishNamespace',
-      3: 'SubscribeNamespace', 4: 'Subscribe', 5: 'RequestUpdate',
-      6: 'Publish', 7: 'Fetch', 8: 'TrackStatus',
-    };
+    const claims = catToken.claims;
+    const payload: Record<string, unknown> = {};
+    if (claims.iss) payload.iss = claims.iss;
+    if (claims.sub) payload.sub = claims.sub;
+    if (claims.aud) payload.aud = claims.aud;
+    if (claims.exp) payload.exp = claims.exp;
+    if (claims.nbf) payload.nbf = claims.nbf;
+    if (claims.iat) payload.iat = claims.iat;
+    if (claims.cti) payload.cti = claims.cti;
 
     const scopes: string[] = [];
-    if (Array.isArray(moqtScopes)) {
-      for (const scope of moqtScopes) {
-        if (Array.isArray(scope) && Array.isArray(scope[0])) {
-          const actionNames = scope[0].map((a: number) => MOQT_ACTIONS[a] || `action(${a})`);
-          scopes.push(...actionNames);
-        }
-      }
-      // Replace raw bytes in payload with decoded scopes for display
-      payload.moqt = moqtScopes.map((scope: any) => {
-        if (!Array.isArray(scope)) return scope;
-        const actions = Array.isArray(scope[0]) ? scope[0].map((a: number) => MOQT_ACTIONS[a] || a) : scope[0];
-        return { actions, ns_match: scope[1] ?? null, track_match: scope[2] ?? null };
-      });
-    }
-
-    return { header, payload, raw: token, scopes, isExpired };
-  } catch {
-    return null;
-  }
-}
-
-function decodeJwt(token: string): DecodedToken | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const header = JSON.parse(atob(parts[0].replace(/-/g, '+').replace(/_/g, '/')));
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-    const exp = payload.exp ? new Date(payload.exp * 1000) : null;
-    const isExpired = exp ? exp < new Date() : false;
-    const scopes: string[] = [];
-    if (payload.moqt && Array.isArray(payload.moqt)) {
-      for (const scope of payload.moqt) {
-        if (scope.actions) scopes.push(...scope.actions);
+    if (claims.moqt) {
+      payload.moqt = claims.moqt.map(scope => ({
+        actions: scope.actions.map(a => MOQT_ACTION_NAMES[a] ?? `action(${a})`),
+        ns_match: scope.namespaceMatch ?? null,
+        track_match: scope.trackMatch ?? null,
+      }));
+      for (const scope of claims.moqt) {
+        scopes.push(...scope.actions.map(a => MOQT_ACTION_NAMES[a] ?? `action(${a})`));
       }
     }
+
+    const isExpired = claims.exp ? (claims.exp * 1000 < Date.now()) : false;
+
     return { header, payload, raw: token, scopes, isExpired };
   } catch {
     return null;
@@ -312,15 +190,13 @@ function decodeJwt(token: string): DecodedToken | null {
 
 function renderToken(panelId: string, token: string) {
   const el = $(`token-${panelId}`);
-  // Try C4M (CBOR/CWT) first, then JWT
-  const decoded = decodeC4mToken(token) || decodeJwt(token);
+  const decoded = decodeTokenForDisplay(token);
   if (!decoded) {
     el.innerHTML = `<div class="token-raw">${escapeHtml(token)}</div>`;
     return;
   }
 
-  const isC4m = decoded.header.token_type !== undefined || decoded.header.alg === 'ES256' && !decoded.header.typ;
-  const formatLabel = isC4m ? 'C4M (CWT/CBOR)' : 'JWT';
+  const formatLabel = 'C4M (CWT/CBOR)';
 
   const iss = decoded.payload.iss instanceof Uint8Array
     ? new TextDecoder().decode(decoded.payload.iss)
@@ -463,62 +339,79 @@ async function mintToken(sessionToken: string, role: string, panelId: string): P
 // Fake token generators (for denied panel)
 // ============================================================================
 
-function generateInvalidToken(mode: string): string {
+// Cached test key pair for generating fake tokens
+let testKeyPairPromise: Promise<CryptoKeyPair> | null = null;
+function getTestKeyPair(): Promise<CryptoKeyPair> {
+  if (!testKeyPairPromise) {
+    testKeyPairPromise = generateTestKeyPair();
+  }
+  return testKeyPairPromise;
+}
+
+async function generateInvalidToken(mode: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const roomId = getRoomId();
+  const keyPair = await getTestKeyPair();
 
   switch (mode) {
     case 'wrong-scope': {
-      const header = { alg: 'ES256', typ: 'CAT' };
-      const payload = {
-        iss: 'https://api.mocha-net.dev', aud: ['moq-relay'], sub: 'wrong-scope-user',
-        iat: now, exp: now + 3600,
-        moqt: [{ actions: ['subscribe'], namespace: `mocha/WRONG-ROOM-${Date.now().toString(36)}` }],
-      };
-      return fakeJwt(header, payload);
+      const { tokenBytes } = await generateTestCatToken({
+        keyPair,
+        scopes: [{
+          actions: [MoqtAction.Subscribe],
+          namespaceMatch: ['mocha', `WRONG-ROOM-${Date.now().toString(36)}`],
+        }],
+        claims: { sub: 'wrong-scope-user', aud: ['moq-relay'] },
+      });
+      return catTokenToBase64url(tokenBytes);
     }
     case 'expired': {
-      const header = { alg: 'ES256', typ: 'CAT' };
-      const payload = {
-        iss: 'https://api.mocha-net.dev', aud: ['moq-relay'], sub: 'expired-user',
-        iat: now - 7200, exp: now - 3600,
-        moqt: [{ actions: ['subscribe'], namespace: `mocha/${roomId}` }],
-      };
-      return fakeJwt(header, payload);
+      const { tokenBytes } = await generateTestCatToken({
+        keyPair,
+        expired: true,
+        claims: { sub: 'expired-user', aud: ['moq-relay'] },
+      });
+      return catTokenToBase64url(tokenBytes);
     }
     case 'bad-sig': {
-      const header = { alg: 'ES256', typ: 'CAT' };
-      const payload = {
-        iss: 'https://api.mocha-net.dev', aud: ['moq-relay'], sub: 'badsig-user',
-        iat: now, exp: now + 3600,
-        moqt: [{ actions: ['subscribe'], namespace: `mocha/${roomId}` }],
-      };
-      const h = btoa(JSON.stringify(header)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-      const p = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-      return `${h}.${p}.INVALID_SIG_xxxxx`;
+      // Sign with proper format, then corrupt signature
+      const { tokenBytes } = await generateTestCatToken({
+        keyPair,
+        scopes: [{
+          actions: [MoqtAction.Subscribe],
+          namespaceMatch: ['mocha', roomId],
+        }],
+        claims: { sub: 'badsig-user', aud: ['moq-relay'] },
+      });
+      // Corrupt last 16 bytes of the token (part of signature)
+      const corrupted = new Uint8Array(tokenBytes);
+      for (let i = corrupted.length - 16; i < corrupted.length; i++) {
+        corrupted[i] ^= 0xff;
+      }
+      return catTokenToBase64url(corrupted);
     }
     case 'guest': {
-      const header = { alg: 'HS256', typ: 'CAT' };
-      const payload = {
-        iss: 'anonymous', aud: ['moq-relay'], sub: `guest-${Date.now().toString(36)}`,
-        iat: now, exp: now + 300,
-        moqt: [{ actions: ['subscribe'], namespace: `mocha/${roomId}` }],
-      };
-      return fakeJwt(header, payload);
+      // Generate a valid-format token but from a self-signed key (relay won't trust it)
+      const guestKeyPair = await generateTestKeyPair();
+      const { tokenBytes } = await generateTestCatToken({
+        keyPair: guestKeyPair,
+        claims: {
+          iss: 'anonymous',
+          sub: `guest-${Date.now().toString(36)}`,
+          aud: ['moq-relay'],
+          exp: now + 300,
+        },
+        scopes: [{
+          actions: [MoqtAction.Subscribe],
+          namespaceMatch: ['mocha', roomId],
+        }],
+      });
+      return catTokenToBase64url(tokenBytes);
     }
     case 'no-token':
     default:
       return '';
   }
-}
-
-function fakeJwt(header: object, payload: object): string {
-  const h = btoa(JSON.stringify(header)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const p = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const bytes = new Uint8Array(64);
-  crypto.getRandomValues(bytes);
-  const sig = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  return `${h}.${p}.${sig}`;
 }
 
 // ============================================================================
@@ -683,7 +576,7 @@ async function trySubscribeDenied() {
   try {
     setStatus(panelId, 'CONNECTING', 'yellow');
 
-    const token = generateInvalidToken(mode);
+    const token = await generateInvalidToken(mode);
     if (token) {
       renderToken(panelId, token);
     } else {

@@ -85,6 +85,7 @@ import {
   NamespaceErrorCode,
   TrackStatusCode,
   ObjectExistence,
+  AuthorizationToken,
 } from '../messages/types.js';
 
 // Draft-16 message types (for future use when full draft-16 encoding is implemented)
@@ -587,6 +588,84 @@ export class MessageCodec {
   private static readonly MAX_STRING_LENGTH = 65536;
 
   /**
+   * Encode an AuthorizationToken to bytes for use as a setup or request parameter value.
+   *
+   * Wire format:
+   * - alias_type (varint): 0=full, 1=define alias, 2=use alias, 3=USE_VALUE
+   * - For types 0,1,3: token_type (varint) + token_value (remaining bytes)
+   * - For type 1: token_alias (varint) before token_type
+   * - For type 2: token_alias (varint) only
+   */
+  static encodeAuthorizationToken(token: AuthorizationToken): Uint8Array {
+    const writer = new BufferWriter();
+    writer.writeVarInt(token.aliasType);
+
+    switch (token.aliasType) {
+      case 0: // Full token (no alias)
+      case 3: // USE_VALUE (inline, no caching)
+        if (token.tokenType === undefined || !token.tokenValue) {
+          throw new MessageCodecError('tokenType and tokenValue required for aliasType 0 or 3');
+        }
+        writer.writeVarInt(token.tokenType);
+        writer.writeBytes(token.tokenValue);
+        break;
+
+      case 1: // Define new alias
+        if (token.tokenAlias === undefined || token.tokenType === undefined || !token.tokenValue) {
+          throw new MessageCodecError('tokenAlias, tokenType, and tokenValue required for aliasType 1');
+        }
+        writer.writeVarInt(token.tokenAlias);
+        writer.writeVarInt(token.tokenType);
+        writer.writeBytes(token.tokenValue);
+        break;
+
+      case 2: // Use existing alias
+        if (token.tokenAlias === undefined) {
+          throw new MessageCodecError('tokenAlias required for aliasType 2');
+        }
+        writer.writeVarInt(token.tokenAlias);
+        break;
+
+      default:
+        throw new MessageCodecError(`Unknown aliasType: ${token.aliasType}`);
+    }
+
+    return writer.toUint8Array();
+  }
+
+  /**
+   * Decode an AuthorizationToken from parameter bytes.
+   */
+  static decodeAuthorizationToken(data: Uint8Array): AuthorizationToken {
+    const reader = new BufferReader(data);
+    const aliasType = reader.readVarIntNumber();
+
+    switch (aliasType) {
+      case 0: // Full token
+      case 3: { // USE_VALUE
+        const tokenType = reader.readVarIntNumber();
+        const tokenValue = data.slice(reader.offset);
+        return { aliasType, tokenType, tokenValue };
+      }
+
+      case 1: { // Define alias
+        const tokenAlias = reader.readVarIntNumber();
+        const tokenType = reader.readVarIntNumber();
+        const tokenValue = data.slice(reader.offset);
+        return { aliasType, tokenAlias, tokenType, tokenValue };
+      }
+
+      case 2: { // Use alias
+        const tokenAlias = reader.readVarIntNumber();
+        return { aliasType, tokenAlias };
+      }
+
+      default:
+        throw new MessageCodecError(`Unknown auth token aliasType: ${aliasType}`);
+    }
+  }
+
+  /**
    * Decode setup parameters
    *
    * Draft-16: Delta-encoded keys, even keys have varint value directly,
@@ -624,8 +703,13 @@ export class MessageCodec {
             throw new MessageCodecError(`Parameter value too long: ${valueLength}`);
           }
           const bytes = reader.readBytes(valueLength);
-          // Odd keys are typically strings (PATH, ENDPOINT_ID, etc.)
-          parameters.set(key, new TextDecoder().decode(bytes));
+          if (key === SetupParameter.AUTHORIZATION_TOKEN) {
+            // AUTHORIZATION_TOKEN carries binary COSE_Sign1 data — preserve as bytes
+            parameters.set(key, bytes);
+          } else {
+            // Other odd keys are strings (PATH, ENDPOINT_ID, AUTHORITY, etc.)
+            parameters.set(key, new TextDecoder().decode(bytes));
+          }
         }
       }
     } else {
@@ -641,6 +725,10 @@ export class MessageCodec {
           // PATH is a string
           const bytes = reader.readBytes(valueLength);
           parameters.set(key, new TextDecoder().decode(bytes));
+        } else if (key === SetupParameter.AUTHORIZATION_TOKEN) {
+          // AUTHORIZATION_TOKEN carries binary COSE_Sign1 data — preserve as bytes
+          const bytes = reader.readBytes(valueLength);
+          parameters.set(key, bytes);
         } else {
           // Other parameters are varints
           const bytes = reader.readBytes(valueLength);

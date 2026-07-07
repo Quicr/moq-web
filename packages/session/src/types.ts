@@ -32,6 +32,17 @@ export type SessionEventType =
   | 'forward-resumed';
 
 /**
+ * Per-request authorization token for SUBSCRIBE/PUBLISH/FETCH.
+ * Used when per-action tokens are needed beyond the session-level token.
+ */
+export interface RequestAuthToken {
+  /** Raw token bytes (COSE_Sign1 CBOR) */
+  tokenBytes: Uint8Array;
+  /** Token type identifier (default: 0x63346d = C4M) */
+  tokenType?: number;
+}
+
+/**
  * Options for subscribing to a track
  */
 export interface SubscribeOptions {
@@ -49,6 +60,8 @@ export interface SubscribeOptions {
   endGroup?: number;
   /** End object for ABSOLUTE_RANGE */
   endObject?: number;
+  /** Per-request authorization token */
+  authToken?: RequestAuthToken;
 }
 
 /**
@@ -67,6 +80,8 @@ export interface PublishOptions {
   deliveryMode?: 'stream' | 'datagram';
   /** Audio delivery mode when main mode is 'stream' (default: 'datagram' for low latency) */
   audioDeliveryMode?: 'datagram' | 'stream';
+  /** Per-request authorization token */
+  authToken?: RequestAuthToken;
 }
 
 /**

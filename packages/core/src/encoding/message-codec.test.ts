@@ -1083,6 +1083,106 @@ describe('ObjectCodec', () => {
   });
 });
 
+describe('AuthorizationToken', () => {
+  describe('encodeAuthorizationToken / decodeAuthorizationToken', () => {
+    it('round-trips USE_VALUE (aliasType 3)', () => {
+      const tokenValue = new Uint8Array([0x84, 0x43, 0xa1, 0x01, 0x26, 0xa0, 0x44, 0x01, 0x02, 0x03, 0x04, 0x58, 0x40, ...new Array(64).fill(0xab)]);
+      const token = {
+        aliasType: 3,
+        tokenType: 0x63346d,
+        tokenValue,
+      };
+
+      const encoded = MessageCodec.encodeAuthorizationToken(token);
+      const decoded = MessageCodec.decodeAuthorizationToken(encoded);
+
+      expect(decoded.aliasType).toBe(3);
+      expect(decoded.tokenType).toBe(0x63346d);
+      expect(decoded.tokenValue).toEqual(tokenValue);
+    });
+
+    it('round-trips full token (aliasType 0)', () => {
+      const tokenValue = new Uint8Array([1, 2, 3, 4, 5]);
+      const token = {
+        aliasType: 0,
+        tokenType: 0x0002,
+        tokenValue,
+      };
+
+      const encoded = MessageCodec.encodeAuthorizationToken(token);
+      const decoded = MessageCodec.decodeAuthorizationToken(encoded);
+
+      expect(decoded.aliasType).toBe(0);
+      expect(decoded.tokenType).toBe(0x0002);
+      expect(decoded.tokenValue).toEqual(tokenValue);
+    });
+
+    it('round-trips define alias (aliasType 1)', () => {
+      const tokenValue = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      const token = {
+        aliasType: 1,
+        tokenAlias: 42,
+        tokenType: 0x63346d,
+        tokenValue,
+      };
+
+      const encoded = MessageCodec.encodeAuthorizationToken(token);
+      const decoded = MessageCodec.decodeAuthorizationToken(encoded);
+
+      expect(decoded.aliasType).toBe(1);
+      expect(decoded.tokenAlias).toBe(42);
+      expect(decoded.tokenType).toBe(0x63346d);
+      expect(decoded.tokenValue).toEqual(tokenValue);
+    });
+
+    it('round-trips use alias (aliasType 2)', () => {
+      const token = {
+        aliasType: 2,
+        tokenAlias: 42,
+      };
+
+      const encoded = MessageCodec.encodeAuthorizationToken(token);
+      const decoded = MessageCodec.decodeAuthorizationToken(encoded);
+
+      expect(decoded.aliasType).toBe(2);
+      expect(decoded.tokenAlias).toBe(42);
+      expect(decoded.tokenType).toBeUndefined();
+      expect(decoded.tokenValue).toBeUndefined();
+    });
+
+    it('throws on unknown aliasType', () => {
+      expect(() => MessageCodec.encodeAuthorizationToken({
+        aliasType: 99,
+      })).toThrow(MessageCodecError);
+    });
+  });
+
+  it('CLIENT_SETUP with binary AUTHORIZATION_TOKEN preserves bytes', () => {
+    // Build a CLIENT_SETUP with binary auth token
+    const authTokenBytes = new Uint8Array(80);
+    crypto.getRandomValues(authTokenBytes);
+
+    const message: ClientSetupMessage = {
+      type: MessageType.CLIENT_SETUP,
+      supportedVersions: [Version.DRAFT_16],
+      parameters: new Map([
+        [SetupParameter.MAX_REQUEST_ID, 100],
+        [SetupParameter.AUTHORIZATION_TOKEN, authTokenBytes],
+      ]),
+    };
+
+    const encoded = MessageCodec.encode(message);
+    const [decoded] = MessageCodec.decode(encoded);
+
+    const decodedSetup = decoded as ClientSetupMessage;
+    const decodedToken = decodedSetup.parameters.get(SetupParameter.AUTHORIZATION_TOKEN);
+
+    // Critical: binary data must NOT be corrupted by TextDecoder
+    expect(decodedToken).toBeInstanceOf(Uint8Array);
+    expect(decodedToken).toEqual(authTokenBytes);
+  });
+});
+
 describe('MessageCodecError', () => {
   it('creates error with message', () => {
     const error = new MessageCodecError('Test error');

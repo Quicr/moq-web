@@ -12,7 +12,8 @@
   "dependencies": {
     "@web-moq/core": "workspace:*",
     "@web-moq/session": "workspace:*",
-    "@web-moq/media": "workspace:*"
+    "@web-moq/media": "workspace:*",
+    "@web-moq/cat": "workspace:*"
   },
   "devDependencies": {
     "@vitejs/plugin-basic-ssl": "2.1.4",
