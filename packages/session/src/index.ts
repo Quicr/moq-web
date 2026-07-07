@@ -78,6 +78,7 @@ export type {
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,
+  RequestAuthToken,
   // FETCH / DVR types
   FetchOptions,
   FetchRange,

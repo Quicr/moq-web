@@ -27,7 +27,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@web-moq/core": "workspace:*"
+    "@web-moq/core": "workspace:*",
+    "@web-moq/cat": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

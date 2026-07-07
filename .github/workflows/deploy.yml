@@ -56,8 +56,20 @@ jobs:
         env:
           BASE_URL: /${{ github.event.repository.name }}/
 
+      - name: Build auth-demo
+        run: |
+          if [ -d apps/auth-demo ]; then
+            cd apps/auth-demo
+            npm install
+            npx vite build --base /${{ github.event.repository.name }}/auth-demo/
+          fi
+
       - name: Save draft-16 build
-        run: mv packages/client/dist dist-combined
+        run: |
+          mv packages/client/dist dist-combined
+          if [ -d apps/auth-demo/dist ]; then
+            mv apps/auth-demo/dist dist-combined/auth-demo
+          fi
 
       - name: Build apps
         run: |

@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MoQ C4M Auth — Architecture & Flow</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0c10;
+      --surface: #141720;
+      --surface-2: #1c2030;
+      --border: #2a2f3e;
+      --text: #e8ebf0;
+      --text-dim: #7a8294;
+      --accent: #6366f1;
+      --green: #10b981;
+      --red: #ef4444;
+      --yellow: #f59e0b;
+      --blue: #3b82f6;
+      --purple: #a855f7;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 40px 20px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      background: linear-gradient(135deg, var(--accent), var(--purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      font-size: 14px;
+      color: var(--text-dim);
+      margin-bottom: 40px;
+    }
+
+    h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 40px 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    h2 .icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+
+    h3 {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      margin: 24px 0 12px;
+    }
+
+    /* Components grid */
+    .components {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin: 20px 0;
+    }
+
+    .component {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .component::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+    }
+
+    .component.google::before { background: var(--yellow); }
+    .component.moat::before { background: var(--purple); }
+    .component.relay::before { background: var(--green); }
+    .component.browser::before { background: var(--accent); }
+
+    .component-name {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .component-url {
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+
+    .component-desc {
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+
+    /* Flow diagram */
+    .flow-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin: 20px 0;
+    }
+
+    .flow-title {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .flow-subtitle {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 20px;
+    }
+
+    .step {
+      display: flex;
+      gap: 16px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .step:last-child { border-bottom: none; }
+
+    .step-num {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .step-num.send { background: rgba(99,102,241,0.15); color: var(--accent); border: 1px solid rgba(99,102,241,0.3); }
+    .step-num.recv { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
+    .step-num.verify { background: rgba(168,85,247,0.15); color: var(--purple); border: 1px solid rgba(168,85,247,0.3); }
+    .step-num.error { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+
+    .step-body { flex: 1; }
+
+    .step-label {
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+
+    .step-detail {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .step-arrow {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: var(--surface-2);
+      display: inline-block;
+      margin: 4px 0;
+    }
+
+    .step-arrow.right { color: var(--accent); }
+    .step-arrow.left { color: var(--green); }
+    .step-arrow.fail { color: var(--red); }
+
+    .code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin: 8px 0;
+      overflow-x: auto;
+      line-height: 1.7;
+    }
+
+    .code .key { color: var(--blue); }
+    .code .str { color: var(--green); }
+    .code .num { color: var(--yellow); }
+    .code .comment { color: var(--text-dim); font-style: italic; }
+
+    /* Key insight box */
+    .insight {
+      background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(168,85,247,0.08));
+      border: 1px solid rgba(99,102,241,0.2);
+      border-radius: 12px;
+      padding: 20px;
+      margin: 30px 0;
+    }
+
+    .insight-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .insight-text {
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    /* Comparison table */
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 16px 0;
+    }
+
+    .compare-card {
+      background: var(--surface-2);
+      border-radius: 10px;
+      padding: 16px;
+      border: 1px solid var(--border);
+    }
+
+    .compare-card.success { border-color: rgba(16,185,129,0.3); }
+    .compare-card.fail { border-color: rgba(239,68,68,0.3); }
+
+    .compare-header {
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .compare-header .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .compare-header .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .compare-header .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+
+    .compare-list {
+      font-size: 11px;
+      color: var(--text-dim);
+      list-style: none;
+    }
+
+    .compare-list li {
+      padding: 3px 0;
+      padding-left: 14px;
+      position: relative;
+    }
+
+    .compare-list li::before {
+      content: '→';
+      position: absolute;
+      left: 0;
+      color: var(--text-dim);
+    }
+
+    /* Token anatomy */
+    .token-anatomy {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 8px 16px;
+      font-size: 12px;
+      align-items: start;
+    }
+
+    .token-field {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--surface-2);
+      font-weight: 500;
+    }
+
+    .token-field.header { color: var(--yellow); }
+    .token-field.payload { color: var(--blue); }
+    .token-field.sig { color: var(--green); }
+
+    @media (max-width: 768px) {
+      .components { grid-template-columns: 1fr 1fr; }
+      .compare { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>MoQ C4M Auth Demo</h1>
+  <p class="subtitle">Architecture and flow for Common Access Token authorization with live video over MOQT</p>
+
+  <!-- Components -->
+  <h2><span class="icon" style="background:rgba(99,102,241,0.15); color:var(--accent)">◆</span> Components</h2>
+
+  <div class="components">
+    <div class="component browser">
+      <div class="component-name">Browser App</div>
+      <div class="component-url">auth-demo (this page)</div>
+      <div class="component-desc">Orchestrates auth flow, publishes/subscribes video via MOQT, displays tokens and timeline</div>
+    </div>
+    <div class="component google">
+      <div class="component-name">Google IDP</div>
+      <div class="component-url">accounts.google.com</div>
+      <div class="component-desc">Identity Provider. Proves who the user is. Issues Google ID tokens (RS256 JWT)</div>
+    </div>
+    <div class="component moat">
+      <div class="component-name">moat (Token Service)</div>
+      <div class="component-url">api.mocha-net.dev/v1</div>
+      <div class="component-desc">Validates Google ID tokens, creates sessions, mints ES256-signed C4M tokens with MOQT-specific scopes</div>
+    </div>
+    <div class="component relay">
+      <div class="component-name">moqx Relay</div>
+      <div class="component-url">suhas-build-vm:443/moq-relay</div>
+      <div class="component-desc">MoQ relay. Verifies C4M tokens using moat's ES256 public key. Enforces per-namespace publish/subscribe authorization</div>
+    </div>
+  </div>
+
+  <!-- Token anatomy -->
+  <h2><span class="icon" style="background:rgba(168,85,247,0.15); color:var(--purple)">◆</span> C4M Token Anatomy</h2>
+
+  <div class="flow-section">
+    <div class="code">
+      <span class="comment">// Header</span><br>
+      { <span class="key">"alg"</span>: <span class="str">"ES256"</span>, <span class="key">"typ"</span>: <span class="str">"CAT"</span> }<br><br>
+      <span class="comment">// Payload</span><br>
+      {<br>
+      &nbsp;&nbsp;<span class="key">"iss"</span>: <span class="str">"https://api.mocha-net.dev"</span>,<br>
+      &nbsp;&nbsp;<span class="key">"aud"</span>: [<span class="str">"moq-relay"</span>],<br>
+      &nbsp;&nbsp;<span class="key">"sub"</span>: <span class="str">"user-id-from-google"</span>,<br>
+      &nbsp;&nbsp;<span class="key">"iat"</span>: <span class="num">1751414400</span>,<br>
+      &nbsp;&nbsp;<span class="key">"exp"</span>: <span class="num">1751418000</span>,<br>
+      &nbsp;&nbsp;<span class="key">"moqt"</span>: [{<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="key">"actions"</span>: [<span class="str">"publish"</span>, <span class="str">"subscribe"</span>],<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="key">"namespace"</span>: <span class="str">"mocha/auth-demo"</span><br>
+      &nbsp;&nbsp;}]<br>
+      }<br><br>
+      <span class="comment">// Signature: ECDSA P-256 (ES256) signed by moat's private key</span>
+    </div>
+
+    <div class="token-anatomy" style="margin-top: 16px">
+      <span class="token-field header">alg: ES256</span>
+      <span>Asymmetric signature — relay verifies with moat's public key (no shared secret)</span>
+      <span class="token-field payload">moqt.actions</span>
+      <span>What this token allows: <code>publish</code>, <code>subscribe</code>, or both</span>
+      <span class="token-field payload">moqt.namespace</span>
+      <span>Which namespace/room the token grants access to</span>
+      <span class="token-field payload">exp</span>
+      <span>Token expiry — relay rejects if current time > exp</span>
+      <span class="token-field sig">signature</span>
+      <span>Relay verifies against moat's ES256 public key (pre-configured)</span>
+    </div>
+  </div>
+
+  <!-- Authorized flow -->
+  <h2><span class="icon" style="background:rgba(16,185,129,0.15); color:var(--green)">◆</span> Authorized Flow (Publisher & Subscriber)</h2>
+
+  <div class="flow-section">
+    <div class="flow-title">Full flow: Google IDP → moat session → C4M token → relay accepts</div>
+    <div class="flow-subtitle">Both publisher and subscriber follow this same path</div>
+
+    <div class="step">
+      <div class="step-num send">1</div>
+      <div class="step-body">
+        <div class="step-label">Google Sign-In</div>
+        <div class="step-arrow right">Browser → Google IDP</div>
+        <div class="step-detail">User authenticates with Google. Browser receives a Google ID token (JWT signed by Google's RS256 key proving identity).</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num send">2</div>
+      <div class="step-body">
+        <div class="step-label">Exchange for moat session</div>
+        <div class="step-arrow right">POST /auth/google → moat</div>
+        <div class="step-detail">moat validates the Google ID token, creates a user record, returns a <code>session_token</code>. This proves identity to moat for subsequent API calls.</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num send">3</div>
+      <div class="step-body">
+        <div class="step-label">Mint C4M token</div>
+        <div class="step-arrow right">POST /token → moat (with session_token)</div>
+        <div class="step-detail">moat creates an ES256-signed C4M token with specific scopes: <code>publish</code> or <code>subscribe</code> on namespace <code>mocha/auth-demo</code>. This token is what the relay will verify.</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num send">4</div>
+      <div class="step-body">
+        <div class="step-label">Connect to relay (WebTransport)</div>
+        <div class="step-arrow right">Browser → QUIC CONNECT → relay</div>
+        <div class="step-detail">Opens a WebTransport session over QUIC/TLS. This layer does NOT check auth — any client can connect.</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num verify">5</div>
+      <div class="step-body">
+        <div class="step-label">CLIENT_SETUP with C4M token</div>
+        <div class="step-arrow right">CLIENT_SETUP { token_type: 0x63346d, token: &lt;ES256 JWT&gt; }</div>
+        <div class="step-detail">
+          The MOQT setup message carries the C4M token. The relay:
+          <br>• Decodes the JWT
+          <br>• Verifies ES256 signature against moat's public key ✓
+          <br>• Checks <code>exp</code> not expired ✓
+          <br>• Stores granted scopes for this session
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num recv">6</div>
+      <div class="step-body">
+        <div class="step-label">SERVER_SETUP — Authorized!</div>
+        <div class="step-arrow left">relay → SERVER_SETUP</div>
+        <div class="step-detail">Relay accepts the session. Client can now PUBLISH or SUBSCRIBE within the granted namespace.</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num recv">7</div>
+      <div class="step-body">
+        <div class="step-label">Publish / Subscribe video</div>
+        <div class="step-detail">
+          <strong>Publisher:</strong> Encodes camera → sends video objects on <code>[mocha/auth-demo]/video</code><br>
+          <strong>Subscriber:</strong> Subscribes to same track → relay forwards frames → video plays
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Denied flow -->
+  <h2><span class="icon" style="background:rgba(239,68,68,0.15); color:var(--red)">◆</span> Denied Flow (Invalid Token)</h2>
+
+  <div class="flow-section">
+    <div class="flow-title">No IDP sign-in — uses a fake/invalid token</div>
+    <div class="flow-subtitle">Demonstrates what happens when authorization fails</div>
+
+    <div class="step">
+      <div class="step-num send">1</div>
+      <div class="step-body">
+        <div class="step-label">Generate invalid token locally</div>
+        <div class="step-detail">No Google sign-in. Token is crafted in the browser with intentional flaws (wrong scope, expired, bad signature, etc.)</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num send">2</div>
+      <div class="step-body">
+        <div class="step-label">Connect to relay (WebTransport)</div>
+        <div class="step-arrow right">Browser → QUIC CONNECT → relay</div>
+        <div class="step-detail">QUIC connection succeeds — transport layer doesn't check auth.</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num error">3</div>
+      <div class="step-body">
+        <div class="step-label">CLIENT_SETUP with invalid token</div>
+        <div class="step-arrow fail">CLIENT_SETUP { token_type: 0x63346d, token: &lt;INVALID&gt; }</div>
+        <div class="step-detail">
+          Relay attempts verification and FAILS:
+          <br>• <strong>Wrong scope:</strong> namespace <code>mocha/wrong-room</code> ≠ requested resource
+          <br>• <strong>Expired:</strong> <code>exp</code> is in the past
+          <br>• <strong>Bad signature:</strong> doesn't verify with any known ES256 public key
+          <br>• <strong>Guest/HS256:</strong> wrong algorithm (relay only has ES256 keys)
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num error">4</div>
+      <div class="step-body">
+        <div class="step-label">Connection terminated — DENIED</div>
+        <div class="step-arrow fail">relay → closes connection / SUBSCRIBE_ERROR</div>
+        <div class="step-detail">Relay rejects the session or the specific subscribe action. No video is received.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Comparison -->
+  <h2><span class="icon" style="background:rgba(59,130,246,0.15); color:var(--blue)">◆</span> Authorized vs. Denied</h2>
+
+  <div class="compare">
+    <div class="compare-card success">
+      <div class="compare-header"><span class="dot green"></span> Authorized (Panels 1 & 2)</div>
+      <ul class="compare-list">
+        <li>Google IDP sign-in proves identity</li>
+        <li>moat mints ES256-signed C4M token</li>
+        <li>Token scoped to correct namespace</li>
+        <li>Relay verifies signature with moat's public key</li>
+        <li>SERVER_SETUP accepted</li>
+        <li>Video flows through relay</li>
+      </ul>
+    </div>
+    <div class="compare-card fail">
+      <div class="compare-header"><span class="dot red"></span> Denied (Panel 3)</div>
+      <ul class="compare-list">
+        <li>No IDP sign-in (no identity proof)</li>
+        <li>Token crafted locally (fake signature)</li>
+        <li>Token scoped to wrong namespace / expired / bad sig</li>
+        <li>Relay verification FAILS</li>
+        <li>Connection rejected</li>
+        <li>No video received</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Key insight -->
+  <div class="insight">
+    <div class="insight-title">Key Insight</div>
+    <div class="insight-text">
+      Authorization happens at the <strong>MOQT protocol layer</strong>, not the transport layer. The QUIC/WebTransport connection succeeds for <em>everyone</em> — it's the C4M token verification inside <code>CLIENT_SETUP</code> that gates access. This means:
+      <br><br>
+      • <strong>Transport is open</strong> — anyone can establish a QUIC connection<br>
+      • <strong>Protocol is gated</strong> — only valid C4M tokens unlock publish/subscribe<br>
+      • <strong>Scopes are granular</strong> — a token can grant publish-only, subscribe-only, or specific namespaces<br>
+      • <strong>Asymmetric crypto</strong> — relay needs only moat's public key (no shared secrets with clients)
+    </div>
+  </div>
+
+  <h2><span class="icon" style="background:rgba(245,158,11,0.15); color:var(--yellow)">◆</span> Token Type: 0x63346d</h2>
+
+  <div class="flow-section">
+    <div class="code">
+      <span class="comment">// In CLIENT_SETUP parameters:</span><br>
+      AUTHORIZATION_TOKEN = {<br>
+      &nbsp;&nbsp;<span class="key">token_type</span>: <span class="num">0x63346d</span> <span class="comment">// ASCII "c4m" = Common Access Token for MoQ</span><br>
+      &nbsp;&nbsp;<span class="key">token</span>: <span class="str">&lt;base64url-encoded ES256 JWT&gt;</span><br>
+      }
+    </div>
+    <div style="font-size: 12px; color: var(--text-dim); margin-top: 12px; line-height: 1.7">
+      The <code>token_type</code> field tells the relay how to interpret the token bytes.
+      <code>0x63346d</code> (decimal 6501485) is the registered type for C4M tokens,
+      which signals the relay to decode it as a JWT/CWT with MOQT-specific claims
+      in the <code>moqt</code> field.
+    </div>
+  </div>
+
+</body>
+</html>
