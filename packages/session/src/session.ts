@@ -26,6 +26,7 @@ import {
   FilterType,
   ObjectStatus,
   RequestParameter,
+  RequestErrorCode,
   SetupParameter,
   ObjectExtension,
   BufferWriter,
@@ -42,6 +43,7 @@ import {
   type PublishNamespaceOkMessage,
   type SubscribeNamespaceOkMessage,
   type SubscribeNamespaceErrorMessage,
+  type PublishDoneMessage,
   type MOQTMessage,
   type ControlMessage,
   type ObjectHeader,
@@ -53,6 +55,7 @@ import {
   type TrackStatusOkMessage,
   type TrackStatusErrorMessage,
 } from '@web-moq/core';
+import { base64urlDecode, coseSign1Encode, C4M_TOKEN_TYPE } from '@web-moq/cat';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
 import { ObjectRouter } from './object-router.js';
@@ -78,6 +81,7 @@ import type {
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,
+  RequestAuthToken,
   FetchOptions,
   FetchRange,
   FetchInfo,
@@ -190,6 +194,16 @@ export class MOQTSession {
   private namespaceSubscriptionStreams = new Map<number, number>();
   /** Our own namespace prefix for filtering out self-publishes */
   private ownNamespacePrefix: string | null = null;
+  /** Authorization token for CLIENT_SETUP */
+  private authToken: string | null = null;
+  /** Token type for AUTHORIZATION_TOKEN parameter (default: C4M = 0x63346d) */
+  private authTokenType: number = C4M_TOKEN_TYPE;
+  // @ts-expect-error Reserved for token alias caching support (aliasType 1/2)
+  private tokenAliasCache = new Map<number, { tokenType: number; tokenValue: Uint8Array }>();
+  // @ts-expect-error Reserved for token alias caching support
+  private nextTokenAlias = 0;
+  // @ts-expect-error Reserved for token alias caching support
+  private maxAuthTokenCacheSize = 0;
 
   // ============================================================================
   // FETCH / DVR State
@@ -296,6 +310,44 @@ export class MOQTSession {
     });
 
     log.debug('MOQTSession created', { isDraft16: IS_DRAFT_16, useWorker: this.useWorker });
+  }
+
+  /**
+   * Set authorization token to include in CLIENT_SETUP.
+   * Must be called before setup().
+   */
+  setAuthToken(token: string, tokenType?: number): void {
+    this.authToken = token;
+    if (tokenType !== undefined) this.authTokenType = tokenType;
+  }
+
+  /**
+   * Encode a token string to raw bytes based on token type.
+   * Handles C4M (base64url COSE_Sign1 or legacy dot-separated), other base64url types, and raw strings.
+   */
+  private encodeTokenBytes(token: string, tokenType: number): Uint8Array {
+    if (tokenType === C4M_TOKEN_TYPE) {
+      if (token.includes('.')) {
+        return dotTokenToCoseSign1Bytes(token);
+      }
+      return base64urlDecode(token);
+    }
+    if (tokenType === 0x0002 || tokenType === 0xda7a) {
+      return base64urlDecode(token);
+    }
+    return new TextEncoder().encode(token);
+  }
+
+  /**
+   * Encode a per-request auth token for SUBSCRIBE/PUBLISH/FETCH parameters.
+   */
+  private encodeRequestAuthToken(authToken: RequestAuthToken): Uint8Array {
+    const tokenType = authToken.tokenType ?? C4M_TOKEN_TYPE;
+    return MessageCodec.encodeAuthorizationToken({
+      aliasType: 3, // USE_VALUE
+      tokenType,
+      tokenValue: authToken.tokenBytes,
+    });
   }
 
   /**
@@ -725,9 +777,17 @@ export class MOQTSession {
     // Send CLIENT_SETUP
     // Draft-14: Include version list
     // Draft-16: Version negotiated via ALPN, no version list
-    const setupParams = new Map<SetupParameter, number | string>();
-    // Set max request ID to allow up to 1000 concurrent requests
+    const setupParams = new Map<SetupParameter, number | string | Uint8Array>();
     setupParams.set(SetupParameter.MAX_REQUEST_ID, 1000);
+    if (this.authToken) {
+      const tokenBytes = this.encodeTokenBytes(this.authToken, this.authTokenType);
+      const authTokenData = MessageCodec.encodeAuthorizationToken({
+        aliasType: 3, // USE_VALUE — inline token, no caching
+        tokenType: this.authTokenType,
+        tokenValue: tokenBytes,
+      });
+      setupParams.set(SetupParameter.AUTHORIZATION_TOKEN, authTokenData);
+    }
 
     const clientSetup: ClientSetupMessage = {
       type: MessageType.CLIENT_SETUP,
@@ -864,6 +924,12 @@ export class MOQTSession {
       startObject: filterType === FilterType.ABSOLUTE_START ? startObject : undefined,
       parameters: new Map(),
     };
+
+    // Add per-request auth token if provided
+    if (options?.authToken) {
+      const authData = this.encodeRequestAuthToken(options.authToken);
+      subscribeMessage.parameters!.set(RequestParameter.AUTHORIZATION_TOKEN, authData);
+    }
 
     const subscribeBytes = MessageCodec.encode(subscribeMessage);
 
@@ -1360,6 +1426,13 @@ export class MOQTSession {
     this.namespaceSubscriptions.delete(subscriptionId);
   }
 
+  removeNamespaceSubscription(subscriptionId: number): void {
+    const subscription = this.namespaceSubscriptions.get(subscriptionId);
+    if (!subscription) return;
+    this.namespaceSubscriptionByRequestId.delete(subscription.requestId);
+    this.namespaceSubscriptions.delete(subscriptionId);
+  }
+
   /**
    * Set own namespace prefix for filtering out self-publishes
    */
@@ -1391,6 +1464,14 @@ export class MOQTSession {
     const subscription = this.subscriptionManager.get(subscriptionId);
     if (subscription) {
       subscription.onObject = onObject;
+      // Flush any objects that arrived before the callback was set
+      if (subscription.pendingObjects && subscription.pendingObjects.length > 0) {
+        const pending = subscription.pendingObjects;
+        subscription.pendingObjects = undefined;
+        for (const obj of pending) {
+          onObject(obj.data, obj.groupId, obj.objectId, obj.timestamp);
+        }
+      }
       log.debug('Updated subscription callback', { subscriptionId });
     } else {
       log.warn('Cannot set callback: subscription not found', { subscriptionId });
@@ -1446,6 +1527,17 @@ export class MOQTSession {
       const writer = new BufferWriter();
       writer.writeVarInt(deliveryTimeout);
       parameters.set(RequestParameter.DELIVERY_TIMEOUT, writer.toUint8Array());
+    }
+    if (options?.maxCacheDuration !== undefined && options.maxCacheDuration > 0) {
+      const writer = new BufferWriter();
+      writer.writeVarInt(options.maxCacheDuration);
+      parameters.set(RequestParameter.MAX_CACHE_DURATION, writer.toUint8Array());
+    }
+
+    // Add per-request auth token if provided
+    if (options?.authToken) {
+      const authData = this.encodeRequestAuthToken(options.authToken);
+      parameters.set(RequestParameter.AUTHORIZATION_TOKEN, authData);
     }
 
     // Create publication (forward state will be set after PUBLISH_OK)
@@ -1791,13 +1883,14 @@ export class MOQTSession {
       return;
     }
 
-    // Find matching namespace subscription
+    // Find most specific (longest prefix) matching namespace subscription
     let matchingSubscription: NamespaceSubscriptionInfo | undefined;
+    let longestMatch = -1;
     for (const sub of this.namespaceSubscriptions.values()) {
       const prefix = sub.namespacePrefix.join('/');
-      if (namespaceStr.startsWith(prefix)) {
+      if (namespaceStr.startsWith(prefix) && prefix.length > longestMatch) {
         matchingSubscription = sub;
-        break;
+        longestMatch = prefix.length;
       }
     }
 
@@ -1809,23 +1902,15 @@ export class MOQTSession {
       return;
     }
 
-    // Check for trackAlias collision - this will cause routing issues
+    // Handle trackAlias reuse (e.g. remote user ended and redialed)
     const existingSubscription = this.subscriptionManager.getByAlias(BigInt(message.trackAlias));
     if (existingSubscription) {
-      const existingTrackName = [...existingSubscription.namespace, existingSubscription.trackName].join('/');
-      log.error('TrackAlias collision detected - multiple tracks using same alias will cause data corruption', {
+      log.info('Replacing stale subscription for reused trackAlias', {
         trackAlias: message.trackAlias.toString(),
-        newTrack: fullTrackNameStr,
-        existingTrack: existingTrackName,
-        existingSubscriptionId: existingSubscription.subscriptionId,
+        oldSubscriptionId: existingSubscription.subscriptionId,
+        track: fullTrackNameStr,
       });
-
-      // Emit error event so UI can warn the user
-      this.emit('error', new Error(
-        `TrackAlias collision: "${fullTrackNameStr}" and "${existingTrackName}" both use alias ${message.trackAlias}. Video/audio data may be corrupted.`
-      ));
-
-      // Continue anyway - we'll accept the PUBLISH but routing will be broken
+      this.subscriptionManager.remove(existingSubscription.subscriptionId);
     }
 
     // Store track info
@@ -2465,6 +2550,18 @@ export class MOQTSession {
     // Close any active GOP stream
     await this.closeVideoGOPStream(key);
 
+    // Send PUBLISH_DONE to notify the relay/subscribers
+    const publishDone: PublishDoneMessage = {
+      type: MessageType.PUBLISH_DONE,
+      requestId: publication.requestId,
+      statusCode: RequestErrorCode.INTERNAL_ERROR,
+      reasonPhrase: '',
+      contentExists: false,
+    };
+    const bytes = MessageCodec.encode(publishDone);
+    await this.doSendControl(bytes).catch(() => {});
+    log.info('Sent PUBLISH_DONE', { trackAlias: key, requestId: publication.requestId });
+
     // Remove from manager (this also runs cleanup handlers)
     this.publicationManager.remove(key);
 
@@ -2487,8 +2584,8 @@ export class MOQTSession {
     if (deliveryMode === 'datagram') {
       await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
     } else {
-      // Video with keyframe info uses GOP batching (one stream per group)
-      if (metadata.type === 'video' && metadata.isKeyframe !== undefined) {
+      // newGroup flag triggers group-based stream batching (one stream per group)
+      if (metadata.newGroup !== undefined) {
         await this.sendObjectWithGOP(trackAlias, data, metadata, priority);
       } else if (metadata.type === 'audio') {
         // Audio uses configured audioDeliveryMode (default: datagram for low latency)
@@ -2645,7 +2742,7 @@ export class MOQTSession {
     const aliasKey = trackAlias.toString();
 
     try {
-      if (metadata.isKeyframe) {
+      if (metadata.newGroup) {
         // Close existing stream with END_OF_GROUP marker
         const existing = this.activeVideoStreams.get(aliasKey);
         if (existing) {
@@ -2728,12 +2825,43 @@ export class MOQTSession {
         const existing = this.activeVideoStreams.get(aliasKey);
 
         if (!existing) {
-          log.warn('No active GOP stream for P-frame, creating new stream', {
+          // No active stream — open one (treat this object as the start of a subgroup)
+          log.info('No active GOP stream, opening new stream for group', {
             trackAlias: aliasKey,
             groupId: metadata.groupId,
             objectId: metadata.objectId,
           });
-          await this.sendObjectViaStream(trackAlias, data, metadata, priority);
+
+          const streamInfo = await this.doCreateStream();
+          const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
+            trackAlias,
+            groupId: metadata.groupId,
+            subgroupId: 0,
+            publisherPriority: priority,
+          }, false);
+
+          const objectData = ObjectCodec.encodeStreamObject(
+            metadata.objectId,
+            data,
+            ObjectStatus.NORMAL,
+            -1,
+            hasExtensions
+          );
+
+          const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
+          combinedData.set(subgroupHeader, 0);
+          combinedData.set(objectData, subgroupHeader.length);
+
+          await this.doWriteStream(streamInfo, combinedData);
+
+          this.activeVideoStreams.set(aliasKey, {
+            writer: streamInfo.writer!,
+            streamId: streamInfo.streamId!,
+            groupId: metadata.groupId,
+            objectCount: 1,
+            previousObjectId: metadata.objectId,
+            hasExtensions,
+          });
           return;
         }
 
@@ -2783,15 +2911,45 @@ export class MOQTSession {
           });
         } catch (writeErr) {
           const errMsg = (writeErr as Error).message;
-          // Stream was closed (STOP_SENDING or not found) - clean up and drop this P-frame
-          // Next keyframe will start a fresh GOP stream
           if (errMsg.includes('not found') || errMsg.includes('STOP_SENDING')) {
-            log.debug('GOP stream closed by relay, dropping P-frame until next keyframe', {
+            log.info('GOP stream closed by relay, reopening for same group', {
               trackAlias: aliasKey,
               groupId: metadata.groupId,
               objectId: metadata.objectId,
             });
             this.activeVideoStreams.delete(aliasKey);
+
+            // Reopen stream and retry as if this is a new keyframe for the same group
+            const streamInfo = await this.doCreateStream();
+            const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
+              trackAlias,
+              groupId: metadata.groupId,
+              subgroupId: 0,
+              publisherPriority: priority,
+            }, false /* not endOfGroup - stream stays open */);
+
+            const retryObjectData = ObjectCodec.encodeStreamObject(
+              metadata.objectId,
+              data,
+              ObjectStatus.NORMAL,
+              -1, // first object in new subgroup
+              hasExtensions
+            );
+
+            const combinedData = new Uint8Array(subgroupHeader.length + retryObjectData.length);
+            combinedData.set(subgroupHeader, 0);
+            combinedData.set(retryObjectData, subgroupHeader.length);
+
+            await this.doWriteStream(streamInfo, combinedData);
+
+            this.activeVideoStreams.set(aliasKey, {
+              writer: streamInfo.writer!,
+              streamId: streamInfo.streamId!,
+              groupId: metadata.groupId,
+              objectCount: 1,
+              previousObjectId: metadata.objectId,
+              hasExtensions,
+            });
           } else {
             throw writeErr;
           }
@@ -2802,7 +2960,7 @@ export class MOQTSession {
         trackAlias: aliasKey,
         groupId: metadata.groupId,
         objectId: metadata.objectId,
-        isKeyframe: metadata.isKeyframe,
+        newGroup: metadata.newGroup,
         error: (err as Error).message,
       });
       this.activeVideoStreams.delete(aliasKey);
@@ -3615,4 +3773,25 @@ export class MOQTSession {
       }
     }
   }
+}
+
+/**
+ * Convert a legacy dot-separated token to COSE_Sign1 CBOR bytes.
+ * Format: base64url(protectedHeader).base64url(payload).base64url(signature)
+ */
+function dotTokenToCoseSign1Bytes(token: string): Uint8Array {
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    return new TextEncoder().encode(token);
+  }
+  const protectedHeader = base64urlDecode(parts[0]);
+  const payload = base64urlDecode(parts[1]);
+  const signature = base64urlDecode(parts[2]);
+
+  return coseSign1Encode({
+    protectedHeader,
+    unprotectedHeader: new Map(),
+    payload,
+    signature,
+  });
 }

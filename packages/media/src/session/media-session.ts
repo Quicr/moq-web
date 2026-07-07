@@ -58,6 +58,12 @@ export interface MediaSessionOptions {
    * Connection timeout in milliseconds (default: 300000 = 5 minutes).
    */
   connectionTimeout?: number;
+  /**
+   * An existing MOQTSession to reuse (session mode).
+   * When provided, MediaSession will not create or manage a transport/session.
+   * The caller is responsible for the session lifecycle (setup, close).
+   */
+  session?: MOQTSession;
 }
 
 const log = Logger.create('moqt:media:session');
@@ -156,12 +162,16 @@ export class MediaSession {
   /** Whether using transport worker mode */
   private useTransportWorker = false;
 
+  /** Whether session lifecycle is owned externally (session mode) */
+  private externalSession = false;
+
   /**
    * Create a new MediaSession
    *
-   * Supports two modes:
+   * Supports three modes:
    * - **Main thread mode**: Pass a connected `MOQTransport` instance
    * - **Worker mode**: Pass `MediaSessionOptions` with `workers.transportWorker`
+   * - **Session mode**: Pass `MediaSessionOptions` with `session` (existing MOQTSession)
    *
    * @example
    * ```typescript
@@ -176,9 +186,13 @@ export class MediaSession {
    *   serverCertificateHashes: [hash],
    * });
    * await session.connect('https://relay.example.com/moq');
+   *
+   * // Session mode (reuse existing MOQTSession)
+   * const mediaSession = new MediaSession({ session: existingMoqtSession });
+   * // No setup/connect needed — session is already connected
    * ```
    *
-   * @param transportOrOptions - Connected MOQTransport instance OR MediaSessionOptions with transportWorker
+   * @param transportOrOptions - Connected MOQTransport instance OR MediaSessionOptions
    * @param options - Optional configuration (only used when first arg is MOQTransport)
    */
   constructor(transportOrOptions: MOQTransport | MediaSessionOptions, options?: MediaSessionOptions) {
@@ -189,26 +203,31 @@ export class MediaSession {
       this.workers = options?.workers;
       this.useTransportWorker = false;
     } else {
-      // Worker mode: transport worker provided in options
       const opts = transportOrOptions;
       this.workers = opts.workers;
-      this.useTransportWorker = !!opts.workers?.transportWorker;
 
-      if (this.useTransportWorker && opts.workers?.transportWorker) {
-        // Create session with worker config
+      if (opts.session) {
+        // Session mode: reuse existing MOQTSession
+        this.session = opts.session;
+        this.useTransportWorker = false;
+        this.externalSession = true;
+      } else if (opts.workers?.transportWorker) {
+        // Worker mode: transport worker provided in options
+        this.useTransportWorker = true;
         this.session = new MOQTSession({
           worker: opts.workers.transportWorker,
           serverCertificateHashes: opts.serverCertificateHashes,
           connectionTimeout: opts.connectionTimeout,
         });
       } else {
-        throw new Error('MediaSession requires either a MOQTransport or workers.transportWorker');
+        throw new Error('MediaSession requires a MOQTransport, workers.transportWorker, or an existing session');
       }
     }
 
     this.setupSessionEvents();
     log.debug('MediaSession created', {
       useTransportWorker: this.useTransportWorker,
+      externalSession: this.externalSession,
       hasEncodeWorker: !!this.workers?.encodeWorker,
       hasDecodeWorker: !!this.workers?.decodeWorker,
     });
@@ -218,11 +237,14 @@ export class MediaSession {
    * Connect to a relay server (worker mode only)
    *
    * This method is only needed when using transport worker mode.
-   * In main thread mode, the transport should already be connected.
+   * In main thread or session mode, the transport/session is already connected.
    *
    * @param url - WebTransport URL to connect to
    */
   async connect(url: string): Promise<void> {
+    if (this.externalSession) {
+      throw new Error('connect() is not available in session mode. The external session is already connected.');
+    }
     if (!this.useTransportWorker) {
       throw new Error('connect() is only available in worker mode. In main thread mode, connect the transport before creating MediaSession.');
     }
@@ -241,6 +263,7 @@ export class MediaSession {
    * Check if session is ready
    */
   get isReady(): boolean {
+    if (this.externalSession) return true;
     return this.session.isReady;
   }
 
@@ -254,9 +277,11 @@ export class MediaSession {
   /**
    * Set up the MOQT session
    *
-   * Sends CLIENT_SETUP and waits for SERVER_SETUP
+   * Sends CLIENT_SETUP and waits for SERVER_SETUP.
+   * In session mode (external session), this is a no-op since setup is already done.
    */
   async setup(): Promise<void> {
+    if (this.externalSession) return;
     await this.session.setup();
   }
 
@@ -300,7 +325,10 @@ export class MediaSession {
   }
 
   /**
-   * Close the session
+   * Close the media session
+   *
+   * Stops all pipelines. In session mode (external session), the underlying
+   * MOQTSession is NOT closed — the caller owns its lifecycle.
    */
   async close(): Promise<void> {
     log.info('Closing media session');
@@ -315,14 +343,23 @@ export class MediaSession {
       await this.unsubscribe(subscriptionId);
     }
 
+    // Clean up namespace subscriptions locally (don't send UNSUBSCRIBE_NAMESPACE
+    // to relay — it may not support this message and would kill the connection)
+    for (const [subscriptionId] of this.namespaceConfigs) {
+      this.session.removeNamespaceSubscription(subscriptionId);
+    }
+    this.namespaceConfigs.clear();
+
     // Clean up session events
     for (const cleanup of this.sessionCleanup) {
       cleanup();
     }
     this.sessionCleanup = [];
 
-    // Close underlying session
-    await this.session.close();
+    // Only close the session if we own it
+    if (!this.externalSession) {
+      await this.session.close();
+    }
 
     log.info('Media session closed');
   }
@@ -390,8 +427,10 @@ export class MediaSession {
     const publishOptions: PublishOptions = {
       priority: config.priority ?? 128,
       deliveryTimeout: config.deliveryTimeout ?? 5000,
+      maxCacheDuration: config.maxCacheDuration,
       deliveryMode: config.deliveryMode ?? 'stream',
       audioDeliveryMode: config.audioDeliveryMode ?? 'datagram',
+      authToken: config.authToken,
     };
 
     // Publish to the session (get track alias)
@@ -402,31 +441,24 @@ export class MediaSession {
 
     const cleanupHandlers: Array<() => void> = [];
 
+    // Serialize video sends to prevent GOP stream corruption from concurrent writes
+    let videoWriteQueue: Promise<void> = Promise.resolve();
+
     // Handle video objects (with optional encryption)
     const videoCleanup = pipeline.on('video-object', (obj: PublishedObject) => {
-      if (secureContext) {
-        // Encrypt before sending
-        secureContext.encrypt(obj.data, {
-          groupId: BigInt(obj.groupId),
-          objectId: obj.objectId,
-        }).then(({ ciphertext }) => {
-          this.session.sendObject(trackAlias, ciphertext, {
-            groupId: obj.groupId,
-            objectId: obj.objectId,
-            isKeyframe: obj.isKeyframe,
-            type: 'video',
-          });
-        }).catch((err) => {
-          log.error('Encryption failed for video object', err as Error);
-        });
-      } else {
-        this.session.sendObject(trackAlias, obj.data, {
+      videoWriteQueue = videoWriteQueue.then(async () => {
+        const payload = secureContext
+          ? (await secureContext.encrypt(obj.data, { groupId: BigInt(obj.groupId), objectId: obj.objectId })).ciphertext
+          : obj.data;
+        await this.session.sendObject(trackAlias, payload, {
           groupId: obj.groupId,
           objectId: obj.objectId,
-          isKeyframe: obj.isKeyframe,
+          newGroup: obj.isKeyframe,
           type: 'video',
         });
-      }
+      }).catch((err) => {
+        log.error('Video send failed', err as Error);
+      });
     });
     cleanupHandlers.push(videoCleanup);
 
@@ -441,7 +473,7 @@ export class MediaSession {
           this.session.sendObject(trackAlias, ciphertext, {
             groupId: obj.groupId,
             objectId: obj.objectId,
-            isKeyframe: obj.isKeyframe,
+            newGroup: obj.isKeyframe,
             type: 'audio',
           });
         }).catch((err) => {
@@ -451,7 +483,7 @@ export class MediaSession {
         this.session.sendObject(trackAlias, obj.data, {
           groupId: obj.groupId,
           objectId: obj.objectId,
-          isKeyframe: obj.isKeyframe,
+          newGroup: obj.isKeyframe,
           type: 'audio',
         });
       }
@@ -710,6 +742,7 @@ export class MediaSession {
       ...options,
       filterType: effectiveFilterType,
       startGroup: options?.startGroup ?? config.startGroup ?? 0,
+      authToken: config.authToken,
     };
 
     // Subscribe via session with object callback and end-of-group handler
@@ -1125,30 +1158,24 @@ export class MediaSession {
 
     const cleanupHandlers: Array<() => void> = [];
 
+    // Serialize video sends to prevent GOP stream corruption from concurrent writes
+    let videoWriteQueue: Promise<void> = Promise.resolve();
+
     // Handle video objects (with optional encryption)
     const videoCleanup = pipeline.on('video-object', (obj: PublishedObject) => {
-      if (secureContext) {
-        secureContext.encrypt(obj.data, {
-          groupId: BigInt(obj.groupId),
-          objectId: obj.objectId,
-        }).then(({ ciphertext }) => {
-          this.session.sendObject(trackAlias, ciphertext, {
-            groupId: obj.groupId,
-            objectId: obj.objectId,
-            isKeyframe: obj.isKeyframe,
-            type: 'video',
-          });
-        }).catch((err) => {
-          log.error('Encryption failed for video object', err as Error);
-        });
-      } else {
-        this.session.sendObject(trackAlias, obj.data, {
+      videoWriteQueue = videoWriteQueue.then(async () => {
+        const payload = secureContext
+          ? (await secureContext.encrypt(obj.data, { groupId: BigInt(obj.groupId), objectId: obj.objectId })).ciphertext
+          : obj.data;
+        await this.session.sendObject(trackAlias, payload, {
           groupId: obj.groupId,
           objectId: obj.objectId,
-          isKeyframe: obj.isKeyframe,
+          newGroup: obj.isKeyframe,
           type: 'video',
         });
-      }
+      }).catch((err) => {
+        log.error('Video send failed', err as Error);
+      });
     });
     cleanupHandlers.push(videoCleanup);
 
@@ -1162,7 +1189,7 @@ export class MediaSession {
           this.session.sendObject(trackAlias, ciphertext, {
             groupId: obj.groupId,
             objectId: obj.objectId,
-            isKeyframe: obj.isKeyframe,
+            newGroup: obj.isKeyframe,
             type: 'audio',
           });
         }).catch((err) => {
@@ -1172,7 +1199,7 @@ export class MediaSession {
         this.session.sendObject(trackAlias, obj.data, {
           groupId: obj.groupId,
           objectId: obj.objectId,
-          isKeyframe: obj.isKeyframe,
+          newGroup: obj.isKeyframe,
           type: 'audio',
         });
       }
@@ -1683,6 +1710,19 @@ export class MediaSession {
       quicrInteropEnabled: config.quicrInteropEnabled,
       minBufferFrames: config.minBufferFrames,
     });
+
+    // Clean up existing pipeline for same track (e.g. remote user redialed)
+    const trackKey = `${event.namespace.join('/')}/${event.trackName}`;
+    for (const [oldSubId, sub] of this.subscriptions) {
+      const oldKey = `${sub.namespace.join('/')}/${sub.trackName}`;
+      if (oldKey === trackKey) {
+        log.info('Replacing stale decode pipeline', { oldSubId, trackKey });
+        await sub.pipeline.stop();
+        this.pipelineToSubscriptionId.delete(sub.pipeline);
+        this.subscriptions.delete(oldSubId);
+        break;
+      }
+    }
 
     log.info('Created decode pipeline for discovered track', {
       namespaceSubscriptionId: event.namespaceSubscriptionId,

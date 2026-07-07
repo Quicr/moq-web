@@ -8,6 +8,7 @@
  */
 
 import type { GroupOrder } from '@web-moq/core';
+import type { RequestAuthToken } from '@web-moq/session';
 
 /**
  * Session state
@@ -96,6 +97,8 @@ export interface MediaConfig {
   keyframeInterval?: number;
   /** Delivery timeout in milliseconds (0 = drop immediately) */
   deliveryTimeout?: number;
+  /** Max cache duration in ms — relay evicts objects after this time */
+  maxCacheDuration?: number;
   /** Publisher priority (0 = highest, 255 = lowest) */
   priority?: number;
   /** Delivery mode: 'stream' for reliable ordered delivery, 'datagram' for low-latency unreliable */
@@ -151,6 +154,10 @@ export interface MediaConfig {
   arbiterDebug?: boolean;
   /** Minimum frames to buffer before starting VOD playback (default: 30) */
   minBufferFrames?: number;
+
+  // Per-request authorization
+  /** Auth token to include in SUBSCRIBE/PUBLISH request parameters */
+  authToken?: RequestAuthToken;
 
   // Secure Objects (E2E encryption) options
   /** Enable Secure Objects encryption/decryption */

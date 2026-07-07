@@ -39,6 +39,17 @@ export type SessionEventType =
   | 'forward-state-change';
 
 /**
+ * Per-request authorization token for SUBSCRIBE/PUBLISH/FETCH.
+ * Used when per-action tokens are needed beyond the session-level token.
+ */
+export interface RequestAuthToken {
+  /** Raw token bytes (COSE_Sign1 CBOR) */
+  tokenBytes: Uint8Array;
+  /** Token type identifier (default: 0x63346d = C4M) */
+  tokenType?: number;
+}
+
+/**
  * Options for subscribing to a track
  */
 export interface SubscribeOptions {
@@ -52,6 +63,8 @@ export interface SubscribeOptions {
   startGroup?: number;
   /** Start object ID when filterType is 'absolute' (default: 0) */
   startObject?: number;
+  /** Per-request authorization token */
+  authToken?: RequestAuthToken;
 }
 
 /**
@@ -64,10 +77,14 @@ export interface PublishOptions {
   groupOrder?: GroupOrder;
   /** Delivery timeout in milliseconds */
   deliveryTimeout?: number;
+  /** Max cache duration in ms — relay evicts objects after this time (default: no limit) */
+  maxCacheDuration?: number;
   /** Delivery mode: 'stream' for reliable, 'datagram' for low-latency */
   deliveryMode?: 'stream' | 'datagram';
   /** Audio delivery mode when main mode is 'stream' (default: 'datagram' for low latency) */
   audioDeliveryMode?: 'datagram' | 'stream';
+  /** Per-request authorization token */
+  authToken?: RequestAuthToken;
 }
 
 /**
@@ -78,7 +95,9 @@ export interface ObjectMetadata {
   groupId: number;
   /** Object ID within the group */
   objectId: number;
-  /** Whether this is a keyframe (starts new GOP for streams) */
+  /** Signals the start of a new group (closes previous group's stream, opens new one) */
+  newGroup?: boolean;
+  /** Whether this object is a keyframe */
   isKeyframe?: boolean;
   /** Object type hint (for logging) */
   type?: string;

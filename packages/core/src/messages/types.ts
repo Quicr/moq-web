@@ -264,6 +264,8 @@ export enum RequestParameter {
   DELIVERY_TIMEOUT = 0x02,
   /** Authorization token for the request */
   AUTHORIZATION_TOKEN = 0x03,
+  /** Max cache duration in ms — relay evicts objects after this time */
+  MAX_CACHE_DURATION = 0x04,
   /** Expires parameter */
   EXPIRES = 0x06,
   /** Largest object parameter */
@@ -523,7 +525,7 @@ export interface ClientSetupMessage extends MOQTMessage {
   /** List of protocol versions supported by the client */
   supportedVersions: Version[];
   /** Session setup parameters */
-  parameters: Map<SetupParameter, number | string>;
+  parameters: Map<SetupParameter, number | string | Uint8Array>;
 }
 
 /**
@@ -538,7 +540,7 @@ export interface ServerSetupMessage extends MOQTMessage {
   /** Selected protocol version */
   selectedVersion: Version;
   /** Session setup parameters */
-  parameters: Map<SetupParameter, number | string>;
+  parameters: Map<SetupParameter, number | string | Uint8Array>;
 }
 
 /**
