@@ -2207,34 +2207,112 @@ export class MessageCodec {
   }
 
   // ============================================================================
-  // Fetch Message Encoding/Decoding (Draft 14)
+  // Fetch Message Encoding/Decoding (Draft 14 / Draft 16)
   // ============================================================================
 
+  // FetchType values for draft-15+
+  private static readonly FETCH_TYPE_STANDALONE = 0x01;
+
   private static encodeFetchPayload(writer: BufferWriter, message: FetchMessage): void {
+    log.info('FETCH encode', {
+      requestId: message.requestId,
+      namespace: message.fullTrackName.namespace.join('/'),
+      trackName: message.fullTrackName.trackName,
+      subscriberPriority: message.subscriberPriority,
+      groupOrder: message.groupOrder,
+      startGroup: message.startGroup,
+      startObject: message.startObject,
+      endGroup: message.endGroup,
+      endObject: message.endObject,
+      paramCount: message.parameters?.size ?? 0,
+      isDraft16: IS_DRAFT_16,
+    });
+
     writer.writeVarInt(message.requestId);
-    MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
-    writer.writeVarInt(message.subscriberPriority);
-    writer.writeVarInt(message.groupOrder);
-    writer.writeVarInt(message.startGroup);
-    writer.writeVarInt(message.startObject);
-    writer.writeVarInt(message.endGroup);
-    writer.writeVarInt(message.endObject);
-    MessageCodec.encodeRequestParameters(writer, message.parameters);
+
+    if (IS_DRAFT_16) {
+      // Draft-15+: FetchType, then type-specific fields, then parameters
+      // Using STANDALONE (0x01) which requires: Full Track Name, Start Location, End Location
+      writer.writeVarInt(MessageCodec.FETCH_TYPE_STANDALONE);
+      MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
+      // Start location (group, object)
+      writer.writeVarInt(message.startGroup);
+      writer.writeVarInt(message.startObject);
+      // End location (group, object)
+      writer.writeVarInt(message.endGroup);
+      writer.writeVarInt(message.endObject);
+      // Parameters - include priority and group order as parameters
+      const params = new Map<RequestParameter, Uint8Array>(message.parameters ?? []);
+      // Add subscriber priority as parameter (0x20)
+      const priorityWriter = new BufferWriter();
+      priorityWriter.writeVarInt(message.subscriberPriority);
+      params.set(RequestParameter.SUBSCRIBER_PRIORITY, priorityWriter.toUint8Array());
+      // Add group order as parameter (0x22)
+      const orderWriter = new BufferWriter();
+      orderWriter.writeVarInt(message.groupOrder);
+      params.set(RequestParameter.GROUP_ORDER, orderWriter.toUint8Array());
+      MessageCodec.encodeRequestParameters(writer, params);
+    } else {
+      // Draft-14: Fixed format fields
+      MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
+      writer.writeByte(message.subscriberPriority);
+      writer.writeByte(message.groupOrder);
+      writer.writeVarInt(message.startGroup);
+      writer.writeVarInt(message.startObject);
+      writer.writeVarInt(message.endGroup);
+      writer.writeVarInt(message.endObject);
+      MessageCodec.encodeRequestParameters(writer, message.parameters);
+    }
   }
 
   private static decodeFetchPayload(reader: BufferReader): FetchMessage {
-    return {
-      type: MessageType.FETCH,
-      requestId: reader.readVarIntNumber(),
-      fullTrackName: MessageCodec.decodeFullTrackName(reader),
-      subscriberPriority: reader.readVarIntNumber(),
-      groupOrder: reader.readVarIntNumber() as GroupOrder,
-      startGroup: reader.readVarIntNumber(),
-      startObject: reader.readVarIntNumber(),
-      endGroup: reader.readVarIntNumber(),
-      endObject: reader.readVarIntNumber(),
-      parameters: MessageCodec.decodeRequestParameters(reader),
-    };
+    const requestId = reader.readVarIntNumber();
+
+    if (IS_DRAFT_16) {
+      // Draft-15+: Read fetch type, then type-specific fields
+      const fetchType = reader.readVarIntNumber();
+      if (fetchType !== MessageCodec.FETCH_TYPE_STANDALONE) {
+        throw new MessageCodecError(`Unsupported fetch type: ${fetchType}`);
+      }
+      const fullTrackName = MessageCodec.decodeFullTrackName(reader);
+      const startGroup = reader.readVarIntNumber();
+      const startObject = reader.readVarIntNumber();
+      const endGroup = reader.readVarIntNumber();
+      const endObject = reader.readVarIntNumber();
+      const parameters = MessageCodec.decodeRequestParameters(reader);
+
+      // Extract priority and group order from parameters, with defaults
+      const subscriberPriority = 128;
+      const groupOrder = GroupOrder.ASCENDING;
+      // Parameters would need to be parsed for these values
+
+      return {
+        type: MessageType.FETCH,
+        requestId,
+        fullTrackName,
+        subscriberPriority,
+        groupOrder,
+        startGroup,
+        startObject,
+        endGroup,
+        endObject,
+        parameters,
+      };
+    } else {
+      // Draft-14 format
+      return {
+        type: MessageType.FETCH,
+        requestId,
+        fullTrackName: MessageCodec.decodeFullTrackName(reader),
+        subscriberPriority: reader.readByte(),
+        groupOrder: reader.readByte() as GroupOrder,
+        startGroup: reader.readVarIntNumber(),
+        startObject: reader.readVarIntNumber(),
+        endGroup: reader.readVarIntNumber(),
+        endObject: reader.readVarIntNumber(),
+        parameters: MessageCodec.decodeRequestParameters(reader),
+      };
+    }
   }
 
   private static encodeFetchCancelPayload(writer: BufferWriter, message: FetchCancelMessage): void {
@@ -2250,20 +2328,62 @@ export class MessageCodec {
 
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
-    writer.writeVarInt(message.groupOrder);
-    writer.writeByte(message.endOfTrack ? 1 : 0);
-    writer.writeVarInt(message.largestGroupId);
-    writer.writeVarInt(message.largestObjectId);
+    if (IS_DRAFT_16) {
+      // Draft-16 FETCH_OK: requestId | endOfTrack (8) | EndLocation | numParams | [params...] | [extensions...]
+      // Track extensions are NOT count-prefixed - they're parsed until message end
+      writer.writeByte(message.endOfTrack ? 1 : 0);
+      // End Location (group, object)
+      writer.writeVarInt(message.largestGroupId);
+      writer.writeVarInt(message.largestObjectId);
+      // Number of parameters (length-prefixed KVP sequence)
+      writer.writeVarInt(0);
+      // Track extensions: empty (no bytes = no extensions)
+    } else {
+      // Pre-draft-16: full fields
+      writer.writeVarInt(message.groupOrder);
+      writer.writeByte(message.endOfTrack ? 1 : 0);
+      writer.writeVarInt(message.largestGroupId);
+      writer.writeVarInt(message.largestObjectId);
+    }
   }
 
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
+    const requestId = reader.readVarIntNumber();
+
+    if (IS_DRAFT_16) {
+      // Draft-16 FETCH_OK: requestId | endOfTrack | largestGroup | largestObject | numParams | [params...]
+      const endOfTrack = reader.readByte() === 1;
+      const largestGroupId = reader.readVarIntNumber();
+      const largestObjectId = reader.readVarIntNumber();
+      const numParams = reader.readVarIntNumber();
+      for (let i = 0; i < numParams; i++) {
+        reader.readVarIntNumber(); // key
+        const valueLen = reader.readVarIntNumber();
+        reader.readBytes(valueLen); // value
+      }
+      return {
+        type: MessageType.FETCH_OK,
+        requestId,
+        groupOrder: GroupOrder.ASCENDING, // not on wire in draft-16
+        endOfTrack,
+        largestGroupId,
+        largestObjectId,
+      };
+    }
+
+    // Pre-draft-16: full fields on wire
+    const groupOrder = reader.readVarIntNumber() as GroupOrder;
+    const endOfTrack = reader.readByte() === 1;
+    const largestGroupId = reader.readVarIntNumber();
+    const largestObjectId = reader.readVarIntNumber();
+
     return {
       type: MessageType.FETCH_OK,
-      requestId: reader.readVarIntNumber(),
-      groupOrder: reader.readVarIntNumber() as GroupOrder,
-      endOfTrack: reader.readByte() === 1,
-      largestGroupId: reader.readVarIntNumber(),
-      largestObjectId: reader.readVarIntNumber(),
+      requestId,
+      groupOrder,
+      endOfTrack,
+      largestGroupId,
+      largestObjectId,
     };
   }
 
@@ -2400,32 +2520,20 @@ export class ObjectCodec {
    */
   static encodeDatagramHeader(header: ObjectHeader): Uint8Array {
     const writer = new BufferWriter();
-
-    if (IS_DRAFT_16) {
-      // Draft-16 datagram type is a bitmask (0b00X0XXXX):
-      // Bit 0 (0x01): EXTENSIONS - Extensions field present
-      // Bit 1 (0x02): END_OF_GROUP
-      // Bit 2 (0x04): ZERO_OBJECT_ID - Object ID omitted (always 0)
-      // Bit 3 (0x08): DEFAULT_PRIORITY - Priority field omitted
-      // Bit 5 (0x20): STATUS - Object Status instead of payload
-      //
-      // We use 0x00: Object ID present, Priority present, no extensions
-      const datagramType = 0x00;
-      writer.writeVarInt(datagramType);
-      writer.writeVarInt(header.trackAlias);
-      writer.writeVarInt(header.groupId);
-      writer.writeVarInt(header.objectId);
-      writer.writeByte(header.publisherPriority);
-      // No extensions field when EXTENSIONS bit (0x01) is not set
-      // Payload follows directly
-    } else {
-      // Draft-14 format
-      writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
-      writer.writeVarInt(header.trackAlias);
-      writer.writeVarInt(header.groupId);
+    writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
+    writer.writeVarInt(header.trackAlias);
+    writer.writeVarInt(header.groupId);
+    if (!IS_DRAFT_16) {
+      // Draft-14 includes subgroupId; draft-16 datagrams don't belong to subgroups
       writer.writeVarInt(header.subgroupId);
-      writer.writeVarInt(header.objectId);
-      writer.writeByte(header.publisherPriority);
+    }
+    writer.writeVarInt(header.objectId);
+    if (IS_DRAFT_16) {
+      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
+      writer.writeVarInt(0); // No extensions for now
+    } else {
+      // Draft-14 includes publisherPriority and objectStatus in datagram header
+      writer.writeByte(header.publisherPriority); // 1 byte, not varint
       writer.writeVarInt(header.objectStatus);
     }
     return writer.toUint8Array();
@@ -2439,97 +2547,56 @@ export class ObjectCodec {
    */
   static decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
     const reader = new BufferReader(buffer);
-    const datagramType = reader.readVarIntNumber();
+    const streamType = reader.readVarIntNumber();
+
+    if (streamType !== DataStreamType.OBJECT_DATAGRAM) {
+      throw new MessageCodecError(
+        `Expected OBJECT_DATAGRAM (${DataStreamType.OBJECT_DATAGRAM}), got ${streamType}`,
+        streamType
+      );
+    }
+
+    // trackAlias can be a 62-bit hash - keep as bigint to preserve full value
+    const trackAliasBigInt = reader.readVarInt();
+    const groupId = reader.readVarIntNumber();
+    // Draft-16 datagrams don't have subgroupId; draft-14 does
+    const subgroupId = IS_DRAFT_16 ? 0 : reader.readVarIntNumber();
+    const objectId = reader.readVarIntNumber();
 
     let publisherPriority: number;
     let objectStatus: ObjectStatus;
-    let objectId: number;
-    let subgroupId = 0;
 
     if (IS_DRAFT_16) {
-      // Draft-16 datagram type is a bitmask (0b00X0XXXX):
-      // Bit 0 (0x01): EXTENSIONS - Extensions field present
-      // Bit 1 (0x02): END_OF_GROUP
-      // Bit 2 (0x04): ZERO_OBJECT_ID - Object ID omitted (always 0)
-      // Bit 3 (0x08): DEFAULT_PRIORITY - Priority field omitted
-      // Bit 5 (0x20): STATUS - Object Status instead of payload
-
-      // Validate type is in valid datagram range
-      if ((datagramType & 0x10) !== 0 || (datagramType > 0x0F && datagramType < 0x20) || datagramType > 0x2F) {
-        throw new MessageCodecError(
-          `Invalid datagram type 0x${datagramType.toString(16)}`,
-          datagramType
-        );
+      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
+      const extensionLength = reader.readVarIntNumber();
+      if (extensionLength > 0) {
+        // Skip extension bytes
+        reader.readBytes(extensionLength);
       }
-
-      const hasExtensions = (datagramType & 0x01) !== 0;
-      const zeroObjectId = (datagramType & 0x04) !== 0;
-      const defaultPriority = (datagramType & 0x08) !== 0;
-
-      const trackAliasBigInt = reader.readVarInt();
-      const groupId = reader.readVarIntNumber();
-      objectId = zeroObjectId ? 0 : reader.readVarIntNumber();
-      publisherPriority = defaultPriority ? 128 : reader.readByte();
-
-      if (hasExtensions) {
-        const extensionLength = reader.readVarIntNumber();
-        if (extensionLength > 0) {
-          reader.readBytes(extensionLength);
-        }
-      }
-
+      publisherPriority = 128; // default priority
       objectStatus = ObjectStatus.NORMAL;
-
-      const header: ObjectHeader = {
-        trackAlias: trackAliasBigInt,
-        groupId,
-        subgroupId,
-        objectId,
-        publisherPriority,
-        objectStatus,
-      };
-
-      log.trace('Decoded datagram header (draft-16)', {
-        trackAlias: trackAliasBigInt.toString(),
-        groupId: header.groupId,
-        objectId: header.objectId,
-        type: `0x${datagramType.toString(16)}`,
-      });
-
-      return [header, reader.offset];
     } else {
-      // Draft-14 format
-      if (datagramType !== DataStreamType.OBJECT_DATAGRAM) {
-        throw new MessageCodecError(
-          `Expected OBJECT_DATAGRAM (${DataStreamType.OBJECT_DATAGRAM}), got ${datagramType}`,
-          datagramType
-        );
-      }
-
-      const trackAliasBigInt = reader.readVarInt();
-      const groupId = reader.readVarIntNumber();
-      subgroupId = reader.readVarIntNumber();
-      objectId = reader.readVarIntNumber();
+      // Draft-14 includes publisherPriority (1 byte) and objectStatus (varint)
       publisherPriority = reader.readByte();
       objectStatus = reader.readVarIntNumber() as ObjectStatus;
-
-      const header: ObjectHeader = {
-        trackAlias: trackAliasBigInt,
-        groupId,
-        subgroupId,
-        objectId,
-        publisherPriority,
-        objectStatus,
-      };
-
-      log.trace('Decoded datagram header (draft-14)', {
-        trackAlias: trackAliasBigInt.toString(),
-        groupId: header.groupId,
-        objectId: header.objectId,
-      });
-
-      return [header, reader.offset];
     }
+
+    const header: ObjectHeader = {
+      trackAlias: trackAliasBigInt,
+      groupId,
+      subgroupId,
+      objectId,
+      publisherPriority,
+      objectStatus,
+    };
+
+    log.trace('Decoded datagram header', {
+      trackAlias: trackAliasBigInt.toString(),
+      groupId: header.groupId,
+      objectId: header.objectId
+    });
+
+    return [header, reader.offset];
   }
 
   /**
@@ -2589,14 +2656,15 @@ export class ObjectCodec {
       // Type | Track Alias | Group ID | [Subgroup ID] | [Publisher Priority]
 
       // Subgroup Header Type: 0b00X1XXXX (bit 4 always set)
-      // EXTENSIONS=0, SUBGROUP_ID_MODE=0b00, DEFAULT_PRIORITY=0 (include priority)
-      let headerType = 0x10; // Base with bit 4 set
+      // Use EXTENSIONS=1 to match relay behavior (0x11 or 0x19)
+      // SUBGROUP_ID_MODE=0b00, DEFAULT_PRIORITY=0 (include priority)
+      let headerType = 0x11; // Base with bit 4 set + EXTENSIONS bit
       if (endOfGroup) {
-        headerType |= 0x08; // END_OF_GROUP bit
+        headerType |= 0x08; // END_OF_GROUP bit (0x19)
       }
       // SUBGROUP_ID_MODE = 0b00: no subgroup ID field (implicit 0)
       // DEFAULT_PRIORITY = 0: include publisher priority field
-      hasExtensions = (headerType & 0x01) !== 0;
+      hasExtensions = (headerType & 0x01) !== 0; // true for 0x11/0x19
 
       writer.writeVarInt(headerType);
       writer.writeVarInt(header.trackAlias);
@@ -2764,7 +2832,7 @@ export class ObjectCodec {
    * @param payload - Object payload
    * @param status - Object status (default: NORMAL)
    * @param previousObjectId - Previous object ID for delta encoding (draft-16), -1 for first object
-   * @param hasExtensions - Whether objects have extensions field (from subgroup header type)
+   * @param hasExtensions - Whether to include extension length field (from subgroup header EXTENSIONS bit)
    * @returns Encoded bytes
    */
   static encodeStreamObject(
@@ -2772,7 +2840,8 @@ export class ObjectCodec {
     payload: Uint8Array,
     status: ObjectStatus = ObjectStatus.NORMAL,
     previousObjectId = -1,
-    hasExtensions = false
+    hasExtensions = false,
+    extensions?: Map<number, number | Uint8Array>
   ): Uint8Array {
     const writer = new BufferWriter();
 
@@ -2785,9 +2854,31 @@ export class ObjectCodec {
       writer.writeVarInt(objectIdDelta);
 
       // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | Payload
-      // Extension length field is only present when hasExtensions bit is set in subgroup header
+      // Extension length field is ONLY present when EXTENSIONS bit is set in subgroup header type
+      // Types with Ext suffix (0x11, 0x19, etc.) have extensions; others (0x10, 0x18, etc.) don't
       if (hasExtensions) {
-        writer.writeVarInt(0); // No extensions for now
+        if (extensions && extensions.size > 0) {
+          // Encode extensions into a temporary buffer to get total length
+          const extWriter = new BufferWriter();
+          for (const [key, value] of extensions) {
+            extWriter.writeVarInt(key);
+            if (typeof value === 'number') {
+              // Varint value - write length then varint-encoded value
+              const encodedValue = VarInt.encode(value);
+              extWriter.writeVarInt(encodedValue.length);
+              extWriter.writeBytes(encodedValue);
+            } else {
+              // Raw bytes value
+              extWriter.writeVarInt(value.length);
+              extWriter.writeBytes(value);
+            }
+          }
+          const extBytes = extWriter.toUint8Array();
+          writer.writeVarInt(extBytes.length);
+          writer.writeBytes(extBytes);
+        } else {
+          writer.writeVarInt(0); // Extension length = 0 (no actual extension data)
+        }
       }
 
       if (payload.length === 0) {
@@ -2802,7 +2893,26 @@ export class ObjectCodec {
       writer.writeVarInt(objectId);
       // Draft-14 LAPS format: Object ID | Extension Length | Payload Length | Payload
       // Write extension length (0 = no extensions) for type 0x11 compatibility
-      writer.writeVarInt(0);
+      if (extensions && extensions.size > 0) {
+        // Encode extensions
+        const extWriter = new BufferWriter();
+        for (const [key, value] of extensions) {
+          extWriter.writeVarInt(key);
+          if (typeof value === 'number') {
+            const encodedValue = VarInt.encode(value);
+            extWriter.writeVarInt(encodedValue.length);
+            extWriter.writeBytes(encodedValue);
+          } else {
+            extWriter.writeVarInt(value.length);
+            extWriter.writeBytes(value);
+          }
+        }
+        const extBytes = extWriter.toUint8Array();
+        writer.writeVarInt(extBytes.length);
+        writer.writeBytes(extBytes);
+      } else {
+        writer.writeVarInt(0);
+      }
       if (payload.length === 0) {
         writer.writeVarInt(0);
         writer.writeVarInt(status);
@@ -2856,7 +2966,8 @@ export class ObjectCodec {
 
     if (IS_DRAFT_16) {
       // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | [Payload]
-      // Extension length field is only present when hasExtensions bit is set in subgroup header
+      // Extension length field is ONLY present when EXTENSIONS bit is set in subgroup header type
+      // Types with Ext suffix (0x11, 0x19, etc.) have extensions; others (0x10, 0x18, etc.) don't
       if (hasExtensions) {
         const extensionLength = reader.readVarIntNumber();
         if (extensionLength > 0) {
@@ -2864,6 +2975,7 @@ export class ObjectCodec {
           reader.readBytes(extensionLength);
         }
       }
+
       const payloadLength = reader.readVarIntNumber();
       let status = ObjectStatus.NORMAL;
       if (payloadLength === 0 && reader.hasMore) {
@@ -2900,4 +3012,286 @@ export class ObjectCodec {
     const payload = reader.readBytes(payloadLength);
     return [objectId, payload, status, reader.offset - offset];
   }
+
+  /**
+   * FETCH Serialization Flags bits (draft-16) - matches moqx/moxygen relay
+   * Bit layout (LSB-first as per moqx implementation):
+   *   Bits 0-1: Subgroup ID Mode (0=zero, 1=same, 2=inc, 3=present)
+   *   Bit 2: Object ID Present
+   *   Bit 3: Group ID Present
+   *   Bit 4: Publisher Priority Present
+   *   Bit 5: Extensions Present
+   *   Bit 6: Datagram forwarding preference (draft-16+)
+   *   Bit 7: Reserved (must be 0)
+   */
+  private static readonly FETCH_FLAG_SUBGROUP_MODE_MASK = 0x03;
+  private static readonly FETCH_FLAG_SUBGROUP_MODE_SHIFT = 0;
+  private static readonly FETCH_FLAG_OBJECT_ID_PRESENT = 0x04;
+  private static readonly FETCH_FLAG_GROUP_ID_PRESENT = 0x08;
+  private static readonly FETCH_FLAG_PRIORITY_PRESENT = 0x10;
+  private static readonly FETCH_FLAG_EXTENSIONS_PRESENT = 0x20;
+
+  /**
+   * State for FETCH object delta encoding
+   */
+  static createFetchEncoderState(): FetchEncoderState {
+    return {
+      previousGroupId: -1,
+      previousSubgroupId: -1,
+      previousObjectId: -1,
+      previousPriority: 128,
+    };
+  }
+
+  /**
+   * Encode an object for FETCH response stream (draft-15/16 serialization flags format)
+   *
+   * Draft-15/16 FETCH objects use serialization flags to indicate which fields are present:
+   * Flags | [Group ID] | [Subgroup ID] | [Object ID] | [Priority] | [ExtLen] | PayloadLen | Payload
+   *
+   * @param groupId - Group ID
+   * @param subgroupId - Subgroup ID (usually 0)
+   * @param objectId - Object ID
+   * @param payload - Object payload
+   * @param state - Encoder state for delta encoding
+   * @param priority - Publisher priority (default 128)
+   * @returns Encoded bytes
+   */
+  static encodeFetchObject(
+    groupId: number,
+    subgroupId: number,
+    objectId: number,
+    payload: Uint8Array,
+    state: FetchEncoderState,
+    priority = 128
+  ): Uint8Array {
+    const writer = new BufferWriter();
+
+    // Build flags byte
+    let flags = 0;
+
+    // Determine which fields need to be present
+    const isFirstObject = state.previousGroupId < 0;
+    const sameGroup = !isFirstObject && groupId === state.previousGroupId;
+    const samePriority = !isFirstObject && priority === state.previousPriority;
+
+    // Group ID present if first object or group changed
+    if (!sameGroup) {
+      flags |= ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT;
+    }
+
+    let subgroupMode: number;
+    if (isFirstObject || !sameGroup) {
+      subgroupMode = subgroupId === 0 ? 0 : 3;
+    } else if (subgroupId === state.previousSubgroupId) {
+      subgroupMode = 1;
+    } else if (subgroupId === state.previousSubgroupId + 1) {
+      subgroupMode = 2;
+    } else {
+      subgroupMode = 3;
+    }
+    flags |= (subgroupMode << ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_SHIFT);
+
+    // Object ID: always present for clarity (could optimize with delta encoding)
+    flags |= ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT;
+
+    // Priority present if first object or priority changed
+    if (!samePriority) {
+      flags |= ObjectCodec.FETCH_FLAG_PRIORITY_PRESENT;
+    }
+
+    // No extensions for now
+    // flags |= ObjectCodec.FETCH_FLAG_EXTENSIONS_PRESENT;
+
+    // Write flags (varint in draft-16)
+    writer.writeVarInt(flags);
+
+    // Write fields based on flags
+    if (flags & ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT) {
+      writer.writeVarInt(groupId);
+    }
+
+    // Subgroup ID if mode 3
+    if (subgroupMode === 3) {
+      writer.writeVarInt(subgroupId);
+    }
+
+    // Object ID
+    if (flags & ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT) {
+      writer.writeVarInt(objectId);
+    }
+
+    // Priority
+    if (flags & ObjectCodec.FETCH_FLAG_PRIORITY_PRESENT) {
+      writer.writeByte(priority);
+    }
+
+    // Extensions (not used, but write length 0 if flag set)
+    if (flags & ObjectCodec.FETCH_FLAG_EXTENSIONS_PRESENT) {
+      writer.writeVarInt(0);
+    }
+
+    // Payload length and payload
+    writer.writeVarInt(payload.length);
+    if (payload.length > 0) {
+      writer.writeBytes(payload);
+    }
+
+    // Update state for next object
+    state.previousGroupId = groupId;
+    state.previousSubgroupId = subgroupId;
+    state.previousObjectId = objectId;
+    state.previousPriority = priority;
+
+    return writer.toUint8Array();
+  }
+
+  /**
+   * Create initial state for FETCH object decoding
+   */
+  static createFetchDecoderState(): FetchDecoderState {
+    return {
+      previousGroupId: -1,
+      previousSubgroupId: 0,
+      previousObjectId: -1,
+      previousPriority: 128,
+    };
+  }
+
+  /**
+   * Decode a FETCH object from stream (draft-15/16 serialization flags format)
+   *
+   * @param buffer - Buffer containing encoded FETCH object
+   * @param state - Decoder state for delta decoding
+   * @returns Decoded object result with groupId, subgroupId, objectId, priority, payload, and bytesConsumed
+   */
+  static decodeFetchObject(
+    buffer: Uint8Array,
+    state: FetchDecoderState
+  ): FetchObjectResult {
+    const reader = new BufferReader(buffer);
+
+    // Debug: log first few bytes for diagnosis
+    const previewLen = Math.min(20, buffer.length);
+    const preview = Array.from(buffer.subarray(0, previewLen)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log.debug('FETCH object decode start', {
+      bufferLen: buffer.length,
+      preview,
+      prevGroup: state.previousGroupId,
+      prevObject: state.previousObjectId,
+    });
+
+    // Read flags (varint)
+    const flags = reader.readVarIntNumber();
+
+    log.debug('FETCH flags decoded', {
+      flags: flags.toString(16),
+      groupIdPresent: !!(flags & ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT),
+      objectIdPresent: !!(flags & ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT),
+      priorityPresent: !!(flags & ObjectCodec.FETCH_FLAG_PRIORITY_PRESENT),
+      extPresent: !!(flags & ObjectCodec.FETCH_FLAG_EXTENSIONS_PRESENT),
+      subgroupMode: (flags & ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_MASK) >> ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_SHIFT,
+    });
+
+    // Decode group ID
+    let groupId: number;
+    if (flags & ObjectCodec.FETCH_FLAG_GROUP_ID_PRESENT) {
+      groupId = reader.readVarIntNumber();
+    } else {
+      groupId = state.previousGroupId;
+    }
+
+    // Decode subgroup ID based on mode (bits 7-6)
+    let subgroupId: number;
+    const subgroupMode = (flags & ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_MASK) >> ObjectCodec.FETCH_FLAG_SUBGROUP_MODE_SHIFT;
+    switch (subgroupMode) {
+      case 0: // Zero
+        subgroupId = 0;
+        break;
+      case 1: // Same as previous
+        subgroupId = state.previousSubgroupId;
+        break;
+      case 2: // Previous + 1
+        subgroupId = state.previousSubgroupId + 1;
+        break;
+      case 3: // Present on wire
+        subgroupId = reader.readVarIntNumber();
+        break;
+      default:
+        subgroupId = 0;
+    }
+
+    // Decode object ID
+    let objectId: number;
+    if (flags & ObjectCodec.FETCH_FLAG_OBJECT_ID_PRESENT) {
+      objectId = reader.readVarIntNumber();
+    } else {
+      objectId = state.previousObjectId + 1;
+    }
+
+    // Decode priority
+    let priority: number;
+    if (flags & ObjectCodec.FETCH_FLAG_PRIORITY_PRESENT) {
+      priority = reader.readByte();
+    } else {
+      priority = state.previousPriority;
+    }
+
+    // Skip extensions if present
+    if (flags & ObjectCodec.FETCH_FLAG_EXTENSIONS_PRESENT) {
+      const extLen = reader.readVarIntNumber();
+      reader.skip(extLen);
+    }
+
+    // Read payload length and payload
+    const payloadLength = reader.readVarIntNumber();
+    const payload = reader.readBytes(payloadLength);
+
+    // Update state for next object
+    state.previousGroupId = groupId;
+    state.previousSubgroupId = subgroupId;
+    state.previousObjectId = objectId;
+    state.previousPriority = priority;
+
+    return {
+      groupId,
+      subgroupId,
+      objectId,
+      priority,
+      payload,
+      bytesConsumed: reader.offset,
+    };
+  }
+}
+
+/**
+ * State for FETCH object delta encoding
+ */
+export interface FetchEncoderState {
+  previousGroupId: number;
+  previousSubgroupId: number;
+  previousObjectId: number;
+  previousPriority: number;
+}
+
+/**
+ * State for FETCH object delta decoding
+ */
+export interface FetchDecoderState {
+  previousGroupId: number;
+  previousSubgroupId: number;
+  previousObjectId: number;
+  previousPriority: number;
+}
+
+/**
+ * Result of decoding a FETCH object
+ */
+export interface FetchObjectResult {
+  groupId: number;
+  subgroupId: number;
+  objectId: number;
+  priority: number;
+  payload: Uint8Array;
+  bytesConsumed: number;
 }

@@ -18,8 +18,13 @@ import {
   type IncomingSubscriber,
   type IncomingSubscribeEvent,
   type IncomingPublishEvent,
+  type IncomingFetchEvent,
   type SubscribeNamespaceOptions,
   type NamespaceSubscriptionInfo,
+  type FetchCompleteEvent,
+  type FetchErrorEvent,
+  type VODPublishOptions,
+  type ForwardStateChangeEvent,
 } from '@web-moq/session';
 import {
   SecureObjectsContext,
@@ -144,6 +149,8 @@ export class MediaSession {
   private subscriptions = new Map<number, ActiveSubscription>();
   /** Reverse lookup: pipeline to subscription ID for O(1) access */
   private pipelineToSubscriptionId = new Map<SubscribePipeline, number>();
+  /** Forward lookup: subscription ID to pipeline for sync updates */
+  private subscriptionIdToPipeline = new Map<number, SubscribePipeline>();
   /** Namespace subscription configs for auto-creating pipelines */
   private namespaceConfigs = new Map<number, NamespaceSubscriptionConfig>();
   /** Event handlers */
@@ -258,6 +265,13 @@ export class MediaSession {
   get isReady(): boolean {
     if (this.externalSession) return true;
     return this.session.isReady;
+  }
+
+  /**
+   * Get the underlying MOQT session for advanced operations
+   */
+  getMOQTSession(): MOQTSession {
+    return this.session;
   }
 
   /**
@@ -532,6 +546,54 @@ export class MediaSession {
   }
 
   /**
+   * Publish VOD content for DVR/rewind playback
+   *
+   * VOD content is served via FETCH requests rather than continuous streaming.
+   * The content provider supplies a getObject callback to serve individual objects.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param options - VOD publish options including metadata and object callback
+   * @returns Track alias
+   *
+   * @example
+   * ```typescript
+   * // Using with VODLoader
+   * const loader = new VODLoader({ framerate: 30 });
+   * await loader.load('https://example.com/video.mp4');
+   *
+   * const trackAlias = await session.publishVOD(
+   *   ['vod', 'my-video'],
+   *   'video',
+   *   {
+   *     ...loader.getPublishOptions(),
+   *     priority: 128,
+   *     deliveryTimeout: 5000,
+   *   }
+   * );
+   * ```
+   */
+  async publishVOD(
+    namespace: string[],
+    trackName: string,
+    options: VODPublishOptions
+  ): Promise<bigint> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    log.info('Publishing VOD content', {
+      namespace: namespace.join('/'),
+      trackName,
+      duration: options.metadata.duration,
+      totalGroups: options.metadata.totalGroups,
+    });
+
+    // Delegate to underlying session's publishVOD
+    return this.session.publishVOD(namespace, trackName, options);
+  }
+
+  /**
    * Subscribe to a track
    *
    * @param namespace - Track namespace
@@ -554,30 +616,68 @@ export class MediaSession {
 
     const resolution = getResolutionConfig(config.videoResolution);
 
+    // Use explicit video decoder config if provided (e.g., from catalog track info)
+    // Otherwise fall back to resolution preset
+    const videoDecoderConfig = config.videoDecoderConfig && (config.videoDecoderConfig.codec || config.videoDecoderConfig.codedWidth) ? {
+      codec: config.videoDecoderConfig.codec ?? resolution.codec,
+      codedWidth: config.videoDecoderConfig.codedWidth ?? resolution.width,
+      codedHeight: config.videoDecoderConfig.codedHeight ?? resolution.height,
+    } : {
+      codec: resolution.codec,
+      codedWidth: resolution.width,
+      codedHeight: resolution.height,
+    };
+
+    log.info('Video decoder config', {
+      fromCatalog: !!(config.videoDecoderConfig?.codec || config.videoDecoderConfig?.codedWidth),
+      codec: videoDecoderConfig.codec,
+      width: videoDecoderConfig.codedWidth,
+      height: videoDecoderConfig.codedHeight,
+    });
+
+    // Build audio decoder config - use explicit config if provided (e.g., AAC from VOD),
+    // otherwise default to Opus
+    const audioDecoderConfig = config.audioDecoderConfig && config.audioDecoderConfig.codec ? {
+      codec: config.audioDecoderConfig.codec,
+      sampleRate: config.audioDecoderConfig.sampleRate ?? 48000,
+      numberOfChannels: config.audioDecoderConfig.numberOfChannels ?? 2,
+      description: config.audioDecoderConfig.description,
+    } : {
+      codec: 'opus',
+      sampleRate: 48000,
+      numberOfChannels: 2,
+    };
+
+    if (config.audioDecoderConfig?.codec) {
+      log.info('Audio decoder config (from catalog)', {
+        codec: audioDecoderConfig.codec,
+        sampleRate: audioDecoderConfig.sampleRate,
+        numberOfChannels: audioDecoderConfig.numberOfChannels,
+        hasDescription: !!audioDecoderConfig.description,
+      });
+    }
+
     // Create subscribe pipeline with shared decode worker
     // The worker supports multiplexing via channelId - each pipeline gets its own channel
     const pipeline = new SubscribePipeline({
       mediaType,
-      video: mediaType !== 'audio' ? {
-        codec: resolution.codec,
-        codedWidth: resolution.width,
-        codedHeight: resolution.height,
-      } : undefined,
-      audio: mediaType !== 'video' ? {
-        sampleRate: 48000,
-        numberOfChannels: 2,
-      } : undefined,
+      video: mediaType !== 'audio' ? videoDecoderConfig : undefined,
+      audio: mediaType !== 'video' ? audioDecoderConfig : undefined,
       jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
       // GroupArbiter options for parallel QUIC stream handling
       useGroupArbiter: config.useGroupArbiter,
+      // New PlayoutBuffer architecture options
+      policyType: config.policyType,
+      isLive: config.isLive,
       maxLatency: config.maxLatency,
       estimatedGopDuration: config.estimatedGopDuration,
       catalogFramerate: config.catalogFramerate,
       catalogTimescale: config.catalogTimescale,
       // QuicR-Mac interop mode
       quicrInteropEnabled: config.quicrInteropEnabled,
+      minBufferFrames: config.minBufferFrames,
     });
 
     log.info('Created subscribe pipeline', {
@@ -586,6 +686,8 @@ export class MediaSession {
       hasAudioConfig: mediaType !== 'video',
       useDecodeWorker: !!this.workers?.decodeWorker,
       useGroupArbiter: config.useGroupArbiter,
+      policyType: config.policyType,
+      isLive: config.isLive,
     });
 
     // Handle video frames - O(1) lookup using reverse map
@@ -632,12 +734,29 @@ export class MediaSession {
     // Create secure context if encryption is enabled
     const secureContext = await this.createSecureContext(config, { namespace, trackName });
 
+    // Merge filterType from config and options (options take precedence)
+    // Default to 'absolute' for VOD, 'latest' for live
+    const effectiveFilterType = options?.filterType ?? config.filterType ?? (config.policyType === 'vod' ? 'absolute' : 'latest');
+    const mergedOptions = {
+      ...options,
+      filterType: effectiveFilterType,
+      startGroup: options?.startGroup ?? config.startGroup ?? 0,
+    };
+
     // Subscribe via session with object callback and end-of-group handler
     const subscriptionId = await this.session.subscribe(
       namespace,
       trackName,
-      options,
+      mergedOptions,
       (data, groupId, objectId, timestamp) => {
+        log.info('MediaSession onObject callback invoked', {
+          namespace: namespace.join('/'),
+          trackName,
+          groupId,
+          objectId,
+          dataSize: data.length,
+          hasSecureContext: !!secureContext,
+        });
         if (secureContext) {
           // Decrypt before pushing to pipeline
           secureContext.decrypt(data, {
@@ -667,9 +786,204 @@ export class MediaSession {
       secureContext,
     });
     this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
+    this.subscriptionIdToPipeline.set(subscriptionId, pipeline);
 
     log.info('Subscription started', { subscriptionId, namespace, trackName, encrypted: !!secureContext });
     return subscriptionId;
+  }
+
+  /**
+   * Create a VOD playback pipeline without subscribing
+   *
+   * This sets up the decode pipeline for VOD content that will be fetched
+   * using FETCH requests rather than SUBSCRIBE. Use this with VodFetchController
+   * for adaptive buffer-aware VOD playback.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param config - Media configuration
+   * @param mediaType - Media type ('video' or 'audio')
+   * @returns Object with subscriptionId and pushData function
+   *
+   * @example
+   * ```typescript
+   * const { subscriptionId, pushData, markGroupComplete } = await session.createVodPipeline(
+   *   ['vod', 'video'],
+   *   'video',
+   *   config,
+   *   'video'
+   * );
+   *
+   * // Use with VodFetchController
+   * controller.on('fetch-request', async ({ startGroup, endGroup }) => {
+   *   await session.getMOQTSession().fetch(namespace, trackName, {
+   *     startGroup, startObject: 0, endGroup, endObject: 0
+   *   }, {}, (data, groupId, objectId) => {
+   *     pushData(data, groupId, objectId, Date.now() * 1000);
+   *   });
+   * });
+   * ```
+   */
+  async createVodPipeline(
+    namespace: string[],
+    trackName: string,
+    config: MediaConfig,
+    mediaType?: 'video' | 'audio'
+  ): Promise<{
+    subscriptionId: number;
+    pushData: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+    markGroupComplete: (groupId: number) => void;
+    skipGroup: (groupId: number) => void;
+    clearBuffers: () => Promise<void>;
+  }> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const resolution = getResolutionConfig(config.videoResolution);
+
+    // Use explicit video decoder config if provided (e.g., from catalog track info)
+    const videoDecoderConfig = config.videoDecoderConfig && (config.videoDecoderConfig.codec || config.videoDecoderConfig.codedWidth) ? {
+      codec: config.videoDecoderConfig.codec ?? resolution.codec,
+      codedWidth: config.videoDecoderConfig.codedWidth ?? resolution.width,
+      codedHeight: config.videoDecoderConfig.codedHeight ?? resolution.height,
+    } : {
+      codec: resolution.codec,
+      codedWidth: resolution.width,
+      codedHeight: resolution.height,
+    };
+
+    // Build audio decoder config - use explicit config if provided (e.g., AAC from VOD)
+    const audioDecoderConfig = config.audioDecoderConfig && config.audioDecoderConfig.codec ? {
+      codec: config.audioDecoderConfig.codec,
+      sampleRate: config.audioDecoderConfig.sampleRate ?? 48000,
+      numberOfChannels: config.audioDecoderConfig.numberOfChannels ?? 2,
+      description: config.audioDecoderConfig.description,
+    } : {
+      codec: 'opus',
+      sampleRate: 48000,
+      numberOfChannels: 2,
+    };
+
+    log.info('Creating VOD pipeline (FETCH-only)', {
+      namespace: namespace.join('/'),
+      trackName,
+      videoCodec: videoDecoderConfig.codec,
+      width: videoDecoderConfig.codedWidth,
+      height: videoDecoderConfig.codedHeight,
+      audioCodec: audioDecoderConfig.codec,
+      hasAudioDescription: !!audioDecoderConfig.description,
+    });
+
+    // Create subscribe pipeline for decoding
+    const pipeline = new SubscribePipeline({
+      mediaType,
+      video: mediaType !== 'audio' ? videoDecoderConfig : undefined,
+      audio: mediaType !== 'video' ? audioDecoderConfig : undefined,
+      jitterBufferDelay: config.jitterBufferDelay ?? 100,
+      decodeWorker: this.workers?.decodeWorker,
+      enableStats: config.enableStats,
+      // VOD-specific settings
+      policyType: 'vod',
+      isLive: false,
+      maxLatency: config.maxLatency,
+      estimatedGopDuration: config.estimatedGopDuration,
+      catalogFramerate: config.catalogFramerate,
+      catalogTimescale: config.catalogTimescale,
+      minBufferFrames: config.minBufferFrames,
+    });
+
+    // Generate a unique subscription ID for this VOD pipeline
+    const subscriptionId = Date.now() + Math.floor(Math.random() * 1000);
+
+    // Set up reverse mapping for event emission
+    this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
+    this.subscriptionIdToPipeline.set(subscriptionId, pipeline);
+
+    // Handle video frames
+    pipeline.on('video-frame', (frame: VideoFrame) => {
+      const subId = this.pipelineToSubscriptionId.get(pipeline);
+      if (subId !== undefined) {
+        this.emit('video-frame', { subscriptionId: subId, frame });
+      }
+    });
+
+    // Handle audio data
+    pipeline.on('audio-data', (audioData: AudioData) => {
+      const subId = this.pipelineToSubscriptionId.get(pipeline);
+      if (subId !== undefined) {
+        this.emit('audio-data', { subscriptionId: subId, audioData });
+      }
+    });
+
+    // Handle jitter samples
+    pipeline.on('jitter-sample', (sample: JitterSample) => {
+      const subId = this.pipelineToSubscriptionId.get(pipeline);
+      if (subId !== undefined) {
+        this.emit('jitter-sample', { subscriptionId: subId, sample });
+      }
+    });
+
+    // Handle latency stats
+    pipeline.on('latency-stats', (stats: LatencyStatsSample) => {
+      const subId = this.pipelineToSubscriptionId.get(pipeline);
+      if (subId !== undefined) {
+        this.emit('latency-stats', { subscriptionId: subId, stats });
+      }
+    });
+
+    // Handle errors
+    pipeline.on('error', (err: Error) => {
+      log.error('VOD pipeline error', err);
+      this.emit('error', err);
+    });
+
+    // Start pipeline (ready to receive data)
+    await pipeline.start();
+
+    // Create secure context if encryption is enabled
+    const secureContext = await this.createSecureContext(config, { namespace, trackName });
+
+    // Store subscription (without actual MOQT subscription)
+    this.subscriptions.set(subscriptionId, {
+      subscriptionId,
+      namespace,
+      trackName,
+      pipeline,
+      mediaType,
+      secureContext,
+    });
+
+    log.info('VOD pipeline created', { subscriptionId, namespace, trackName });
+
+    // Return functions to push data and mark groups complete
+    return {
+      subscriptionId,
+      pushData: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => {
+        if (secureContext) {
+          secureContext.decrypt(data, {
+            groupId: BigInt(groupId),
+            objectId,
+          }).then(({ plaintext }) => {
+            pipeline.push(plaintext, groupId, objectId, timestamp);
+          }).catch((err) => {
+            log.error('VOD decryption failed', { groupId, objectId, error: (err as Error).message });
+          });
+        } else {
+          pipeline.push(data, groupId, objectId, timestamp);
+        }
+      },
+      markGroupComplete: (groupId: number) => {
+        pipeline.markGroupComplete(groupId);
+      },
+      skipGroup: (groupId: number) => {
+        pipeline.skipGroup(groupId);
+      },
+      clearBuffers: async () => {
+        log.info('Clearing VOD pipeline buffers for seek', { subscriptionId });
+        await pipeline.reset();
+      },
+    };
   }
 
   // ============================================================================
@@ -935,6 +1249,7 @@ export class MediaSession {
 
     // Remove from subscriptions and reverse map
     this.pipelineToSubscriptionId.delete(subscription.pipeline);
+    this.subscriptionIdToPipeline.delete(subscriptionId);
     this.subscriptions.delete(subscriptionId);
 
     // Unsubscribe from session
@@ -945,16 +1260,32 @@ export class MediaSession {
 
   /**
    * Pause a subscription
+   * Stops frame output and sends forward=0 to relay (for live content)
    */
   async pauseSubscription(subscriptionId: number): Promise<void> {
+    // Pause the decode pipeline to stop frame output immediately
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (subscription?.pipeline) {
+      subscription.pipeline.pause();
+    }
+
+    // Send SUBSCRIBE_UPDATE with forward=0 (stops data from relay for live)
     await this.session.pauseSubscription(subscriptionId);
   }
 
   /**
    * Resume a subscription
+   * Resumes frame output and sends forward=1 to relay (for live content)
    */
   async resumeSubscription(subscriptionId: number): Promise<void> {
+    // Send SUBSCRIBE_UPDATE with forward=1 first (resumes data from relay)
     await this.session.resumeSubscription(subscriptionId);
+
+    // Resume the decode pipeline to allow frame output
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (subscription?.pipeline) {
+      subscription.pipeline.resume();
+    }
   }
 
   /**
@@ -963,6 +1294,247 @@ export class MediaSession {
   isSubscriptionPaused(subscriptionId: number): boolean {
     return this.session.isSubscriptionPaused(subscriptionId);
   }
+
+  /**
+   * Update the A/V sync clock for a subscription
+   * Call this on audio subscriptions when video frames are rendered
+   * @param subscriptionId - Audio subscription ID
+   * @param masterTimeMs - Current video playback time in milliseconds (PTS)
+   */
+  updateSyncTime(subscriptionId: number, masterTimeMs: number): void {
+    const pipeline = this.subscriptionIdToPipeline.get(subscriptionId);
+    if (pipeline) {
+      pipeline.updateSyncTime(masterTimeMs);
+    }
+  }
+
+  // ============================================================================
+  // DVR / Seek Support
+  // ============================================================================
+
+  /**
+   * Seek to a specific time position in a subscription (DVR/Rewind)
+   *
+   * This uses FETCH to request historical content from the specified time.
+   * The subscription pipeline will buffer and decode the fetched content.
+   *
+   * @param subscriptionId - Active subscription to seek
+   * @param timeMs - Target time in milliseconds from start
+   * @param durationMs - Duration to fetch in milliseconds (optional, default 5000ms)
+   * @returns Fetch request ID
+   *
+   * @example
+   * ```typescript
+   * // Seek to 30 seconds into the video
+   * await session.seek(subscriptionId, 30000);
+   *
+   * // Seek to 1 minute and fetch 10 seconds of content
+   * await session.seek(subscriptionId, 60000, 10000);
+   * ```
+   */
+  async seek(
+    subscriptionId: number,
+    timeMs: number,
+    durationMs = 5000
+  ): Promise<number> {
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (!subscription) {
+      throw new Error(`Subscription ${subscriptionId} not found`);
+    }
+
+    // Calculate group range from time
+    // Assume 1 second per group by default (can be configured via track metadata)
+    const gopDuration = 1000; // TODO: Get from track metadata
+    const startGroup = Math.floor(timeMs / gopDuration);
+    const endGroup = Math.floor((timeMs + durationMs) / gopDuration);
+
+    log.info('Seeking subscription', {
+      subscriptionId,
+      timeMs,
+      durationMs,
+      startGroup,
+      endGroup,
+    });
+
+    // Use FETCH to request the range
+    const fetchId = await this.session.fetch(
+      subscription.namespace,
+      subscription.trackName,
+      {
+        startGroup,
+        startObject: 0,
+        endGroup,
+        endObject: 0, // 0 = all objects in group
+      },
+      {},
+      (data, groupId, objectId) => {
+        // Push fetched data into the subscription pipeline for decoding
+        // Use current time as timestamp since we're seeking
+        subscription.pipeline.push(data, groupId, objectId, Date.now() * 1000);
+      }
+    );
+
+    log.info('Seek fetch started', {
+      subscriptionId,
+      fetchId,
+      startGroup,
+      endGroup,
+    });
+
+    return fetchId;
+  }
+
+  /**
+   * Fetch a specific range of content from a track
+   *
+   * Lower-level method for DVR - fetches specific groups/objects.
+   * Use `seek()` for time-based seeking.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param startGroup - Start group ID
+   * @param endGroup - End group ID
+   * @param config - Media configuration for decoding
+   * @param mediaType - Optional media type for decoder
+   * @returns Fetch request ID
+   */
+  async fetchRange(
+    namespace: string[],
+    trackName: string,
+    startGroup: number,
+    endGroup: number,
+    config: MediaConfig,
+    mediaType?: 'video' | 'audio'
+  ): Promise<number> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    log.info('Fetching range', {
+      namespace: namespace.join('/'),
+      trackName,
+      startGroup,
+      endGroup,
+      mediaType,
+    });
+
+    // Create a temporary pipeline for decoding fetched content
+    const resolution = getResolutionConfig(config.videoResolution);
+    const pipeline = new SubscribePipeline({
+      mediaType,
+      video: mediaType !== 'audio' ? {
+        codec: resolution.codec,
+        codedWidth: resolution.width,
+        codedHeight: resolution.height,
+      } : undefined,
+      audio: mediaType !== 'video' ? {
+        sampleRate: 48000,
+        numberOfChannels: 2,
+      } : undefined,
+      jitterBufferDelay: config.jitterBufferDelay ?? 100,
+      decodeWorker: this.workers?.decodeWorker,
+      enableStats: config.enableStats,
+      useGroupArbiter: config.useGroupArbiter,
+      policyType: config.policyType,
+      isLive: config.isLive,
+      maxLatency: config.maxLatency,
+      estimatedGopDuration: config.estimatedGopDuration,
+    });
+
+    // Track the fetch pipeline separately
+    const fetchId = Date.now(); // Temporary ID for tracking
+
+    // Forward events from pipeline
+    pipeline.on('video-frame', (frame: VideoFrame) => {
+      this.emit('video-frame', { subscriptionId: -fetchId, frame });
+    });
+
+    pipeline.on('audio-data', (audioData: AudioData) => {
+      this.emit('audio-data', { subscriptionId: -fetchId, audioData });
+    });
+
+    pipeline.on('error', (err: Error) => {
+      log.error('Fetch pipeline error', err);
+      this.emit('error', err);
+    });
+
+    // Start the fetch
+    const actualFetchId = await this.session.fetch(
+      namespace,
+      trackName,
+      {
+        startGroup,
+        startObject: 0,
+        endGroup,
+        endObject: 0,
+      },
+      {},
+      (data, groupId, objectId) => {
+        pipeline.push(data, groupId, objectId, Date.now() * 1000);
+      }
+    );
+
+    log.info('Range fetch started', {
+      fetchId: actualFetchId,
+      startGroup,
+      endGroup,
+    });
+
+    return actualFetchId;
+  }
+
+  /**
+   * Cancel an in-progress fetch/seek operation
+   *
+   * @param fetchId - Fetch request ID to cancel
+   */
+  async cancelFetch(fetchId: number): Promise<void> {
+    await this.session.cancelFetch(fetchId);
+  }
+
+  /**
+   * Get track info for DVR (available range, duration, etc.)
+   *
+   * This information comes from FETCH_OK responses or track metadata.
+   *
+   * @param subscriptionId - Subscription to get info for
+   * @returns Track DVR info or undefined if not available
+   */
+  getTrackDVRInfo(subscriptionId: number): {
+    largestGroupId?: number;
+    largestObjectId?: number;
+    estimatedDuration?: number;
+  } | undefined {
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (!subscription) {
+      return undefined;
+    }
+
+    // Get info from any completed fetches
+    const fetches = this.session.getActiveFetches();
+    const completedFetch = fetches.find(f =>
+      f.namespace.join('/') === subscription.namespace.join('/') &&
+      f.trackName === subscription.trackName &&
+      f.completed
+    );
+
+    if (completedFetch) {
+      return {
+        largestGroupId: completedFetch.largestGroupId,
+        largestObjectId: completedFetch.largestObjectId,
+        // Estimate duration assuming 1 second per group
+        estimatedDuration: completedFetch.largestGroupId !== undefined
+          ? (completedFetch.largestGroupId + 1) * 1000
+          : undefined,
+      };
+    }
+
+    return undefined;
+  }
+
+  // ============================================================================
+  // End DVR Support
+  // ============================================================================
 
   /**
    * Register an event handler
@@ -977,7 +1549,11 @@ export class MediaSession {
   on(event: 'subscribe-stats', handler: (stats: { subscriptionId: number; groupId: number; objectId: number; bytes: number }) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
+  on(event: 'incoming-fetch', handler: (event: IncomingFetchEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
+  // DVR/FETCH events
+  on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
+  on(event: 'fetch-error', handler: (event: FetchErrorEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: MediaSessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -995,54 +1571,12 @@ export class MediaSession {
   // =========================================================================
 
   /**
-   * Stop all active pipelines (called on session error)
-   */
-  private async stopAllPipelines(): Promise<void> {
-    log.info('Stopping all pipelines due to session error', {
-      publications: this.publications.size,
-      subscriptions: this.subscriptions.size,
-    });
-
-    // Stop all publish pipelines
-    for (const [trackAlias, publication] of this.publications) {
-      try {
-        await publication.pipeline.stop();
-        for (const cleanup of publication.cleanupHandlers) {
-          cleanup();
-        }
-        log.info('Stopped publish pipeline', { trackAlias });
-      } catch (err) {
-        log.error('Error stopping publish pipeline', err as Error);
-      }
-    }
-    this.publications.clear();
-
-    // Stop all subscribe pipelines
-    for (const [subscriptionId, subscription] of this.subscriptions) {
-      try {
-        await subscription.pipeline.stop();
-        this.pipelineToSubscriptionId.delete(subscription.pipeline);
-        log.info('Stopped subscribe pipeline', { subscriptionId });
-      } catch (err) {
-        log.error('Error stopping subscribe pipeline', err as Error);
-      }
-    }
-    this.subscriptions.clear();
-  }
-
-  /**
    * Set up session event forwarding
    */
   private setupSessionEvents(): void {
-    // Forward state changes and handle error state cleanup
+    // Forward state changes
     const stateCleanup = this.session.on('state-change', (state: SessionState) => {
       this.emit('state-change', state);
-      // Stop all pipelines when session enters error state
-      if (state === 'error') {
-        this.stopAllPipelines().catch((err) => {
-          log.error('Error stopping pipelines on session error', err as Error);
-        });
-      }
     });
     this.sessionCleanup.push(stateCleanup);
 
@@ -1085,6 +1619,38 @@ export class MediaSession {
       this.emit('incoming-publish', event);
     });
     this.sessionCleanup.push(incomingPublishCleanup);
+
+    // Forward FETCH/DVR events
+    const incomingFetchCleanup = this.session.on('incoming-fetch', (event) => {
+      this.emit('incoming-fetch', event);
+    });
+    this.sessionCleanup.push(incomingFetchCleanup);
+
+    const fetchCompleteCleanup = this.session.on('fetch-complete', (event: FetchCompleteEvent) => {
+      this.emit('fetch-complete', event);
+    });
+    this.sessionCleanup.push(fetchCompleteCleanup);
+
+    const fetchErrorCleanup = this.session.on('fetch-error', (event: FetchErrorEvent) => {
+      this.emit('fetch-error', event);
+    });
+    this.sessionCleanup.push(fetchErrorCleanup);
+
+    // Handle forward state changes for live/interactive publish pipelines
+    const forwardStateCleanup = this.session.on('forward-state-change', (event: ForwardStateChangeEvent) => {
+      const key = event.trackAlias.toString();
+      const publication = this.publications.get(key);
+      if (publication) {
+        if (event.forward === 0) {
+          log.info('Forward=0, pausing publish pipeline', { trackAlias: key });
+          publication.pipeline.pause();
+        } else if (event.forward === 1) {
+          log.info('Forward=1, resuming publish pipeline', { trackAlias: key });
+          publication.pipeline.resume();
+        }
+      }
+    });
+    this.sessionCleanup.push(forwardStateCleanup);
   }
 
   /**
@@ -1131,12 +1697,16 @@ export class MediaSession {
       enableStats: config.enableStats,
       // GroupArbiter options for parallel QUIC stream handling
       useGroupArbiter: config.useGroupArbiter,
+      // New PlayoutBuffer architecture options
+      policyType: config.policyType,
+      isLive: config.isLive,
       maxLatency: config.maxLatency,
       estimatedGopDuration: config.estimatedGopDuration,
       catalogFramerate: config.catalogFramerate,
       catalogTimescale: config.catalogTimescale,
       // QuicR-Mac interop mode
       quicrInteropEnabled: config.quicrInteropEnabled,
+      minBufferFrames: config.minBufferFrames,
     });
 
     // Clean up existing pipeline for same track (e.g. remote user redialed)
@@ -1158,6 +1728,8 @@ export class MediaSession {
       mediaType,
       useGroupArbiter: config.useGroupArbiter,
       quicrInteropEnabled: config.quicrInteropEnabled,
+      policyType: config.policyType,
+      isLive: config.isLive,
     });
 
     // Use the subscriptionId from the event (added in the session when creating the subscription)
@@ -1209,6 +1781,7 @@ export class MediaSession {
       secureContext,
     });
     this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
+    this.subscriptionIdToPipeline.set(subscriptionId, pipeline);
 
     // Update the subscription's onObject callback to push to pipeline (with optional decryption)
     this.session.setSubscriptionCallback(subscriptionId, (data, groupId, objectId, timestamp) => {

@@ -69,6 +69,8 @@ export type {
   PublicationInfo,
   PublishStatsEvent,
   SubscribeStatsEvent,
+  SubscribeOkEvent,
+  MessageLogEvent,
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
@@ -77,6 +79,21 @@ export type {
   IncomingPublishInfo,
   IncomingPublishEvent,
   RequestAuthToken,
+  // FETCH / DVR types
+  FetchOptions,
+  FetchRange,
+  FetchInfo,
+  FetchObjectEvent,
+  FetchCompleteEvent,
+  FetchStreamCompleteEvent,
+  FetchErrorEvent,
+  // VOD types
+  VODMetadata,
+  VODPublishOptions,
+  VODTrackInfo,
+  IncomingFetchEvent,
+  // Forward state types
+  ForwardStateChangeEvent,
 } from './types.js';
 
 // Worker API

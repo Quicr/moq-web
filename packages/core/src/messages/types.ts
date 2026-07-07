@@ -278,6 +278,39 @@ export enum RequestParameter {
   SUBSCRIPTION_FILTER = 0x21,
   /** Group order (Draft-16) */
   GROUP_ORDER = 0x22,
+  /** DTS Switching Set Assignment (DTS4MoQ extension) */
+  SWITCHING_SET_ASSIGNMENT = 0x41,
+}
+
+/**
+ * Object extension header keys (Draft-16)
+ *
+ * @remarks
+ * Extension headers are sent with objects to provide relay-visible metadata.
+ * They control caching, delivery timeouts, and other relay behaviors.
+ */
+export enum ObjectExtension {
+  /** Delivery timeout in milliseconds - how long to wait for delivery */
+  DELIVERY_TIMEOUT = 0x01,
+  /** Max cache duration in milliseconds - how long relay should cache the object */
+  MAX_CACHE_DURATION = 0x02,
+}
+
+/**
+ * Fetch Type (Draft-15+)
+ *
+ * @remarks
+ * Determines how the fetch range is specified.
+ */
+export enum FetchType {
+  /** Standalone fetch with full track name and absolute range */
+  STANDALONE = 0x01,
+  /** Joining fetch - inherits track from existing subscription */
+  JOINING = 0x02,
+  /** Absolute standalone with explicit range */
+  ABSOLUTE_STANDALONE = 0x03,
+  /** Absolute joining fetch */
+  ABSOLUTE_JOINING = 0x04,
 }
 
 /**

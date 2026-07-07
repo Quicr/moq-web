@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Android Video Conferencing: Aspect Ratio Handling with H264</title>
+
+    <!-- Google Fonts - Product Sans style with Roboto -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <style>
+        /* Google Color Palette */
+        :root {
+            /* Google Colors */
+            --google-blue: #4285F4;
+            --google-red: #EA4335;
+            --google-yellow: #FBBC05;
+            --google-green: #34A853;
+            --google-blue-dark: #1a73e8;
+            --google-blue-light: #8ab4f8;
+
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-tertiary: #0f3460;
+            --bg-card: #1a1a2e;
+            --bg-code: #0d1117;
+            --bg-code-inline: #21262d;
+
+            --text-primary: #ffffff;
+            --text-secondary: #c9d1d9;
+            --text-muted: #8b949e;
+            --text-code: #e6edf3;
+
+            /* Vibrant accents using Google colors */
+            --accent-primary: var(--google-blue);
+            --accent-secondary: var(--google-red);
+            --accent-tertiary: var(--google-green);
+            --accent-warm: var(--google-yellow);
+            --accent-pink: #e94560;
+
+            --border-color: #30363d;
+            --border-accent: var(--google-blue);
+            --shadow-lg: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            --shadow-glow: 0 0 40px rgba(66, 133, 244, 0.2);
+
+            --content-width: 960px;
+
+            /* Gradient colors */
+            --gradient-google: linear-gradient(135deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+        }
+
+        /* Light theme - Google style */
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #ffffff;
+                --bg-secondary: #f8f9fa;
+                --bg-tertiary: #e8eaed;
+                --bg-card: #ffffff;
+                --bg-code: #f8f9fa;
+                --bg-code-inline: #e8eaed;
+                --text-primary: #202124;
+                --text-secondary: #5f6368;
+                --text-muted: #80868b;
+                --text-code: #202124;
+                --border-color: #dadce0;
+                --shadow-glow: 0 0 40px rgba(66, 133, 244, 0.1);
+                --accent-warm: #ea8600;
+            }
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            font-size: 16px;
+        }
+
+        body {
+            font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.75;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            max-width: var(--content-width);
+            margin: 0 auto;
+            padding: 3rem 2rem 6rem;
+        }
+
+        /* Typography - Google Style */
+        h1 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+            background-size: 300% 300%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: gradient-shift 8s ease infinite;
+        }
+
+        @keyframes gradient-shift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        h2 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.875rem;
+            font-weight: 500;
+            margin-top: 4rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 3px solid transparent;
+            border-image: linear-gradient(90deg, var(--google-blue), var(--google-green)) 1;
+            letter-spacing: -0.01em;
+            color: var(--text-primary);
+        }
+
+        h2::before {
+            content: '';
+            display: inline-block;
+            width: 6px;
+            height: 1.5rem;
+            background: linear-gradient(180deg, var(--google-blue), var(--google-red));
+            margin-right: 0.75rem;
+            border-radius: 3px;
+            vertical-align: middle;
+        }
+
+        h3 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.375rem;
+            font-weight: 500;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--google-blue);
+        }
+
+        h4 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.125rem;
+            font-weight: 500;
+            color: var(--google-green);
+            margin-top: 2rem;
+            margin-bottom: 0.75rem;
+        }
+
+        p {
+            margin-bottom: 1.25rem;
+            color: var(--text-secondary);
+        }
+
+        strong {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        em {
+            font-style: italic;
+            color: var(--accent-tertiary);
+        }
+
+        a {
+            color: var(--google-blue);
+            text-decoration: none;
+            transition: all 0.2s ease;
+            border-bottom: 1px solid transparent;
+            font-weight: 500;
+        }
+
+        a:hover {
+            color: var(--google-blue-light);
+            border-bottom-color: var(--google-blue-light);
+        }
+
+        /* Lists */
+        ul, ol {
+            margin-bottom: 1.5rem;
+            padding-left: 1.5rem;
+            color: var(--text-secondary);
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+            padding-left: 0.5rem;
+        }
+
+        ul li::marker {
+            color: var(--google-blue);
+        }
+
+        ol li::marker {
+            color: var(--google-red);
+            font-weight: 600;
+        }
+
+        /* Code */
+        pre {
+            background: var(--bg-code);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--google-blue);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        pre code {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            color: var(--text-code);
+            background: none;
+            padding: 0;
+            border-radius: 0;
+        }
+
+        code {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            font-size: 0.875em;
+            background: var(--bg-code-inline);
+            color: var(--google-yellow);
+            padding: 0.2em 0.5em;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+
+        /* Tables - Google style */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            background: var(--bg-card);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--border-color);
+        }
+
+        th {
+            background: linear-gradient(135deg, var(--google-blue), var(--google-blue-dark));
+            color: white;
+            font-weight: 500;
+            text-align: left;
+            padding: 1rem 1.25rem;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+
+        tr:hover td {
+            background: var(--bg-secondary);
+        }
+
+        /* Alternate row coloring */
+        tbody tr:nth-child(even) td {
+            background: var(--bg-secondary);
+        }
+
+        tbody tr:nth-child(even):hover td {
+            background: var(--bg-tertiary);
+        }
+
+        /* Blockquotes */
+        blockquote {
+            border-left: 4px solid var(--google-green);
+            background: var(--bg-secondary);
+            padding: 1rem 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 0 12px 12px 0;
+            color: var(--text-secondary);
+        }
+
+        hr {
+            border: none;
+            height: 3px;
+            background: linear-gradient(90deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+            margin: 3rem 0;
+            border-radius: 2px;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 2rem 1rem 4rem;
+            }
+
+            h1 {
+                font-size: 2rem;
+            }
+
+            h2 {
+                font-size: 1.5rem;
+            }
+
+            pre {
+                padding: 1rem;
+                font-size: 0.8rem;
+            }
+        }
+
+        /* Print */
+        @media print {
+            body {
+                background: white;
+                color: black;
+            }
+
+            pre {
+                background: #f5f5f5;
+            }
+
+            h1 {
+                background: none;
+                -webkit-text-fill-color: inherit;
+                color: black;
+            }
+        }
+
+        h2:hover, h3:hover {
+            color: var(--google-blue);
+        }
+
+        :target {
+            scroll-margin-top: 2rem;
+        }
+
+        /* TOC styling */
+        .toc-list {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem 2rem;
+            border-left: 4px solid var(--google-blue);
+        }
+
+        .toc-list a {
+            display: inline-block;
+            padding: 0.25rem 0;
+            transition: transform 0.2s ease, color 0.2s ease;
+        }
+
+        .toc-list a:hover {
+            transform: translateX(4px);
+            color: var(--google-red);
+        }
+
+        .footer {
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 3px solid transparent;
+            border-image: linear-gradient(90deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green)) 1;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .footer em {
+            color: var(--text-secondary);
+        }
+
+        /* Copy button for code blocks */
+        .copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            font-family: 'Roboto', sans-serif;
+            background: var(--google-blue);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            opacity: 0;
+            transition: all 0.2s;
+        }
+
+        pre:hover .copy-btn {
+            opacity: 1;
+        }
+
+        .copy-btn:hover {
+            background: var(--google-blue-dark);
+            transform: scale(1.05);
+        }
+
+        /* Google-style badges/pills for inline code */
+        h2 code, h3 code, h4 code {
+            background: var(--google-blue);
+            color: white;
+            font-size: 0.75em;
+            padding: 0.2em 0.6em;
+            border-radius: 12px;
+            border: none;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="android-video-conferencing-aspect-ratio-handling-with-h264">Android Video Conferencing: Aspect Ratio Handling with H264</h1>
+<p>A comprehensive guide to handling video dimensions and aspect ratio through the complete video pipeline in an Android conferencing application.</p>
+<hr />
+<h2 id="the-complete-pipeline">The Complete Pipeline</h2>
+<pre><code>Camera2 Capture --&gt; MediaCodec Encoder --&gt; MediaCodec Decoder --&gt; SurfaceView/TextureView
+     1080p             H264 NALUs            YUV/RGB frames           Display
+   (varies)          (dimensions in SPS)                             (varies)
+</code></pre>
+<hr />
+<h2 id="1-capture-camera2-api">1. Capture: Camera2 API</h2>
+<h3 id="resolution-selection">Resolution Selection</h3>
+<pre><code class="language-kotlin">// Get available output sizes for the camera
+val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+val outputSizes = map?.getOutputSizes(SurfaceTexture::class.java)
+
+// Find best match for 1080p (could be 1920x1080 or 1080x1920)
+fun selectOptimalSize(
+    choices: Array&lt;Size&gt;,
+    targetWidth: Int,
+    targetHeight: Int
+): Size {
+    // Filter sizes that match aspect ratio
+    val targetRatio = targetWidth.toFloat() / targetHeight
+
+    return choices
+        .filter { 
+            val ratio = it.width.toFloat() / it.height
+            abs(ratio - targetRatio) &lt; 0.01  // ~1% tolerance
+        }
+        .minByOrNull { 
+            abs(it.width * it.height - targetWidth * targetHeight) 
+        } ?: choices[0]
+}
+</code></pre>
+<h3 id="handle-device-rotation">Handle Device Rotation</h3>
+<pre><code class="language-kotlin">// Camera sensor orientation vs device orientation
+val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+val deviceRotation = windowManager.defaultDisplay.rotation
+
+// Calculate rotation needed
+val rotation = when (deviceRotation) {
+    Surface.ROTATION_0 -&gt; sensorOrientation
+    Surface.ROTATION_90 -&gt; (sensorOrientation + 270) % 360
+    Surface.ROTATION_180 -&gt; (sensorOrientation + 180) % 360
+    Surface.ROTATION_270 -&gt; (sensorOrientation + 90) % 360
+    else -&gt; sensorOrientation
+}
+
+// IMPORTANT: Store this rotation - you'll need to signal it to receivers
+captureRequestBuilder.set(CaptureRequest.JPEG_ORIENTATION, rotation)
+</code></pre>
+<h3 id="key-point-camera-always-outputs-in-sensor-orientation">Key Point: Camera Always Outputs in Sensor Orientation</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Output</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Physical sensor</td>
+<td>Landscape (1920x1080)</td>
+<td>Fixed hardware orientation</td>
+</tr>
+<tr>
+<td>Phone held portrait</td>
+<td>1920x1080 rotated 90 degrees</td>
+<td>Must rotate before encode OR signal rotation</td>
+</tr>
+<tr>
+<td>Phone held landscape</td>
+<td>1920x1080 native</td>
+<td>No rotation needed</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-encode-mediacodec-h264">2. Encode: MediaCodec H264</h2>
+<h3 id="encoder-setup">Encoder Setup</h3>
+<pre><code class="language-kotlin">fun createEncoder(width: Int, height: Int, frameRate: Int, bitrate: Int): MediaCodec {
+    val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+        setInteger(MediaFormat.KEY_COLOR_FORMAT, 
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)  // For Surface input
+        setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+        setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
+        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)  // GOP size
+
+        // CRITICAL: These are encoded in SPS/PPS
+        // width and height here define the encoded dimensions
+    }
+
+    val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+    encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+
+    return encoder
+}
+</code></pre>
+<h3 id="where-dimensions-live-in-h264">Where Dimensions Live in H264</h3>
+<p>The H264 bitstream contains dimension information in the SPS (Sequence Parameter Set):</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pic_width_in_mbs_minus1</code></td>
+<td>Width = (value + 1) * 16</td>
+</tr>
+<tr>
+<td><code>pic_height_in_map_units_minus1</code></td>
+<td>Height calculation</td>
+</tr>
+<tr>
+<td><code>frame_cropping_flag</code></td>
+<td>Exact dimensions if not multiple of 16</td>
+</tr>
+<tr>
+<td><code>vui_parameters_present_flag</code></td>
+<td>Contains aspect ratio info</td>
+</tr>
+<tr>
+<td><code>aspect_ratio_idc</code></td>
+<td>SAR (Sample Aspect Ratio)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="signaling-rotation-two-approaches">Signaling Rotation: Two Approaches</h3>
+<p><strong>Approach A: Transform before encoding (recommended for compatibility)</strong></p>
+<pre><code class="language-kotlin">// Use OpenGL to rotate the camera texture before feeding to encoder
+// This way encoded video is &quot;correct&quot; orientation
+// Width/height swap if rotating 90/270
+
+val isPortrait = rotation == 90 || rotation == 270
+val encodedWidth = if (isPortrait) 1080 else 1920
+val encodedHeight = if (isPortrait) 1920 else 1080
+
+// GPU shader rotates the texture
+// Encoder receives already-rotated frames
+</code></pre>
+<p><strong>Approach B: Signal rotation out-of-band</strong></p>
+<pre><code class="language-kotlin">// Encode in sensor orientation (always landscape)
+// Send rotation as metadata alongside the stream
+
+data class VideoTrackMetadata(
+    val width: Int,           // 1920
+    val height: Int,          // 1080
+    val rotation: Int,        // 90 (for portrait)
+    val pixelAspectRatio: Float  // 1.0 (square pixels)
+)
+
+// In SDP, WebRTC, or MoQ metadata
+// Receiver must apply rotation during render
+</code></pre>
+<hr />
+<h2 id="3-decode-mediacodec-h264">3. Decode: MediaCodec H264</h2>
+<h3 id="decoder-setup">Decoder Setup</h3>
+<pre><code class="language-kotlin">fun createDecoder(width: Int, height: Int, surface: Surface): MediaCodec {
+    val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+
+    val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+
+    // Output directly to Surface for efficient rendering
+    decoder.configure(format, surface, null, 0)
+
+    return decoder
+}
+</code></pre>
+<h3 id="handling-format-changes">Handling Format Changes</h3>
+<pre><code class="language-kotlin">// Decoder may signal format change when SPS is parsed
+when (val outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, timeoutUs)) {
+    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -&gt; {
+        val newFormat = decoder.outputFormat
+        val actualWidth = newFormat.getInteger(MediaFormat.KEY_WIDTH)
+        val actualHeight = newFormat.getInteger(MediaFormat.KEY_HEIGHT)
+
+        // IMPORTANT: Update your rendering surface/view with actual dimensions
+        // These may differ from what you initially configured
+        onVideoSizeChanged(actualWidth, actualHeight)
+    }
+    // ... handle frames
+}
+</code></pre>
+<h3 id="key-point-decoder-discovers-dimensions-from-bitstream">Key Point: Decoder Discovers Dimensions from Bitstream</h3>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>What Happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Configure</td>
+<td>You provide "expected" width/height</td>
+</tr>
+<tr>
+<td>Parse SPS</td>
+<td>Actual dimensions extracted from bitstream</td>
+</tr>
+<tr>
+<td>Format Change</td>
+<td><code>INFO_OUTPUT_FORMAT_CHANGED</code> signals actual size</td>
+</tr>
+<tr>
+<td>Action</td>
+<td>Always listen and update your view accordingly</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-render-surfaceview-textureview">4. Render: SurfaceView / TextureView</h2>
+<h3 id="option-a-surfaceview-with-aspect-ratio-container">Option A: SurfaceView with Aspect Ratio Container</h3>
+<pre><code class="language-kotlin">class AspectRatioFrameLayout @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null
+) : FrameLayout(context, attrs) {
+
+    private var videoWidth = 0
+    private var videoHeight = 0
+    private var rotation = 0
+    private var scaleType = ScaleType.FIT  // or FILL
+
+    enum class ScaleType { FIT, FILL }
+
+    fun setVideoSize(width: Int, height: Int, rotation: Int = 0) {
+        // Account for rotation
+        if (rotation == 90 || rotation == 270) {
+            this.videoWidth = height
+            this.videoHeight = width
+        } else {
+            this.videoWidth = width
+            this.videoHeight = height
+        }
+        this.rotation = rotation
+        requestLayout()
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+
+        if (videoWidth == 0 || videoHeight == 0) return
+
+        val containerWidth = measuredWidth.toFloat()
+        val containerHeight = measuredHeight.toFloat()
+
+        val videoAspect = videoWidth.toFloat() / videoHeight
+        val containerAspect = containerWidth / containerHeight
+
+        val (targetWidth, targetHeight) = when (scaleType) {
+            ScaleType.FIT -&gt; {
+                // Letterbox/pillarbox - show all content
+                if (videoAspect &gt; containerAspect) {
+                    // Video is wider - fit to width, letterbox top/bottom
+                    containerWidth to (containerWidth / videoAspect)
+                } else {
+                    // Video is taller - fit to height, pillarbox sides
+                    (containerHeight * videoAspect) to containerHeight
+                }
+            }
+            ScaleType.FILL -&gt; {
+                // Crop - fill container, lose edges
+                if (videoAspect &gt; containerAspect) {
+                    // Video is wider - fit to height, crop sides
+                    (containerHeight * videoAspect) to containerHeight
+                } else {
+                    // Video is taller - fit to width, crop top/bottom
+                    containerWidth to (containerWidth / videoAspect)
+                }
+            }
+        }
+
+        // Measure child (SurfaceView) with calculated dimensions
+        val childWidthSpec = MeasureSpec.makeMeasureSpec(targetWidth.toInt(), MeasureSpec.EXACTLY)
+        val childHeightSpec = MeasureSpec.makeMeasureSpec(targetHeight.toInt(), MeasureSpec.EXACTLY)
+
+        getChildAt(0)?.measure(childWidthSpec, childHeightSpec)
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        val child = getChildAt(0) ?: return
+
+        // Center the child
+        val childWidth = child.measuredWidth
+        val childHeight = child.measuredHeight
+        val left = (measuredWidth - childWidth) / 2
+        val top = (measuredHeight - childHeight) / 2
+
+        child.layout(left, top, left + childWidth, top + childHeight)
+    }
+}
+</code></pre>
+<h3 id="option-b-textureview-with-matrix-transform">Option B: TextureView with Matrix Transform</h3>
+<pre><code class="language-kotlin">class VideoTextureView(context: Context) : TextureView(context) {
+
+    private var videoWidth = 0
+    private var videoHeight = 0
+    private var videoRotation = 0
+
+    fun setVideoSize(width: Int, height: Int, rotation: Int = 0) {
+        videoWidth = width
+        videoHeight = height
+        videoRotation = rotation
+        updateTransform()
+    }
+
+    private fun updateTransform() {
+        if (videoWidth == 0 || videoHeight == 0 || width == 0 || height == 0) return
+
+        val matrix = Matrix()
+
+        val viewWidth = width.toFloat()
+        val viewHeight = height.toFloat()
+
+        // Account for rotation in aspect ratio calculation
+        val (effectiveVideoWidth, effectiveVideoHeight) = if (videoRotation == 90 || videoRotation == 270) {
+            videoHeight.toFloat() to videoWidth.toFloat()
+        } else {
+            videoWidth.toFloat() to videoHeight.toFloat()
+        }
+
+        val videoAspect = effectiveVideoWidth / effectiveVideoHeight
+        val viewAspect = viewWidth / viewHeight
+
+        // Calculate scale for aspect-fit
+        val (scaleX, scaleY) = if (videoAspect &gt; viewAspect) {
+            1f to (viewAspect / videoAspect)
+        } else {
+            (videoAspect / viewAspect) to 1f
+        }
+
+        // Apply transformations centered
+        matrix.setScale(scaleX, scaleY, viewWidth / 2, viewHeight / 2)
+
+        // Apply rotation if needed (if not pre-rotated during encoding)
+        if (videoRotation != 0) {
+            matrix.postRotate(videoRotation.toFloat(), viewWidth / 2, viewHeight / 2)
+        }
+
+        setTransform(matrix)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        updateTransform()
+    }
+}
+</code></pre>
+<hr />
+<h2 id="5-grid-layout-multiple-participants">5. Grid Layout: Multiple Participants</h2>
+<pre><code class="language-kotlin">class VideoGridLayout(context: Context) : ViewGroup(context) {
+
+    private var participantCount = 0
+
+    fun setParticipantCount(count: Int) {
+        participantCount = count
+        requestLayout()
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        val width = r - l
+        val height = b - t
+
+        val columns = ceil(sqrt(participantCount.toDouble())).toInt()
+        val rows = ceil(participantCount.toDouble() / columns).toInt()
+
+        val cellWidth = width / columns
+        val cellHeight = height / rows
+
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            val row = i / columns
+            val col = i % columns
+
+            val left = col * cellWidth
+            val top = row * cellHeight
+
+            // Each child is an AspectRatioFrameLayout containing a SurfaceView
+            // The aspect ratio handling happens inside each child
+            child.layout(left, top, left + cellWidth, top + cellHeight)
+        }
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        // Measure children to fill their cells
+        // Each AspectRatioFrameLayout will handle aspect ratio internally
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+    }
+}
+</code></pre>
+<hr />
+<h2 id="6-complete-flow-example">6. Complete Flow Example</h2>
+<pre><code class="language-kotlin">class VideoConferenceManager(
+    private val context: Context
+) {
+    // Capture
+    private lateinit var cameraDevice: CameraDevice
+    private lateinit var captureSession: CameraCaptureSession
+
+    // Encode
+    private lateinit var encoder: MediaCodec
+    private var encodedWidth = 1920
+    private var encodedHeight = 1080
+    private var captureRotation = 0
+
+    // Track metadata to send to remote
+    data class LocalVideoTrack(
+        val width: Int,
+        val height: Int,
+        val rotation: Int,  // 0, 90, 180, 270
+        val codec: String = &quot;H264&quot;
+    )
+
+    fun startCapture(previewSurface: Surface) {
+        // 1. Open camera
+        // 2. Determine rotation
+        captureRotation = calculateRotation()
+
+        // 3. Create encoder (in sensor orientation)
+        encoder = createEncoder(1920, 1080, 30, 2_000_000)
+        val encoderSurface = encoder.createInputSurface()
+        encoder.start()
+
+        // 4. Setup capture session with both preview and encoder surfaces
+        val surfaces = listOf(previewSurface, encoderSurface)
+        cameraDevice.createCaptureSession(surfaces, /* callback */)
+
+        // 5. Signal track metadata to remote participants
+        sendTrackMetadata(LocalVideoTrack(
+            width = encodedWidth,
+            height = encodedHeight,
+            rotation = captureRotation
+        ))
+    }
+
+    // On receive side
+    fun onRemoteTrackReceived(
+        trackMetadata: LocalVideoTrack,
+        videoView: AspectRatioFrameLayout
+    ) {
+        // Decoder outputs to the SurfaceView inside videoView
+        val surfaceView = videoView.getChildAt(0) as SurfaceView
+
+        decoder = createDecoder(
+            trackMetadata.width,
+            trackMetadata.height,
+            surfaceView.holder.surface
+        )
+        decoder.start()
+
+        // Tell the view about dimensions + rotation
+        videoView.setVideoSize(
+            trackMetadata.width,
+            trackMetadata.height,
+            trackMetadata.rotation
+        )
+    }
+}
+</code></pre>
+<hr />
+<h2 id="7-summary-where-aspect-ratio-is-handled">7. Summary: Where Aspect Ratio is Handled</h2>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>What Happens</th>
+<th>Your Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Capture</strong></td>
+<td>Camera outputs in sensor orientation</td>
+<td>Select resolution, track rotation</td>
+</tr>
+<tr>
+<td><strong>Encode</strong></td>
+<td>Dimensions baked into SPS</td>
+<td>Decide: rotate before encode OR signal rotation</td>
+</tr>
+<tr>
+<td><strong>Transport</strong></td>
+<td>Bitstream + metadata</td>
+<td>Signal width, height, rotation to receiver</td>
+</tr>
+<tr>
+<td><strong>Decode</strong></td>
+<td>Reads dimensions from SPS</td>
+<td>Listen for format changes</td>
+</tr>
+<tr>
+<td><strong>Render</strong></td>
+<td>Must fit video into arbitrary container</td>
+<td>Implement aspect ratio layout (FIT/FILL)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-golden-rule">The Golden Rule</h3>
+<p><strong>Never assume sender and receiver have same screen dimensions.</strong></p>
+<ul>
+<li>Always signal video dimensions + rotation</li>
+<li>Always calculate aspect ratio at render time</li>
+<li>Handle <code>INFO_OUTPUT_FORMAT_CHANGED</code> from decoder</li>
+</ul>
+<hr />
+<h2 id="8-comparison-fit-vs-fill">8. Comparison: FIT vs FILL</h2>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Behavior</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FIT (Letterbox)</strong></td>
+<td>Shows all content, may have black bars</td>
+<td>Default safe choice, no content loss</td>
+</tr>
+<tr>
+<td><strong>FILL (Crop)</strong></td>
+<td>Fills container, clips edges</td>
+<td>More immersive, loses edge content</td>
+</tr>
+</tbody>
+</table>
+<h3 id="visual-example">Visual Example</h3>
+<pre><code>Portrait video (9:16) on Landscape screen (16:9):
+
+FIT:                          FILL:
++--+--------+--+              +----------------+
+|  |        |  |              |    clipped     |
+|  | video  |  |              |================|
+|  |        |  |              |     video      |
+|  |        |  |              |================|
+|  |        |  |              |    clipped     |
++--+--------+--+              +----------------+
+   pillarbox                     edges cropped
+</code></pre>
+<hr />
+<h2 id="9-best-practices">9. Best Practices</h2>
+<ol>
+<li><strong>Capture</strong>: Always track sensor orientation and device rotation</li>
+<li><strong>Encode</strong>: Prefer GPU rotation before encode for maximum compatibility</li>
+<li><strong>Metadata</strong>: Signal width, height, rotation, and codec in track metadata</li>
+<li><strong>Decode</strong>: Always handle <code>INFO_OUTPUT_FORMAT_CHANGED</code></li>
+<li><strong>Render</strong>: Use <code>AspectRatioFrameLayout</code> or <code>TextureView</code> with matrix transforms</li>
+<li><strong>Grid</strong>: Let each participant tile handle its own aspect ratio internally</li>
+</ol>
+
+        <div class="footer">
+            <em>Android Video Conferencing: Aspect Ratio Handling with H264</em>
+        </div>
+    </div>
+
+    <script>
+        // Generate IDs for h2/h3 headers based on their text content
+        document.querySelectorAll('h2, h3').forEach(header => {
+            if (!header.id) {
+                const text = header.textContent.trim();
+                // Generate ID: lowercase, replace spaces with dashes, remove special chars
+                const id = text
+                    .toLowerCase()
+                    .replace(/[^a-z0-9\s-]/g, '')
+                    .replace(/\s+/g, '-')
+                    .replace(/-+/g, '-')
+                    .replace(/^-|-$/g, '');
+                header.id = id;
+            }
+        });
+
+        // Add copy button to code blocks
+        document.querySelectorAll('pre').forEach(block => {
+            const button = document.createElement('button');
+            button.className = 'copy-btn';
+            button.textContent = 'Copy';
+            block.appendChild(button);
+
+            button.addEventListener('click', async () => {
+                const code = block.querySelector('code');
+                await navigator.clipboard.writeText(code.textContent);
+                button.textContent = 'Copied!';
+                setTimeout(() => button.textContent = 'Copy', 2000);
+            });
+        });
+
+        // Smooth scrolling for anchor links with fuzzy matching
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                const href = this.getAttribute('href');
+                const targetId = href.substring(1);
+
+                // Try exact match first
+                let target = document.getElementById(targetId);
+
+                // If not found, try fuzzy match (handle different ID formats)
+                if (!target) {
+                    const searchText = targetId.replace(/-/g, ' ').toLowerCase();
+                    document.querySelectorAll('h2, h3').forEach(header => {
+                        const headerText = header.textContent.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+                        if (headerText.includes(searchText) || searchText.includes(headerText.substring(0, 20))) {
+                            target = header;
+                        }
+                    });
+                }
+
+                if (target) {
+                    e.preventDefault();
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                    // Update URL hash
+                    history.pushState(null, null, href);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

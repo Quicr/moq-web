@@ -6,7 +6,7 @@ on:
       branch:
         description: 'Branch to deploy'
         required: true
-        default: 'jitter-overhaul'
+        default: 'draft-18'
 
 permissions:
   contents: read
@@ -44,24 +44,26 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build branch
-        run: pnpm --filter '!@web-moq/auth-demo' run build
+        run: |
+          if [[ "${{ github.event.inputs.branch }}" == *"draft-18"* ]]; then
+            pnpm run build:draft-18
+          else
+            pnpm run build
+          fi
         env:
           BASE_URL: /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/
 
-      - name: Build auth-demo
-        run: |
-          if [ -d apps/auth-demo ]; then
-            cd apps/auth-demo
-            npx vite build --base /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/auth-demo/
-          fi
-
       - name: Save branch build
         run: |
-          mkdir -p branch-build
-          mv packages/client/dist branch-build/${{ github.event.inputs.branch }}
-          if [ -d apps/auth-demo/dist ]; then
-            mv apps/auth-demo/dist branch-build/${{ github.event.inputs.branch }}/auth-demo
-          fi
+          mkdir -p branch-build/${{ github.event.inputs.branch }}
+          cp -r packages/client/dist/* branch-build/${{ github.event.inputs.branch }}/
+          for app_dir in apps/*/dist; do
+            if [ -d "$app_dir" ]; then
+              app_name=$(echo "$app_dir" | cut -d'/' -f2)
+              mkdir -p "branch-build/${{ github.event.inputs.branch }}/apps/$app_name"
+              cp -r "$app_dir"/* "branch-build/${{ github.event.inputs.branch }}/apps/$app_name/"
+            fi
+          done
 
       - name: Checkout main for full build
         uses: actions/checkout@v4

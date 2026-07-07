@@ -6,17 +6,18 @@
  *
  * Main interface for publishing multiple media tracks including device selection,
  * encoding settings, and track management.
+ * Reorganized with collapsible sections for a cleaner, less busy interface.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { getResolutionConfig } from '@web-moq/media';
+import { getResolutionConfig, VODLoader, type VODLoadProgress } from '@web-moq/media';
 import { useStore } from '../../store';
 import { isDebugMode } from '../common/DevSettingsPanel';
 import { useVAD } from '../../hooks/useVAD';
 import { VADIndicator, VADDot } from '../common/VADIndicator';
 
 type MediaType = 'video' | 'audio';
-type Resolution = '1080p' | '720p' | '480p';
+type Resolution = '4k' | '1080p' | '720p' | '480p';
 type Framerate = 30 | 24 | 15;
 type DeliveryMode = 'stream' | 'datagram';
 
@@ -33,7 +34,56 @@ interface TrackConfig {
   deliveryMode: DeliveryMode;
   isPublishing: boolean;
   trackAlias?: bigint;
+  // VOD-specific fields
+  isVod?: boolean;
+  vodUrl?: string;
+  vodLoop?: boolean;
+  vodLoader?: VODLoader;
+  vodProgress?: VODLoadProgress;
+  vodPlaybackUrl?: string;
+  vodIsPlaying?: boolean;
+  /** Fetch-only mode: if true, don't auto-stream - wait for FETCH requests */
+  fetchOnly?: boolean;
 }
+
+// Collapsible Section Component
+const CollapsibleSection: React.FC<{
+  title: string;
+  icon: React.ReactNode;
+  defaultOpen?: boolean;
+  badge?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ title, icon, defaultOpen = false, badge, children }) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <div className="glass-panel">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="collapsible-header"
+      >
+        <div className="flex items-center gap-3">
+          {icon}
+          <span className="font-semibold text-white">{title}</span>
+          {badge}
+        </div>
+        <svg
+          className={`collapsible-chevron ${isOpen ? 'open' : ''}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      <div className={`collapsible-content ${isOpen ? 'open' : 'closed'}`}>
+        <div className="glass-panel-body border-t border-white/5">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const PublishPanel: React.FC = () => {
   const {
@@ -48,12 +98,15 @@ export const PublishPanel: React.FC = () => {
     setKeyframeInterval,
     useAnnounceFlow,
     announceStatus,
-    announceTrackAliases,
     cancelAnnounce,
     secureObjectsEnabled,
+    vodPublishEnabled,
+    session,
+    addPublishedTrack,
   } = useStore();
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const vodVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedVideoDevice, setSelectedVideoDevice] = useState('');
   const [selectedAudioDevice, setSelectedAudioDevice] = useState('');
@@ -73,6 +126,9 @@ export const PublishPanel: React.FC = () => {
     deliveryTimeout: 5000,
     priority: 128,
     deliveryMode: 'stream', // Video defaults to stream
+    isVod: false,
+    vodUrl: '',
+    vodLoop: false,
   });
 
   // Voice Activity Detection
@@ -130,26 +186,20 @@ export const PublishPanel: React.FC = () => {
     }
   }, [localStream]);
 
-  const createCaptureStream = async (
-    videoDeviceId?: string,
-    audioDeviceId?: string,
-    options?: { videoEnabled?: boolean; audioEnabled?: boolean }
-  ) => {
+  const createCaptureStream = async (videoDeviceId?: string, audioDeviceId?: string) => {
     const { width, height } = getResolutionConfig(videoResolution);
-    const videoEnabled = options?.videoEnabled ?? true;
-    const audioEnabled = options?.audioEnabled ?? true;
 
     return navigator.mediaDevices.getUserMedia({
-      video: videoEnabled
-        ? (videoDeviceId
-            ? { deviceId: { exact: videoDeviceId }, width, height }
-            : { width, height })
-        : false,
-      audio: audioEnabled
-        ? (audioDeviceId
-            ? { deviceId: { exact: audioDeviceId } }
-            : true)
-        : false,
+      video: videoDeviceId
+        ? {
+            deviceId: { exact: videoDeviceId },
+            width,
+            height,
+          }
+        : { width, height },
+      audio: audioDeviceId
+        ? { deviceId: { exact: audioDeviceId } }
+        : true,
     });
   };
 
@@ -186,8 +236,27 @@ export const PublishPanel: React.FC = () => {
     void captureSelectedDevices(selectedVideoDevice, selectedAudioDevice);
   }, [selectedVideoDevice, selectedAudioDevice]);
 
+  // Start local VOD playback when VOD track starts publishing
+  // This runs when a VOD track transitions to publishing state with a loader ready
+  useEffect(() => {
+    trackConfigs.forEach(config => {
+      if (config.isVod && config.isPublishing && config.vodLoader && !config.vodIsPlaying) {
+        console.log('[PublishPanel] Starting local playback for VOD track', config.trackName);
+        const playbackUrl = config.vodLoader.createPlaybackUrl();
+        if (playbackUrl) {
+          setTrackConfigs(prev => prev.map(t =>
+            t.id === config.id
+              ? { ...t, vodPlaybackUrl: playbackUrl, vodIsPlaying: true }
+              : t
+          ));
+        }
+      }
+    });
+  }, [trackConfigs]);
+
   const addTrackConfig = () => {
     if (!newTrack.namespace || !newTrack.trackName) return;
+    if (newTrack.isVod && !newTrack.vodUrl) return;
 
     // Default delivery mode: stream for video, datagram for audio
     const defaultDeliveryMode: DeliveryMode = newTrack.mediaType === 'video' ? 'stream' : 'datagram';
@@ -204,12 +273,16 @@ export const PublishPanel: React.FC = () => {
       priority: newTrack.priority ?? 128,
       deliveryMode: newTrack.deliveryMode ?? defaultDeliveryMode,
       isPublishing: false,
+      isVod: newTrack.isVod,
+      vodUrl: newTrack.vodUrl,
+      vodLoop: newTrack.vodLoop,
     };
 
     setTrackConfigs([...trackConfigs, config]);
     setNewTrack({
       ...newTrack,
       trackName: '',
+      vodUrl: '',
     });
   };
 
@@ -221,22 +294,87 @@ export const PublishPanel: React.FC = () => {
     setPublishError(null);
 
     try {
-      // Each track gets its own video/audio enabled based on its media type
-      const videoEnabled = config.mediaType === 'video';
-      const audioEnabled = config.mediaType === 'audio';
+      // Handle VOD track publishing
+      if (config.isVod && config.vodUrl) {
+        if (!session) {
+          setPublishError('No session available');
+          return;
+        }
 
-      // Always create a fresh stream for each track
-      // This ensures each track has its own independent stream that won't be stopped
-      // when other operations happen (device changes, other tracks starting, etc.)
-      const stream = await createCaptureStream(
-        videoEnabled ? selectedVideoDevice : undefined,
-        audioEnabled ? selectedAudioDevice : undefined,
-        { videoEnabled, audioEnabled }
-      );
+        // Get resolution dimensions
+        const getResolutionDimensions = (res: Resolution | undefined) => {
+          switch (res) {
+            case '4k': return { width: 3840, height: 2160 };
+            case '1080p': return { width: 1920, height: 1080 };
+            case '720p': return { width: 1280, height: 720 };
+            case '480p': return { width: 854, height: 480 };
+            default: return { width: 1280, height: 720 };
+          }
+        };
+        const { width, height } = getResolutionDimensions(config.resolution);
 
-      // Update localStream for preview (don't stop the old one if tracks are still publishing)
-      if (!localStream) {
-        setLocalStream(stream);
+        // Create VOD loader and load the video
+        const loader = new VODLoader({
+          framesPerGroup: 30,
+          framerate: config.framerate ?? 30,
+          width,
+          height,
+          bitrate: config.bitrate ?? (config.resolution === '4k' ? 15000000 : 2000000),
+          loop: config.vodLoop ?? false,
+          codec: config.resolution === '4k' ? 'avc1.640033' : 'avc1.42E01F',
+          onProgress: (progress) => {
+            setTrackConfigs(prev => prev.map(t =>
+              t.id === config.id ? { ...t, vodProgress: progress } : t
+            ));
+          },
+        });
+
+        // Update config with loader
+        setTrackConfigs(prev => prev.map(t =>
+          t.id === config.id ? { ...t, vodLoader: loader, vodProgress: { phase: 'fetching', progress: 0 } } : t
+        ));
+
+        // Load the video
+        await loader.load(config.vodUrl);
+
+        // Get publish options from loader
+        const publishOptions = loader.getPublishOptions();
+
+        // Publish VOD track
+        // Default to fetchOnly mode for smoother playback (subscriber controls pacing via FETCH)
+        const trackAlias = await session.publishVOD(
+          config.namespace.split('/'),
+          config.trackName,
+          {
+            ...publishOptions,
+            priority: config.priority,
+            deliveryTimeout: config.deliveryTimeout,
+            deliveryMode: config.deliveryMode,
+            fetchOnly: config.fetchOnly ?? true, // Default to fetch-only for VOD
+          }
+        );
+
+        // Add to published tracks for stats display
+        addPublishedTrack({
+          id: `pub-${trackAlias.toString()}`,
+          type: 'video',
+          namespace: config.namespace.split('/'),
+          trackName: config.trackName,
+          active: true,
+          stats: { groupId: 0, objectId: 0, bytesTransferred: 0 },
+        });
+
+        setTrackConfigs(prev => prev.map(t =>
+          t.id === config.id ? { ...t, isPublishing: true, trackAlias, vodLoader: loader } : t
+        ));
+        return;
+      }
+
+      // Standard live track publishing
+      let stream = localStream;
+      if (!stream) {
+        await startCapture();
+        stream = useStore.getState().localStream;
       }
 
       if (!stream) {
@@ -244,7 +382,11 @@ export const PublishPanel: React.FC = () => {
         return;
       }
 
-      // Pass the stream directly to startPublishing
+      // Each track gets its own video/audio enabled based on its media type
+      // These are passed directly to startPublishing, not set globally
+      const videoEnabled = config.mediaType === 'video';
+      const audioEnabled = config.mediaType === 'audio';
+
       const trackAlias = await storeStartPublishing(
         config.namespace,
         config.trackName,
@@ -252,11 +394,10 @@ export const PublishPanel: React.FC = () => {
         config.priority,
         config.deliveryMode,
         videoEnabled,
-        audioEnabled,
-        stream
+        audioEnabled
       );
 
-      setTrackConfigs(trackConfigs.map(t =>
+      setTrackConfigs(prev => prev.map(t =>
         t.id === config.id ? { ...t, isPublishing: true, trackAlias } : t
       ));
     } catch (err) {
@@ -267,20 +408,16 @@ export const PublishPanel: React.FC = () => {
   };
 
   const stopPublishingTrack = async (config: TrackConfig) => {
-    // In announce flow, look up the actual trackAlias from the map using namespace/trackName
-    // because config.trackAlias is just a placeholder (0n) returned from startPublishing
-    const trackKey = `${config.namespace}/${config.trackName}`;
-    const announceAlias = announceTrackAliases.get(trackKey);
-    const effectiveTrackAlias = useAnnounceFlow && announceAlias !== undefined
-      ? announceAlias
-      : config.trackAlias;
-
     try {
-      if (effectiveTrackAlias !== undefined) {
-        await storeStopPublishing(effectiveTrackAlias);
+      if (config.trackAlias !== undefined) {
+        await storeStopPublishing(config.trackAlias);
       }
-      setTrackConfigs(trackConfigs.map(t =>
-        t.id === config.id ? { ...t, isPublishing: false, trackAlias: undefined } : t
+      // Clean up VOD loader if present
+      if (config.vodLoader) {
+        config.vodLoader.clear();
+      }
+      setTrackConfigs(prev => prev.map(t =>
+        t.id === config.id ? { ...t, isPublishing: false, trackAlias: undefined, vodLoader: undefined, vodProgress: undefined } : t
       ));
     } catch (err) {
       console.error('Failed to stop publishing:', err);
@@ -291,463 +428,490 @@ export const PublishPanel: React.FC = () => {
   const audioDevices = devices.filter(d => d.kind === 'audioinput');
   const hasPublishingTracks = trackConfigs.some(t => t.isPublishing);
 
+  // State for advanced options visibility
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   return (
-    <div className="space-y-6">
-      {/* Video Preview */}
-      <div className="panel">
-        <div className="panel-header">Local Preview</div>
-        <div className="panel-body">
-          <div className="video-container mb-4" style={{ position: 'relative', paddingBottom: '56.25%' }}>
+    <div className="space-y-4">
+      {/* Media Source - Collapsible: Preview + Devices combined */}
+      <CollapsibleSection
+        title="Media Source"
+        icon={
+          <svg className="w-5 h-5 text-accent-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        }
+        badge={localStream ? <span className="badge-green text-xs ml-2">Active</span> : null}
+        defaultOpen={!localStream}
+      >
+        <div className="space-y-4">
+          {/* Compact Preview - 16:9 aspect ratio */}
+          <div className="video-container" style={{ paddingBottom: '56.25%' }}>
             <video
               ref={videoRef}
               autoPlay
               muted
               playsInline
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: '100%',
-                display: localStream ? 'block' : 'none',
-              }}
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{ display: localStream ? 'block' : 'none' }}
             />
             {!localStream && (
-              <div className="absolute inset-0 flex items-center justify-center bg-gray-100 dark:bg-gray-700">
-                <div className="text-center text-gray-400">
-                  <svg className="w-12 h-12 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="text-center text-gray-400 dark:text-white/40">
+                  <svg className="w-10 h-10 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                   </svg>
-                  <p className="text-sm">No video</p>
+                  <p className="text-sm">No preview</p>
                 </div>
               </div>
             )}
           </div>
-          <div className="flex gap-2">
+
+          {/* Capture Button + VAD inline */}
+          <div className="flex items-center gap-4">
             {!localStream ? (
-              <button onClick={startCapture} className="btn-secondary flex-1">
+              <button onClick={startCapture} className="btn-primary">
                 Start Capture
               </button>
             ) : (
-              <button onClick={stopCapture} className="btn-secondary flex-1" disabled={hasPublishingTracks}>
+              <button onClick={stopCapture} className="btn-secondary" disabled={hasPublishingTracks}>
                 Stop Capture
               </button>
             )}
-          </div>
-          {/* VAD Status - fixed height container to prevent layout shifts */}
-          <div className="mt-2 h-8 flex items-center">
             {localStream && (
-              <div className={`flex items-center gap-3 text-sm ${isSpeaking ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`}>
-                <VADIndicator
-                  audioContext={audioContext}
-                  sourceNode={sourceNode}
-                  isSpeaking={isSpeaking}
-                  vadResult={vadResult}
-                />
+              <div className={`flex items-center gap-2 text-sm ${isSpeaking ? 'text-emerald-400' : 'text-gray-500 dark:text-white/50'}`}>
+                <VADIndicator audioContext={audioContext} sourceNode={sourceNode} isSpeaking={isSpeaking} vadResult={vadResult} />
                 <VADDot isSpeaking={isSpeaking} />
                 <span>{isSpeaking ? 'Speaking' : 'Silent'}</span>
-                {vadResult && (
-                  <span className="text-xs opacity-75">({(vadResult.probability * 100).toFixed(0)}%)</span>
-                )}
               </div>
             )}
           </div>
-        </div>
-      </div>
 
-      {/* Device Selection */}
-      <div className="panel">
-        <div className="panel-header flex items-center justify-between">
-          <span>Device Selection</span>
-          <button
-            onClick={refreshDevices}
-            className="btn-secondary btn-sm"
-            title="Refresh device list"
-          >
-            Refresh
-          </button>
-        </div>
-        <div className="panel-body space-y-4">
-          <div>
-            <label className="label">Camera</label>
-            <select
-              value={selectedVideoDevice}
-              onChange={(e) => setSelectedVideoDevice(e.target.value)}
-              className="input"
-              disabled={hasPublishingTracks}
+          {/* Compact device selection - 3 columns + refresh */}
+          <div className="flex items-end gap-3">
+            <div className="grid grid-cols-3 gap-3 flex-1">
+              <div>
+                <label className="label text-xs">Camera</label>
+                <select value={selectedVideoDevice} onChange={(e) => setSelectedVideoDevice(e.target.value)} className="input py-2 text-sm" disabled={hasPublishingTracks}>
+                  {videoDevices.map(device => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label || `Camera ${device.deviceId.slice(0, 6)}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label text-xs">Microphone</label>
+                <select value={selectedAudioDevice} onChange={(e) => setSelectedAudioDevice(e.target.value)} className="input py-2 text-sm" disabled={hasPublishingTracks}>
+                  {audioDevices.map(device => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label || `Mic ${device.deviceId.slice(0, 6)}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label text-xs">Keyframe</label>
+                <select value={keyframeInterval} onChange={(e) => setKeyframeInterval(Number(e.target.value))} className="input py-2 text-sm" disabled={hasPublishingTracks}>
+                  <option value={0.5}>0.5s</option>
+                  <option value={1}>1s</option>
+                  <option value={2}>2s</option>
+                  <option value={5}>5s</option>
+                </select>
+              </div>
+            </div>
+            <button
+              onClick={refreshDevices}
+              className="btn-secondary btn-sm py-2"
+              title="Refresh device list"
             >
-              {videoDevices.map(device => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label || `Camera ${device.deviceId.slice(0, 8)}`}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Microphone</label>
-            <select
-              value={selectedAudioDevice}
-              onChange={(e) => setSelectedAudioDevice(e.target.value)}
-              className="input"
-              disabled={hasPublishingTracks}
-            >
-              {audioDevices.map(device => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label || `Microphone ${device.deviceId.slice(0, 8)}`}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Keyframe Interval</label>
-            <select
-              value={keyframeInterval}
-              onChange={(e) => setKeyframeInterval(Number(e.target.value))}
-              className="input"
-              disabled={hasPublishingTracks}
-            >
-              <option value={0.5}>0.5 seconds (fast join)</option>
-              <option value={1}>1 second</option>
-              <option value={2}>2 seconds</option>
-              <option value={5}>5 seconds</option>
-            </select>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
           </div>
         </div>
-      </div>
+      </CollapsibleSection>
 
-      {/* Add New Track */}
-      <div className="panel">
-        <div className="panel-header">Add Track to Publish</div>
-        <div className="panel-body space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+      {/* Add Track - Streamlined form */}
+      <div className="glass-panel">
+        <div className="glass-panel-header">
+          <svg className="w-5 h-5 text-accent-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Add Track
+        </div>
+        <div className="glass-panel-body space-y-4">
+          {/* VOD Toggle (compact) */}
+          {vodPublishEnabled && (
+            <label className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer hover:bg-white/8">
+              <input
+                type="checkbox"
+                checked={newTrack.isVod ?? false}
+                onChange={(e) => setNewTrack({ ...newTrack, isVod: e.target.checked, mediaType: 'video' })}
+                className="w-4 h-4 rounded border-white/30 bg-white/10 text-accent-cyan focus:ring-accent-cyan"
+              />
+              <div className="flex-1">
+                <span className="text-sm font-medium text-white">VOD Track</span>
+                <span className="text-xs text-gray-500 dark:text-white/50 ml-2">from URL</span>
+              </div>
+            </label>
+          )}
+
+          {/* VOD URL (shown when enabled) */}
+          {newTrack.isVod && (
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={newTrack.vodUrl ?? ''}
+                onChange={(e) => setNewTrack({ ...newTrack, vodUrl: e.target.value })}
+                placeholder="https://example.com/video.mp4"
+                className="input"
+              />
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-white/70">
+                <input
+                  type="checkbox"
+                  checked={newTrack.vodLoop ?? false}
+                  onChange={(e) => setNewTrack({ ...newTrack, vodLoop: e.target.checked })}
+                  className="w-4 h-4 rounded border-white/30 bg-white/10"
+                />
+                Loop continuously
+              </label>
+            </div>
+          )}
+
+          {/* Essential fields - 2 rows */}
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label">Media Type</label>
+              <label className="label text-xs">Namespace</label>
+              <input
+                type="text"
+                value={newTrack.namespace}
+                onChange={(e) => setNewTrack({ ...newTrack, namespace: e.target.value })}
+                placeholder="conference/room-1/media"
+                className="input py-2"
+              />
+            </div>
+            <div>
+              <label className="label text-xs">Track Name</label>
+              <input
+                type="text"
+                value={newTrack.trackName}
+                onChange={(e) => setNewTrack({ ...newTrack, trackName: e.target.value })}
+                placeholder={newTrack.mediaType === 'video' ? 'user-id/video' : 'user-id/audio'}
+                className="input py-2"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-4 gap-3">
+            <div>
+              <label className="label text-xs">Type</label>
               <select
                 value={newTrack.mediaType}
                 onChange={(e) => {
                   const mediaType = e.target.value as MediaType;
-                  // Auto-set delivery mode default: stream for video, datagram for audio
                   const deliveryMode: DeliveryMode = mediaType === 'video' ? 'stream' : 'datagram';
-                  setNewTrack({ ...newTrack, mediaType, deliveryMode });
+                  setNewTrack({ ...newTrack, mediaType, deliveryMode, isVod: mediaType === 'audio' ? false : newTrack.isVod });
                 }}
-                className="input"
+                className="input py-2"
+                disabled={newTrack.isVod}
               >
                 <option value="video">Video</option>
                 <option value="audio">Audio</option>
               </select>
             </div>
-            {newTrack.mediaType === 'video' && (
+            {newTrack.mediaType === 'video' ? (
               <>
                 <div>
-                  <label className="label">Resolution</label>
-                  <select
-                    value={newTrack.resolution}
-                    onChange={(e) => setNewTrack({ ...newTrack, resolution: e.target.value as Resolution })}
-                    className="input"
-                  >
-                    <option value="1080p">1080p (1920x1080)</option>
-                    <option value="720p">720p (1280x720)</option>
-                    <option value="480p">480p (854x480)</option>
+                  <label className="label text-xs">Resolution</label>
+                  <select value={newTrack.resolution} onChange={(e) => setNewTrack({ ...newTrack, resolution: e.target.value as Resolution })} className="input py-2">
+                    <option value="4k">4K</option>
+                    <option value="1080p">1080p</option>
+                    <option value="720p">720p</option>
+                    <option value="480p">480p</option>
                   </select>
                 </div>
                 <div>
-                  <label className="label">Frame Rate</label>
-                  <select
-                    value={newTrack.framerate}
-                    onChange={(e) => setNewTrack({ ...newTrack, framerate: Number(e.target.value) as Framerate })}
-                    className="input"
-                  >
-                    <option value={30}>30 fps</option>
-                    <option value={24}>24 fps</option>
-                    <option value={15}>15 fps</option>
+                  <label className="label text-xs">FPS</label>
+                  <select value={newTrack.framerate} onChange={(e) => setNewTrack({ ...newTrack, framerate: Number(e.target.value) as Framerate })} className="input py-2">
+                    <option value={30}>30</option>
+                    <option value={24}>24</option>
+                    <option value={15}>15</option>
                   </select>
                 </div>
                 <div>
-                  <label className="label">Bitrate (Mbps)</label>
-                  <select
-                    value={newTrack.bitrate}
-                    onChange={(e) => setNewTrack({ ...newTrack, bitrate: Number(e.target.value) })}
-                    className="input"
-                  >
+                  <label className="label text-xs">Bitrate</label>
+                  <select value={newTrack.bitrate} onChange={(e) => setNewTrack({ ...newTrack, bitrate: Number(e.target.value) })} className="input py-2">
+                    <option value={20000000}>20 Mbps</option>
+                    <option value={15000000}>15 Mbps</option>
+                    <option value={8000000}>8 Mbps</option>
                     <option value={4000000}>4 Mbps</option>
                     <option value={2000000}>2 Mbps</option>
                     <option value={1000000}>1 Mbps</option>
-                    <option value={500000}>0.5 Mbps</option>
                   </select>
                 </div>
               </>
+            ) : (
+              <>
+                <div>
+                  <label className="label text-xs">Bitrate</label>
+                  <select value={newTrack.bitrate} onChange={(e) => setNewTrack({ ...newTrack, bitrate: Number(e.target.value) })} className="input py-2">
+                    <option value={128000}>128 kbps</option>
+                    <option value={96000}>96 kbps</option>
+                    <option value={64000}>64 kbps</option>
+                  </select>
+                </div>
+                <div className="col-span-2" />
+              </>
             )}
-            {newTrack.mediaType === 'audio' && (
+          </div>
+
+          {/* Advanced Options Toggle */}
+          <button
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-2 text-sm text-gray-500 dark:text-white/50 hover:text-gray-700 dark:text-white/70 transition-colors"
+          >
+            <svg className={`w-4 h-4 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+            Advanced Options
+          </button>
+
+          {/* Advanced Options (collapsed by default) */}
+          {showAdvanced && (
+            <div className="grid grid-cols-3 gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
               <div>
-                <label className="label">Bitrate (kbps)</label>
-                <select
-                  value={newTrack.bitrate}
-                  onChange={(e) => setNewTrack({ ...newTrack, bitrate: Number(e.target.value) })}
-                  className="input"
-                >
-                  <option value={128000}>128 kbps</option>
-                  <option value={96000}>96 kbps</option>
-                  <option value={64000}>64 kbps</option>
+                <label className="label text-xs">Delivery Mode</label>
+                <select value={newTrack.deliveryMode} onChange={(e) => setNewTrack({ ...newTrack, deliveryMode: e.target.value as DeliveryMode })} className="input py-2">
+                  <option value="stream">Stream</option>
+                  <option value="datagram">Datagram</option>
                 </select>
               </div>
-            )}
-          </div>
-          <div>
-            <label className="label">Namespace</label>
-            <input
-              type="text"
-              value={newTrack.namespace}
-              onChange={(e) => setNewTrack({ ...newTrack, namespace: e.target.value })}
-              placeholder="conference/room-1/media"
-              className="input"
-            />
-          </div>
-          <div>
-            <label className="label">Track Name</label>
-            <input
-              type="text"
-              value={newTrack.trackName}
-              onChange={(e) => setNewTrack({ ...newTrack, trackName: e.target.value })}
-              placeholder={newTrack.mediaType === 'video' ? 'user-id/video' : 'user-id/audio'}
-              className="input"
-            />
-          </div>
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="label">Delivery Mode</label>
-              <select
-                value={newTrack.deliveryMode}
-                onChange={(e) => setNewTrack({ ...newTrack, deliveryMode: e.target.value as DeliveryMode })}
-                className="input"
-              >
-                <option value="stream">Stream</option>
-                <option value="datagram">Datagram</option>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">Stream for video, Datagram for audio</p>
+              <div>
+                <label className="label text-xs">Timeout (ms)</label>
+                <input type="number" value={newTrack.deliveryTimeout} onChange={(e) => setNewTrack({ ...newTrack, deliveryTimeout: Number(e.target.value) })} min={0} className="input py-2" />
+              </div>
+              <div>
+                <label className="label text-xs">Priority</label>
+                <input type="number" value={newTrack.priority} onChange={(e) => setNewTrack({ ...newTrack, priority: Number(e.target.value) })} min={0} max={255} className="input py-2" />
+              </div>
             </div>
-            <div>
-              <label className="label">Delivery Timeout (ms)</label>
-              <input
-                type="number"
-                value={newTrack.deliveryTimeout}
-                onChange={(e) => setNewTrack({ ...newTrack, deliveryTimeout: Number(e.target.value) })}
-                placeholder="5000"
-                min={0}
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">0 = drop immediately</p>
-            </div>
-            <div>
-              <label className="label">Priority</label>
-              <input
-                type="number"
-                value={newTrack.priority}
-                onChange={(e) => setNewTrack({ ...newTrack, priority: Number(e.target.value) })}
-                placeholder="128"
-                min={0}
-                max={255}
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">0 = highest, 255 = lowest</p>
-            </div>
-          </div>
+          )}
+
           <button
             onClick={addTrackConfig}
-            disabled={!newTrack.namespace || !newTrack.trackName}
+            disabled={!newTrack.namespace || !newTrack.trackName || (newTrack.isVod && !newTrack.vodUrl)}
             className="btn-primary w-full"
           >
-            Add Track
+            Add {newTrack.isVod ? 'VOD ' : ''}Track
           </button>
         </div>
       </div>
 
-      {/* Track Configurations */}
+      {/* Configured Tracks - Always visible when tracks exist */}
       {trackConfigs.length > 0 && (
-        <div className="panel">
-          <div className="panel-header">Configured Tracks ({trackConfigs.length})</div>
-          <div className="panel-body space-y-3">
+        <div className="glass-panel">
+          <div className="glass-panel-header justify-between">
+            <div className="flex items-center gap-3">
+              <svg className="w-5 h-5 text-accent-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
+              <span>Tracks</span>
+              <span className="badge-blue text-xs">{trackConfigs.length}</span>
+            </div>
+          </div>
+          <div className="glass-panel-body space-y-2">
             {publishError && (
-              <div className="p-3 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-md text-sm">
+              <div className="p-3 rounded-lg bg-red-500/20 border border-red-500/30 text-red-300 text-sm">
                 {publishError}
               </div>
             )}
             {trackConfigs.map(config => (
-              <div
-                key={config.id}
-                className="p-4 bg-gray-50 dark:bg-gray-900 rounded-lg space-y-3"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    {config.mediaType === 'video' ? (
-                      <svg className="w-6 h-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
-                    ) : (
-                      <svg className="w-6 h-6 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                      </svg>
-                    )}
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-medium">{config.trackName}</span>
-                        {secureObjectsEnabled && (
-                          <svg className="w-4 h-4 text-yellow-500" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
-                          </svg>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-500">{config.namespace}</div>
+              <div key={config.id} className="p-3 rounded-xl bg-white/5 border border-white/5 hover:border-white/10 transition-colors">
+                {/* Compact track row */}
+                <div className="flex items-center gap-3">
+                  {/* Icon */}
+                  {config.mediaType === 'video' ? (
+                    <svg className="w-5 h-5 text-blue-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                  )}
+
+                  {/* Track info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-white truncate">{config.trackName}</span>
+                      {secureObjectsEnabled && (
+                        <svg className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                      {config.isVod && <span className="badge-blue text-xs py-0.5">VOD</span>}
                     </div>
+                    <div className="text-xs text-gray-400 dark:text-white/40 truncate">{config.namespace}</div>
                   </div>
-                  <span className={`badge ${
+
+                  {/* Specs badges */}
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {config.mediaType === 'video' && (
+                      <>
+                        <span className="text-xs text-gray-500 dark:text-white/50">{config.resolution}</span>
+                        <span className="text-gray-200 dark:text-white/20">·</span>
+                        <span className="text-xs text-gray-500 dark:text-white/50">{config.framerate}fps</span>
+                        <span className="text-gray-200 dark:text-white/20">·</span>
+                        <span className="text-xs text-gray-500 dark:text-white/50">{((config.bitrate || 0) / 1000000).toFixed(0)}M</span>
+                      </>
+                    )}
+                    {config.mediaType === 'audio' && (
+                      <span className="text-xs text-gray-500 dark:text-white/50">{((config.bitrate || 0) / 1000)}kbps</span>
+                    )}
+                  </div>
+
+                  {/* Status badge */}
+                  <span className={`flex-shrink-0 ${
                     config.isPublishing
                       ? (useAnnounceFlow && announceStatus === 'waiting' ? 'badge-yellow' : 'badge-green')
                       : 'badge-gray'
                   }`}>
                     {config.isPublishing
                       ? (useAnnounceFlow && announceStatus === 'waiting' ? 'Waiting' :
-                         useAnnounceFlow && announceStatus === 'announcing' ? 'Announcing' :
-                         'Publishing')
-                      : 'Stopped'}
+                         useAnnounceFlow && announceStatus === 'announcing' ? 'Announcing' : 'Live')
+                      : 'Ready'}
                   </span>
+
+                  {/* Actions */}
+                  <div className="flex gap-1.5 flex-shrink-0">
+                    {!config.isPublishing ? (
+                      <button onClick={() => startPublishingTrack(config)} disabled={sessionState !== 'ready'} className="btn-success btn-sm py-1.5 px-3">
+                        Publish
+                      </button>
+                    ) : (
+                      <button onClick={() => stopPublishingTrack(config)} className="btn-danger btn-sm py-1.5 px-3">
+                        Stop
+                      </button>
+                    )}
+                    <button onClick={() => removeTrackConfig(config.id)} disabled={config.isPublishing} className="btn-secondary btn-sm py-1.5 px-2">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
 
-                {config.mediaType === 'video' && (
-                  <div className="flex gap-4 text-sm text-gray-600 dark:text-gray-400">
-                    <span>{config.resolution}</span>
-                    <span>{config.framerate} fps</span>
-                    <span>{((config.bitrate || 0) / 1000000).toFixed(1)} Mbps</span>
+                {/* VOD Progress (if applicable) */}
+                {config.vodProgress && config.vodProgress.phase !== 'complete' && (
+                  <div className="mt-2 flex items-center gap-2 text-xs text-gray-500 dark:text-white/50">
+                    <span className="capitalize">{config.vodProgress.phase}</span>
+                    <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all ${config.vodProgress.phase === 'error' ? 'bg-red-500' : 'bg-accent-cyan'}`}
+                        style={{ width: `${config.vodProgress.progress}%` }}
+                      />
+                    </div>
+                    <span>{config.vodProgress.progress}%</span>
                   </div>
                 )}
-                {config.mediaType === 'audio' && (
-                  <div className="text-sm text-gray-600 dark:text-gray-400">
-                    {((config.bitrate || 0) / 1000)} kbps
-                  </div>
-                )}
-                <div className="flex gap-4 text-sm text-gray-600 dark:text-gray-400">
-                  <span className={`px-2 py-0.5 rounded ${config.deliveryMode === 'stream' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'}`}>
-                    {config.deliveryMode}
-                  </span>
-                  <span>Timeout: {config.deliveryTimeout}ms</span>
-                  <span>Priority: {config.priority}</span>
-                </div>
 
-                <div className="flex gap-2">
-                  {!config.isPublishing ? (
-                    <button
-                      onClick={() => startPublishingTrack(config)}
-                      disabled={sessionState !== 'ready'}
-                      className="btn-success btn-sm flex-1"
-                    >
-                      Start Publishing
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => stopPublishingTrack(config)}
-                      className="btn-danger btn-sm flex-1"
-                    >
-                      Stop Publishing
-                    </button>
-                  )}
-                  <button
-                    onClick={() => removeTrackConfig(config.id)}
-                    disabled={config.isPublishing}
-                    className="btn-secondary btn-sm"
-                  >
-                    Remove
-                  </button>
-                </div>
+                {/* VOD Local Playback (when subscriber connects) */}
+                {config.vodPlaybackUrl && config.vodIsPlaying && (
+                  <div className="mt-3">
+                    <div className="flex items-center gap-2 text-xs text-emerald-400 mb-2">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span>Local playback (subscriber connected)</span>
+                    </div>
+                    <div className="video-container" style={{ paddingBottom: '56.25%' }}>
+                      <video
+                        ref={(el) => {
+                          if (el) vodVideoRefs.current.set(config.id, el);
+                        }}
+                        src={config.vodPlaybackUrl}
+                        autoPlay
+                        muted
+                        loop={config.vodLoop}
+                        playsInline
+                        className="absolute inset-0 w-full h-full object-cover rounded-lg"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Announce Flow Status */}
-      {useAnnounceFlow && announceStatus !== 'idle' && (
-        <div className="panel">
-          <div className="panel-header">Announce Flow Status</div>
-          <div className="panel-body">
-            <div className={`p-4 rounded-lg ${
-              announceStatus === 'announcing' ? 'bg-blue-100 dark:bg-blue-900/30' :
-              announceStatus === 'waiting' ? 'bg-yellow-100 dark:bg-yellow-900/30' :
-              announceStatus === 'active' ? 'bg-green-100 dark:bg-green-900/30' :
-              'bg-gray-100 dark:bg-gray-900/30'
-            }`}>
-              <div className="flex items-center gap-3">
-                {announceStatus === 'announcing' && (
-                  <>
-                    <div className="animate-spin h-5 w-5 border-2 border-blue-500 border-t-transparent rounded-full" />
-                    <span className="text-blue-700 dark:text-blue-300 font-medium">Announcing namespace...</span>
-                  </>
+      {/* Status Sections - Only shown when relevant */}
+      {(useAnnounceFlow && announceStatus !== 'idle') && (
+        <div className="glass-panel-subtle p-4">
+          <div className="flex items-center gap-3">
+            {announceStatus === 'announcing' && (
+              <>
+                <div className="animate-spin h-4 w-4 border-2 border-accent-cyan border-t-transparent rounded-full" />
+                <span className="text-sm text-gray-700 dark:text-white/70">Announcing namespace...</span>
+              </>
+            )}
+            {announceStatus === 'waiting' && (
+              <>
+                <div className="animate-pulse h-4 w-4 bg-amber-400 rounded-full" />
+                <span className="text-sm text-gray-700 dark:text-white/70">Waiting for subscribers...</span>
+                {trackConfigs.length > 0 && trackConfigs[0].namespace && (
+                  <button onClick={() => cancelAnnounce(trackConfigs[0].namespace)} className="btn-ghost btn-sm ml-auto py-1 px-2 text-xs">
+                    Cancel
+                  </button>
                 )}
-                {announceStatus === 'waiting' && (
-                  <>
-                    <div className="animate-pulse h-5 w-5 bg-yellow-500 rounded-full" />
-                    <span className="text-yellow-700 dark:text-yellow-300 font-medium">Waiting for subscribers...</span>
-                  </>
-                )}
-                {announceStatus === 'active' && (
-                  <>
-                    <div className="h-5 w-5 bg-green-500 rounded-full" />
-                    <span className="text-green-700 dark:text-green-300 font-medium">Publishing to subscribers</span>
-                  </>
-                )}
-              </div>
-              {announceStatus === 'waiting' && (
-                <p className="mt-2 text-sm text-yellow-600 dark:text-yellow-400">
-                  Namespace announced. Media will start when a subscriber connects.
-                </p>
-              )}
-              {(announceStatus === 'announcing' || announceStatus === 'waiting') && trackConfigs.length > 0 && trackConfigs[0].namespace && (
-                <button
-                  onClick={() => cancelAnnounce(trackConfigs[0].namespace)}
-                  className="mt-3 btn-secondary btn-sm"
-                >
-                  Cancel Announce
-                </button>
-              )}
-            </div>
+              </>
+            )}
+            {announceStatus === 'active' && (
+              <>
+                <div className="h-4 w-4 bg-emerald-400 rounded-full" />
+                <span className="text-sm text-emerald-400">Publishing to subscribers</span>
+              </>
+            )}
           </div>
         </div>
       )}
 
-      {/* Published Tracks Stats */}
+      {/* Publishing Stats - Collapsible */}
       {publishedTracks.length > 0 && (
-        <div className="panel">
-          <div className="panel-header">Publishing Stats</div>
-          <div className="panel-body">
-            <div className="space-y-2">
-              {publishedTracks.map(track => (
-                <div
-                  key={track.id}
-                  className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-900 rounded-md"
-                >
-                  <div className="flex items-center gap-3">
-                    {track.type === 'video' ? (
-                      <svg className="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                      </svg>
-                    )}
-                    <div>
-                      <div className="font-medium text-sm">{track.trackName}</div>
-                      <div className="text-xs text-gray-500">{track.namespace.join('/')}</div>
-                    </div>
-                  </div>
-                  {isDebugMode() && (
-                    <div className="text-xs text-gray-500">
-                      G:{track.stats.groupId} O:{track.stats.objectId}
-                    </div>
+        <CollapsibleSection
+          title="Publishing Stats"
+          icon={
+            <svg className="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          }
+          badge={<span className="badge-green text-xs ml-2">{publishedTracks.length} active</span>}
+        >
+          <div className="space-y-2">
+            {publishedTracks.map(track => (
+              <div key={track.id} className="flex items-center justify-between p-2 rounded-lg bg-white/5">
+                <div className="flex items-center gap-2">
+                  {track.type === 'video' ? (
+                    <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
                   )}
+                  <span className="text-sm text-gray-800 dark:text-white/80">{track.trackName}</span>
                 </div>
-              ))}
-            </div>
+                {isDebugMode() && (
+                  <span className="text-xs text-gray-400 dark:text-white/40 font-mono">G:{track.stats.groupId} O:{track.stats.objectId}</span>
+                )}
+              </div>
+            ))}
           </div>
-        </div>
+        </CollapsibleSection>
       )}
     </div>
   );

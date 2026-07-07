@@ -65,6 +65,15 @@ export interface VideoTrackInput {
   initData?: string;
   temporalId?: number;
   spatialId?: number;
+  // VOD metadata (for isLive=false tracks)
+  /** Track duration in milliseconds */
+  trackDuration?: number;
+  /** Timescale (units per second, default 1000 for ms) */
+  timescale?: number;
+  /** Total number of groups/GOPs */
+  totalGroups?: number;
+  /** GOP duration in milliseconds */
+  gopDuration?: number;
 }
 
 /**
@@ -84,6 +93,14 @@ export interface AudioTrackInput {
   targetLatency?: number;
   label?: string;
   lang?: string;
+  /** AudioSpecificConfig for AAC (base64 encoded) */
+  audioSpecificConfig?: string;
+  /** Track duration in milliseconds (for VOD) */
+  trackDuration?: number;
+  /** Total number of groups (for VOD) */
+  totalGroups?: number;
+  /** GOP duration in milliseconds (for VOD) */
+  gopDuration?: number;
 }
 
 /**

@@ -28,9 +28,12 @@ const textEncoder = new TextEncoder();
 
 /**
  * Convert Uint8Array to ArrayBuffer for WebCrypto API compatibility.
- * Handles the TypeScript strict mode issue with SharedArrayBuffer.
+ * Avoids copying when the array owns its full underlying buffer.
  */
 function toArrayBuffer(arr: Uint8Array): ArrayBuffer {
+  if (arr.byteOffset === 0 && arr.byteLength === arr.buffer.byteLength) {
+    return arr.buffer as ArrayBuffer;
+  }
   return arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength) as ArrayBuffer;
 }
 
@@ -67,36 +70,38 @@ export function constructNonce(
 }
 
 /**
- * Encode a value as a varint (MOQT-style).
- * For simplicity, supports values up to 2^30 - 1.
+ * Encode a value as a varint (MOQT-style QUIC variable-length integer).
  */
 function encodeVarInt(value: number | bigint): Uint8Array {
-  const n = typeof value === 'bigint' ? Number(value) : value;
+  const n = BigInt(value);
 
-  if (n < 0x40) {
-    return new Uint8Array([n]);
-  } else if (n < 0x4000) {
-    return new Uint8Array([0x40 | (n >> 8), n & 0xff]);
-  } else if (n < 0x40000000) {
+  if (n < 0x40n) {
+    return new Uint8Array([Number(n)]);
+  } else if (n < 0x4000n) {
     return new Uint8Array([
-      0x80 | (n >> 24),
-      (n >> 16) & 0xff,
-      (n >> 8) & 0xff,
-      n & 0xff,
+      0x40 | Number((n >> 8n) & 0x3fn),
+      Number(n & 0xffn),
     ]);
-  } else {
-    // 8-byte varint for larger values
+  } else if (n < 0x40000000n) {
+    return new Uint8Array([
+      0x80 | Number((n >> 24n) & 0x3fn),
+      Number((n >> 16n) & 0xffn),
+      Number((n >> 8n) & 0xffn),
+      Number(n & 0xffn),
+    ]);
+  } else if (n < 0x4000000000000000n) {
     const bytes = new Uint8Array(8);
-    const bigN = BigInt(n);
-    bytes[0] = 0xc0 | Number((bigN >> 56n) & 0x3fn);
-    bytes[1] = Number((bigN >> 48n) & 0xffn);
-    bytes[2] = Number((bigN >> 40n) & 0xffn);
-    bytes[3] = Number((bigN >> 32n) & 0xffn);
-    bytes[4] = Number((bigN >> 24n) & 0xffn);
-    bytes[5] = Number((bigN >> 16n) & 0xffn);
-    bytes[6] = Number((bigN >> 8n) & 0xffn);
-    bytes[7] = Number(bigN & 0xffn);
+    bytes[0] = 0xc0 | Number((n >> 56n) & 0x3fn);
+    bytes[1] = Number((n >> 48n) & 0xffn);
+    bytes[2] = Number((n >> 40n) & 0xffn);
+    bytes[3] = Number((n >> 32n) & 0xffn);
+    bytes[4] = Number((n >> 24n) & 0xffn);
+    bytes[5] = Number((n >> 16n) & 0xffn);
+    bytes[6] = Number((n >> 8n) & 0xffn);
+    bytes[7] = Number(n & 0xffn);
     return bytes;
+  } else {
+    throw new Error(`Value ${n} exceeds maximum varint range (2^62 - 1)`);
   }
 }
 
@@ -155,8 +160,11 @@ export function constructAAD(components: AADComponents): Uint8Array {
  * encrypting and decrypting MOQT objects.
  */
 export class SecureObjectsContext {
+  private static readonly MAX_INVOCATIONS = 2 ** 32;
   private readonly context: EncryptionContext;
   private readonly params;
+  private readonly usedNonces = new Set<string>();
+  private encryptionCount = 0;
 
   private constructor(context: EncryptionContext) {
     this.context = context;
@@ -227,6 +235,17 @@ export class SecureObjectsContext {
     objectId: ObjectIdentifier,
     encryptedProperties?: Uint8Array
   ): Promise<EncryptedObject> {
+    if (this.encryptionCount >= SecureObjectsContext.MAX_INVOCATIONS) {
+      throw new Error('Encryption limit reached: this context has exceeded 2^32 invocations and must be rotated');
+    }
+    this.encryptionCount++;
+
+    const nonceKey = `${objectId.groupId}:${objectId.objectId}`;
+    if (this.usedNonces.has(nonceKey)) {
+      throw new Error('Nonce reuse detected: this (groupId, objectId) pair has already been used for encryption with this context');
+    }
+    this.usedNonces.add(nonceKey);
+
     const nonce = constructNonce(this.context.salt, objectId);
 
     const aad = constructAAD({
@@ -337,6 +356,11 @@ export class SecureObjectsContext {
 
     // Parse decrypted data: payload_length (varint) + payload + [encrypted_properties]
     const { value: payloadLength, bytesRead } = this.readVarInt(decryptedWithProperties);
+
+    if (bytesRead + payloadLength > decryptedWithProperties.length) {
+      throw new Error('Decrypted payload length exceeds available data');
+    }
+
     const plaintext = decryptedWithProperties.slice(bytesRead, bytesRead + payloadLength);
 
     let encryptedProperties: Uint8Array | undefined;
@@ -368,6 +392,8 @@ export class SecureObjectsContext {
     }
   }
 
+  private static readonly MAX_CTR_PLAINTEXT_LENGTH = (2 ** 32 - 1) * 16;
+
   /**
    * AES-CTR-HMAC encryption (encrypt-then-MAC).
    */
@@ -378,6 +404,10 @@ export class SecureObjectsContext {
   ): Promise<Uint8Array> {
     if (!this.context.hmacKey) {
       throw new Error('HMAC key not available for CTR-HMAC cipher suite');
+    }
+
+    if (plaintext.length > SecureObjectsContext.MAX_CTR_PLAINTEXT_LENGTH) {
+      throw new Error('Plaintext exceeds maximum AES-CTR length (counter would wrap)');
     }
 
     // AES-CTR encryption
@@ -478,9 +508,9 @@ export class SecureObjectsContext {
    * Constant-time comparison to prevent timing attacks.
    */
   private constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-    if (a.length !== b.length) return false;
-    let result = 0;
-    for (let i = 0; i < a.length; i++) {
+    let result = a.length ^ b.length;
+    const len = Math.min(a.length, b.length);
+    for (let i = 0; i < len; i++) {
       result |= a[i] ^ b[i];
     }
     return result === 0;
@@ -510,10 +540,19 @@ export class SecureObjectsContext {
       };
     } else {
       if (buffer.length < 8) throw new Error('Buffer too short');
-      // For 8-byte varints, we may lose precision for very large values
-      const high = ((firstByte & 0x3f) << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
-      const low = (buffer[4] << 24) | (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
-      return { value: high * 0x100000000 + (low >>> 0), bytesRead: 8 };
+      const n =
+        (BigInt(firstByte & 0x3f) << 56n) |
+        (BigInt(buffer[1]) << 48n) |
+        (BigInt(buffer[2]) << 40n) |
+        (BigInt(buffer[3]) << 32n) |
+        (BigInt(buffer[4]) << 24n) |
+        (BigInt(buffer[5]) << 16n) |
+        (BigInt(buffer[6]) << 8n) |
+        BigInt(buffer[7]);
+      if (n > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('Varint value exceeds safe integer range for payload length');
+      }
+      return { value: Number(n), bytesRead: 8 };
     }
   }
 }

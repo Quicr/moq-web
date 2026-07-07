@@ -28,10 +28,12 @@ import {
   RequestParameter,
   RequestErrorCode,
   SetupParameter,
+  ObjectExtension,
   BufferWriter,
   Logger,
   IS_DRAFT_16,
   getCurrentALPNProtocol,
+  DataStreamType,
   type ClientSetupMessage,
   type ServerSetupMessage,
   type PublishMessage,
@@ -45,6 +47,13 @@ import {
   type MOQTMessage,
   type ControlMessage,
   type ObjectHeader,
+  type FetchMessage,
+  type FetchOkMessage,
+  type FetchErrorMessage,
+  type FetchCancelMessage,
+  type TrackStatusMessage,
+  type TrackStatusOkMessage,
+  type TrackStatusErrorMessage,
 } from '@web-moq/core';
 import { base64urlDecode, coseSign1Encode, C4M_TOKEN_TYPE } from '@web-moq/cat';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
@@ -61,6 +70,8 @@ import type {
   ReceivedObjectEvent,
   PublishStatsEvent,
   SubscribeStatsEvent,
+  SubscribeOkEvent,
+  MessageLogEvent,
   SubscriptionInfo,
   PublicationInfo,
   AnnouncedNamespaceInfo,
@@ -71,6 +82,17 @@ import type {
   IncomingPublishInfo,
   IncomingPublishEvent,
   RequestAuthToken,
+  FetchOptions,
+  FetchRange,
+  FetchInfo,
+  FetchObjectEvent,
+  FetchCompleteEvent,
+  FetchStreamCompleteEvent,
+  FetchErrorEvent,
+  VODPublishOptions,
+  VODTrackInfo,
+  IncomingFetchEvent,
+  ForwardStateChangeEvent,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -156,6 +178,7 @@ export class MOQTSession {
     objectCount: number;
     previousObjectId: number; // For delta encoding in draft-16
     hasExtensions: boolean; // Whether subgroup header has extensions bit set
+    maxCacheDuration?: number; // Max cache duration in ms (from first keyframe)
   }>();
   /** Announced namespaces (for announce flow) */
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
@@ -181,6 +204,40 @@ export class MOQTSession {
   private nextTokenAlias = 0;
   // @ts-expect-error Reserved for token alias caching support
   private maxAuthTokenCacheSize = 0;
+
+  // ============================================================================
+  // FETCH / DVR State
+  // ============================================================================
+
+  /** Active fetch requests (we are the fetcher/subscriber) */
+  private activeFetches = new Map<number, FetchInfo>();
+  /** Request ID to fetch stream mapping for receiving fetch data */
+  private fetchStreamBuffers = new Map<number, Uint8Array[]>();
+
+  // ============================================================================
+  // Track Status State (for live edge tracking)
+  // ============================================================================
+
+  /** Pending TRACK_STATUS request callbacks */
+  private trackStatusCallbacks = new Map<number, {
+    resolve: (status: TrackStatusOkMessage) => void;
+    reject: (error: Error) => void;
+  }>();
+
+  // ============================================================================
+  // VOD Publishing State
+  // ============================================================================
+
+  /** VOD tracks we are publishing */
+  private vodTracks = new Map<string, VODTrackInfo>();
+  /** Pending fetch responses we need to send (VOD publisher serving fetches) */
+  private pendingFetchResponses = new Map<number, {
+    trackAlias: bigint;
+    range: FetchRange;
+    getObject: (groupId: number, objectId: number) => Promise<Uint8Array | null>;
+    isKeyframe?: (groupId: number, objectId: number) => boolean;
+    objectsPerGroup?: number;
+  }>();
 
   /**
    * Create a new MOQTSession
@@ -226,6 +283,32 @@ export class MOQTSession {
         bytes: data.byteLength,
       } as SubscribeStatsEvent);
     });
+
+    // Set up FETCH object callback to emit fetch-object events
+    this.objectRouter.setFetchObjectCallback((requestId, data, groupId, objectId) => {
+      log.info('FETCH object received', { requestId, groupId, objectId, dataSize: data.length });
+      this.emit('fetch-object', {
+        requestId,
+        data,
+        groupId,
+        objectId,
+      } as FetchObjectEvent);
+    });
+
+    // Set up FETCH end-of-group callback - fires when FETCH stream completes
+    this.objectRouter.setFetchEndOfGroupCallback((requestId, groupId) => {
+      log.info('FETCH stream complete (all data received)', { requestId, lastGroupId: groupId });
+      this.emit('fetch-stream-complete', {
+        requestId,
+        lastGroupId: groupId,
+      });
+    });
+
+    // Set up forward state change listener to emit events for MediaSession
+    this.publicationManager.onForwardStateChange((trackAlias, forward) => {
+      this.emit('forward-state-change', { trackAlias, forward });
+    });
+
     log.debug('MOQTSession created', { isDraft16: IS_DRAFT_16, useWorker: this.useWorker });
   }
 
@@ -726,6 +809,7 @@ export class MOQTSession {
 
     await this.doSendControl(setupBytes);
     log.info('Sent CLIENT_SETUP');
+    this.emitMessageSent('CLIENT_SETUP', setupBytes.length, IS_DRAFT_16 ? 'draft-16' : 'draft-14', { isDraft16: IS_DRAFT_16 });
 
     // Wait for SERVER_SETUP
     await this.waitForServerSetup();
@@ -820,8 +904,14 @@ export class MOQTSession {
     };
     this.subscriptionManager.add(subscription);
 
+    // Determine filter type - use ABSOLUTE_START for VOD, LATEST_GROUP for live
+    const filterType = options?.filterType === 'absolute'
+      ? FilterType.ABSOLUTE_START
+      : FilterType.LATEST_GROUP;
+    const startGroup = options?.startGroup ?? 0;
+    const startObject = options?.startObject ?? 0;
+
     // Send SUBSCRIBE message
-    const filterType = (options?.filterType ?? FilterType.LATEST_GROUP) as FilterType;
     const subscribeMessage: SubscribeMessage = {
       type: MessageType.SUBSCRIBE,
       requestId,
@@ -830,9 +920,8 @@ export class MOQTSession {
       subscriberPriority: options?.priority ?? 128,
       groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
       filterType,
-      startGroup: options?.startGroup,
-      startObject: options?.startObject,
-      endGroup: options?.endGroup,
+      startGroup: filterType === FilterType.ABSOLUTE_START ? startGroup : undefined,
+      startObject: filterType === FilterType.ABSOLUTE_START ? startObject : undefined,
       parameters: new Map(),
     };
 
@@ -854,6 +943,7 @@ export class MOQTSession {
       namespace: namespace.join('/'),
       trackName,
     });
+    this.emitMessageSent('SUBSCRIBE', subscribeBytes.length, `${namespace.join('/')}/${trackName}`, { requestId, trackAlias: trackAlias.toString() });
 
     log.info('Subscription started', { subscriptionId });
     return subscriptionId;
@@ -890,6 +980,241 @@ export class MOQTSession {
     // Remove from manager
     this.subscriptionManager.remove(subscriptionId);
     log.info('Unsubscribed', { subscriptionId });
+  }
+
+  // ============================================================================
+  // FETCH Methods (DVR/Rewind Support)
+  // ============================================================================
+
+  /**
+   * Fetch historical objects from a track
+   *
+   * Use this to request a specific range of past objects for DVR/rewind functionality.
+   * Objects are delivered via 'fetch-object' events, completion via 'fetch-complete'.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param range - Range of objects to fetch (startGroup/Object to endGroup/Object)
+   * @param options - Fetch options
+   * @param onObject - Optional callback for received objects
+   * @returns Fetch request ID
+   *
+   * @example
+   * ```typescript
+   * // Fetch objects from group 10 to group 20
+   * const fetchId = await session.fetch(
+   *   ['conference', 'room-1', 'media'],
+   *   'video',
+   *   { startGroup: 10, startObject: 0, endGroup: 20, endObject: 0 },
+   *   {},
+   *   (data, groupId, objectId) => {
+   *     console.log('Fetched object:', { groupId, objectId, bytes: data.length });
+   *   }
+   * );
+   *
+   * // Listen for completion
+   * session.on('fetch-complete', (event) => {
+   *   if (event.requestId === fetchId) {
+   *     console.log('Fetch complete, largest group:', event.largestGroupId);
+   *   }
+   * });
+   * ```
+   */
+  async fetch(
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+    onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
+  ): Promise<number> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+    const fullTrackNameStr = [...namespace, trackName].join('/');
+
+    log.info('Fetching historical objects', {
+      namespace: namespace.join('/'),
+      trackName,
+      fullTrackName: fullTrackNameStr,
+      range,
+      requestId,
+    });
+
+    // Create fetch info
+    const fetchInfo: FetchInfo = {
+      requestId,
+      namespace,
+      trackName,
+      range,
+      completed: false,
+    };
+    this.activeFetches.set(requestId, fetchInfo);
+
+    // Build FETCH message
+    const fetchMessage: FetchMessage = {
+      type: MessageType.FETCH,
+      requestId,
+      fullTrackName: { namespace, trackName },
+      subscriberPriority: options?.priority ?? 128,
+      groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
+      startGroup: range.startGroup,
+      startObject: range.startObject,
+      endGroup: range.endGroup,
+      endObject: range.endObject,
+      parameters: new Map(),
+    };
+
+    const fetchBytes = MessageCodec.encode(fetchMessage);
+    const hexBytes = Array.from(fetchBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log.info('FETCH bytes', { length: fetchBytes.length, hex: hexBytes });
+
+    await this.doSendControl(fetchBytes);
+    log.info('Sent FETCH message', {
+      requestId,
+      namespace: namespace.join('/'),
+      trackName,
+      range,
+    });
+    this.emitMessageSent('FETCH', fetchBytes.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId, range });
+
+    // Store object callback if provided
+    if (onObject) {
+      const handler = (event: FetchObjectEvent) => {
+        if (event.requestId === requestId) {
+          onObject(event.data, event.groupId, event.objectId);
+        }
+      };
+      this.on('fetch-object', handler);
+    }
+
+    return requestId;
+  }
+
+  /**
+   * Cancel an in-progress fetch
+   *
+   * @param requestId - Fetch request ID to cancel
+   */
+  async cancelFetch(requestId: number): Promise<void> {
+    const fetchInfo = this.activeFetches.get(requestId);
+    if (!fetchInfo) {
+      log.warn('No fetch found to cancel', { requestId });
+      return;
+    }
+
+    log.info('Cancelling fetch', { requestId });
+
+    // Send FETCH_CANCEL message
+    const cancelMessage: FetchCancelMessage = {
+      type: MessageType.FETCH_CANCEL,
+      requestId,
+    };
+
+    try {
+      const cancelBytes = MessageCodec.encode(cancelMessage);
+      await this.doSendControl(cancelBytes);
+      log.info('Sent FETCH_CANCEL message', { requestId });
+    } catch (err) {
+      log.error('Failed to send FETCH_CANCEL message', { error: (err as Error).message });
+    }
+
+    // Remove from active fetches
+    this.activeFetches.delete(requestId);
+    this.fetchStreamBuffers.delete(requestId);
+    log.info('Fetch cancelled', { requestId });
+  }
+
+  /**
+   * Get active fetch info
+   */
+  getFetch(requestId: number): FetchInfo | undefined {
+    return this.activeFetches.get(requestId);
+  }
+
+  /**
+   * Get all active fetches
+   */
+  getActiveFetches(): FetchInfo[] {
+    return Array.from(this.activeFetches.values());
+  }
+
+  // ============================================================================
+  // Track Status (for live edge tracking)
+  // ============================================================================
+
+  /**
+   * Request the current status of a track
+   *
+   * Used to determine the live edge position for DVR/trick play.
+   * Returns the last known group and object IDs if the track is in progress.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param timeoutMs - Timeout in milliseconds (default: 5000)
+   * @returns Track status info including lastGroupId and lastObjectId
+   *
+   * @example
+   * ```typescript
+   * const status = await session.requestTrackStatus(
+   *   ['conference', 'meeting123'],
+   *   'video'
+   * );
+   * if (status.statusCode === TrackStatusCode.IN_PROGRESS) {
+   *   console.log('Live edge:', status.lastGroupId, status.lastObjectId);
+   * }
+   * ```
+   */
+  async requestTrackStatus(
+    namespace: string[],
+    trackName: string,
+    timeoutMs = 5000
+  ): Promise<TrackStatusOkMessage> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+
+    log.info('Requesting track status', {
+      namespace: namespace.join('/'),
+      trackName,
+      requestId,
+    });
+
+    // Build TRACK_STATUS message
+    const trackStatusMessage: TrackStatusMessage = {
+      type: MessageType.TRACK_STATUS,
+      requestId,
+      fullTrackName: { namespace, trackName },
+    };
+
+    const bytes = MessageCodec.encode(trackStatusMessage);
+    await this.doSendControl(bytes);
+
+    log.info('Sent TRACK_STATUS message', { requestId });
+
+    // Wait for TRACK_STATUS_OK or TRACK_STATUS_ERROR
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.trackStatusCallbacks.delete(requestId);
+        reject(new Error(`TRACK_STATUS request ${requestId} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.trackStatusCallbacks.set(requestId, {
+        resolve: (status: TrackStatusOkMessage) => {
+          clearTimeout(timer);
+          this.trackStatusCallbacks.delete(requestId);
+          resolve(status);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timer);
+          this.trackStatusCallbacks.delete(requestId);
+          reject(error);
+        },
+      });
+    });
   }
 
   /**
@@ -1215,7 +1540,7 @@ export class MOQTSession {
       parameters.set(RequestParameter.AUTHORIZATION_TOKEN, authData);
     }
 
-    // Create publication
+    // Create publication (forward state will be set after PUBLISH_OK)
     const publication: InternalPublication = {
       trackAlias,
       namespace,
@@ -1225,6 +1550,7 @@ export class MOQTSession {
       audioDeliveryMode,
       requestId,
       cleanupHandlers: [],
+      forward: 0, // Will be updated after PUBLISH_OK
     };
     this.publicationManager.add(publication);
 
@@ -1258,6 +1584,7 @@ export class MOQTSession {
       namespace: namespace.join('/'),
       trackName,
     });
+    this.emitMessageSent('PUBLISH', publishBytes.length, `${namespace.join('/')}/${trackName}`, { requestId, trackAlias: trackAlias.toString() });
 
     // Wait for PUBLISH_OK
     const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
@@ -1505,7 +1832,7 @@ export class MOQTSession {
     // Send SUBSCRIBE_OK
     await this.sendSubscribeOk(message.requestId, trackAlias, announceInfo.options.groupOrder ?? GroupOrder.ASCENDING);
 
-    // Create a publication entry for this track
+    // Create a publication entry for this track (forward=1 since subscriber is connected)
     const publication: InternalPublication = {
       trackAlias,
       namespace,
@@ -1515,6 +1842,7 @@ export class MOQTSession {
       audioDeliveryMode: announceInfo.options.audioDeliveryMode ?? 'datagram',
       requestId: message.requestId,
       cleanupHandlers: [],
+      forward: 1, // Subscriber is connected, can send immediately
     };
     this.publicationManager.add(publication);
 
@@ -1699,6 +2027,511 @@ export class MOQTSession {
   // End Announce Flow
   // ============================================================================
 
+  // ============================================================================
+  // VOD Publishing (for DVR/Rewind support)
+  // ============================================================================
+
+  /**
+   * Publish VOD (Video on Demand) content
+   *
+   * VOD tracks respond to FETCH requests from subscribers, allowing them to
+   * seek/rewind to any point in the content.
+   *
+   * @param namespace - Track namespace
+   * @param trackName - Track name
+   * @param options - VOD publish options including metadata and object retrieval callback
+   * @returns Track alias
+   *
+   * @example
+   * ```typescript
+   * // Publish a pre-recorded video as VOD
+   * const trackAlias = await session.publishVOD(
+   *   ['vod', 'movie-1'],
+   *   'video',
+   *   {
+   *     metadata: {
+   *       duration: 120000, // 2 minutes
+   *       totalGroups: 240, // 30fps * 2min / 15 frames per GOP = 240 GOPs
+   *       gopDuration: 500, // 500ms per GOP
+   *       framerate: 30,
+   *     },
+   *     getObject: async (groupId, objectId) => {
+   *       // Return the encoded frame data for this group/object
+   *       return await loadFrameFromStorage(groupId, objectId);
+   *     },
+   *     isKeyframe: (groupId, objectId) => objectId === 0,
+   *     objectsPerGroup: 15, // 15 frames per GOP
+   *   }
+   * );
+   * ```
+   */
+  async publishVOD(
+    namespace: string[],
+    trackName: string,
+    options: VODPublishOptions
+  ): Promise<bigint> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+
+    const requestId = this.getNextRequestId();
+    const trackAlias = BigInt(requestId);
+    const fullTrackName = [...namespace, trackName].join('/');
+
+    log.info('Publishing VOD content', {
+      namespace: namespace.join('/'),
+      trackName,
+      fullTrackName,
+      duration: options.metadata.duration,
+      totalGroups: options.metadata.totalGroups,
+    });
+
+    // Create VOD track info
+    const vodTrack: VODTrackInfo = {
+      trackAlias,
+      namespace,
+      trackName,
+      metadata: options.metadata,
+      activeFetches: new Map(),
+    };
+    this.vodTracks.set(trackAlias.toString(), vodTrack);
+
+    // Store the object retrieval callback for serving fetch requests
+    // This will be used when we receive FETCH messages
+    const vodKey = `${namespace.join('/')}/${trackName}`;
+    // Store in a separate map keyed by track name for incoming fetch lookup
+    (this as unknown as { vodCallbacks: Map<string, VODPublishOptions> }).vodCallbacks =
+      (this as unknown as { vodCallbacks: Map<string, VODPublishOptions> }).vodCallbacks || new Map();
+    (this as unknown as { vodCallbacks: Map<string, VODPublishOptions> }).vodCallbacks.set(vodKey, options);
+
+    // Send PUBLISH message with contentExists=true to indicate VOD content
+    const publishMessage: PublishMessage = {
+      type: MessageType.PUBLISH,
+      requestId,
+      fullTrackName: { namespace, trackName },
+      trackAlias,
+      groupOrder: options.groupOrder ?? GroupOrder.ASCENDING,
+      contentExists: true, // VOD content exists
+      forward: 0, // Not forwarding live content
+      parameters: new Map(),
+    };
+
+    const publishBytes = MessageCodec.encode(publishMessage);
+    await this.doSendControl(publishBytes);
+    log.info('Sent VOD PUBLISH message', {
+      requestId,
+      trackAlias: trackAlias.toString(),
+      namespace: namespace.join('/'),
+      trackName,
+    });
+
+    // Wait for PUBLISH_OK
+    const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
+    log.info('Received PUBLISH_OK for VOD track', {
+      requestId,
+      forward: publishOkResult.forward,
+    });
+
+    // Create publication entry with initial forward state
+    const publication: InternalPublication = {
+      trackAlias,
+      namespace,
+      trackName,
+      priority: options.priority ?? 128,
+      deliveryMode: options.deliveryMode ?? 'stream',
+      audioDeliveryMode: options.audioDeliveryMode ?? 'datagram',
+      requestId,
+      cleanupHandlers: [],
+      forward: publishOkResult.forward,
+    };
+    this.publicationManager.add(publication);
+
+    // Start VOD auto-stream unless fetchOnly mode is enabled
+    // In fetchOnly mode, content is only delivered via FETCH requests
+    if (!options.fetchOnly) {
+      log.info('Starting VOD auto-stream', {
+        trackAlias: trackAlias.toString(),
+        initialForward: publishOkResult.forward,
+      });
+      this.startVODAutoStream(trackAlias, options);
+    } else {
+      log.info('VOD fetchOnly mode - waiting for FETCH requests', {
+        trackAlias: trackAlias.toString(),
+      });
+    }
+
+    log.info('VOD publishing started', { trackAlias: trackAlias.toString() });
+    return trackAlias;
+  }
+
+  /**
+   * Auto-stream VOD content to subscribers at realtime pace
+   * Handles forward state: waits for forward=1, pauses on forward=0, resumes on forward=1
+   */
+  private async startVODAutoStream(trackAlias: bigint, options: VODPublishOptions): Promise<void> {
+    const { metadata, getObject, objectsPerGroup = 30 } = options;
+    const frameDuration = 1000 / (metadata.framerate ?? 30); // ms per frame
+    const totalGroups = Math.min(metadata.totalGroups, Number.MAX_SAFE_INTEGER);
+    const aliasStr = trackAlias.toString();
+
+    log.info('VOD auto-stream initialized', {
+      trackAlias: aliasStr,
+      totalGroups,
+      framerate: metadata.framerate,
+      frameDuration,
+    });
+
+    const publication = this.publicationManager.get(trackAlias);
+    if (!publication) {
+      log.warn('No publication found for VOD auto-stream', { trackAlias: aliasStr });
+      return;
+    }
+
+    // VOD position tracking for pause/resume
+    let currentGroupId = 0;
+    let currentObjectId = 0;
+
+    // Forward state change handling
+    let forwardResolve: (() => void) | null = null;
+
+    const waitForForward = (): Promise<void> => {
+      return new Promise((resolve) => {
+        // Check current state
+        if (this.publicationManager.getForward(trackAlias) === 1) {
+          resolve();
+          return;
+        }
+        // Wait for forward=1
+        forwardResolve = resolve;
+      });
+    };
+
+    // Listen for forward state changes
+    const cleanupListener = this.publicationManager.onForwardStateChange((alias, forward) => {
+      if (alias.toString() === aliasStr) {
+        log.info('VOD auto-stream forward state changed', { trackAlias: aliasStr, forward });
+        if (forward === 1 && forwardResolve) {
+          forwardResolve();
+          forwardResolve = null;
+        }
+      }
+    });
+
+    // Stream VOD content in realtime
+    const streamLoop = async () => {
+      try {
+        // Wait for initial forward=1 if needed
+        if (this.publicationManager.getForward(trackAlias) !== 1) {
+          log.info('VOD auto-stream waiting for forward=1', { trackAlias: aliasStr });
+          await waitForForward();
+          log.info('VOD auto-stream received forward=1, starting', { trackAlias: aliasStr });
+        }
+
+        // Wait for subscriber to set up decode pipeline
+        await new Promise(resolve => setTimeout(resolve, 500));
+        log.info('VOD auto-stream starting after subscriber setup delay', { trackAlias: aliasStr });
+
+        while (true) {
+          // Check if publication still exists
+          if (!this.publicationManager.get(trackAlias)) {
+            log.info('VOD publication ended, stopping auto-stream', { trackAlias: aliasStr });
+            break;
+          }
+
+          // Check forward state - pause if forward=0
+          if (this.publicationManager.getForward(trackAlias) !== 1) {
+            log.info('VOD auto-stream paused (forward=0)', {
+              trackAlias: aliasStr,
+              pausedAt: { groupId: currentGroupId, objectId: currentObjectId },
+            });
+            await waitForForward();
+            log.info('VOD auto-stream resumed (forward=1)', {
+              trackAlias: aliasStr,
+              resumeAt: { groupId: currentGroupId, objectId: currentObjectId },
+            });
+          }
+
+          // Loop group ID for looping content
+          const effectiveGroupId = currentGroupId % (totalGroups || 1);
+
+          // Stream all objects in this group (starting from currentObjectId for resume)
+          for (let objectId = currentObjectId; objectId < objectsPerGroup; objectId++) {
+            // Check forward state before each object
+            if (this.publicationManager.getForward(trackAlias) !== 1) {
+              currentObjectId = objectId;
+              break; // Will pause in outer loop
+            }
+
+            const data = await getObject(effectiveGroupId, objectId);
+            if (!data) {
+              // No more objects in this group
+              break;
+            }
+
+            try {
+              // Send object using normal publish flow
+              // Note: Omitting maxCacheDuration to avoid extension encoding issues with relay
+              await this.sendObject(trackAlias, data, {
+                groupId: currentGroupId,
+                objectId,
+                type: 'video',
+                isKeyframe: objectId === 0,
+              });
+            } catch (err) {
+              log.warn('Failed to send VOD object', {
+                trackAlias: aliasStr,
+                groupId: currentGroupId,
+                objectId,
+                error: err,
+              });
+            }
+
+            // Wait for frame duration to maintain realtime playback
+            await new Promise(resolve => setTimeout(resolve, frameDuration));
+          }
+
+          // Reset objectId for next group
+          currentObjectId = 0;
+          currentGroupId++;
+
+          // For non-looping content, stop at end
+          if (currentGroupId >= totalGroups && totalGroups !== Number.MAX_SAFE_INTEGER) {
+            log.info('VOD auto-stream completed', { trackAlias: aliasStr, totalGroups: currentGroupId });
+            break;
+          }
+        }
+      } finally {
+        // Clean up listener
+        cleanupListener();
+      }
+    };
+
+    // Start streaming in background
+    streamLoop().catch(err => {
+      log.error('VOD auto-stream error', { trackAlias: aliasStr, error: err });
+      cleanupListener();
+    });
+  }
+
+  /**
+   * Handle incoming FETCH request (we are the VOD publisher)
+   */
+  private async handleIncomingFetch(message: FetchMessage): Promise<void> {
+    const { namespace, trackName } = message.fullTrackName;
+    const fullTrackNameStr = [...namespace, trackName].join('/');
+    const vodKey = `${namespace.join('/')}/${trackName}`;
+
+    log.info('Received FETCH request', {
+      requestId: message.requestId,
+      namespace: namespace.join('/'),
+      trackName,
+      startGroup: message.startGroup,
+      startObject: message.startObject,
+      endGroup: message.endGroup,
+      endObject: message.endObject,
+    });
+
+    // Find VOD track by name
+    const vodCallbacks = (this as unknown as { vodCallbacks: Map<string, VODPublishOptions> }).vodCallbacks;
+    const vodOptions = vodCallbacks?.get(vodKey);
+
+    if (!vodOptions) {
+      log.warn('FETCH for unknown VOD track', { fullTrackName: fullTrackNameStr });
+      await this.sendFetchError(message.requestId, 0x03, 'Track not found');
+      return;
+    }
+
+    // Emit event for application to handle (optional custom handling)
+    this.emit('incoming-fetch', {
+      requestId: message.requestId,
+      namespace,
+      trackName,
+      range: {
+        startGroup: message.startGroup,
+        startObject: message.startObject,
+        endGroup: message.endGroup,
+        endObject: message.endObject,
+      },
+      priority: message.subscriberPriority,
+      groupOrder: message.groupOrder,
+    } as IncomingFetchEvent);
+
+    // Send FETCH_OK first
+    const fetchOk: FetchOkMessage = {
+      type: MessageType.FETCH_OK,
+      requestId: message.requestId,
+      groupOrder: message.groupOrder,
+      endOfTrack: message.endGroup >= vodOptions.metadata.totalGroups - 1,
+      largestGroupId: vodOptions.metadata.totalGroups - 1,
+      largestObjectId: (vodOptions.objectsPerGroup ?? 1) - 1,
+    };
+
+    const fetchOkBytes = MessageCodec.encode(fetchOk);
+    await this.doSendControl(fetchOkBytes);
+    log.info('Sent FETCH_OK', {
+      requestId: message.requestId,
+      largestGroupId: fetchOk.largestGroupId,
+      largestObjectId: fetchOk.largestObjectId,
+      encodedLength: fetchOkBytes.length,
+    });
+
+    // Create a stream to send the fetched objects
+    await this.sendFetchedObjects(message, vodOptions);
+  }
+
+  /**
+   * Send fetched objects on a FETCH stream
+   *
+   * Draft-15/16 FETCH response format uses serialization flags for each object,
+   * which is different from SUBSCRIBE delivery (subgroup headers).
+   */
+  private async sendFetchedObjects(
+    fetchMessage: FetchMessage,
+    vodOptions: VODPublishOptions
+  ): Promise<void> {
+    const requestId = fetchMessage.requestId;
+    const { startGroup, startObject, endGroup, endObject } = fetchMessage;
+    const objectsPerGroup = vodOptions.objectsPerGroup ?? 1;
+
+    log.info('Sending fetched objects', {
+      requestId,
+      startGroup,
+      startObject,
+      endGroup,
+      endObject,
+      objectsPerGroup,
+      objectsPerGroupSource: vodOptions.objectsPerGroup,
+    });
+    console.log('[FETCH] Sending objects', {
+      requestId,
+      range: `group ${startGroup}-${endGroup}, objects 0-${objectsPerGroup - 1}`,
+      objectsPerGroup,
+    });
+
+    try {
+      // Create a unidirectional stream for the FETCH response
+      const streamInfo = await this.doCreateStream();
+
+      // Send FETCH_HEADER first (stream type + request ID)
+      const headerWriter = new BufferWriter();
+      headerWriter.writeVarInt(DataStreamType.FETCH_HEADER);
+      headerWriter.writeVarInt(requestId);
+      await this.doWriteStream(streamInfo, headerWriter.toUint8Array());
+
+      // Create encoder state for delta encoding across objects
+      const fetchState = ObjectCodec.createFetchEncoderState();
+
+      // Send objects in requested range
+      for (let groupId = startGroup; groupId <= endGroup; groupId++) {
+        const objStart = groupId === startGroup ? startObject : 0;
+        const objEnd = groupId === endGroup && endObject > 0
+          ? endObject
+          : objectsPerGroup - 1;
+
+        for (let objectId = objStart; objectId <= objEnd; objectId++) {
+          // Check if fetch was cancelled
+          if (this.pendingFetchResponses.has(requestId) === false && requestId !== fetchMessage.requestId) {
+            log.info('Fetch cancelled, stopping send', { requestId });
+            await this.doCloseStream(streamInfo);
+            return;
+          }
+
+          // Get object data
+          const data = await vodOptions.getObject(groupId, objectId);
+          if (!data) {
+            log.warn('Object not found', { groupId, objectId });
+            continue;
+          }
+
+          const isKeyframe = vodOptions.isKeyframe?.(groupId, objectId) ?? objectId === 0;
+
+          // Encode using draft-15/16 FETCH object format (serialization flags)
+          const objectData = ObjectCodec.encodeFetchObject(
+            groupId,
+            0, // subgroupId
+            objectId,
+            data,
+            fetchState,
+            128 // priority
+          );
+
+          // Debug: show exact bytes for first few objects (before write transfers buffer)
+          if (objectId < 3) {
+            const bytesHex = Array.from(objectData.slice(0, Math.min(32, objectData.length)))
+              .map(b => b.toString(16).padStart(2, '0')).join(' ');
+            log.info('FETCH object encoded', {
+              requestId,
+              groupId,
+              objectId,
+              payloadSize: data.byteLength,
+              encodedSize: objectData.byteLength,
+              firstBytes: bytesHex,
+            });
+          }
+
+          await this.doWriteStream(streamInfo, objectData);
+
+          log.trace('Sent fetched object', {
+            requestId,
+            groupId,
+            objectId,
+            isKeyframe,
+            bytes: data.byteLength,
+            encodedBytes: objectData.byteLength,
+          });
+        }
+      }
+
+      // Close the stream
+      await this.doCloseStream(streamInfo);
+      log.info('Fetch stream completed', { requestId });
+
+    } catch (err) {
+      log.error('Error sending fetched objects', {
+        requestId,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Send FETCH_ERROR response
+   */
+  private async sendFetchError(
+    requestId: number,
+    errorCode: number,
+    reasonPhrase: string
+  ): Promise<void> {
+    const fetchError: FetchErrorMessage = {
+      type: MessageType.FETCH_ERROR,
+      requestId,
+      errorCode: errorCode as import('@web-moq/core').RequestErrorCode,
+      reasonPhrase,
+    };
+
+    const bytes = MessageCodec.encode(fetchError);
+    await this.doSendControl(bytes);
+    log.info('Sent FETCH_ERROR', { requestId, errorCode, reasonPhrase });
+  }
+
+  /**
+   * Get VOD track info
+   */
+  getVODTrack(trackAlias: bigint | string): VODTrackInfo | undefined {
+    return this.vodTracks.get(trackAlias.toString());
+  }
+
+  /**
+   * Get all VOD tracks
+   */
+  getVODTracks(): VODTrackInfo[] {
+    return Array.from(this.vodTracks.values());
+  }
+
+  // ============================================================================
+  // End VOD Publishing
+  // ============================================================================
+
   /**
    * Stop publishing a track
    *
@@ -1743,17 +2576,7 @@ export class MOQTSession {
     data: Uint8Array,
     metadata: ObjectMetadata
   ): Promise<void> {
-    // Skip sending if session is not ready (connection lost, error state, etc.)
-    if (!this.isReady) {
-      return;
-    }
-
     const publication = this.publicationManager.get(trackAlias);
-    // Skip if publication was removed (unpublished)
-    if (!publication) {
-      log.debug('Skipping sendObject - publication not found (unpublished?)', { trackAlias: trackAlias.toString() });
-      return;
-    }
     const priority = publication?.priority ?? 128;
     const deliveryMode = publication?.deliveryMode ?? 'stream';
     const audioDeliveryMode = publication?.audioDeliveryMode ?? 'datagram';
@@ -1857,12 +2680,20 @@ export class MOQTSession {
         publisherPriority: priority ?? 128,
       }, true /* endOfGroup */);
 
+      // Build extensions map if maxCacheDuration is specified
+      let extensions: Map<number, number> | undefined;
+      if (metadata.maxCacheDuration !== undefined && metadata.maxCacheDuration > 0) {
+        extensions = new Map();
+        extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
+      }
+
       const objectData = ObjectCodec.encodeStreamObject(
         metadata.objectId,
         data,
         ObjectStatus.NORMAL,
         -1, // previousObjectId (first object)
-        hasExtensions
+        hasExtensions,
+        extensions
       );
 
       const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -1951,12 +2782,20 @@ export class MOQTSession {
           publisherPriority: priority,
         }, true /* endOfGroup */);
 
+        // Build extensions map if maxCacheDuration is specified
+        let extensions: Map<number, number> | undefined;
+        if (metadata.maxCacheDuration !== undefined && metadata.maxCacheDuration > 0) {
+          extensions = new Map();
+          extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
+        }
+
         const objectData = ObjectCodec.encodeStreamObject(
           metadata.objectId,
           data,
           ObjectStatus.NORMAL,
           -1, // previousObjectId (first object)
-          hasExtensions
+          hasExtensions,
+          extensions
         );
 
         const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -1972,6 +2811,7 @@ export class MOQTSession {
           objectCount: 1,
           previousObjectId: metadata.objectId, // For delta encoding
           hasExtensions,
+          maxCacheDuration: metadata.maxCacheDuration, // Store for P-frames
         });
 
         log.info('Started new GOP stream with keyframe', {
@@ -2041,12 +2881,20 @@ export class MOQTSession {
           return;
         }
 
+        // Build extensions map if maxCacheDuration was set on the keyframe
+        let extensions: Map<number, number> | undefined;
+        if (existing.maxCacheDuration !== undefined && existing.maxCacheDuration > 0) {
+          extensions = new Map();
+          extensions.set(ObjectExtension.MAX_CACHE_DURATION, existing.maxCacheDuration);
+        }
+
         const objectData = ObjectCodec.encodeStreamObject(
           metadata.objectId,
           data,
           ObjectStatus.NORMAL,
           existing.previousObjectId, // Delta encoding from previous object
-          existing.hasExtensions
+          existing.hasExtensions,
+          extensions
         );
 
         try {
@@ -2219,6 +3067,48 @@ export class MOQTSession {
   }
 
   /**
+   * Seek a subscription to a specific position using SUBSCRIBE_UPDATE
+   * Used for live trick play to change the start position
+   */
+  async seekSubscription(
+    subscriptionId: number,
+    groupId: number,
+    objectId: number = 0
+  ): Promise<void> {
+    const subscription = this.subscriptionManager.get(subscriptionId);
+    if (!subscription) {
+      log.warn('No subscription found for seek', { subscriptionId });
+      return;
+    }
+
+    log.info('Seeking subscription', { subscriptionId, groupId, objectId });
+
+    const subscribeUpdateMessage = {
+      type: MessageType.SUBSCRIBE_UPDATE as const,
+      requestId: this.getNextRequestId(),
+      subscriptionRequestId: subscription.requestId,
+      startLocation: { groupId, objectId },
+      endGroup: 0,
+      subscriberPriority: 128,
+      forward: 1,
+    };
+
+    try {
+      const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
+      await this.doSendControl(updateBytes);
+      log.info('Sent SUBSCRIBE_UPDATE (seek)', {
+        subscriptionId,
+        requestId: subscribeUpdateMessage.requestId,
+        groupId,
+        objectId,
+      });
+    } catch (err) {
+      log.error('Failed to send SUBSCRIBE_UPDATE (seek)', { error: (err as Error).message });
+      throw err;
+    }
+  }
+
+  /**
    * Check if a subscription is paused
    */
   isSubscriptionPaused(subscriptionId: number): boolean {
@@ -2265,11 +3155,21 @@ export class MOQTSession {
   on(event: 'error', handler: (err: Error) => void): () => void;
   on(event: 'publish-stats', handler: (stats: PublishStatsEvent) => void): () => void;
   on(event: 'subscribe-stats', handler: (stats: SubscribeStatsEvent) => void): () => void;
+  on(event: 'subscribe-ok', handler: (event: SubscribeOkEvent) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
-  on(event: 'forward-paused', handler: (data: { subscriptionRequestId: number }) => void): () => void;
-  on(event: 'forward-resumed', handler: (data: { subscriptionRequestId: number }) => void): () => void;
+  // FETCH / DVR events
+  on(event: 'fetch-object', handler: (event: FetchObjectEvent) => void): () => void;
+  on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
+  on(event: 'fetch-stream-complete', handler: (event: FetchStreamCompleteEvent) => void): () => void;
+  on(event: 'fetch-error', handler: (event: FetchErrorEvent) => void): () => void;
+  on(event: 'incoming-fetch', handler: (event: IncomingFetchEvent) => void): () => void;
+  // Message logging events
+  on(event: 'message-sent', handler: (event: MessageLogEvent) => void): () => void;
+  on(event: 'message-received', handler: (event: MessageLogEvent) => void): () => void;
+  // Forward state events
+  on(event: 'forward-state-change', handler: (event: ForwardStateChangeEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -2302,6 +3202,7 @@ export class MOQTSession {
           log.debug('Received SERVER_SETUP', {
             version: serverSetup.selectedVersion,
           });
+          this.emitMessageReceived('SERVER_SETUP', 0, `version=${serverSetup.selectedVersion}`, { version: serverSetup.selectedVersion });
           this.setState('ready');
           resolve();
         }
@@ -2409,12 +3310,20 @@ export class MOQTSession {
           requestId: number;
           trackAlias?: number;
           forward: number;
+          startLocation?: { groupId: number; objectId: number };
+          endGroup?: number;
         };
         log.info('Received PUBLISH_OK in handler', {
           requestId: publishOk.requestId,
           trackAlias: publishOk.trackAlias,
           forward: publishOk.forward,
+          startLocation: publishOk.startLocation,
+          endGroup: publishOk.endGroup,
         });
+        const locationStr = publishOk.startLocation
+          ? ` loc=(${publishOk.startLocation.groupId},${publishOk.startLocation.objectId})`
+          : '';
+        this.emitMessageReceived('PUBLISH_OK', 0, `trackAlias=${publishOk.trackAlias} forward=${publishOk.forward}${locationStr}`, { requestId: publishOk.requestId, trackAlias: publishOk.trackAlias, forward: publishOk.forward, startLocation: publishOk.startLocation });
 
         this.publicationManager.resolvePublishOk(publishOk.requestId, {
           forward: publishOk.forward ?? 0,
@@ -2455,11 +3364,25 @@ export class MOQTSession {
           largestGroupId: subscribeOk.largestGroupId,
           largestObjectId: subscribeOk.largestObjectId,
         });
+        this.emitMessageReceived('SUBSCRIBE_OK', 0, `trackAlias=${trackAliasNum}${subscribeOk.largestGroupId !== undefined ? ` largestGroup=${subscribeOk.largestGroupId}` : ''}`, { requestId: subscribeOk.requestId, trackAlias: trackAliasNum.toString(), largestGroupId: subscribeOk.largestGroupId });
 
         // Find subscription by request ID and update track alias
         const sub = this.subscriptionManager.findByRequestId(subscribeOk.requestId);
         if (sub) {
           this.subscriptionManager.updateTrackAlias(sub.subscriptionId, BigInt(subscribeOk.trackAlias));
+
+          // Emit subscribe-ok event for listeners (e.g., catalog subscriber)
+          const contentExists = typeof subscribeOk.contentExists === 'boolean'
+            ? subscribeOk.contentExists
+            : subscribeOk.contentExists === 1; // ObjectExistence.EXISTS
+          this.emit('subscribe-ok', {
+            subscriptionId: sub.subscriptionId,
+            requestId: subscribeOk.requestId,
+            trackAlias: trackAliasNum,
+            contentExists,
+            largestGroupId: subscribeOk.largestGroupId,
+            largestObjectId: subscribeOk.largestObjectId,
+          } as SubscribeOkEvent);
         } else {
           log.warn('SUBSCRIBE_OK received but no matching subscription found', {
             requestId: subscribeOk.requestId,
@@ -2481,6 +3404,7 @@ export class MOQTSession {
           reasonPhrase: subscribeError.reasonPhrase,
           trackAlias: subscribeError.trackAlias,
         });
+        this.emitMessageReceived('SUBSCRIBE_ERROR', 0, `code=${subscribeError.errorCode} "${subscribeError.reasonPhrase}"`, { requestId: subscribeError.requestId, errorCode: subscribeError.errorCode, reasonPhrase: subscribeError.reasonPhrase });
 
         // Find and clean up the failed subscription
         const sub = this.subscriptionManager.findByRequestId(subscribeError.requestId);
@@ -2508,7 +3432,7 @@ export class MOQTSession {
           startLocation: subscribeUpdate.startLocation,
         });
 
-        // When forward=1, resolve all pending forward promises
+        // Handle forward state change for all publications
         if (subscribeUpdate.forward === 1) {
           log.info('Forward enabled by relay, resolving all pending publishers', {
             subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
@@ -2516,11 +3440,48 @@ export class MOQTSession {
           });
           this.publicationManager.resolveAllForward();
         } else if (subscribeUpdate.forward === 0) {
-          // No more subscribers - emit event so publisher can pause
-          log.info('Forward disabled (no subscribers), emitting forward-paused event', {
+          log.info('Forward disabled by relay, pausing all publications', {
             subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
           });
-          this.emit('forward-paused', { subscriptionRequestId: subscribeUpdate.subscriptionRequestId });
+          this.publicationManager.setAllForward(0);
+        }
+        break;
+      }
+
+      // Track Status handlers (for live edge tracking)
+      case MessageType.TRACK_STATUS_OK: {
+        const trackStatusOk = message as TrackStatusOkMessage;
+        log.info('Received TRACK_STATUS_OK', {
+          requestId: trackStatusOk.requestId,
+          statusCode: trackStatusOk.statusCode,
+          lastGroupId: trackStatusOk.lastGroupId,
+          lastObjectId: trackStatusOk.lastObjectId,
+        });
+
+        // Resolve the pending callback
+        const callback = this.trackStatusCallbacks.get(trackStatusOk.requestId);
+        if (callback) {
+          callback.resolve(trackStatusOk);
+        } else {
+          log.warn('TRACK_STATUS_OK for unknown request', { requestId: trackStatusOk.requestId });
+        }
+        break;
+      }
+
+      case MessageType.TRACK_STATUS_ERROR: {
+        const trackStatusError = message as TrackStatusErrorMessage;
+        log.error('Received TRACK_STATUS_ERROR', {
+          requestId: trackStatusError.requestId,
+          errorCode: trackStatusError.errorCode,
+          reasonPhrase: trackStatusError.reasonPhrase,
+        });
+
+        // Reject the pending callback
+        const callback = this.trackStatusCallbacks.get(trackStatusError.requestId);
+        if (callback) {
+          callback.reject(new Error(`Track status error: ${trackStatusError.reasonPhrase} (code: ${trackStatusError.errorCode})`));
+        } else {
+          log.warn('TRACK_STATUS_ERROR for unknown request', { requestId: trackStatusError.requestId });
         }
         break;
       }
@@ -2669,6 +3630,84 @@ export class MOQTSession {
         break;
       }
 
+      // FETCH message handlers (DVR support)
+      case MessageType.FETCH_OK: {
+        const fetchOk = message as FetchOkMessage;
+        log.info('Received FETCH_OK', {
+          requestId: fetchOk.requestId,
+          groupOrder: fetchOk.groupOrder,
+          endOfTrack: fetchOk.endOfTrack,
+          largestGroupId: fetchOk.largestGroupId,
+          largestObjectId: fetchOk.largestObjectId,
+        });
+        this.emitMessageReceived('FETCH_OK', 0, `largestGroup=${fetchOk.largestGroupId}${fetchOk.endOfTrack ? ' (EOT)' : ''}`, { requestId: fetchOk.requestId, largestGroupId: fetchOk.largestGroupId });
+
+        const fetchInfo = this.activeFetches.get(fetchOk.requestId);
+        if (fetchInfo) {
+          fetchInfo.completed = true;
+          fetchInfo.largestGroupId = fetchOk.largestGroupId;
+          fetchInfo.largestObjectId = fetchOk.largestObjectId;
+          fetchInfo.endOfTrack = fetchOk.endOfTrack;
+
+          // Emit fetch complete event
+          this.emit('fetch-complete', {
+            requestId: fetchOk.requestId,
+            largestGroupId: fetchOk.largestGroupId,
+            largestObjectId: fetchOk.largestObjectId,
+            endOfTrack: fetchOk.endOfTrack,
+          } as FetchCompleteEvent);
+        } else {
+          log.warn('FETCH_OK for unknown fetch request', { requestId: fetchOk.requestId });
+        }
+        break;
+      }
+
+      case MessageType.FETCH_ERROR: {
+        const fetchError = message as FetchErrorMessage;
+        log.error('Received FETCH_ERROR', {
+          requestId: fetchError.requestId,
+          errorCode: fetchError.errorCode,
+          reasonPhrase: fetchError.reasonPhrase,
+        });
+
+        const fetchInfo = this.activeFetches.get(fetchError.requestId);
+        if (fetchInfo) {
+          // Remove from active fetches
+          this.activeFetches.delete(fetchError.requestId);
+          this.fetchStreamBuffers.delete(fetchError.requestId);
+
+          // Emit fetch error event
+          this.emit('fetch-error', {
+            requestId: fetchError.requestId,
+            errorCode: fetchError.errorCode,
+            reason: fetchError.reasonPhrase,
+          } as FetchErrorEvent);
+        }
+        break;
+      }
+
+      case MessageType.FETCH: {
+        // Handle incoming FETCH (we are the VOD publisher)
+        const fetchMessage = message as FetchMessage;
+        this.handleIncomingFetch(fetchMessage).catch(err => {
+          log.error('Error handling incoming FETCH', { error: (err as Error).message });
+        });
+        break;
+      }
+
+      case MessageType.FETCH_CANCEL: {
+        const fetchCancel = message as FetchCancelMessage;
+        log.info('Received FETCH_CANCEL', { requestId: fetchCancel.requestId });
+
+        // Cancel any pending fetch response
+        const pendingResponse = this.pendingFetchResponses.get(fetchCancel.requestId);
+        if (pendingResponse) {
+          this.pendingFetchResponses.delete(fetchCancel.requestId);
+          log.info('Cancelled pending fetch response', { requestId: fetchCancel.requestId });
+        }
+        break;
+      }
+
       default:
         log.trace('Unhandled message type', { type: MessageType[message.type] });
     }
@@ -2691,6 +3730,32 @@ export class MOQTSession {
   private handleError(err: Error): void {
     this.setState('error');
     this.emit('error', err);
+  }
+
+  /**
+   * Emit a message-sent event for the message log panel
+   */
+  private emitMessageSent(messageType: string, bytes: number, summary: string, details?: Record<string, unknown>): void {
+    this.emit('message-sent', {
+      messageType,
+      timestamp: Date.now(),
+      bytes,
+      summary,
+      details,
+    } as MessageLogEvent);
+  }
+
+  /**
+   * Emit a message-received event for the message log panel
+   */
+  private emitMessageReceived(messageType: string, bytes: number, summary: string, details?: Record<string, unknown>): void {
+    this.emit('message-received', {
+      messageType,
+      timestamp: Date.now(),
+      bytes,
+      summary,
+      details,
+    } as MessageLogEvent);
   }
 
   /**

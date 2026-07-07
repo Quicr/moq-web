@@ -1,0 +1,1309 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
+// SPDX-License-Identifier: BSD-2-Clause
+
+/**
+ * @fileoverview Catalog Subscriber Panel
+ *
+ * Component for subscribing to MSF catalogs and displaying received tracks.
+ * Supports offline configuration with "Connect & Go" workflow.
+ */
+
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useStore } from '../../store';
+import { createMSFSession, type MSFSession, type FullCatalog, type Track } from '@web-moq/msf';
+import { ABRController, type ABRTrack } from '@web-moq/media';
+import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
+import { MoqMediaPlayer } from '../player/MoqMediaPlayer';
+import { useVideoFrameQueue } from '../../hooks/useVideoFrameQueue';
+import { AudioPlayer } from '../subscribe/AudioPlayer';
+
+// FETCH playback state per track
+interface FetchPlaybackState {
+  isActive: boolean;
+  isFetching: boolean;
+  bufferSeconds: number;
+  priority: number;
+  currentGroup: number;
+  totalGroups: number;
+  bufferedGroups: number;
+  subscriptionId?: number;
+  audioSubscriptionId?: number;
+  error?: string;
+}
+
+interface CatalogSubscriberPanelProps {
+  namespace: string;
+  onNamespaceChange: (namespace: string) => void;
+}
+
+// Timeline data type for VOD seeking
+interface TimelineData {
+  duration: number;
+  entries: Array<{ groupId: number; timestamp: number; objectCount: number }>;
+  framerate: number;
+}
+
+/**
+ * Get experience profile label from targetLatency
+ */
+function getExperienceProfile(targetLatency?: number): string {
+  if (!targetLatency) return 'default';
+  if (targetLatency <= 100) return 'interactive';
+  if (targetLatency <= 1000) return 'streaming';
+  return 'broadcast';
+}
+
+/**
+ * Format bitrate for display
+ */
+function formatBitrate(bitrate?: number): string {
+  if (!bitrate) return 'N/A';
+  if (bitrate >= 1_000_000) {
+    return `${(bitrate / 1_000_000).toFixed(1)} Mbps`;
+  }
+  return `${(bitrate / 1000).toFixed(0)} Kbps`;
+}
+
+/**
+ * Determine track type from track properties
+ */
+function getTrackType(track: Track): 'video' | 'audio' | 'subtitle' | 'timeline' | 'data' {
+  if (track.width || track.height || track.framerate) return 'video';
+  if (track.samplerate || track.channelConfig) return 'audio';
+  if (track.role === 'subtitle' || track.lang) return 'subtitle';
+  if (track.packaging === 'mediatimeline' || track.name.toLowerCase().includes('timeline')) return 'timeline';
+  return 'data';
+}
+
+export const CatalogSubscriberPanel: React.FC<CatalogSubscriberPanelProps> = ({
+  namespace,
+  onNamespaceChange,
+}) => {
+  const { session, sessionState, state, connect, serverUrl, startSubscription, startVodSubscription, onVideoFrame, onAudioData, onSubscribeStats, onSeekStart, vodFetchStrategy } = useStore();
+
+  const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'connecting' | 'subscribing' | 'subscribed' | 'error'>('idle');
+  const [subscribeError, setSubscribeError] = useState<string | null>(null);
+  const [receivedCatalog, setReceivedCatalog] = useState<FullCatalog | null>(null);
+  const [subscribedTracks, setSubscribedTracks] = useState<Set<string>>(new Set());
+  const [loadingSubtitles, setLoadingSubtitles] = useState<Set<string>>(new Set());
+  const [loadingTimeline, setLoadingTimeline] = useState<Set<string>>(new Set());
+  const [showCatalogJson, setShowCatalogJson] = useState(false);
+
+  // Local state for subtitles and timeline (TODO: integrate with store)
+  const [_subtitleCuesMap, setSubtitleCuesMap] = useState<Map<string, SubtitleCue[]>>(new Map());
+  const [activeSubtitleTrack, setActiveSubtitleTrack] = useState<string | null>(null);
+  const [_timelineData, setTimelineData] = useState<TimelineData | null>(null);
+  // Note: _subtitleCuesMap and _timelineData are set but read access will be added when player integration is complete
+
+  // Track starting (first delivered) group/object per subscription
+  const [startingDelivery, setStartingDelivery] = useState<Map<string, { groupId: number; objectId: number }>>(new Map());
+
+  // FETCH playback state for VOD tracks
+  const [fetchPlaybackState, setFetchPlaybackState] = useState<Map<string, FetchPlaybackState>>(new Map());
+  const [showFetchPanel, setShowFetchPanel] = useState<Map<string, boolean>>(new Map());
+
+  // High-frequency frame queue for 60fps rendering (bypasses React state batching)
+  const fetchFrameQueue = useVideoFrameQueue();
+  const subscribeFrameQueue = useVideoFrameQueue();
+
+  // Track video playback time for A/V sync (keyed by track name)
+  // These refs are updated on every video frame (60fps) for real-time A/V sync
+  const videoPlaybackTimeRefs = useRef<Map<string, React.MutableRefObject<number>>>(new Map());
+
+  // Get or create a video time ref for a track
+  const getVideoTimeRef = useCallback((trackName: string): React.MutableRefObject<number> => {
+    if (!videoPlaybackTimeRefs.current.has(trackName)) {
+      videoPlaybackTimeRefs.current.set(trackName, { current: 0 });
+    }
+    return videoPlaybackTimeRefs.current.get(trackName)!;
+  }, []);
+
+  // Video frames for rendering (SUBSCRIBE) - used to trigger re-render when first frame arrives
+  const [videoFrames, setVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
+  // Video frames for FETCH playback - used to trigger re-render when first frame arrives
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_fetchVideoFrames, setFetchVideoFrames] = useState<Map<string, VideoFrame | null>>(new Map());
+  const subscriptionToTrackRef = useRef<Map<number, string>>(new Map());
+  const trackToSubscriptionRef = useRef<Map<string, number>>(new Map()); // Reverse map for VOD controls
+  // Track which subscriptions are FETCH vs SUBSCRIBE
+  const fetchSubscriptionIds = useRef<Set<number>>(new Set());
+  // Map track name to subscription ID for frame queue getters
+  const trackNameToSubIdRef = useRef<Map<string, number>>(new Map());
+
+  // ABR state
+  const abrControllerRef = useRef<ABRController | null>(null);
+  const [abrEnabled, setAbrEnabled] = useState(true);
+  const [selectedQuality, setSelectedQuality] = useState<Map<number, string>>(new Map()); // altGroup -> trackName
+
+  // Helper to set subtitle cues for a track
+  const setSubtitleCues = useCallback((trackName: string, cues: SubtitleCue[]) => {
+    setSubtitleCuesMap(prev => new Map(prev).set(trackName, cues));
+  }, []);
+
+  // MSF Session reference
+  const msfSessionRef = useRef<MSFSession | null>(null);
+
+  const isConnected = state === 'connected' && sessionState === 'ready';
+
+  // Group tracks by altGroup for ABR quality switching
+  const tracksByAltGroup = useMemo(() => {
+    if (!receivedCatalog) return new Map<number, Track[]>();
+
+    const groups = new Map<number, Track[]>();
+    for (const track of receivedCatalog.tracks) {
+      if (track.altGroup !== undefined) {
+        if (!groups.has(track.altGroup)) {
+          groups.set(track.altGroup, []);
+        }
+        groups.get(track.altGroup)!.push(track);
+      }
+    }
+
+    // Sort each group by bitrate or resolution
+    for (const [, tracks] of groups) {
+      tracks.sort((a, b) => {
+        if (a.bitrate !== undefined && b.bitrate !== undefined) {
+          return a.bitrate - b.bitrate;
+        }
+        if (a.width !== undefined && b.width !== undefined) {
+          return a.width - b.width;
+        }
+        return 0;
+      });
+    }
+
+    return groups;
+  }, [receivedCatalog]);
+
+  // Initialize ABR controller when catalog is received
+  useEffect(() => {
+    if (!receivedCatalog || tracksByAltGroup.size === 0) {
+      abrControllerRef.current = null;
+      return;
+    }
+
+    const handleSwitch = async (fromTrack: ABRTrack, toTrack: ABRTrack) => {
+      console.log('[ABR] Switching from', fromTrack.name, 'to', toTrack.name);
+
+      // Find the Track objects
+      const from = receivedCatalog.tracks.find((t: Track) => t.name === fromTrack.name);
+      const to = receivedCatalog.tracks.find((t: Track) => t.name === toTrack.name);
+
+      if (!from || !to) return;
+
+      // Unsubscribe from current track (TODO: implement proper unsubscribe)
+      setSubscribedTracks(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(fromTrack.name);
+        return newSet;
+      });
+
+      // Subscribe to new track
+      await handleTrackSubscribe(to);
+
+      // Update selected quality
+      setSelectedQuality(prev => new Map(prev).set(fromTrack.altGroup, toTrack.name));
+    };
+
+    const abr = new ABRController({
+      onSwitch: handleSwitch,
+      debug: true,
+    });
+
+    // Register all tracks with altGroup
+    for (const [altGroup, tracks] of tracksByAltGroup) {
+      for (const track of tracks) {
+        abr.registerTrack({
+          name: track.name,
+          namespace: track.namespace ?? namespace.split('/'),
+          altGroup,
+          bitrate: track.bitrate,
+          width: track.width,
+          height: track.height,
+          codec: track.codec,
+        });
+      }
+    }
+
+    abrControllerRef.current = abr;
+
+    if (abrEnabled) {
+      abr.start();
+    }
+
+    return () => {
+      abr.stop();
+    };
+  }, [receivedCatalog, tracksByAltGroup, namespace, abrEnabled]);
+
+  // Handle manual quality selection
+  const handleQualityChange = useCallback(async (altGroup: number, trackName: string) => {
+    if (!abrControllerRef.current) return;
+
+    const success = await abrControllerRef.current.requestQuality(altGroup, trackName);
+    if (success) {
+      setSelectedQuality(prev => new Map(prev).set(altGroup, trackName));
+    }
+  }, []);
+
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      if (msfSessionRef.current) {
+        msfSessionRef.current.close().catch(console.error);
+      }
+      // Note: Don't close video frames here - VideoRenderer handles cleanup
+      // in its own useEffect cleanup. The frames in videoFrames map may still
+      // be queued in VideoRenderer waiting to be rendered.
+    };
+  }, []);
+
+  // Track starting group/object for each subscription (first delivered object)
+  useEffect(() => {
+    const unsubscribe = onSubscribeStats(({ subscriptionId, groupId, objectId }) => {
+      const trackName = subscriptionToTrackRef.current.get(subscriptionId);
+      if (trackName && !startingDelivery.has(trackName)) {
+        setStartingDelivery(prev => {
+          if (prev.has(trackName)) return prev; // Already captured
+          const newMap = new Map(prev);
+          newMap.set(trackName, { groupId, objectId });
+          return newMap;
+        });
+      }
+    });
+
+    return unsubscribe;
+  }, [onSubscribeStats, startingDelivery]);
+
+  // Handle incoming video frames - use high-frequency frame queue for 60fps
+  useEffect(() => {
+    const unsubscribe = onVideoFrame(({ subscriptionId, frame }) => {
+      const trackName = subscriptionToTrackRef.current.get(subscriptionId);
+      if (trackName) {
+        // Update track name to subscription ID mapping
+        trackNameToSubIdRef.current.set(trackName, subscriptionId);
+
+        // Route to FETCH or SUBSCRIBE frame queue (bypasses React state for 60fps)
+        const isFetch = fetchSubscriptionIds.current.has(subscriptionId);
+        const frameQueue = isFetch ? fetchFrameQueue : subscribeFrameQueue;
+        frameQueue.pushFrame(subscriptionId, frame);
+
+        // Also update legacy state for any components that still need it
+        // This is throttled by React anyway, so won't cause extra frame drops
+        const setFrames = isFetch ? setFetchVideoFrames : setVideoFrames;
+        setFrames(prev => {
+          const newMap = new Map(prev);
+          newMap.set(trackName, frame);
+          return newMap;
+        });
+      }
+    });
+
+    return unsubscribe;
+  }, [onVideoFrame, session]);
+
+  // Handle seek start - clear frame queues to prevent stale frames after seek
+  useEffect(() => {
+    const unsubscribe = onSeekStart(({ subscriptionId }) => {
+      console.log('[CatalogSubscriberPanel] Seek start - clearing frame queues', { subscriptionId });
+      // Clear both FETCH and SUBSCRIBE frame queues for this subscription
+      fetchFrameQueue.clearSubscription(subscriptionId);
+      subscribeFrameQueue.clearSubscription(subscriptionId);
+    });
+
+    return unsubscribe;
+  }, [onSeekStart, fetchFrameQueue, subscribeFrameQueue]);
+
+  /**
+   * Connect & Subscribe flow - handles connection if needed
+   */
+  const handleSubscribe = useCallback(async () => {
+    setSubscribeError(null);
+    setReceivedCatalog(null);
+
+    // If not connected, connect first
+    if (!session || sessionState !== 'ready') {
+      setSubscribeStatus('connecting');
+
+      try {
+        await connect(serverUrl);
+
+        // Wait for session to be ready
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Session setup timeout')), 10000);
+
+          const checkReady = () => {
+            const { sessionState: currentState } = useStore.getState();
+            if (currentState === 'ready') {
+              clearTimeout(timeout);
+              resolve();
+            } else if (currentState === 'error') {
+              clearTimeout(timeout);
+              reject(new Error('Session setup failed'));
+            } else {
+              setTimeout(checkReady, 100);
+            }
+          };
+          checkReady();
+        });
+      } catch (err) {
+        console.error('[CatalogSubscriber] Failed to connect:', err);
+        setSubscribeError(`Connection failed: ${(err as Error).message}`);
+        setSubscribeStatus('error');
+        return;
+      }
+    }
+
+    // Get fresh session reference
+    const { session: currentSession } = useStore.getState();
+    if (!currentSession) {
+      setSubscribeError('No session after connect');
+      setSubscribeStatus('error');
+      return;
+    }
+
+    setSubscribeStatus('subscribing');
+
+    try {
+      // Create MSFSession for catalog subscription
+      const moqtSession = currentSession.getMOQTSession();
+      const msfSession = createMSFSession(moqtSession, namespace.split('/'));
+      msfSessionRef.current = msfSession;
+
+      // Subscribe to catalog with callbacks
+      await msfSession.subscribeCatalog(
+        (catalog: FullCatalog, isIndependent: boolean) => {
+          console.log('[CatalogSubscriber] Received catalog:', {
+            tracks: catalog.tracks.length,
+            isIndependent,
+            generatedAt: catalog.generatedAt,
+          });
+          setReceivedCatalog(catalog);
+        },
+        (error: Error) => {
+          console.error('[CatalogSubscriber] Catalog error:', error);
+          setSubscribeError(error.message);
+          setSubscribeStatus('error');
+        }
+      );
+
+      console.log('[CatalogSubscriber] Subscribed to catalog:', namespace);
+      setSubscribeStatus('subscribed');
+    } catch (err) {
+      console.error('[CatalogSubscriber] Failed to subscribe:', err);
+      setSubscribeError((err as Error).message);
+      setSubscribeStatus('error');
+    }
+  }, [session, sessionState, namespace, serverUrl, connect]);
+
+  // Unsubscribe from catalog
+  const handleUnsubscribe = useCallback(async () => {
+    if (msfSessionRef.current) {
+      await msfSessionRef.current.close();
+      msfSessionRef.current = null;
+    }
+    setSubscribeStatus('idle');
+    setReceivedCatalog(null);
+    setSubscribedTracks(new Set());
+    setStartingDelivery(new Map());
+  }, []);
+
+  // Subscribe to a specific track
+  const handleTrackSubscribe = useCallback(async (track: Track) => {
+    if (!receivedCatalog) return;
+
+    const trackNamespace = track.namespace ?? namespace.split('/');
+    const trackName = track.name;
+
+    try {
+      const mediaType = getTrackType(track) === 'audio' ? 'audio' : 'video';
+
+      // Always use SUBSCRIBE for catalog-discovered tracks
+      // Jitter buffer profile is selected based on content type:
+      //   - VOD (isLive=false): larger buffers, sequential ordering, no frame skipping
+      //   - Live (isLive=true): deadline-based release, catch-up on stale groups
+      // For explicit FETCH, use the standalone Fetch panel instead
+      const subscriptionId = await startSubscription(
+        trackNamespace.join('/'),
+        trackName,
+        mediaType,
+        undefined, // DTS assignment - not used in catalog subscriber
+        track.isLive,
+        track.framerate,
+        track.gopDuration
+      );
+
+      // Map subscription ID to track name for video frame routing
+      subscriptionToTrackRef.current.set(subscriptionId, trackName);
+      trackToSubscriptionRef.current.set(trackName, subscriptionId);
+      console.log('[CatalogSubscriber] Mapped subscription', { subscriptionId, trackName });
+
+      setSubscribedTracks(prev => new Set([...prev, trackName]));
+      console.log('[CatalogSubscriber] Subscribed to track:', trackName);
+    } catch (err) {
+      console.error('[CatalogSubscriber] Failed to subscribe to track:', err);
+    }
+  }, [receivedCatalog, namespace, startSubscription]);
+
+  // Subscribe to a subtitle track
+  const handleSubtitleSubscribe = useCallback(async (track: Track) => {
+    if (!msfSessionRef.current || !receivedCatalog) return;
+
+    const trackNamespace = track.namespace ?? namespace.split('/');
+    const trackName = track.name;
+
+    setLoadingSubtitles(prev => new Set([...prev, trackName]));
+
+    try {
+      const moqtSession = msfSessionRef.current.getMOQTSession();
+      let accumulatedContent = '';
+
+      await moqtSession.subscribe(
+        trackNamespace,
+        trackName,
+        {},
+        (data: Uint8Array, groupId: number, objectId: number) => {
+          const textContent = new TextDecoder().decode(data);
+
+          console.log('[CatalogSubscriber] Received subtitle data:', {
+            trackName,
+            groupId,
+            objectId,
+            size: data.byteLength,
+          });
+
+          accumulatedContent += textContent;
+          const cues = parseSubtitles(accumulatedContent);
+
+          if (cues.length > 0) {
+            console.log('[CatalogSubscriber] Parsed subtitle cues:', {
+              trackName,
+              cueCount: cues.length,
+            });
+
+            setSubtitleCues(trackName, cues);
+
+            if (!activeSubtitleTrack) {
+              setActiveSubtitleTrack(trackName);
+            }
+          }
+        }
+      );
+
+      setSubscribedTracks(prev => new Set([...prev, trackName]));
+      setLoadingSubtitles(prev => {
+        const next = new Set(prev);
+        next.delete(trackName);
+        return next;
+      });
+
+      console.log('[CatalogSubscriber] Subscribed to subtitle track:', trackName);
+    } catch (err) {
+      console.error('[CatalogSubscriber] Failed to subscribe to subtitle track:', err);
+      setLoadingSubtitles(prev => {
+        const next = new Set(prev);
+        next.delete(trackName);
+        return next;
+      });
+    }
+  }, [receivedCatalog, namespace, setSubtitleCues, setActiveSubtitleTrack, activeSubtitleTrack]);
+
+  // Start FETCH playback for VOD track with user-specified buffer duration and start group
+  const handleFetchPlayback = useCallback(async (track: Track, bufferSeconds: number, priority: number, startGroup: number = 0) => {
+    if (!receivedCatalog) return;
+
+    const trackNamespace = track.namespace ?? namespace.split('/');
+    const trackName = track.name;
+
+    // Initialize fetch state
+    setFetchPlaybackState(prev => {
+      const newMap = new Map(prev);
+      newMap.set(trackName, {
+        isActive: true,
+        isFetching: true,
+        bufferSeconds,
+        priority,
+        currentGroup: startGroup,
+        totalGroups: track.totalGroups ?? 0,
+        bufferedGroups: 0,
+      });
+      return newMap;
+    });
+
+    try {
+      const videoConfig = (track.codec || track.width) ? {
+        codec: track.codec,
+        width: track.width,
+        height: track.height,
+      } : undefined;
+
+      // Calculate groups to buffer based on GOP duration
+      const gopDurationSec = (track.gopDuration ?? 2000) / 1000;
+      const groupsToBuffer = Math.ceil(bufferSeconds / gopDurationSec);
+
+      console.log('[CatalogSubscriber] Starting FETCH playback', {
+        trackName,
+        bufferSeconds,
+        gopDurationSec,
+        groupsToBuffer,
+        priority,
+        totalGroups: track.totalGroups,
+        startGroup, // Log the startGroup passed from UI
+      });
+
+      // Debug: Log all tracks in catalog to help identify audio track naming
+      console.log('[CatalogSubscriber] All tracks in catalog:', receivedCatalog.tracks.map((t: Track) => ({
+        name: t.name,
+        type: getTrackType(t),
+        samplerate: t.samplerate,
+        channelConfig: t.channelConfig,
+        codec: t.codec,
+        renderGroup: t.renderGroup,
+      })));
+      console.log('[CatalogSubscriber] Looking for audio track with name:', `${trackName}-audio`);
+
+      // Create VOD pipeline with FETCH and adaptive buffer config
+      // Use user-specified buffer seconds for initial buffer, with sensible defaults for min buffer
+      // IMPORTANT: Use startGroup directly from function parameter, not from React state
+      // (React state updates are async and may not be applied yet)
+      console.log('[CatalogSubscriber] FETCH startGroup trace', {
+        fromParam: startGroup,
+        fromState: fetchPlaybackState.get(trackName)?.currentGroup,
+      });
+      // Build ABR options if strategy is ABR and we have an ABR controller with altGroup tracks
+      const abrOptions = (vodFetchStrategy === 'abr' && abrControllerRef.current && track.altGroup !== undefined)
+        ? { abrController: abrControllerRef.current, altGroup: track.altGroup }
+        : undefined;
+
+      const subscriptionId = await startVodSubscription(
+        trackNamespace.join('/'),
+        trackName,
+        'video',
+        videoConfig,
+        {
+          framerate: track.framerate,
+          gopDuration: track.gopDuration,
+          totalGroups: track.totalGroups,
+        },
+        {
+          initialBufferSec: bufferSeconds,
+          minBufferSec: Math.max(1, bufferSeconds / 2),
+          fetchBatchSec: Math.max(1, bufferSeconds / 3),
+        },
+        startGroup,
+        abrOptions
+      );
+
+      // Map subscription ID for video frame routing - mark as FETCH
+      subscriptionToTrackRef.current.set(subscriptionId, trackName);
+      fetchSubscriptionIds.current.add(subscriptionId); // Mark as FETCH subscription
+
+      // Look for associated audio track (naming convention: {video-name}-audio)
+      const audioTrackName = `${trackName}-audio`;
+      const audioTrack = receivedCatalog.tracks.find((t: Track) => t.name === audioTrackName);
+
+      if (audioTrack) {
+        // Check if video and audio share same renderGroup (per MSF spec for A/V sync)
+        const videoRenderGroup = track.renderGroup;
+        const audioRenderGroup = audioTrack.renderGroup;
+        const needsSync = videoRenderGroup !== undefined &&
+                         audioRenderGroup !== undefined &&
+                         videoRenderGroup === audioRenderGroup;
+
+        console.log('[CatalogSubscriber] Found associated audio track:', audioTrackName, {
+          codec: audioTrack.codec,
+          samplerate: audioTrack.samplerate,
+          channelConfig: audioTrack.channelConfig,
+          hasAudioSpecificConfig: !!audioTrack.audioSpecificConfig,
+          videoRenderGroup,
+          audioRenderGroup,
+          needsSync,
+        });
+
+        // Decode base64 AudioSpecificConfig from catalog to Uint8Array
+        let audioSpecificConfig: Uint8Array | undefined;
+        if (audioTrack.audioSpecificConfig) {
+          try {
+            const binaryString = atob(audioTrack.audioSpecificConfig);
+            audioSpecificConfig = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              audioSpecificConfig[i] = binaryString.charCodeAt(i);
+            }
+            console.log('[CatalogSubscriber] Decoded AudioSpecificConfig:', audioSpecificConfig.length, 'bytes');
+          } catch (err) {
+            console.warn('[CatalogSubscriber] Failed to decode AudioSpecificConfig:', err);
+          }
+        }
+
+        // Build audio config from catalog track info
+        const audioConfig = {
+          codec: audioTrack.codec,
+          sampleRate: audioTrack.samplerate,
+          numberOfChannels: audioTrack.channelConfig === 'stereo' ? 2 : audioTrack.channelConfig === 'mono' ? 1 : undefined,
+          description: audioSpecificConfig,
+        };
+
+        // Start audio VOD subscription in parallel
+        const audioNamespace = audioTrack.namespace ?? namespace.split('/');
+        try {
+          const audioSubscriptionId = await startVodSubscription(
+            audioNamespace.join('/'),
+            audioTrackName,
+            'audio',
+            undefined, // no video config for audio
+            {
+              framerate: audioTrack.framerate,
+              gopDuration: audioTrack.gopDuration ?? track.gopDuration, // Use video's GOP if audio doesn't specify
+              totalGroups: audioTrack.totalGroups ?? track.totalGroups,
+            },
+            {
+              initialBufferSec: bufferSeconds,
+              minBufferSec: Math.max(1, bufferSeconds / 2),
+              fetchBatchSec: Math.max(1, bufferSeconds / 3),
+            },
+            startGroup,
+            undefined, // no ABR for audio
+            audioConfig
+          );
+
+          // Map audio subscription
+          subscriptionToTrackRef.current.set(audioSubscriptionId, audioTrackName);
+          fetchSubscriptionIds.current.add(audioSubscriptionId);
+          setSubscribedTracks(prev => new Set([...prev, audioTrackName]));
+          console.log('[CatalogSubscriber] Audio FETCH started:', audioTrackName, { audioSubscriptionId });
+
+          // Update state with audio subscription ID
+          setFetchPlaybackState(prev => {
+            const newMap = new Map(prev);
+            const state = newMap.get(trackName);
+            if (state) {
+              newMap.set(trackName, {
+                ...state,
+                subscriptionId,
+                audioSubscriptionId,
+                isFetching: false,
+              });
+            }
+            return newMap;
+          });
+        } catch (audioErr) {
+          console.warn('[CatalogSubscriber] Failed to start audio FETCH (video will continue):', audioErr);
+          // Update state without audio subscription
+          setFetchPlaybackState(prev => {
+            const newMap = new Map(prev);
+            const state = newMap.get(trackName);
+            if (state) {
+              newMap.set(trackName, {
+                ...state,
+                subscriptionId,
+                isFetching: false,
+              });
+            }
+            return newMap;
+          });
+        }
+      } else {
+        console.log('[CatalogSubscriber] No associated audio track found for:', trackName);
+        // Update state without audio subscription
+        setFetchPlaybackState(prev => {
+          const newMap = new Map(prev);
+          const state = newMap.get(trackName);
+          if (state) {
+            newMap.set(trackName, {
+              ...state,
+              subscriptionId,
+              isFetching: false,
+            });
+          }
+          return newMap;
+        });
+      }
+
+      setSubscribedTracks(prev => new Set([...prev, trackName]));
+      console.log('[CatalogSubscriber] FETCH playback started:', trackName);
+    } catch (err) {
+      console.error('[CatalogSubscriber] FETCH playback failed:', err);
+      setFetchPlaybackState(prev => {
+        const newMap = new Map(prev);
+        newMap.set(trackName, {
+          isActive: false,
+          isFetching: false,
+          bufferSeconds,
+          priority,
+          currentGroup: 0,
+          totalGroups: 0,
+          bufferedGroups: 0,
+          error: (err as Error).message,
+        });
+        return newMap;
+      });
+    }
+  }, [receivedCatalog, namespace, startVodSubscription]);
+
+  // Toggle FETCH panel visibility
+  const toggleFetchPanel = useCallback((trackName: string) => {
+    setShowFetchPanel(prev => {
+      const newMap = new Map(prev);
+      newMap.set(trackName, !newMap.get(trackName));
+      return newMap;
+    });
+  }, []);
+
+  // Subscribe to a timeline track
+  const handleTimelineSubscribe = useCallback(async (track: Track) => {
+    if (!msfSessionRef.current || !receivedCatalog) return;
+
+    const trackNamespace = track.namespace ?? namespace.split('/');
+    const trackName = track.name;
+
+    setLoadingTimeline(prev => new Set([...prev, trackName]));
+
+    try {
+      const moqtSession = msfSessionRef.current.getMOQTSession();
+
+      await moqtSession.subscribe(
+        trackNamespace,
+        trackName,
+        {},
+        (data: Uint8Array, groupId: number, objectId: number) => {
+          const textContent = new TextDecoder().decode(data);
+
+          console.log('[CatalogSubscriber] Received timeline data:', {
+            trackName,
+            groupId,
+            objectId,
+            size: data.byteLength,
+          });
+
+          try {
+            const timelineData = JSON.parse(textContent);
+            console.log('[CatalogSubscriber] Parsed timeline:', {
+              duration: timelineData.duration,
+              entries: timelineData.entries?.length,
+              framerate: timelineData.framerate,
+            });
+
+            setTimelineData(timelineData);
+          } catch (parseErr) {
+            console.error('[CatalogSubscriber] Failed to parse timeline:', parseErr);
+          }
+        }
+      );
+
+      setSubscribedTracks(prev => new Set([...prev, trackName]));
+      setLoadingTimeline(prev => {
+        const next = new Set(prev);
+        next.delete(trackName);
+        return next;
+      });
+
+      console.log('[CatalogSubscriber] Subscribed to timeline track:', trackName);
+    } catch (err) {
+      console.error('[CatalogSubscriber] Failed to subscribe to timeline track:', err);
+      setLoadingTimeline(prev => {
+        const next = new Set(prev);
+        next.delete(trackName);
+        return next;
+      });
+    }
+  }, [receivedCatalog, namespace, setTimelineData]);
+
+  /**
+   * Get button text based on connection state
+   */
+  const getSubscribeButtonText = () => {
+    if (subscribeStatus === 'connecting') return 'Connecting...';
+    if (subscribeStatus === 'subscribing') return 'Subscribing...';
+    if (isConnected) return 'Subscribe';
+    return 'Connect & Subscribe';
+  };
+
+  // Track type icons
+  const TrackIcon: React.FC<{ type: string; className?: string }> = ({ type, className = 'w-5 h-5' }) => {
+    const icons: Record<string, string> = {
+      video: 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z',
+      audio: 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z',
+      subtitle: 'M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z',
+      timeline: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
+      data: 'M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4',
+    };
+
+    const colors: Record<string, string> = {
+      video: 'text-accent-purple',
+      audio: 'text-emerald-400',
+      subtitle: 'text-blue-400',
+      timeline: 'text-orange-400',
+      data: 'text-gray-500 dark:text-white/50',
+    };
+
+    return (
+      <svg className={`${className} ${colors[type] || colors.data}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icons[type] || icons.data} />
+      </svg>
+    );
+  };
+
+  return (
+    <div className="glass-panel">
+      <div className="glass-panel-header">
+        <svg className="w-5 h-5 text-accent-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
+        </svg>
+        Subscribe to Catalog
+      </div>
+      <div className="glass-panel-body space-y-4">
+        {/* Namespace Input */}
+        <div>
+          <label className="label">Catalog Track Name</label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={namespace}
+              onChange={(e) => onNamespaceChange(e.target.value)}
+              placeholder="conference/room-1/media"
+              className="input flex-1"
+              disabled={subscribeStatus === 'subscribed'}
+            />
+            {subscribeStatus !== 'subscribed' ? (
+              <button
+                onClick={handleSubscribe}
+                disabled={subscribeStatus === 'connecting' || subscribeStatus === 'subscribing'}
+                className="btn-primary whitespace-nowrap"
+              >
+                {getSubscribeButtonText()}
+              </button>
+            ) : (
+              <button
+                onClick={handleUnsubscribe}
+                className="btn-secondary whitespace-nowrap"
+              >
+                Unsubscribe
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-gray-400 dark:text-white/40 mt-2">
+            Subscribe to the catalog track and auto-discover available tracks
+          </p>
+        </div>
+
+        {/* Error Display */}
+        {subscribeError && (
+          <div className="glass-panel-subtle p-4 flex items-center gap-3 border-red-500/30">
+            <div className="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center flex-shrink-0">
+              <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-red-300 font-medium text-sm">Subscribe Error</p>
+              <p className="text-red-400/70 text-xs">{subscribeError}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Received Catalog */}
+        {receivedCatalog ? (
+          <div className="space-y-4">
+            {/* Catalog Info */}
+            <div className="glass-panel-subtle p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                    <svg className="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-gray-900 dark:text-white/90 font-medium text-sm">Catalog Received</p>
+                    <p className="text-gray-500 dark:text-white/50 text-xs">
+                      {receivedCatalog.tracks.length} track{receivedCatalog.tracks.length !== 1 ? 's' : ''} available
+                      {receivedCatalog.generatedAt && (
+                        <> &middot; {new Date(receivedCatalog.generatedAt).toLocaleString()}</>
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowCatalogJson(!showCatalogJson)}
+                  className="btn-sm btn-ghost text-xs"
+                >
+                  {showCatalogJson ? 'Hide' : 'Show'} JSON
+                </button>
+              </div>
+
+              {/* Collapsible JSON View */}
+              {showCatalogJson && (
+                <div className="mt-4">
+                  <pre className="text-xs text-gray-700 dark:text-white/70 p-3 rounded-lg overflow-auto max-h-48 bg-black/20 border border-white/5">
+                    {JSON.stringify(receivedCatalog, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+
+            {/* Track List */}
+            <div className="space-y-2">
+              {receivedCatalog.tracks.map((track: Track, index: number) => {
+                const trackType = getTrackType(track);
+                const isSubscribed = subscribedTracks.has(track.name);
+                return (
+                  <div
+                    key={`${track.name}-${index}`}
+                    className={`glass-panel-subtle p-4 transition-all ${
+                      isSubscribed ? 'border-emerald-500/30' : ''
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <TrackIcon type={trackType} />
+                        <div>
+                          <span className="font-medium text-sm text-gray-900 dark:text-white/90">{track.name}</span>
+                          {track.label && (
+                            <span className="text-xs text-gray-400 dark:text-white/40 ml-2">({track.label})</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Subscribe/Fetch Buttons - for VOD tracks, show both options as mutually exclusive */}
+                      {(trackType === 'video' || trackType === 'audio') && (
+                        <div className="flex items-center gap-2">
+                          {/* For VOD (isLive === false), show Subscribe and Fetch as separate options */}
+                          {track.isLive === false ? (
+                            <>
+                              <button
+                                onClick={() => handleTrackSubscribe(track)}
+                                disabled={isSubscribed || fetchPlaybackState.get(track.name)?.isActive}
+                                className={`btn-sm ${isSubscribed ? 'btn-success opacity-60' : 'btn-secondary'}`}
+                                title="Push-based delivery (may have jitter)"
+                              >
+                                {isSubscribed ? 'Subscribed' : 'Subscribe'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  // Use default settings for quick fetch start
+                                  handleFetchPlayback(track, 3, 128, 0);
+                                }}
+                                disabled={isSubscribed || fetchPlaybackState.get(track.name)?.isActive}
+                                className={`btn-sm ${fetchPlaybackState.get(track.name)?.isActive ? 'btn-success opacity-60' : 'btn-primary'}`}
+                                title="Pull-based delivery (smoother playback)"
+                              >
+                                {fetchPlaybackState.get(track.name)?.isActive ? 'Fetching' : 'Fetch'}
+                              </button>
+                            </>
+                          ) : (
+                            /* For Live tracks, only show Subscribe */
+                            <button
+                              onClick={() => handleTrackSubscribe(track)}
+                              disabled={isSubscribed}
+                              className={`btn-sm ${isSubscribed ? 'btn-success opacity-60' : 'btn-primary'}`}
+                            >
+                              {isSubscribed ? 'Subscribed' : 'Subscribe'}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {trackType === 'subtitle' && (
+                        <>
+                          {isSubscribed ? (
+                            <button
+                              onClick={() => setActiveSubtitleTrack(
+                                activeSubtitleTrack === track.name ? null : track.name
+                              )}
+                              className={`btn-sm ${
+                                activeSubtitleTrack === track.name
+                                  ? 'btn-success'
+                                  : 'btn-secondary'
+                              }`}
+                            >
+                              {activeSubtitleTrack === track.name ? 'Active' : 'Use'}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleSubtitleSubscribe(track)}
+                              disabled={loadingSubtitles.has(track.name)}
+                              className="btn-sm btn-primary"
+                            >
+                              {loadingSubtitles.has(track.name) ? 'Loading...' : 'Subscribe'}
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {trackType === 'timeline' && (
+                        <button
+                          onClick={() => handleTimelineSubscribe(track)}
+                          disabled={isSubscribed || loadingTimeline.has(track.name)}
+                          className={`btn-sm ${isSubscribed ? 'btn-success opacity-60' : 'btn-primary'}`}
+                        >
+                          {loadingTimeline.has(track.name) ? 'Loading...' : isSubscribed ? 'Loaded' : 'Load'}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Track Details */}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {track.codec && (
+                        <span className="badge">{track.codec}</span>
+                      )}
+                      {track.width && track.height && (
+                        <span className="badge">{track.width}x{track.height}</span>
+                      )}
+                      {track.framerate && (
+                        <span className="badge">{track.framerate}fps</span>
+                      )}
+                      {track.bitrate && (
+                        <span className="badge">{formatBitrate(track.bitrate)}</span>
+                      )}
+                      {track.samplerate && (
+                        <span className="badge">{track.samplerate / 1000}kHz</span>
+                      )}
+                      {track.channelConfig && (
+                        <span className="badge">{track.channelConfig}</span>
+                      )}
+                      {track.isLive !== undefined && (
+                        <span className={track.isLive ? 'badge-red' : 'badge-blue'}>
+                          {track.isLive ? 'LIVE' : 'VOD'}
+                        </span>
+                      )}
+                      {track.altGroup !== undefined && (
+                        <span className="badge-purple">
+                          ABR Group {track.altGroup}
+                        </span>
+                      )}
+                      {track.targetLatency && (
+                        <span className="badge-yellow">
+                          {getExperienceProfile(track.targetLatency)}
+                        </span>
+                      )}
+                      {track.lang && (
+                        <span className="badge">{track.lang}</span>
+                      )}
+                      {trackType === 'subtitle' && activeSubtitleTrack === track.name && (
+                        <span className="badge-green">active</span>
+                      )}
+                      {isSubscribed && startingDelivery.has(track.name) && (
+                        <span className="badge" title="First delivered group and object ID">
+                          start: g{startingDelivery.get(track.name)!.groupId}/o{startingDelivery.get(track.name)!.objectId}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* FETCH Playback Panel for VOD video tracks (isLive === false) */}
+                    {trackType === 'video' && track.isLive === false && (
+                      <div className="mt-3">
+                        <button
+                          onClick={() => toggleFetchPanel(track.name)}
+                          className="btn-sm btn-ghost text-xs flex items-center gap-1"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                          {showFetchPanel.get(track.name) ? 'Hide' : 'Show'} FETCH Playback
+                        </button>
+
+                        {showFetchPanel.get(track.name) && (
+                          <div className="mt-2 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                            <p className="text-xs text-blue-300 mb-2">
+                              FETCH retrieves cached content with buffering for smooth playback
+                            </p>
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-400 dark:text-white/50 w-24">Buffer (sec):</label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="30"
+                                  defaultValue={3}
+                                  id={`fetch-buffer-${track.name}`}
+                                  className="input text-xs w-20 px-2 py-1"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-400 dark:text-white/50 w-24">Priority:</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="255"
+                                  defaultValue={128}
+                                  id={`fetch-priority-${track.name}`}
+                                  className="input text-xs w-20 px-2 py-1"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-400 dark:text-white/50 w-24">Start Group:</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={track.totalGroups ? track.totalGroups - 1 : 9999}
+                                  defaultValue={0}
+                                  id={`fetch-startgroup-${track.name}`}
+                                  className="input text-xs w-20 px-2 py-1"
+                                />
+                                <span className="text-xs text-gray-500">/ {(track.totalGroups ?? 1) - 1}</span>
+                              </div>
+                              <div className="flex items-center gap-2 mt-3">
+                                <button
+                                  onClick={() => {
+                                    const bufferInput = document.getElementById(`fetch-buffer-${track.name}`) as HTMLInputElement;
+                                    const priorityInput = document.getElementById(`fetch-priority-${track.name}`) as HTMLInputElement;
+                                    const startGroupInput = document.getElementById(`fetch-startgroup-${track.name}`) as HTMLInputElement;
+                                    const bufferSec = parseFloat(bufferInput?.value ?? '3');
+                                    const priority = parseInt(priorityInput?.value ?? '128', 10);
+                                    const startGroup = parseInt(startGroupInput?.value ?? '0', 10);
+                                    handleFetchPlayback(track, bufferSec, priority, startGroup);
+                                  }}
+                                  disabled={fetchPlaybackState.get(track.name)?.isFetching}
+                                  className="btn-sm btn-primary"
+                                >
+                                  {fetchPlaybackState.get(track.name)?.isFetching ? 'Starting...' : 'Start FETCH Playback'}
+                                </button>
+                              </div>
+                              {fetchPlaybackState.get(track.name)?.error && (
+                                <p className="text-xs text-red-400 mt-2">
+                                  {fetchPlaybackState.get(track.name)?.error}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* FETCH Playback Status for active FETCH */}
+                    {fetchPlaybackState.get(track.name)?.isActive && (
+                      <div className="mt-3 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-emerald-300">FETCH Playback Active</span>
+                          <span className="text-gray-400 dark:text-white/50">
+                            Buffer: {fetchPlaybackState.get(track.name)?.bufferSeconds}s |
+                            Priority: {fetchPlaybackState.get(track.name)?.priority}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Quality Selector for ABR tracks */}
+                    {track.altGroup !== undefined && isSubscribed && tracksByAltGroup.get(track.altGroup)!.length > 1 && (
+                      <div className="mt-3 flex items-center gap-2">
+                        <span className="text-xs text-gray-500 dark:text-white/50">Quality:</span>
+                        <select
+                          value={selectedQuality.get(track.altGroup) ?? track.name}
+                          onChange={(e) => handleQualityChange(track.altGroup!, e.target.value)}
+                          className="px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                        >
+                          {tracksByAltGroup.get(track.altGroup)!.map((t) => (
+                            <option key={t.name} value={t.name}>
+                              {t.width && t.height ? `${t.height}p` : t.name}
+                              {t.bitrate ? ` (${formatBitrate(t.bitrate)})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="flex items-center gap-1 text-xs text-gray-500 dark:text-white/50">
+                          <input
+                            type="checkbox"
+                            checked={abrEnabled}
+                            onChange={(e) => {
+                              setAbrEnabled(e.target.checked);
+                              if (abrControllerRef.current) {
+                                if (e.target.checked) {
+                                  abrControllerRef.current.start();
+                                } else {
+                                  abrControllerRef.current.stop();
+                                }
+                              }
+                            }}
+                            className="w-3 h-3"
+                          />
+                          Auto
+                        </label>
+                      </div>
+                    )}
+
+                    {/* Video Player for subscribed video tracks (SUBSCRIBE) */}
+                    {trackType === 'video' && isSubscribed && videoFrames.get(track.name) && (
+                      <div className="mt-4">
+                        <p className="text-xs text-gray-400 mb-1">SUBSCRIBE Playback:</p>
+                        <MoqMediaPlayer
+                          getFrame={() => {
+                            const subId = trackNameToSubIdRef.current.get(track.name);
+                            return subId !== undefined ? subscribeFrameQueue.getFrame(subId) : null;
+                          }}
+                          subscriptionId={trackToSubscriptionRef.current.get(track.name) ?? 0}
+                          isLive={track.isLive ?? true}
+                          duration={track.trackDuration}
+                          framerate={track.framerate}
+                          totalGroups={track.totalGroups}
+                          gopDuration={track.gopDuration}
+                          className="w-full rounded-lg overflow-hidden"
+                          showControls={true}
+                          enableDiagnostics={false}
+                        />
+                      </div>
+                    )}
+
+                    {/* Video Player for FETCH playback (separate from SUBSCRIBE) */}
+                    {trackType === 'video' && fetchPlaybackState.get(track.name)?.isActive && (
+                      <div className="mt-4">
+                        <p className="text-xs text-emerald-400 mb-1">FETCH Playback (buffered):</p>
+                        <MoqMediaPlayer
+                          getFrame={() => {
+                            const subId = trackNameToSubIdRef.current.get(track.name);
+                            return subId !== undefined ? fetchFrameQueue.getFrame(subId) : null;
+                          }}
+                          subscriptionId={fetchPlaybackState.get(track.name)?.subscriptionId ?? 0}
+                          audioSubscriptionId={fetchPlaybackState.get(track.name)?.audioSubscriptionId}
+                          isLive={false}
+                          duration={track.trackDuration}
+                          framerate={track.framerate}
+                          totalGroups={track.totalGroups}
+                          gopDuration={track.gopDuration}
+                          className="w-full rounded-lg overflow-hidden border border-emerald-500/30"
+                          showControls={true}
+                          enableDiagnostics={false}
+                          videoTimeRef={getVideoTimeRef(track.name)}
+                        />
+                        {/* Audio Player for FETCH playback (if audio track exists) */}
+                        {fetchPlaybackState.get(track.name)?.audioSubscriptionId && (
+                          <div className="mt-2">
+                            <AudioPlayer
+                              subscriptionId={fetchPlaybackState.get(track.name)!.audioSubscriptionId!}
+                              onAudioData={onAudioData}
+                              getVideoTimeMs={() => getVideoTimeRef(track.name).current}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : subscribeStatus === 'idle' ? (
+          <div className="text-center py-12">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/5 flex items-center justify-center">
+              <svg className="w-8 h-8 text-gray-200 dark:text-white/20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
+            </div>
+            <p className="text-gray-600 dark:text-white/60 font-medium">No catalog subscribed</p>
+            <p className="text-gray-400 dark:text-white/40 text-sm mt-1">Enter a catalog track name and subscribe to view catalog</p>
+          </div>
+        ) : (subscribeStatus === 'connecting' || subscribeStatus === 'subscribing') ? (
+          <div className="text-center py-12">
+            <svg className="w-10 h-10 mx-auto mb-4 animate-spin text-accent-purple" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+            <p className="text-gray-600 dark:text-white/60">
+              {subscribeStatus === 'connecting' ? 'Connecting to relay...' : 'Subscribing to catalog...'}
+            </p>
+          </div>
+        ) : (
+          <div className="text-center py-12 text-gray-500 dark:text-white/50">
+            <p>Waiting for catalog...</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};

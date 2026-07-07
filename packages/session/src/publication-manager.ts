@@ -20,6 +20,8 @@ export interface InternalPublication extends PublicationInfo {
   requestId: number;
   /** Cleanup handlers for event subscriptions */
   cleanupHandlers: Array<() => void>;
+  /** Current forward state (0 = paused/no subscribers, 1 = active/can send) */
+  forward: number;
 }
 
 /**
@@ -39,6 +41,11 @@ export interface PendingForward {
 }
 
 /**
+ * Forward state change listener
+ */
+export type ForwardStateChangeListener = (trackAlias: bigint, forward: number) => void;
+
+/**
  * Manages publications and pending publish operations
  */
 export class PublicationManager {
@@ -50,6 +57,8 @@ export class PublicationManager {
   private pendingPublishOk = new Map<number, PendingPublishOk>();
   /** Pending forward callbacks */
   private pendingForward = new Map<number, PendingForward>();
+  /** Forward state change listeners */
+  private forwardStateListeners = new Set<ForwardStateChangeListener>();
 
   /**
    * Add a new publication
@@ -204,13 +213,63 @@ export class PublicationManager {
   }
 
   /**
-   * Resolve all pending forward callbacks
+   * Resolve all pending forward callbacks and update forward state
    */
   resolveAllForward(): void {
     for (const [, pending] of this.pendingForward) {
       pending.resolve();
     }
     this.pendingForward.clear();
+
+    // Update forward state for all publications and notify listeners
+    for (const [key, pub] of this.publications) {
+      if (pub.forward !== 1) {
+        pub.forward = 1;
+        this.notifyForwardStateChange(BigInt(key), 1);
+      }
+    }
+  }
+
+  /**
+   * Set forward state for all publications (e.g., when forward=0 received)
+   */
+  setAllForward(forward: number): void {
+    for (const [key, pub] of this.publications) {
+      if (pub.forward !== forward) {
+        pub.forward = forward;
+        this.notifyForwardStateChange(BigInt(key), forward);
+      }
+    }
+  }
+
+  /**
+   * Get forward state for a publication
+   */
+  getForward(trackAlias: bigint | string): number {
+    const pub = this.publications.get(trackAlias.toString());
+    return pub?.forward ?? 0;
+  }
+
+  /**
+   * Add forward state change listener
+   */
+  onForwardStateChange(listener: ForwardStateChangeListener): () => void {
+    this.forwardStateListeners.add(listener);
+    return () => this.forwardStateListeners.delete(listener);
+  }
+
+  /**
+   * Notify all listeners of forward state change
+   */
+  private notifyForwardStateChange(trackAlias: bigint, forward: number): void {
+    log.info('Forward state changed', { trackAlias: trackAlias.toString(), forward });
+    for (const listener of this.forwardStateListeners) {
+      try {
+        listener(trackAlias, forward);
+      } catch (err) {
+        log.error('Forward state listener error', { error: err });
+      }
+    }
   }
 
   /**

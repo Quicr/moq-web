@@ -39,7 +39,6 @@ export {
   type CipherSuiteParams,
   type TrackIdentifier,
   type ObjectIdentifier,
-  type EncryptionContext,
   type EncryptionConfig,
   type EncryptedObject,
   type DecryptedObject,

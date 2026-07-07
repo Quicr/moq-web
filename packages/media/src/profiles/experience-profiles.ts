@@ -18,6 +18,7 @@ export type ExperienceProfileName =
   | 'low-latency-live'
   | 'live-streaming'
   | 'broadcast'
+  | 'vod'
   | 'custom';
 
 /**
@@ -133,7 +134,7 @@ export const EXPERIENCE_PROFILES: Record<Exclude<ExperienceProfileName, 'custom'
   'broadcast': {
     name: 'broadcast',
     displayName: 'Broadcast',
-    description: 'VOD-like playback',
+    description: 'Traditional broadcast',
     targetLatency: 5000,
     settings: {
       jitterBufferDelay: 200,
@@ -144,6 +145,23 @@ export const EXPERIENCE_PROFILES: Record<Exclude<ExperienceProfileName, 'custom'
       skipGraceFrames: 8,
       enableCatchUp: false,
       catchUpThreshold: 10,
+    },
+  },
+
+  'vod': {
+    name: 'vod',
+    displayName: 'VOD (Subscribe)',
+    description: 'VOD via SUBSCRIBE - deep buffer, no skipping',
+    targetLatency: 10000,
+    settings: {
+      jitterBufferDelay: 3000,
+      useLatencyDeadline: false,
+      maxLatency: Infinity,
+      estimatedGopDuration: 500,
+      skipToLatestGroup: false,
+      skipGraceFrames: 180,
+      enableCatchUp: false,
+      catchUpThreshold: 300,
     },
   },
 };
@@ -207,4 +225,5 @@ export const EXPERIENCE_PROFILE_ORDER: DefinedProfileName[] = [
   'low-latency-live',
   'live-streaming',
   'broadcast',
+  'vod',
 ];

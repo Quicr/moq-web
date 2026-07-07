@@ -1,0 +1,1431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Group-Aware Deadline-Based Jitter Buffer Design</title>
+
+    <!-- Google Fonts - Product Sans style with Roboto -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <style>
+        /* Google Color Palette */
+        :root {
+            /* Google Colors */
+            --google-blue: #4285F4;
+            --google-red: #EA4335;
+            --google-yellow: #FBBC05;
+            --google-green: #34A853;
+            --google-blue-dark: #1a73e8;
+            --google-blue-light: #8ab4f8;
+
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-tertiary: #0f3460;
+            --bg-card: #1a1a2e;
+            --bg-code: #0d1117;
+            --bg-code-inline: #21262d;
+
+            --text-primary: #ffffff;
+            --text-secondary: #c9d1d9;
+            --text-muted: #8b949e;
+            --text-code: #e6edf3;
+
+            /* Vibrant accents using Google colors */
+            --accent-primary: var(--google-blue);
+            --accent-secondary: var(--google-red);
+            --accent-tertiary: var(--google-green);
+            --accent-warm: var(--google-yellow);
+            --accent-pink: #e94560;
+
+            --border-color: #30363d;
+            --border-accent: var(--google-blue);
+            --shadow-lg: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            --shadow-glow: 0 0 40px rgba(66, 133, 244, 0.2);
+
+            --content-width: 960px;
+
+            /* Gradient colors */
+            --gradient-google: linear-gradient(135deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+        }
+
+        /* Light theme - Google style */
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #ffffff;
+                --bg-secondary: #f8f9fa;
+                --bg-tertiary: #e8eaed;
+                --bg-card: #ffffff;
+                --bg-code: #f8f9fa;
+                --bg-code-inline: #e8eaed;
+                --text-primary: #202124;
+                --text-secondary: #5f6368;
+                --text-muted: #80868b;
+                --text-code: #202124;
+                --border-color: #dadce0;
+                --shadow-glow: 0 0 40px rgba(66, 133, 244, 0.1);
+                --accent-warm: #ea8600;
+            }
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            font-size: 16px;
+        }
+
+        body {
+            font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.75;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            max-width: var(--content-width);
+            margin: 0 auto;
+            padding: 3rem 2rem 6rem;
+        }
+
+        /* Typography - Google Style */
+        h1 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+            background-size: 300% 300%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: gradient-shift 8s ease infinite;
+        }
+
+        @keyframes gradient-shift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        h2 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.875rem;
+            font-weight: 500;
+            margin-top: 4rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 3px solid transparent;
+            border-image: linear-gradient(90deg, var(--google-blue), var(--google-green)) 1;
+            letter-spacing: -0.01em;
+            color: var(--text-primary);
+        }
+
+        h2::before {
+            content: '';
+            display: inline-block;
+            width: 6px;
+            height: 1.5rem;
+            background: linear-gradient(180deg, var(--google-blue), var(--google-red));
+            margin-right: 0.75rem;
+            border-radius: 3px;
+            vertical-align: middle;
+        }
+
+        h3 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.375rem;
+            font-weight: 500;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--google-blue);
+        }
+
+        h4 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.125rem;
+            font-weight: 500;
+            color: var(--google-green);
+            margin-top: 2rem;
+            margin-bottom: 0.75rem;
+        }
+
+        p {
+            margin-bottom: 1.25rem;
+            color: var(--text-secondary);
+        }
+
+        strong {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        em {
+            font-style: italic;
+            color: var(--accent-tertiary);
+        }
+
+        a {
+            color: var(--google-blue);
+            text-decoration: none;
+            transition: all 0.2s ease;
+            border-bottom: 1px solid transparent;
+            font-weight: 500;
+        }
+
+        a:hover {
+            color: var(--google-blue-light);
+            border-bottom-color: var(--google-blue-light);
+        }
+
+        /* Lists */
+        ul, ol {
+            margin-bottom: 1.5rem;
+            padding-left: 1.5rem;
+            color: var(--text-secondary);
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+            padding-left: 0.5rem;
+        }
+
+        ul li::marker {
+            color: var(--google-blue);
+        }
+
+        ol li::marker {
+            color: var(--google-red);
+            font-weight: 600;
+        }
+
+        /* Code */
+        pre {
+            background: var(--bg-code);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--google-blue);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        pre code {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            color: var(--text-code);
+            background: none;
+            padding: 0;
+            border-radius: 0;
+        }
+
+        code {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            font-size: 0.875em;
+            background: var(--bg-code-inline);
+            color: var(--google-yellow);
+            padding: 0.2em 0.5em;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+
+        /* Tables - Google style */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            background: var(--bg-card);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--border-color);
+        }
+
+        th {
+            background: linear-gradient(135deg, var(--google-blue), var(--google-blue-dark));
+            color: white;
+            font-weight: 500;
+            text-align: left;
+            padding: 1rem 1.25rem;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+
+        tr:hover td {
+            background: var(--bg-secondary);
+        }
+
+        /* Alternate row coloring */
+        tbody tr:nth-child(even) td {
+            background: var(--bg-secondary);
+        }
+
+        tbody tr:nth-child(even):hover td {
+            background: var(--bg-tertiary);
+        }
+
+        /* Blockquotes */
+        blockquote {
+            border-left: 4px solid var(--google-green);
+            background: var(--bg-secondary);
+            padding: 1rem 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 0 12px 12px 0;
+            color: var(--text-secondary);
+        }
+
+        hr {
+            border: none;
+            height: 3px;
+            background: linear-gradient(90deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+            margin: 3rem 0;
+            border-radius: 2px;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 2rem 1rem 4rem;
+            }
+
+            h1 {
+                font-size: 2rem;
+            }
+
+            h2 {
+                font-size: 1.5rem;
+            }
+
+            pre {
+                padding: 1rem;
+                font-size: 0.8rem;
+            }
+        }
+
+        /* Print */
+        @media print {
+            body {
+                background: white;
+                color: black;
+            }
+
+            pre {
+                background: #f5f5f5;
+            }
+
+            h1 {
+                background: none;
+                -webkit-text-fill-color: inherit;
+                color: black;
+            }
+        }
+
+        h2:hover, h3:hover {
+            color: var(--google-blue);
+        }
+
+        :target {
+            scroll-margin-top: 2rem;
+        }
+
+        /* TOC styling */
+        .toc-list {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem 2rem;
+            border-left: 4px solid var(--google-blue);
+        }
+
+        .toc-list a {
+            display: inline-block;
+            padding: 0.25rem 0;
+            transition: transform 0.2s ease, color 0.2s ease;
+        }
+
+        .toc-list a:hover {
+            transform: translateX(4px);
+            color: var(--google-red);
+        }
+
+        .footer {
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 3px solid transparent;
+            border-image: linear-gradient(90deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green)) 1;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .footer em {
+            color: var(--text-secondary);
+        }
+
+        /* Copy button for code blocks */
+        .copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            font-family: 'Roboto', sans-serif;
+            background: var(--google-blue);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            opacity: 0;
+            transition: all 0.2s;
+        }
+
+        pre:hover .copy-btn {
+            opacity: 1;
+        }
+
+        .copy-btn:hover {
+            background: var(--google-blue-dark);
+            transform: scale(1.05);
+        }
+
+        /* Google-style badges/pills for inline code */
+        h2 code, h3 code, h4 code {
+            background: var(--google-blue);
+            color: white;
+            font-size: 0.75em;
+            padding: 0.2em 0.6em;
+            border-radius: 12px;
+            border: none;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="group-aware-deadline-based-jitter-buffer-design">Group-Aware Deadline-Based Jitter Buffer Design</h1>
+<h2 id="problem-statement">Problem Statement</h2>
+<p>In MOQT, multiple QUIC streams can deliver groups for the same track concurrently. Due to QUIC's parallel stream delivery, a newer group (N+1) can start arriving before an older group (N) completes. The system must:</p>
+<ol>
+<li>Ensure correct decode order (older groups before newer)</li>
+<li>Minimize latency (don't wait indefinitely for delayed groups)</li>
+<li>Support partial group decode (keyframe + some P-frames is valid)</li>
+<li>Handle dynamic GOP sizes (NewGroupRequest triggers new keyframes)</li>
+<li>Handle gaps in groupId sequence</li>
+<li>Maintain high performance (minimize per-frame overhead)</li>
+</ol>
+<h2 id="design-principles">Design Principles</h2>
+<ol>
+<li><strong>Use existing LOC properties</strong> - No new extensions needed</li>
+<li><strong>Leverage MOQT groupId/objectId</strong> - Already provides ordering</li>
+<li><strong>Catalog-informed, runtime-adaptive</strong> - Use catalog hints, detect actual behavior</li>
+<li><strong>Graceful degradation</strong> - Work without timing info, improve with it</li>
+<li><strong>Performance-first</strong> - Use monotonic counters, avoid syscalls in hot path</li>
+</ol>
+<hr />
+<h2 id="loc-properties-available-draft-ietf-moq-loc-02">LOC Properties Available (draft-ietf-moq-loc-02)</h2>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>ID</th>
+<th>Type</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Timestamp</td>
+<td>0x06</td>
+<td>vi64</td>
+<td>Frame capture time</td>
+</tr>
+<tr>
+<td>Timescale</td>
+<td>0x08</td>
+<td>vi64</td>
+<td>Units per second (default: 1,000,000 = microseconds)</td>
+</tr>
+<tr>
+<td>Video Frame Marking</td>
+<td>0x04</td>
+<td>vi64</td>
+<td>Independent/discardable/base-layer flags</td>
+</tr>
+<tr>
+<td>Audio Level</td>
+<td>0x06</td>
+<td>vi64</td>
+<td>Audio level + VAD</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key insight</strong>: With <code>Timestamp</code> and <code>Timescale</code>, we can compute:<br />
+- Presentation time: <code>timestamp / timescale</code> (seconds)<br />
+- Frame interval: <code>(timestamp[n+1] - timestamp[n]) / timescale</code><br />
+- GOP duration: Detected from keyframe-to-keyframe interval</p>
+<hr />
+<h2 id="architecture-overview">Architecture Overview</h2>
+<pre><code>┌────────────────────────────────────────────────────────────────────┐
+│                    GroupAwareJitterBuffer                          │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │                    TimingEstimator                           │   │
+│  │  - Tracks GOP duration from keyframe intervals               │   │
+│  │  - Uses catalog hints as initial estimate                    │   │
+│  │  - Adapts to actual observed intervals                       │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              │                                      │
+│                              ▼                                      │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
+│  │ Group N  │  │ Group N+1│  │ Group N+3│  │ Group N+4│  (sparse) │
+│  │ state:   │  │ state:   │  │ state:   │  │ state:   │           │
+│  │ active   │  │ pending  │  │ pending  │  │ pending  │           │
+│  │ deadline:│  │ deadline:│  │ deadline:│  │ deadline:│           │
+│  │ T+100    │  │ T+200    │  │ T+400    │  │ T+500    │           │
+│  │ frames:  │  │ frames:  │  │ frames:  │  │ frames:  │           │
+│  │ [0,1,2]  │  │ [0,1]    │  │ [0]      │  │ []       │           │
+│  └────┬─────┘  └──────────┘  └──────────┘  └──────────┘           │
+│       │                                                             │
+│       ▼                                                             │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │                     OutputScheduler                          │   │
+│  │  - Outputs frames from active group in objectId order        │   │
+│  │  - Checks deadlines using monotonic tick counter             │   │
+│  │  - Promotes next group when active completes/expires         │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              │                                      │
+│                              ▼                                      │
+│                        To Decoder                                   │
+└────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<hr />
+<h2 id="core-data-structures">Core Data Structures</h2>
+<h3 id="1-groupstate">1. GroupState</h3>
+<pre><code class="language-typescript">interface GroupState&lt;T&gt; {
+  groupId: number;
+
+  // Frame storage - sparse array indexed by objectId
+  frames: Map&lt;number, FrameEntry&lt;T&gt;&gt;;
+
+  // Timing
+  firstFrameReceivedTick: number;   // Monotonic tick when first frame arrived
+  locTimestampBase: number;         // LOC timestamp of first frame (if available)
+  locTimescale: number;             // LOC timescale (default: 1_000_000)
+  deadlineTick: number;             // Tick by which group must complete
+
+  // State tracking
+  hasKeyframe: boolean;             // Received objectId=0?
+  highestObjectId: number;          // Highest objectId seen
+  outputObjectId: number;           // Next objectId to output (-1 = not started)
+  frameCount: number;               // Total frames received
+
+  // Status
+  status: 'receiving' | 'active' | 'complete' | 'expired' | 'skipped';
+}
+
+interface FrameEntry&lt;T&gt; {
+  data: T;
+  objectId: number;
+  receivedTick: number;             // Monotonic tick
+  locTimestamp?: number;            // LOC timestamp (optional)
+  isKeyframe: boolean;
+  isDiscardable: boolean;           // From LOC Video Frame Marking
+}
+</code></pre>
+<h3 id="2-timingconfig">2. TimingConfig</h3>
+<pre><code class="language-typescript">interface TimingConfig {
+  // From catalog (initial estimates)
+  catalogFramerate?: number;        // e.g., 30
+  catalogTimescale?: number;        // e.g., 90000
+
+  // Derived/configured
+  estimatedGopDuration: number;     // ms, initial estimate
+  maxLatency: number;               // ms, maximum acceptable e2e delay
+  jitterDelay: number;              // ms, per-frame buffer delay
+  deadlineExtension: number;        // ms, extension when no keyframe available
+
+  // Limits
+  maxActiveGroups: number;          // Max groups to track (default: 4)
+  maxFramesPerGroup: number;        // Max frames per group (default: 120)
+
+  // Behavior flags
+  allowPartialGroupDecode: boolean; // Output partial groups (default: true)
+  skipOnlyToKeyframe: boolean;      // Only skip to groups with keyframe (default: true)
+}
+</code></pre>
+<h3 id="3-tickprovider-performance-optimization">3. TickProvider (Performance Optimization)</h3>
+<pre><code class="language-typescript">/**
+ * Monotonic tick provider to avoid performance.now() in hot path.
+ *
+ * performance.now() involves:
+ * - Potential syscall overhead
+ * - Floating-point operations
+ * - Security mitigations (reduced precision)
+ *
+ * Instead, use a tick counter incremented by the processing loop.
+ * Periodically sync with wall clock for deadline calculations.
+ */
+interface TickProvider {
+  currentTick: number;              // Monotonic counter
+  ticksPerMs: number;               // Calibrated ticks per millisecond
+  lastSyncTime: number;             // Last wall-clock sync
+  lastSyncTick: number;             // Tick at last sync
+
+  /** Increment tick (call once per processing cycle) */
+  tick(): void;
+
+  /** Convert ticks to milliseconds (approximate) */
+  ticksToMs(ticks: number): number;
+
+  /** Convert milliseconds to ticks */
+  msToTicks(ms: number): number;
+
+  /** Sync with wall clock (call periodically, e.g., every 100 frames) */
+  sync(): void;
+}
+
+// Implementation
+class MonotonicTickProvider implements TickProvider {
+  currentTick = 0;
+  ticksPerMs = 1;                   // 1 tick = 1ms initially
+  lastSyncTime = performance.now();
+  lastSyncTick = 0;
+
+  tick(): void {
+    this.currentTick++;
+  }
+
+  ticksToMs(ticks: number): number {
+    return ticks / this.ticksPerMs;
+  }
+
+  msToTicks(ms: number): number {
+    return Math.round(ms * this.ticksPerMs);
+  }
+
+  sync(): void {
+    const now = performance.now();
+    const elapsed = now - this.lastSyncTime;
+    const ticksElapsed = this.currentTick - this.lastSyncTick;
+
+    if (elapsed &gt; 100 &amp;&amp; ticksElapsed &gt; 0) {
+      // Recalibrate
+      this.ticksPerMs = ticksElapsed / elapsed;
+      this.lastSyncTime = now;
+      this.lastSyncTick = this.currentTick;
+    }
+  }
+}
+</code></pre>
+<hr />
+<h2 id="gop-duration-estimation">GOP Duration Estimation</h2>
+<h3 id="three-sources-priority-order">Three Sources (Priority Order)</h3>
+<ol>
+<li><strong>LOC Timestamps</strong> (most accurate)</li>
+<li>Detect keyframe-to-keyframe interval from actual timestamps</li>
+<li>
+<p>Adapts to dynamic GOP sizes automatically</p>
+</li>
+<li>
+<p><strong>Catalog Hints</strong> (initial estimate)</p>
+</li>
+<li><code>framerate</code> + assumed GOP length (e.g., 1 second)</li>
+<li>
+<p>Used until runtime detection kicks in</p>
+</li>
+<li>
+<p><strong>Configuration</strong> (fallback)</p>
+</li>
+<li>Default: 1000ms GOP, configurable per use case</li>
+</ol>
+<h3 id="timingestimator">TimingEstimator</h3>
+<pre><code class="language-typescript">class TimingEstimator {
+  private config: TimingConfig;
+  private lastKeyframeTimestamp: number = -1;
+  private lastKeyframeGroupId: number = -1;
+  private gopDurationSamples: number[] = [];
+  private estimatedGopDuration: number;
+
+  constructor(config: TimingConfig) {
+    this.config = config;
+    // Initialize from catalog or default
+    this.estimatedGopDuration = this.calculateInitialEstimate();
+  }
+
+  private calculateInitialEstimate(): number {
+    if (this.config.catalogFramerate) {
+      // Assume 1-second GOP as starting point
+      return 1000;
+    }
+    return this.config.estimatedGopDuration;
+  }
+
+  /**
+   * Update estimate when keyframe received
+   */
+  onKeyframe(groupId: number, locTimestamp?: number, locTimescale?: number): void {
+    if (locTimestamp !== undefined &amp;&amp; this.lastKeyframeTimestamp &gt;= 0) {
+      const scale = locTimescale ?? 1_000_000;
+      const durationMs = ((locTimestamp - this.lastKeyframeTimestamp) / scale) * 1000;
+
+      // Sanity check: 100ms &lt; duration &lt; 10s
+      if (durationMs &gt; 100 &amp;&amp; durationMs &lt; 10000) {
+        this.gopDurationSamples.push(durationMs);
+
+        // Keep last 5 samples for averaging
+        if (this.gopDurationSamples.length &gt; 5) {
+          this.gopDurationSamples.shift();
+        }
+
+        // Update estimate (exponential moving average)
+        const avg = this.gopDurationSamples.reduce((a, b) =&gt; a + b, 0) /
+                    this.gopDurationSamples.length;
+        this.estimatedGopDuration = 0.7 * this.estimatedGopDuration + 0.3 * avg;
+      }
+    }
+
+    this.lastKeyframeTimestamp = locTimestamp ?? -1;
+    this.lastKeyframeGroupId = groupId;
+  }
+
+  /**
+   * Calculate deadline for a group
+   */
+  calculateDeadline(
+    group: GroupState&lt;unknown&gt;,
+    tickProvider: TickProvider
+  ): number {
+    const gopMs = this.estimatedGopDuration;
+    const maxLatencyMs = this.config.maxLatency;
+
+    // Deadline = arrival + GOP duration + max latency
+    const deadlineMs = tickProvider.ticksToMs(group.firstFrameReceivedTick) +
+                       gopMs + maxLatencyMs;
+
+    return tickProvider.msToTicks(deadlineMs);
+  }
+
+  getEstimatedGopDuration(): number {
+    return this.estimatedGopDuration;
+  }
+}
+</code></pre>
+<hr />
+<h2 id="group-arbiter-algorithm">Group Arbiter Algorithm</h2>
+<h3 id="core-logic">Core Logic</h3>
+<pre><code class="language-typescript">class GroupArbiter&lt;T&gt; {
+  private groups: Map&lt;number, GroupState&lt;T&gt;&gt; = new Map();
+  private activeGroupId: number = -1;
+  private tickProvider: TickProvider;
+  private timingEstimator: TimingEstimator;
+  private config: TimingConfig;
+  private stats: ArbiterStats;
+
+  /**
+   * Add a frame - called for each received frame
+   */
+  addFrame(
+    groupId: number,
+    objectId: number,
+    data: T,
+    isKeyframe: boolean,
+    locTimestamp?: number,
+    locTimescale?: number,
+    isDiscardable?: boolean
+  ): void {
+    // Tick once per frame (amortized timing)
+    this.tickProvider.tick();
+
+    // Get or create group
+    let group = this.groups.get(groupId);
+
+    if (!group) {
+      // Check if this is an old group we already passed
+      if (this.activeGroupId &gt;= 0 &amp;&amp; groupId &lt; this.activeGroupId) {
+        this.stats.droppedLateFrames++;
+        return; // Drop frame from old group
+      }
+
+      group = this.createGroup(groupId);
+      this.groups.set(groupId, group);
+      this.pruneOldGroups();
+    }
+
+    // Don't accept frames for terminal groups
+    if (group.status === 'expired' || group.status === 'skipped' ||
+        group.status === 'complete') {
+      this.stats.droppedLateFrames++;
+      return;
+    }
+
+    // Store frame
+    group.frames.set(objectId, {
+      data,
+      objectId,
+      receivedTick: this.tickProvider.currentTick,
+      locTimestamp,
+      isKeyframe,
+      isDiscardable: isDiscardable ?? false,
+    });
+
+    group.frameCount++;
+    group.highestObjectId = Math.max(group.highestObjectId, objectId);
+
+    if (isKeyframe) {
+      group.hasKeyframe = true;
+      this.timingEstimator.onKeyframe(groupId, locTimestamp, locTimescale);
+    }
+
+    // Update LOC timing if available
+    if (locTimestamp !== undefined &amp;&amp; group.locTimestampBase &lt; 0) {
+      group.locTimestampBase = locTimestamp;
+      group.locTimescale = locTimescale ?? 1_000_000;
+    }
+
+    // Activate first group if none active
+    if (this.activeGroupId &lt; 0) {
+      this.activeGroupId = groupId;
+      group.status = 'active';
+    }
+  }
+
+  /**
+   * Get frames ready for output
+   */
+  getReadyFrames(): FrameEntry&lt;T&gt;[] {
+    const result: FrameEntry&lt;T&gt;[] = [];
+
+    // Periodic sync (every ~100 ticks)
+    if (this.tickProvider.currentTick % 100 === 0) {
+      this.tickProvider.sync();
+    }
+
+    // Update group states (check deadlines)
+    this.updateGroupStates();
+
+    // Get active group
+    const activeGroup = this.groups.get(this.activeGroupId);
+    if (!activeGroup || activeGroup.status !== 'active') {
+      // Try to find next active group
+      this.promoteNextGroup();
+      return result;
+    }
+
+    // Output frames in objectId order
+    const startObjectId = activeGroup.outputObjectId &lt; 0 ? 0 : activeGroup.outputObjectId;
+
+    for (let objId = startObjectId; objId &lt;= activeGroup.highestObjectId; objId++) {
+      const frame = activeGroup.frames.get(objId);
+
+      if (!frame) {
+        // Gap in sequence
+        if (this.shouldWaitForMissingFrame(activeGroup, objId)) {
+          break; // Wait for missing frame
+        }
+        // Skip missing frame (deadline pressure)
+        this.stats.skippedMissingFrames++;
+        continue;
+      }
+
+      // Check jitter delay
+      const jitterTicks = this.tickProvider.msToTicks(this.config.jitterDelay);
+      if (frame.receivedTick + jitterTicks &gt; this.tickProvider.currentTick) {
+        break; // Not ready yet
+      }
+
+      result.push(frame);
+      activeGroup.frames.delete(objId);
+      activeGroup.outputObjectId = objId + 1;
+    }
+
+    // Check if group is complete (all frames output)
+    if (activeGroup.frames.size === 0 &amp;&amp; activeGroup.outputObjectId &gt; 0) {
+      activeGroup.status = 'complete';
+      this.stats.groupsCompleted++;
+      this.promoteNextGroup();
+    }
+
+    return result;
+  }
+
+  /**
+   * Update group states based on deadlines
+   */
+  private updateGroupStates(): void {
+    const now = this.tickProvider.currentTick;
+
+    for (const [groupId, group] of this.groups) {
+      if (group.status !== 'receiving' &amp;&amp; group.status !== 'active') {
+        continue;
+      }
+
+      // Check deadline
+      if (now &gt; group.deadlineTick) {
+        if (groupId === this.activeGroupId) {
+          // Active group expired - decide what to do
+          this.handleExpiredActiveGroup(group);
+        } else if (groupId &lt; this.activeGroupId) {
+          // Old group we already passed
+          group.status = 'expired';
+          this.stats.groupsExpired++;
+        }
+        // Future groups: let them continue receiving
+      }
+    }
+  }
+
+  /**
+   * Handle expired active group
+   */
+  private handleExpiredActiveGroup(group: GroupState&lt;T&gt;): void {
+    // Option 1: If we have partial content and allowPartialGroupDecode, keep outputting
+    if (this.config.allowPartialGroupDecode &amp;&amp;
+        group.hasKeyframe &amp;&amp;
+        group.outputObjectId &gt;= 0) {
+      // Extend deadline slightly to finish partial output
+      group.deadlineTick = this.tickProvider.currentTick +
+                           this.tickProvider.msToTicks(this.config.deadlineExtension);
+      this.stats.deadlinesExtended++;
+      return;
+    }
+
+    // Option 2: Find next group with keyframe to skip to
+    if (this.config.skipOnlyToKeyframe) {
+      const nextKeyframeGroup = this.findNextKeyframeGroup(group.groupId);
+      if (nextKeyframeGroup) {
+        group.status = 'skipped';
+        this.activeGroupId = nextKeyframeGroup.groupId;
+        nextKeyframeGroup.status = 'active';
+        this.stats.groupsSkipped++;
+        return;
+      }
+    }
+
+    // Option 3: No keyframe available - extend deadline
+    group.deadlineTick = this.tickProvider.currentTick +
+                         this.tickProvider.msToTicks(this.config.deadlineExtension);
+    this.stats.deadlinesExtended++;
+  }
+
+  /**
+   * Find next group (by groupId) that has a keyframe
+   * Handles gaps in groupId sequence
+   */
+  private findNextKeyframeGroup(afterGroupId: number): GroupState&lt;T&gt; | null {
+    let candidate: GroupState&lt;T&gt; | null = null;
+    let candidateGroupId = Infinity;
+
+    for (const [groupId, group] of this.groups) {
+      if (groupId &gt; afterGroupId &amp;&amp;
+          groupId &lt; candidateGroupId &amp;&amp;
+          group.hasKeyframe &amp;&amp;
+          group.status === 'receiving') {
+        candidate = group;
+        candidateGroupId = groupId;
+      }
+    }
+
+    return candidate;
+  }
+
+  /**
+   * Decide whether to wait for a missing frame
+   */
+  private shouldWaitForMissingFrame(group: GroupState&lt;T&gt;, objectId: number): boolean {
+    const now = this.tickProvider.currentTick;
+    const timeUntilDeadline = group.deadlineTick - now;
+
+    // If plenty of time, wait
+    if (timeUntilDeadline &gt; this.tickProvider.msToTicks(this.config.jitterDelay * 2)) {
+      return true;
+    }
+
+    // If it's objectId 0 (keyframe), must wait (can't decode without it)
+    if (objectId === 0) {
+      return true;
+    }
+
+    // Otherwise, skip if under deadline pressure
+    return false;
+  }
+
+  /**
+   * Create a new group
+   */
+  private createGroup(groupId: number): GroupState&lt;T&gt; {
+    const tick = this.tickProvider.currentTick;
+
+    const group: GroupState&lt;T&gt; = {
+      groupId,
+      frames: new Map(),
+      firstFrameReceivedTick: tick,
+      locTimestampBase: -1,
+      locTimescale: 1_000_000,
+      deadlineTick: 0, // Set below
+      hasKeyframe: false,
+      highestObjectId: -1,
+      outputObjectId: -1,
+      frameCount: 0,
+      status: 'receiving',
+    };
+
+    // Calculate deadline
+    group.deadlineTick = this.timingEstimator.calculateDeadline(group, this.tickProvider);
+
+    return group;
+  }
+
+  /**
+   * Promote next group to active
+   */
+  private promoteNextGroup(): void {
+    // Find lowest groupId &gt; activeGroupId with status 'receiving'
+    let nextGroup: GroupState&lt;T&gt; | null = null;
+    let nextGroupId = Infinity;
+
+    for (const [groupId, group] of this.groups) {
+      if (groupId &gt; this.activeGroupId &amp;&amp;
+          groupId &lt; nextGroupId &amp;&amp;
+          (group.status === 'receiving' || group.status === 'active')) {
+        nextGroup = group;
+        nextGroupId = groupId;
+      }
+    }
+
+    if (nextGroup) {
+      this.activeGroupId = nextGroupId;
+      nextGroup.status = 'active';
+    }
+  }
+
+  /**
+   * Prune old groups to limit memory
+   */
+  private pruneOldGroups(): void {
+    if (this.groups.size &lt;= this.config.maxActiveGroups) {
+      return;
+    }
+
+    // Remove oldest groups that are complete/expired/skipped
+    const sortedGroups = [...this.groups.entries()].sort(([a], [b]) =&gt; a - b);
+
+    for (const [groupId, group] of sortedGroups) {
+      if (this.groups.size &lt;= this.config.maxActiveGroups) break;
+
+      if (group.status === 'complete' ||
+          group.status === 'expired' ||
+          group.status === 'skipped') {
+        this.groups.delete(groupId);
+      }
+    }
+  }
+}
+</code></pre>
+<hr />
+<h2 id="statistics">Statistics</h2>
+<pre><code class="language-typescript">interface ArbiterStats {
+  // Group-level
+  groupsReceived: number;
+  groupsCompleted: number;
+  groupsExpired: number;
+  groupsSkipped: number;
+  deadlinesExtended: number;
+
+  // Frame-level
+  framesReceived: number;
+  framesOutput: number;
+  droppedLateFrames: number;
+  skippedMissingFrames: number;
+
+  // Timing
+  avgGopDuration: number;
+  avgOutputLatency: number;
+}
+</code></pre>
+<hr />
+<h2 id="integration-with-existing-code">Integration with Existing Code</h2>
+<h3 id="changes-to-codec-decode-workerts">Changes to codec-decode-worker.ts</h3>
+<pre><code class="language-typescript">// Replace per-channel sequence counters with GroupArbiter
+interface DecodeChannel {
+  // ... existing fields ...
+
+  // Remove: videoSequence, audioSequence
+  // Add:
+  videoArbiter?: GroupArbiter&lt;VideoBufferData&gt;;
+  audioArbiter?: GroupArbiter&lt;AudioBufferData&gt;;
+}
+
+// In processMediaFrame:
+function processMediaFrame(channelId: number, frame: ReceivedFrame): void {
+  const channel = channels.get(channelId);
+  if (!channel) return;
+
+  const locFrame = unpackager.unpackage(frame.payload);
+
+  if (locFrame.header.mediaType === MediaType.VIDEO &amp;&amp; channel.videoArbiter) {
+    channel.videoArbiter.addFrame(
+      frame.groupId,
+      frame.objectId,
+      {
+        data: locFrame.payload,
+        isKeyframe: locFrame.header.isKeyframe,
+        codecDescription: locFrame.codecDescription,
+        arrivedAt: performance.now(),
+      },
+      locFrame.header.isKeyframe,
+      locFrame.captureTimestamp,
+      undefined, // timescale from catalog
+      locFrame.frameMarking?.discardable
+    );
+  }
+  // Similar for audio
+}
+</code></pre>
+<h3 id="changes-to-jitterbuffer">Changes to JitterBuffer</h3>
+<p>The existing <code>JitterBuffer</code> can be kept for simple use cases. <code>GroupArbiter</code> is a higher-level component that replaces <code>JitterBuffer</code> when group-aware ordering is needed.</p>
+<hr />
+<h2 id="phased-implementation-plan">Phased Implementation Plan</h2>
+<h3 id="phase-1-foundation-week-1">Phase 1: Foundation (Week 1)</h3>
+<p><strong>Goal</strong>: Core data structures and tick provider without changing existing behavior.</p>
+<ol>
+<li><strong>Create <code>TickProvider</code> class</strong></li>
+<li><code>packages/media/src/pipeline/tick-provider.ts</code></li>
+<li>
+<p>Unit tests for calibration accuracy</p>
+</li>
+<li>
+<p><strong>Create <code>GroupState</code> and <code>ArbiterStats</code> types</strong></p>
+</li>
+<li>
+<p><code>packages/media/src/pipeline/group-arbiter-types.ts</code></p>
+</li>
+<li>
+<p><strong>Create <code>TimingEstimator</code> class</strong></p>
+</li>
+<li><code>packages/media/src/pipeline/timing-estimator.ts</code></li>
+<li>Unit tests for GOP detection</li>
+</ol>
+<p><strong>Deliverable</strong>: New files with tests, no integration yet.</p>
+<hr />
+<h3 id="phase-2-grouparbiter-core-week-2">Phase 2: GroupArbiter Core (Week 2)</h3>
+<p><strong>Goal</strong>: Working GroupArbiter with basic group ordering.</p>
+<ol>
+<li><strong>Implement <code>GroupArbiter</code> class</strong></li>
+<li><code>packages/media/src/pipeline/group-arbiter.ts</code></li>
+<li><code>addFrame()</code> - basic frame storage</li>
+<li><code>getReadyFrames()</code> - simple FIFO per group</li>
+<li>
+<p>Group creation and pruning</p>
+</li>
+<li>
+<p><strong>Unit tests</strong></p>
+</li>
+<li>Single group ordering</li>
+<li>Multiple concurrent groups</li>
+<li>Group gaps handling</li>
+</ol>
+<p><strong>Deliverable</strong>: GroupArbiter that orders by (groupId, objectId).</p>
+<hr />
+<h3 id="phase-3-deadline-logic-week-3">Phase 3: Deadline Logic (Week 3)</h3>
+<p><strong>Goal</strong>: Add deadline-based skip/expire logic.</p>
+<ol>
+<li><strong>Integrate TimingEstimator into GroupArbiter</strong></li>
+<li>Deadline calculation</li>
+<li>
+<p>GOP duration detection from LOC timestamps</p>
+</li>
+<li>
+<p><strong>Implement deadline handling</strong></p>
+</li>
+<li><code>updateGroupStates()</code> with deadline checks</li>
+<li><code>handleExpiredActiveGroup()</code> with skip-to-keyframe</li>
+<li>
+<p><code>findNextKeyframeGroup()</code> with gap handling</p>
+</li>
+<li>
+<p><strong>Unit tests</strong></p>
+</li>
+<li>Expired group handling</li>
+<li>Skip to keyframe scenarios</li>
+<li>Deadline extension</li>
+</ol>
+<p><strong>Deliverable</strong>: Full deadline-based logic.</p>
+<hr />
+<h3 id="phase-4-worker-integration-week-4">Phase 4: Worker Integration (Week 4)</h3>
+<p><strong>Goal</strong>: Replace JitterBuffer with GroupArbiter in codec-decode-worker.</p>
+<ol>
+<li><strong>Add config support</strong></li>
+<li>Pass timing config from catalog</li>
+<li>
+<p>Add <code>useGroupArbiter</code> flag for gradual rollout</p>
+</li>
+<li>
+<p><strong>Integrate in codec-decode-worker.ts</strong></p>
+</li>
+<li>Create GroupArbiter per channel</li>
+<li>Wire up frame processing</li>
+<li>
+<p>Wire up output loop</p>
+</li>
+<li>
+<p><strong>Integration tests</strong></p>
+</li>
+<li>End-to-end with simulated out-of-order groups</li>
+<li>Performance benchmarks</li>
+</ol>
+<p><strong>Deliverable</strong>: Working integration behind feature flag.</p>
+<hr />
+<h3 id="phase-5-loc-enhancement-week-5">Phase 5: LOC Enhancement (Week 5)</h3>
+<p><strong>Goal</strong>: Use LOC timescale from catalog, add diagnostics.</p>
+<ol>
+<li><strong>Pass timescale from catalog</strong></li>
+<li>
+<p>Thread through from MSF catalog to decode worker</p>
+</li>
+<li>
+<p><strong>Add LOC Timescale tracking</strong></p>
+</li>
+<li>Store per-track timescale</li>
+<li>
+<p>Convert timestamps correctly</p>
+</li>
+<li>
+<p><strong>Add observability</strong></p>
+</li>
+<li>Stats reporting</li>
+<li>Debug logging</li>
+<li>Latency metrics</li>
+</ol>
+<p><strong>Deliverable</strong>: Full LOC timestamp support.</p>
+<hr />
+<h3 id="phase-6-polish-optimization-week-6">Phase 6: Polish &amp; Optimization (Week 6)</h3>
+<p><strong>Goal</strong>: Performance tuning and edge cases.</p>
+<ol>
+<li><strong>Performance optimization</strong></li>
+<li>Profile hot paths</li>
+<li>Reduce allocations in <code>addFrame()</code></li>
+<li>
+<p>Optimize Map operations</p>
+</li>
+<li>
+<p><strong>Edge cases</strong></p>
+</li>
+<li>Very long GOP (10+ seconds)</li>
+<li>Very short GOP (&lt; 100ms)</li>
+<li>Rapid group ID jumps</li>
+<li>
+<p>NewGroupRequest mid-stream</p>
+</li>
+<li>
+<p><strong>Documentation</strong></p>
+</li>
+<li>Update README</li>
+<li>Add architecture docs</li>
+<li>Add configuration guide</li>
+</ol>
+<p><strong>Deliverable</strong>: Production-ready feature.</p>
+<hr />
+<h2 id="performance-considerations">Performance Considerations</h2>
+<h3 id="hot-path-analysis">Hot Path Analysis</h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Frequency</th>
+<th>Current</th>
+<th>Proposed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Add frame</td>
+<td>Per frame (~30-60/sec)</td>
+<td><code>performance.now()</code></td>
+<td>Tick increment (++counter)</td>
+</tr>
+<tr>
+<td>Get ready frames</td>
+<td>Per poll (~60/sec)</td>
+<td>Multiple <code>performance.now()</code></td>
+<td>Tick comparison</td>
+</tr>
+<tr>
+<td>Deadline check</td>
+<td>Per poll</td>
+<td>N/A</td>
+<td>Integer comparison</td>
+</tr>
+<tr>
+<td>Wall-clock sync</td>
+<td>Every ~100 frames</td>
+<td>N/A</td>
+<td>Single <code>performance.now()</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="memory">Memory</h3>
+<ul>
+<li>Per group: ~200 bytes overhead + frame storage</li>
+<li>Max groups: 4 default = ~800 bytes overhead</li>
+<li>Frames use existing buffers (no copy)</li>
+</ul>
+<h3 id="cpu">CPU</h3>
+<ul>
+<li>Tick increment: ~1 CPU cycle</li>
+<li>Map lookup: O(1)</li>
+<li>Group iteration: O(n) where n &lt;= 4</li>
+</ul>
+<hr />
+<h2 id="configuration-defaults">Configuration Defaults</h2>
+<pre><code class="language-typescript">const DEFAULT_CONFIG: TimingConfig = {
+  // Timing
+  estimatedGopDuration: 1000,       // 1 second
+  maxLatency: 500,                  // 500ms max e2e
+  jitterDelay: 50,                  // 50ms per-frame buffer
+  deadlineExtension: 200,           // 200ms extension
+
+  // Limits
+  maxActiveGroups: 4,
+  maxFramesPerGroup: 120,           // 4 seconds at 30fps
+
+  // Behavior
+  allowPartialGroupDecode: true,
+  skipOnlyToKeyframe: true,
+};
+</code></pre>
+<hr />
+<h2 id="open-questions-future-work">Open Questions / Future Work</h2>
+<ol>
+<li><strong>Audio-video sync</strong>: Should audio follow video group decisions?</li>
+<li>
+<p>Recommendation: Keep audio independent, sync at renderer level</p>
+</li>
+<li>
+<p><strong>SVC layers</strong>: How to handle temporal/spatial layers?</p>
+</li>
+<li>Use LOC Video Frame Marking for layer info</li>
+<li>
+<p>Potentially drop higher layers under pressure</p>
+</li>
+<li>
+<p><strong>ABR integration</strong>: How does this interact with quality switching?</p>
+</li>
+<li>Group boundaries align with quality switch points</li>
+<li>
+<p>NewGroupRequest triggers new keyframe at new quality</p>
+</li>
+<li>
+<p><strong>Metrics export</strong>: What metrics to expose?</p>
+</li>
+<li>GOP duration histogram</li>
+<li>Skip/expire rates</li>
+<li>Output latency percentiles</li>
+</ol>
+
+        <div class="footer">
+            <em>Group-Aware Deadline-Based Jitter Buffer Design</em>
+        </div>
+    </div>
+
+    <script>
+        // Generate IDs for h2/h3 headers based on their text content
+        document.querySelectorAll('h2, h3').forEach(header => {
+            if (!header.id) {
+                const text = header.textContent.trim();
+                // Generate ID: lowercase, replace spaces with dashes, remove special chars
+                const id = text
+                    .toLowerCase()
+                    .replace(/[^a-z0-9\s-]/g, '')
+                    .replace(/\s+/g, '-')
+                    .replace(/-+/g, '-')
+                    .replace(/^-|-$/g, '');
+                header.id = id;
+            }
+        });
+
+        // Add copy button to code blocks
+        document.querySelectorAll('pre').forEach(block => {
+            const button = document.createElement('button');
+            button.className = 'copy-btn';
+            button.textContent = 'Copy';
+            block.appendChild(button);
+
+            button.addEventListener('click', async () => {
+                const code = block.querySelector('code');
+                await navigator.clipboard.writeText(code.textContent);
+                button.textContent = 'Copied!';
+                setTimeout(() => button.textContent = 'Copy', 2000);
+            });
+        });
+
+        // Smooth scrolling for anchor links with fuzzy matching
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                const href = this.getAttribute('href');
+                const targetId = href.substring(1);
+
+                // Try exact match first
+                let target = document.getElementById(targetId);
+
+                // If not found, try fuzzy match (handle different ID formats)
+                if (!target) {
+                    const searchText = targetId.replace(/-/g, ' ').toLowerCase();
+                    document.querySelectorAll('h2, h3').forEach(header => {
+                        const headerText = header.textContent.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+                        if (headerText.includes(searchText) || searchText.includes(headerText.substring(0, 20))) {
+                            target = header;
+                        }
+                    });
+                }
+
+                if (target) {
+                    e.preventDefault();
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                    // Update URL hash
+                    history.pushState(null, null, href);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -19,6 +19,7 @@
     "@ricky0123/vad-web": "^0.0.30",
     "@web-moq/core": "workspace:*",
     "@web-moq/media": "workspace:*",
+    "@web-moq/msf": "workspace:*",
     "@web-moq/secure-objects": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

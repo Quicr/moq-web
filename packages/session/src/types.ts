@@ -25,11 +25,18 @@ export type SessionEventType =
   | 'error'
   | 'publish-stats'
   | 'subscribe-stats'
+  | 'subscribe-ok'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
   | 'incoming-publish'
-  | 'forward-paused'
-  | 'forward-resumed';
+  | 'fetch-object'
+  | 'fetch-complete'
+  | 'fetch-stream-complete'
+  | 'fetch-error'
+  | 'incoming-fetch'
+  | 'message-sent'
+  | 'message-received'
+  | 'forward-state-change';
 
 /**
  * Per-request authorization token for SUBSCRIBE/PUBLISH/FETCH.
@@ -50,16 +57,12 @@ export interface SubscribeOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
-  /** Filter type (default: LATEST_GROUP) */
-  filterType?: number;
-  /** Start group for ABSOLUTE_START/ABSOLUTE_RANGE */
+  /** Filter type: 'latest' for live (default), 'absolute' for VOD to start from beginning */
+  filterType?: 'latest' | 'absolute';
+  /** Start group ID when filterType is 'absolute' (default: 0) */
   startGroup?: number;
-  /** Start object for ABSOLUTE_START/ABSOLUTE_RANGE */
+  /** Start object ID when filterType is 'absolute' (default: 0) */
   startObject?: number;
-  /** End group for ABSOLUTE_RANGE */
-  endGroup?: number;
-  /** End object for ABSOLUTE_RANGE */
-  endObject?: number;
   /** Per-request authorization token */
   authToken?: RequestAuthToken;
 }
@@ -98,6 +101,8 @@ export interface ObjectMetadata {
   isKeyframe?: boolean;
   /** Object type hint (for logging) */
   type?: string;
+  /** Max cache duration in milliseconds - tells relay how long to cache this object */
+  maxCacheDuration?: number;
 }
 
 /**
@@ -162,6 +167,40 @@ export interface SubscribeStatsEvent {
   groupId: number;
   objectId: number;
   bytes: number;
+}
+
+/**
+ * Subscribe OK event data - emitted when SUBSCRIBE_OK is received
+ */
+export interface SubscribeOkEvent {
+  /** Subscription ID */
+  subscriptionId: number;
+  /** Request ID from the subscribe */
+  requestId: number;
+  /** Track alias assigned by relay */
+  trackAlias: bigint;
+  /** Whether content exists for this track */
+  contentExists: boolean;
+  /** Largest group ID available (if content exists) */
+  largestGroupId?: number;
+  /** Largest object ID in largest group (if content exists) */
+  largestObjectId?: number;
+}
+
+/**
+ * Message log event - emitted when control messages are sent or received
+ */
+export interface MessageLogEvent {
+  /** Message type name (e.g., 'SUBSCRIBE', 'PUBLISH_OK') */
+  messageType: string;
+  /** Timestamp when message was processed */
+  timestamp: number;
+  /** Message size in bytes */
+  bytes: number;
+  /** Summary of message content for display */
+  summary: string;
+  /** Additional details (optional) */
+  details?: Record<string, unknown>;
 }
 
 /**
@@ -290,4 +329,205 @@ export interface IncomingPublishEvent {
   trackAlias: bigint;
   /** Group order */
   groupOrder: GroupOrder;
+}
+
+// ============================================================================
+// FETCH / DVR Types
+// ============================================================================
+
+/**
+ * Options for fetching historical objects
+ */
+export interface FetchOptions {
+  /** Subscriber priority (0-255, default 128) */
+  priority?: number;
+  /** Group ordering preference */
+  groupOrder?: GroupOrder;
+}
+
+/**
+ * Range specification for FETCH request
+ */
+export interface FetchRange {
+  /** Start group ID */
+  startGroup: number;
+  /** Start object ID within start group */
+  startObject: number;
+  /** End group ID */
+  endGroup: number;
+  /** End object ID within end group (0 = end of group) */
+  endObject: number;
+}
+
+/**
+ * Active fetch info
+ */
+export interface FetchInfo {
+  /** Fetch request ID */
+  requestId: number;
+  /** Namespace */
+  namespace: string[];
+  /** Track name */
+  trackName: string;
+  /** Requested range */
+  range: FetchRange;
+  /** Whether fetch completed */
+  completed: boolean;
+  /** Largest group ID available (from FETCH_OK) */
+  largestGroupId?: number;
+  /** Largest object ID in largest group (from FETCH_OK) */
+  largestObjectId?: number;
+  /** Whether end of track is known */
+  endOfTrack?: boolean;
+}
+
+/**
+ * Event fired when fetch receives objects
+ */
+export interface FetchObjectEvent {
+  /** Fetch request ID */
+  requestId: number;
+  /** Object payload */
+  data: Uint8Array;
+  /** Group ID */
+  groupId: number;
+  /** Object ID */
+  objectId: number;
+}
+
+/**
+ * Event fired when fetch completes successfully
+ */
+export interface FetchCompleteEvent {
+  /** Fetch request ID */
+  requestId: number;
+  /** Largest group ID available */
+  largestGroupId: number;
+  /** Largest object ID in largest group */
+  largestObjectId: number;
+  /** Whether this is the end of the track */
+  endOfTrack: boolean;
+}
+
+/**
+ * Event fired when FETCH data stream completes (all objects received)
+ * This fires after all data has been received, unlike fetch-complete which
+ * fires on FETCH_OK (before data arrives).
+ */
+export interface FetchStreamCompleteEvent {
+  /** Fetch request ID */
+  requestId: number;
+  /** Last group ID received on this stream */
+  lastGroupId: number;
+}
+
+/**
+ * Event fired when fetch fails
+ */
+export interface FetchErrorEvent {
+  /** Fetch request ID */
+  requestId: number;
+  /** Error code */
+  errorCode: number;
+  /** Error reason */
+  reason: string;
+}
+
+// ============================================================================
+// VOD Publishing Types
+// ============================================================================
+
+/**
+ * VOD (Video on Demand) content metadata
+ */
+export interface VODMetadata {
+  /** Total duration in milliseconds */
+  duration: number;
+  /** Total number of groups */
+  totalGroups: number;
+  /** Frames per second (for time-to-group mapping) */
+  framerate?: number;
+  /** GOP duration in milliseconds (for time-to-group mapping) */
+  gopDuration?: number;
+  /** Timescale (ticks per second, default 1000) */
+  timescale?: number;
+}
+
+/**
+ * Options for publishing VOD content
+ */
+export interface VODPublishOptions extends PublishOptions {
+  /** VOD metadata */
+  metadata: VODMetadata;
+  /** Callback to fetch object data by group/object ID */
+  getObject: (groupId: number, objectId: number) => Promise<Uint8Array | null>;
+  /** Callback to check if object is a keyframe */
+  isKeyframe?: (groupId: number, objectId: number) => boolean;
+  /** Number of objects per group (if uniform) */
+  objectsPerGroup?: number;
+  /** Max cache duration in milliseconds - tells relay how long to cache content (default: 60000ms = 1 minute) */
+  maxCacheDuration?: number;
+  /**
+   * Fetch-only mode: if true, don't auto-stream via SUBSCRIBE.
+   * Content will only be delivered in response to FETCH requests.
+   * This provides smoother VOD playback as subscriber controls pacing.
+   * Default: false (auto-stream enabled for backward compatibility)
+   */
+  fetchOnly?: boolean;
+}
+
+/**
+ * VOD track info
+ */
+export interface VODTrackInfo {
+  /** Track alias */
+  trackAlias: bigint;
+  /** Namespace */
+  namespace: string[];
+  /** Track name */
+  trackName: string;
+  /** VOD metadata */
+  metadata: VODMetadata;
+  /** Active fetch requests being served */
+  activeFetches: Map<number, FetchRange>;
+}
+
+/**
+ * Event fired when a subscriber sends a FETCH request (VOD publisher receives this)
+ */
+export interface IncomingFetchEvent {
+  /** Request ID from the fetch */
+  requestId: number;
+  /** Namespace */
+  namespace: string[];
+  /** Track name */
+  trackName: string;
+  /** Requested range */
+  range: FetchRange;
+  /** Subscriber priority */
+  priority: number;
+  /** Group order preference */
+  groupOrder: GroupOrder;
+}
+
+// ============================================================================
+// Forward State Types
+// ============================================================================
+
+/**
+ * Event fired when forward state changes for a publication
+ *
+ * Forward state indicates whether subscribers exist:
+ * - forward=0: No subscribers, should pause sending
+ * - forward=1: Subscribers exist, can send objects
+ *
+ * This is used for both live/interactive and VOD flows:
+ * - Live: Pause/resume capture devices
+ * - VOD: Pause/resume auto-streaming with position tracking
+ */
+export interface ForwardStateChangeEvent {
+  /** Track alias */
+  trackAlias: bigint;
+  /** New forward state (0 = paused/no subscribers, 1 = active/can send) */
+  forward: number;
 }
