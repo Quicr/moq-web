@@ -259,10 +259,10 @@ describe('CBOR Codec', () => {
   });
 
   describe('tags', () => {
-    it('encodes/decodes tagged values', () => {
+    it('encodes/decodes COSE_Sign1 tag (18)', () => {
       const data = [1, 2, 3];
-      const encoded = cborEncodeTagged(18, data); // COSE_Sign1 tag
-      // cborDecode strips tags, returning inner value
+      const encoded = cborEncodeTagged(18, data);
+      // cborDecode accepts tag 18 (COSE_Sign1), returns inner value
       const { value } = cborDecode(encoded);
       expect(value).toEqual([1, 2, 3]);
     });
@@ -280,6 +280,11 @@ describe('CBOR Codec', () => {
       const { tag, value } = cborDecodeTagged(encoded);
       expect(tag).toBe(-1);
       expect(value).toEqual([1, 2, 3]);
+    });
+
+    it('rejects unsupported tags', () => {
+      const encoded = cborEncodeTagged(99, [1, 2, 3]);
+      expect(() => cborDecode(encoded)).toThrow(CborError);
     });
   });
 
@@ -342,6 +347,26 @@ describe('CBOR Codec', () => {
 
     it('throws on unsupported value types', () => {
       expect(() => cborEncode({} as unknown as CborValue)).toThrow(CborError);
+    });
+
+    it('throws on duplicate map keys', () => {
+      // Manually craft CBOR map with duplicate key 1:
+      // a2 (map of 2) + 01 (key 1) + 26 (value -7) + 01 (key 1 again) + 38 23 (value -36)
+      const duplicateKeyMap = new Uint8Array([0xa2, 0x01, 0x26, 0x01, 0x38, 0x23]);
+      expect(() => cborDecode(duplicateKeyMap)).toThrow('Duplicate CBOR map key');
+    });
+
+    it('throws on encoder depth overflow', () => {
+      // Build deeply nested value
+      let value: CborValue = 42;
+      for (let i = 0; i < 40; i++) {
+        value = [value];
+      }
+      expect(() => cborEncode(value)).toThrow(CborError);
+    });
+
+    it('throws on number exceeding safe integer range', () => {
+      expect(() => cborEncode(Number.MAX_SAFE_INTEGER + 1)).toThrow(CborError);
     });
   });
 

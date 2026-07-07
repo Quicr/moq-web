@@ -17,6 +17,13 @@ import {
   type CborValue,
 } from './types.js';
 
+/** Standard CWT claim keys that cannot be overridden via additionalClaims */
+const RESERVED_CLAIM_KEYS = new Set([
+  CwtClaimKey.ISS, CwtClaimKey.SUB, CwtClaimKey.AUD,
+  CwtClaimKey.EXP, CwtClaimKey.NBF, CwtClaimKey.IAT,
+  CwtClaimKey.CTI, CwtClaimKey.MOQT, 65000,
+]);
+
 // ============================================================================
 // CWT Claims Encode / Decode
 // ============================================================================
@@ -44,9 +51,12 @@ export function cwtClaimsEncode(claims: CwtClaims): Uint8Array {
     map.set(CwtClaimKey.MOQT, moqtScopesEncode(claims.moqt));
   }
 
-  // Additional claims
+  // M6: Additional claims — reject collisions with standard claim keys
   if (claims.additionalClaims) {
     for (const [key, value] of claims.additionalClaims) {
+      if (RESERVED_CLAIM_KEYS.has(key)) {
+        throw new CwtError(`Additional claim key ${key} conflicts with a reserved CWT claim key`);
+      }
       map.set(key, value);
     }
   }
@@ -94,13 +104,29 @@ export function cwtClaimsFromMap(map: Map<number | string, CborValue>): CwtClaim
         }
         break;
       case CwtClaimKey.EXP:
-        if (typeof value === 'number') claims.exp = value;
+        // L5: Validate that time claims are integers
+        if (typeof value === 'number') {
+          if (!Number.isInteger(value)) {
+            throw new CwtError(`CWT exp claim must be an integer, got ${value}`);
+          }
+          claims.exp = value;
+        }
         break;
       case CwtClaimKey.NBF:
-        if (typeof value === 'number') claims.nbf = value;
+        if (typeof value === 'number') {
+          if (!Number.isInteger(value)) {
+            throw new CwtError(`CWT nbf claim must be an integer, got ${value}`);
+          }
+          claims.nbf = value;
+        }
         break;
       case CwtClaimKey.IAT:
-        if (typeof value === 'number') claims.iat = value;
+        if (typeof value === 'number') {
+          if (!Number.isInteger(value)) {
+            throw new CwtError(`CWT iat claim must be an integer, got ${value}`);
+          }
+          claims.iat = value;
+        }
         break;
       case CwtClaimKey.CTI:
         if (value instanceof Uint8Array) claims.cti = value;
@@ -195,11 +221,10 @@ export function moqtScopesDecode(scopesArray: CborValue[]): MoqtScope[] {
     if (scopeValue.length > 1 && scopeValue[1] !== null) {
       const nsMatch = scopeValue[1];
       if (Array.isArray(nsMatch)) {
-        scope.namespaceMatch = nsMatch.map((n) => {
-          if (typeof n === 'string') return n;
-          if (n instanceof Uint8Array) return n;
-          return String(n);
-        });
+        // L6: Reject non-string/non-bytes namespace elements instead of coercing
+        scope.namespaceMatch = nsMatch.filter((n): n is string | Uint8Array =>
+          typeof n === 'string' || n instanceof Uint8Array
+        );
       }
     }
 
@@ -222,11 +247,6 @@ export function moqtScopesDecode(scopesArray: CborValue[]): MoqtScope[] {
 
 /**
  * Check if CWT claims have expired.
- *
- * @param claims - CWT claims
- * @param nowSeconds - Current time as Unix timestamp (default: current time)
- * @param clockSkewSeconds - Allowed clock skew in seconds (default: 60)
- * @returns true if the token is expired
  */
 export function cwtIsExpired(
   claims: CwtClaims,
@@ -240,11 +260,6 @@ export function cwtIsExpired(
 
 /**
  * Check if CWT claims are not yet valid (before nbf).
- *
- * @param claims - CWT claims
- * @param nowSeconds - Current time as Unix timestamp
- * @param clockSkewSeconds - Allowed clock skew in seconds (default: 60)
- * @returns true if the token is not yet valid
  */
 export function cwtIsNotYetValid(
   claims: CwtClaims,
@@ -258,10 +273,6 @@ export function cwtIsNotYetValid(
 
 /**
  * Check if CWT claims match a required audience.
- *
- * @param claims - CWT claims
- * @param requiredAudience - The audience value to check
- * @returns true if the audience matches
  */
 export function cwtMatchesAudience(claims: CwtClaims, requiredAudience: string): boolean {
   if (claims.aud === undefined) return false;

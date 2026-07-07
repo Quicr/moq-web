@@ -365,4 +365,57 @@ describe('COSE_Sign1', () => {
       expect(() => coseSign1GetAlgorithm(sign1)).toThrow(CoseError);
     });
   });
+
+  describe('algorithm confusion prevention', () => {
+    it('rejects token when requiredAlgorithm does not match', async () => {
+      const headers = new Map<number, CborValue>();
+      const payload = new Uint8Array([1]);
+
+      const sign1 = await coseSign1Sign(
+        CoseAlgorithm.ES256,
+        headers,
+        payload,
+        es256KeyPair.privateKey,
+      );
+
+      // Require ES384 but token uses ES256
+      expect(await coseSign1Verify(sign1, es256KeyPair.publicKey, CoseAlgorithm.ES384)).toBe(false);
+    });
+
+    it('accepts token when requiredAlgorithm matches', async () => {
+      const headers = new Map<number, CborValue>();
+      const payload = new Uint8Array([1]);
+
+      const sign1 = await coseSign1Sign(
+        CoseAlgorithm.ES256,
+        headers,
+        payload,
+        es256KeyPair.privateKey,
+      );
+
+      expect(await coseSign1Verify(sign1, es256KeyPair.publicKey, CoseAlgorithm.ES256)).toBe(true);
+    });
+
+    it('rejects token when key curve does not match algorithm', async () => {
+      const headers = new Map<number, CborValue>();
+      const payload = new Uint8Array([1]);
+
+      // Sign with ES256 key
+      const sign1 = await coseSign1Sign(
+        CoseAlgorithm.ES256,
+        headers,
+        payload,
+        es256KeyPair.privateKey,
+      );
+
+      // Try to verify with ES384 key — curve mismatch
+      expect(await coseSign1Verify(sign1, es384KeyPair.publicKey)).toBe(false);
+    });
+  });
+
+  describe('protected header validation', () => {
+    it('coseSign1DecodeProtectedHeader throws on empty bytes', () => {
+      expect(() => coseSign1DecodeProtectedHeader(new Uint8Array(0))).toThrow(CoseError);
+    });
+  });
 });

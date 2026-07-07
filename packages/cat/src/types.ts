@@ -80,16 +80,17 @@ export interface CoseSign1 {
 /**
  * Maps CoseAlgorithm to WebCrypto parameters.
  */
-export const COSE_ALG_PARAMS: Record<CoseAlgorithm, {
+// Frozen to prevent runtime mutation of algorithm parameters
+export const COSE_ALG_PARAMS: Readonly<Record<CoseAlgorithm, Readonly<{
   name: string;
   hash: string;
   namedCurve: string;
   sigLength: number;
-}> = {
-  [CoseAlgorithm.ES256]: { name: 'ECDSA', hash: 'SHA-256', namedCurve: 'P-256', sigLength: 64 },
-  [CoseAlgorithm.ES384]: { name: 'ECDSA', hash: 'SHA-384', namedCurve: 'P-384', sigLength: 96 },
-  [CoseAlgorithm.ES512]: { name: 'ECDSA', hash: 'SHA-512', namedCurve: 'P-521', sigLength: 132 },
-};
+}>>> = Object.freeze({
+  [CoseAlgorithm.ES256]: Object.freeze({ name: 'ECDSA', hash: 'SHA-256', namedCurve: 'P-256', sigLength: 64 }),
+  [CoseAlgorithm.ES384]: Object.freeze({ name: 'ECDSA', hash: 'SHA-384', namedCurve: 'P-384', sigLength: 96 }),
+  [CoseAlgorithm.ES512]: Object.freeze({ name: 'ECDSA', hash: 'SHA-512', namedCurve: 'P-521', sigLength: 132 }),
+});
 
 // ============================================================================
 // CWT Types (RFC 8392)
@@ -208,4 +209,8 @@ export interface CatValidationOptions {
   requiredAudience?: string;
   /** Override current time for testing (Unix timestamp seconds) */
   now?: number;
+  /** Required algorithm — rejects tokens using a different algorithm */
+  requiredAlgorithm?: CoseAlgorithm;
+  /** Require exp claim to be present (default: true) */
+  requireExp?: boolean;
 }

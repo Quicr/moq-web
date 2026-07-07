@@ -26,16 +26,22 @@ import {
 /**
  * Generate a test ECDSA key pair for CAT token signing/verification.
  *
+ * WARNING: Keys are extractable by default for testing convenience.
+ * Do NOT use this function for production key generation — use
+ * crypto.subtle.generateKey directly with extractable=false.
+ *
  * @param algorithm - COSE algorithm (default: ES256)
+ * @param extractable - Whether the private key is extractable (default: true for testing)
  * @returns WebCrypto key pair
  */
 export async function generateTestKeyPair(
   algorithm: CoseAlgorithm = CoseAlgorithm.ES256,
+  extractable = true,
 ): Promise<CryptoKeyPair> {
   const params = COSE_ALG_PARAMS[algorithm];
   return crypto.subtle.generateKey(
     { name: params.name, namedCurve: params.namedCurve },
-    true, // extractable (for testing)
+    extractable,
     ['sign', 'verify'],
   );
 }

@@ -100,6 +100,17 @@ describe('CWT Claims', () => {
       const notMap = cborEncode([1, 2, 3]);
       expect(() => cwtClaimsDecode(notMap)).toThrow(CwtError);
     });
+
+    it('rejects additionalClaims that collide with standard keys', () => {
+      const claims: CwtClaims = {
+        iss: 'test',
+        exp: 12345,
+        additionalClaims: new Map<number, CborValue>([
+          [4, 99999], // key 4 = EXP, collision
+        ]),
+      };
+      expect(() => cwtClaimsEncode(claims)).toThrow(CwtError);
+    });
   });
 
   describe('cwtClaimsFromMap', () => {

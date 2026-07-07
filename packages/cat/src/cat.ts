@@ -36,13 +36,35 @@ import {
 } from './types.js';
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/** Maximum token size in bytes (8 KiB — generous for auth tokens) */
+const MAX_TOKEN_SIZE = 8192;
+
+/** Maximum base64url input length */
+const MAX_BASE64URL_LENGTH = 12000; // ~8 KiB decoded
+
+/** Valid base64url character set */
+const BASE64URL_REGEX = /^[A-Za-z0-9_-]+$/;
+
+// ============================================================================
 // Base64url Utilities
 // ============================================================================
 
 /**
  * Decode a base64url string to bytes.
+ *
+ * Validates character set before decoding.
+ * Enforces maximum input length.
  */
 export function base64urlDecode(str: string): Uint8Array {
+  if (str.length > MAX_BASE64URL_LENGTH) {
+    throw new CatError(`base64url input too large: ${str.length} chars`);
+  }
+  if (str.length > 0 && !BASE64URL_REGEX.test(str)) {
+    throw new CatError('Invalid base64url characters');
+  }
   const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
   const padding = '='.repeat((4 - (base64.length % 4)) % 4);
   const binary = atob(base64 + padding);
@@ -109,13 +131,13 @@ export class CatTokenBuilder {
 
   /** Set the expiration time (Unix timestamp in seconds, or Date). */
   expiration(exp: number | Date): this {
-    this._claims.exp = exp instanceof Date ? Math.floor(exp.getTime() / 1000) : exp;
+    this._claims.exp = exp instanceof Date ? Math.floor(exp.getTime() / 1000) : Math.floor(exp);
     return this;
   }
 
   /** Set the not-before time (Unix timestamp in seconds, or Date). */
   notBefore(nbf: number | Date): this {
-    this._claims.nbf = nbf instanceof Date ? Math.floor(nbf.getTime() / 1000) : nbf;
+    this._claims.nbf = nbf instanceof Date ? Math.floor(nbf.getTime() / 1000) : Math.floor(nbf);
     return this;
   }
 
@@ -124,7 +146,7 @@ export class CatTokenBuilder {
     if (iat === undefined) {
       this._claims.iat = Math.floor(Date.now() / 1000);
     } else {
-      this._claims.iat = iat instanceof Date ? Math.floor(iat.getTime() / 1000) : iat;
+      this._claims.iat = iat instanceof Date ? Math.floor(iat.getTime() / 1000) : Math.floor(iat);
     }
     return this;
   }
@@ -191,9 +213,6 @@ export class CatTokenBuilder {
 
   /**
    * Sign the token and return COSE_Sign1 CBOR bytes.
-   *
-   * @param privateKey - WebCrypto ECDSA private key
-   * @returns COSE_Sign1 encoded as CBOR bytes (bare array, no Tag 18)
    */
   async sign(privateKey: CryptoKey): Promise<Uint8Array> {
     const payload = cwtClaimsEncode(this._claims);
@@ -231,9 +250,14 @@ export class CatTokenDecoder {
    * Decode a CAT token from raw COSE_Sign1 CBOR bytes.
    * Does NOT verify the signature.
    *
+   * Enforces maximum token size.
+   *
    * @throws {CatError} If the token cannot be decoded
    */
   static decode(data: Uint8Array): CatToken {
+    if (data.length > MAX_TOKEN_SIZE) {
+      throw new CatError('Token exceeds maximum size');
+    }
     const sign1 = coseSign1Decode(data);
     return CatTokenDecoder.fromCoseSign1(sign1);
   }
@@ -274,19 +298,15 @@ export class CatTokenDecoder {
 
   /**
    * Decode from a COSE_Sign1 structure.
+   *
+   * No silent algorithm fallback — missing algorithm is an error.
    */
   private static fromCoseSign1(sign1: import('./types.js').CoseSign1): CatToken {
-    // Decode protected header
+    // Decode protected header — throws if empty or invalid
     const header = coseSign1DecodeProtectedHeader(sign1.protectedHeader);
 
-    // Extract algorithm
-    let algorithm: CoseAlgorithm;
-    try {
-      algorithm = coseSign1GetAlgorithm(sign1);
-    } catch {
-      // Default to ES256 if not found (for legacy tokens)
-      algorithm = CoseAlgorithm.ES256;
-    }
+    // Extract algorithm — throws if missing/unsupported, no silent default
+    const algorithm = coseSign1GetAlgorithm(sign1);
 
     // Decode payload as CWT claims
     let claims: CwtClaims;
@@ -302,9 +322,10 @@ export class CatTokenDecoder {
   /**
    * Fully validate a CAT token: decode, verify signature, check expiration/nbf/audience.
    *
-   * @param data - COSE_Sign1 CBOR bytes
-   * @param publicKey - WebCrypto ECDSA public key for signature verification
-   * @param options - Validation options
+   * Signature is verified FIRST, before any claims are inspected.
+   * Supports requiredAlgorithm to prevent algorithm confusion.
+   * Supports requireExp to reject tokens without expiration.
+   * Returns generic error messages — no internal details.
    */
   static async validate(
     data: Uint8Array,
@@ -314,41 +335,54 @@ export class CatTokenDecoder {
     const clockSkew = options?.clockSkewSeconds ?? 60;
     const now = options?.now ?? Math.floor(Date.now() / 1000);
 
-    // Step 1: Decode
+    // Step 1: Decode structure (but do NOT return claims to caller yet)
     let token: CatToken;
     try {
       token = CatTokenDecoder.decode(data);
-    } catch (e) {
-      return { valid: false, error: `Decode failed: ${(e as Error).message}` };
+    } catch {
+      // M3: Generic error — don't leak internal decode details
+      return { valid: false, error: 'Token decode failed' };
     }
 
-    // Step 2: Check expiration
+    // Step 2: Verify signature FIRST — before inspecting any claims
+    let signatureValid: boolean;
+    try {
+      signatureValid = await coseSign1Verify(
+        token.coseSign1,
+        publicKey,
+        options?.requiredAlgorithm,
+      );
+    } catch {
+      return { valid: false, error: 'Signature verification failed' };
+    }
+
+    if (!signatureValid) {
+      // Do NOT return the token — claims are untrusted
+      return { valid: false, error: 'Invalid signature' };
+    }
+
+    // Signature is valid — now safe to inspect claims
+
+    // Step 3: Check that exp is present if required
+    if ((options?.requireExp ?? true) && token.claims.exp === undefined) {
+      return { valid: false, token, error: 'Token missing required exp claim' };
+    }
+
+    // Step 4: Check expiration
     if (cwtIsExpired(token.claims, now, clockSkew)) {
       return { valid: false, token, error: 'Token expired', expired: true };
     }
 
-    // Step 3: Check not-before
+    // Step 5: Check not-before
     if (cwtIsNotYetValid(token.claims, now, clockSkew)) {
       return { valid: false, token, error: 'Token not yet valid' };
     }
 
-    // Step 4: Check audience
+    // Step 6: Check audience
     if (options?.requiredAudience) {
       if (!cwtMatchesAudience(token.claims, options.requiredAudience)) {
-        return { valid: false, token, error: `Audience mismatch: required ${options.requiredAudience}` };
+        return { valid: false, token, error: 'Audience mismatch' };
       }
-    }
-
-    // Step 5: Verify signature
-    let signatureValid: boolean;
-    try {
-      signatureValid = await coseSign1Verify(token.coseSign1, publicKey);
-    } catch (e) {
-      return { valid: false, token, error: `Signature verification failed: ${(e as Error).message}` };
-    }
-
-    if (!signatureValid) {
-      return { valid: false, token, error: 'Invalid signature' };
     }
 
     return { valid: true, token };

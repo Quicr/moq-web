@@ -8,6 +8,7 @@
  * - Major types 0-5, 6 (tags), 7 (simple values)
  * - Definite-length only
  * - Deterministic map key ordering for COSE Sig_structure
+ * - Duplicate map key rejection (RFC 8949 Section 5.6)
  *
  * Does NOT support: indefinite-length, floats, break codes.
  */
@@ -19,6 +20,7 @@ import type { CborValue } from './types.js';
 // ============================================================================
 
 const MAX_SAFE_DECODE_DEPTH = 32;
+const MAX_ENCODE_DEPTH = 32;
 const MAX_DECODE_LENGTH = 1_048_576; // 1 MiB
 
 // ============================================================================
@@ -30,7 +32,7 @@ const MAX_DECODE_LENGTH = 1_048_576; // 1 MiB
  */
 export function cborEncode(value: CborValue): Uint8Array {
   const parts: Uint8Array[] = [];
-  encodeValue(parts, value);
+  encodeValue(parts, value, 0);
   return concatenate(parts);
 }
 
@@ -40,11 +42,14 @@ export function cborEncode(value: CborValue): Uint8Array {
 export function cborEncodeTagged(tag: number, value: CborValue): Uint8Array {
   const parts: Uint8Array[] = [];
   parts.push(encodeHead(6, tag));
-  encodeValue(parts, value);
+  encodeValue(parts, value, 0);
   return concatenate(parts);
 }
 
-function encodeValue(parts: Uint8Array[], value: CborValue): void {
+function encodeValue(parts: Uint8Array[], value: CborValue, depth: number): void {
+  if (depth > MAX_ENCODE_DEPTH) {
+    throw new CborError('CBOR encoding depth exceeded');
+  }
   if (value === null) {
     parts.push(new Uint8Array([0xf6])); // simple(22)
     return;
@@ -58,6 +63,10 @@ function encodeValue(parts: Uint8Array[], value: CborValue): void {
     return;
   }
   if (typeof value === 'number') {
+    // L3: Reject numbers that exceed safe integer range for encoding
+    if (value > Number.MAX_SAFE_INTEGER || value < -Number.MAX_SAFE_INTEGER) {
+      throw new CborError('Number exceeds safe integer range; use bigint for values > 2^53');
+    }
     if (value >= 0) {
       parts.push(encodeHead(0, value));
     } else {
@@ -87,7 +96,7 @@ function encodeValue(parts: Uint8Array[], value: CborValue): void {
   if (Array.isArray(value)) {
     parts.push(encodeHead(4, value.length));
     for (const item of value) {
-      encodeValue(parts, item);
+      encodeValue(parts, item, depth + 1);
     }
     return;
   }
@@ -97,7 +106,7 @@ function encodeValue(parts: Uint8Array[], value: CborValue): void {
     const encodedEntries: { keyBytes: Uint8Array; key: number | string; val: CborValue }[] = [];
     for (const [key, val] of entries) {
       const keyParts: Uint8Array[] = [];
-      encodeValue(keyParts, key);
+      encodeValue(keyParts, key, depth + 1);
       encodedEntries.push({ keyBytes: concatenate(keyParts), key, val });
     }
     // Sort by encoded key bytes (length first, then lexicographic)
@@ -112,7 +121,7 @@ function encodeValue(parts: Uint8Array[], value: CborValue): void {
     parts.push(encodeHead(5, encodedEntries.length));
     for (const entry of encodedEntries) {
       parts.push(entry.keyBytes);
-      encodeValue(parts, entry.val);
+      encodeValue(parts, entry.val, depth + 1);
     }
     return;
   }
@@ -143,14 +152,8 @@ function encodeHead(majorType: number, value: number): Uint8Array {
       value & 0xff,
     ]);
   }
-  // 8-byte encoding for large values
-  const buf = new Uint8Array(9);
-  buf[0] = mt | 27;
-  const view = new DataView(buf.buffer);
-  // Split into high/low 32-bit parts for values > 2^32
-  view.setUint32(1, Math.floor(value / 0x100000000), false);
-  view.setUint32(5, value >>> 0, false);
-  return buf;
+  // 8-byte encoding — use BigInt path for precision safety
+  return encodeHeadBigInt(majorType, BigInt(value));
 }
 
 /**
@@ -297,18 +300,31 @@ function decodeValue(data: Uint8Array, offset: number, depth: number): DecodeRes
         pos = keyResult.offset;
         const valResult = decodeValue(data, pos, depth + 1);
         pos = valResult.offset;
+
+        let mapKey: number | string;
         if (typeof key === 'number' || typeof key === 'string') {
-          map.set(key, valResult.value);
+          mapKey = key;
         } else if (typeof key === 'bigint') {
-          map.set(Number(key), valResult.value);
+          mapKey = Number(key);
         } else {
           throw new CborError(`Unsupported map key type: ${typeof key}`);
         }
+
+        // Reject duplicate map keys (RFC 8949 Section 5.6)
+        if (map.has(mapKey)) {
+          throw new CborError(`Duplicate CBOR map key: ${mapKey}`);
+        }
+        map.set(mapKey, valResult.value);
       }
       return { value: map, offset: pos };
     }
-    case 6: { // tag — skip tag number, decode inner value
-      const { newOffset } = readArgument(data, offset);
+    case 6: { // tag — reject unknown tags in security context
+      const { value: tagNum, newOffset } = readArgument(data, offset);
+      const tag = Number(tagNum);
+      // Only allow COSE_Sign1 tag (18) — reject all others
+      if (tag !== 18) {
+        throw new CborError(`Unsupported CBOR tag: ${tag}`);
+      }
       const inner = decodeValue(data, newOffset, depth + 1);
       return { value: inner.value, offset: inner.offset };
     }

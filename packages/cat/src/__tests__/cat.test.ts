@@ -184,20 +184,23 @@ describe('CatTokenDecoder', () => {
       expect(result.error).toContain('expired');
     });
 
-    it('rejects token with bad signature', async () => {
+    it('rejects token with bad signature and does NOT return claims ', async () => {
       const { tokenBytes } = await generateBadSignatureToken(keyPair);
 
       const result = await CatTokenDecoder.validate(tokenBytes, keyPair.publicKey);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('signature');
+      // Token must NOT be returned when signature is invalid
+      expect(result.token).toBeUndefined();
     });
 
-    it('rejects token signed with wrong key', async () => {
+    it('rejects token signed with wrong key and does NOT return claims ', async () => {
       const { tokenBytes, verifyKeyPair } = await generateWrongKeyToken();
 
       const result = await CatTokenDecoder.validate(tokenBytes, verifyKeyPair.publicKey);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('signature');
+      expect(result.token).toBeUndefined();
     });
 
     it('rejects token with wrong audience', async () => {
@@ -211,6 +214,55 @@ describe('CatTokenDecoder', () => {
       });
       expect(result.valid).toBe(false);
       expect(result.error).toContain('Audience');
+    });
+
+    it('rejects token without exp when requireExp is true', async () => {
+      // Build a token with no exp claim
+      const tokenBytes = await new CatTokenBuilder()
+        .issuer('test')
+        .subject('user')
+        .audience('relay')
+        .issuedAt()
+        // deliberately no .expiration()
+        .sign(keyPair.privateKey);
+
+      const result = await CatTokenDecoder.validate(tokenBytes, keyPair.publicKey, {
+        requireExp: true,
+      });
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('exp');
+    });
+
+    it('defaults requireExp to true', async () => {
+      const tokenBytes = await new CatTokenBuilder()
+        .issuer('test')
+        .sign(keyPair.privateKey);
+
+      const result = await CatTokenDecoder.validate(tokenBytes, keyPair.publicKey);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('exp');
+    });
+
+    it('allows missing exp when requireExp is false', async () => {
+      const tokenBytes = await new CatTokenBuilder()
+        .issuer('test')
+        .sign(keyPair.privateKey);
+
+      const result = await CatTokenDecoder.validate(tokenBytes, keyPair.publicKey, {
+        requireExp: false,
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    it('enforces requiredAlgorithm', async () => {
+      const { tokenBytes } = await generateTestCatToken({ keyPair });
+
+      // Token uses ES256, require ES384 — should fail
+      const result = await CatTokenDecoder.validate(tokenBytes, keyPair.publicKey, {
+        requiredAlgorithm: CoseAlgorithm.ES384,
+      });
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('signature');
     });
 
     it('rejects token not yet valid', async () => {
@@ -304,5 +356,16 @@ describe('base64url utilities', () => {
     expect(encoded).not.toContain('+');
     expect(encoded).not.toContain('/');
     expect(encoded).not.toContain('=');
+  });
+
+  it('rejects invalid base64url characters', () => {
+    expect(() => base64urlDecode('abc def')).toThrow(); // space
+    expect(() => base64urlDecode('abc\ndef')).toThrow(); // newline
+    expect(() => base64urlDecode('abc+def')).toThrow(); // standard base64 char
+  });
+
+  it('rejects oversized input', () => {
+    const huge = 'A'.repeat(13000);
+    expect(() => base64urlDecode(huge)).toThrow();
   });
 });

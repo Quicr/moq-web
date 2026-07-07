@@ -104,11 +104,6 @@ export function coseSign1Decode(data: Uint8Array): CoseSign1 {
  *   external_aad : bstr,
  *   payload : bstr
  * ]
- *
- * @param protectedHeader - CBOR-encoded protected header bytes
- * @param payload - Payload bytes
- * @param externalAAD - External additional authenticated data (default: empty)
- * @returns CBOR-encoded Sig_structure
  */
 export function coseSign1SigStructure(
   protectedHeader: Uint8Array,
@@ -130,13 +125,6 @@ export function coseSign1SigStructure(
 
 /**
  * Create and sign a COSE_Sign1 structure.
- *
- * @param algorithm - COSE algorithm (ES256, ES384, ES512)
- * @param protectedHeaders - Protected header parameters (ALG will be added automatically)
- * @param payload - Payload bytes (typically CBOR-encoded CWT claims)
- * @param privateKey - WebCrypto ECDSA private key
- * @param unprotectedHeaders - Optional unprotected header parameters
- * @returns Signed COSE_Sign1 structure
  */
 export async function coseSign1Sign(
   algorithm: CoseAlgorithm,
@@ -187,18 +175,31 @@ export async function coseSign1Sign(
 /**
  * Verify the signature of a COSE_Sign1 structure.
  *
- * @param sign1 - The COSE_Sign1 structure to verify
- * @param publicKey - WebCrypto ECDSA public key
- * @returns true if signature is valid, false otherwise
+ * Accepts an optional `requiredAlgorithm` to prevent algorithm confusion.
+ * When provided, the token's algorithm must match exactly.
+ *
+ * Only catches DOMException from WebCrypto. Other errors propagate.
  */
 export async function coseSign1Verify(
   sign1: CoseSign1,
   publicKey: CryptoKey,
+  requiredAlgorithm?: CoseAlgorithm,
 ): Promise<boolean> {
   // Extract algorithm from protected header
   const algorithm = coseSign1GetAlgorithm(sign1);
   const algParams = COSE_ALG_PARAMS[algorithm];
   if (!algParams) {
+    return false;
+  }
+
+  // Enforce required algorithm if specified
+  if (requiredAlgorithm !== undefined && algorithm !== requiredAlgorithm) {
+    return false;
+  }
+
+  // Verify algorithm matches the public key's curve
+  const keyAlg = publicKey.algorithm as EcKeyAlgorithm;
+  if (keyAlg.namedCurve && keyAlg.namedCurve !== algParams.namedCurve) {
     return false;
   }
 
@@ -210,6 +211,7 @@ export async function coseSign1Verify(
   // Construct Sig_structure
   const sigStructure = coseSign1SigStructure(sign1.protectedHeader, sign1.payload);
 
+  // H4: Only catch DOMException from WebCrypto verify, let other errors propagate
   try {
     return await crypto.subtle.verify(
       { name: algParams.name, hash: algParams.hash },
@@ -217,8 +219,11 @@ export async function coseSign1Verify(
       toArrayBuffer(sign1.signature),
       toArrayBuffer(sigStructure),
     );
-  } catch {
-    return false;
+  } catch (e) {
+    if (e instanceof DOMException) {
+      return false;
+    }
+    throw e;
   }
 }
 
@@ -228,6 +233,7 @@ export async function coseSign1Verify(
  * @throws {CoseError} If the algorithm is missing or unsupported
  */
 export function coseSign1GetAlgorithm(sign1: CoseSign1): CoseAlgorithm {
+  // Empty protected header (zero bytes) is invalid — must contain at least an empty map
   if (sign1.protectedHeader.length === 0) {
     throw new CoseError('Empty protected header');
   }
@@ -252,12 +258,14 @@ export function coseSign1GetAlgorithm(sign1: CoseSign1): CoseAlgorithm {
 
 /**
  * Decode the protected header of a COSE_Sign1 as a map.
+ *
+ * Rejects truly empty headers (0 bytes). Accepts empty CBOR map (0xa0).
  */
 export function coseSign1DecodeProtectedHeader(
   protectedHeader: Uint8Array,
 ): Map<number, CborValue> {
   if (protectedHeader.length === 0) {
-    return new Map();
+    throw new CoseError('Protected header must not be empty');
   }
   const decoded = cborDecode(protectedHeader);
   if (!(decoded.value instanceof Map)) {
