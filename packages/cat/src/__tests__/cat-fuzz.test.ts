@@ -9,7 +9,6 @@ import {
   CatTokenDecoder,
   generateTestKeyPair,
   generateTestCatToken,
-  coseSign1Encode,
 } from '../index.js';
 
 describe('Fuzz Tests', () => {

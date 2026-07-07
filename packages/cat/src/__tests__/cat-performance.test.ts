@@ -5,14 +5,13 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import {
   CatTokenBuilder,
   CatTokenDecoder,
-  CoseAlgorithm,
   MoqtAction,
   cborEncode,
   cborDecode,
   generateTestKeyPair,
   base64urlEncode,
 } from '../index.js';
-import type { CborValue, MoqtScope } from '../index.js';
+import type { CborValue } from '../index.js';
 
 describe('Performance', () => {
   let keyPair: CryptoKeyPair;
@@ -49,6 +48,7 @@ describe('Performance', () => {
     }
     const elapsed = performance.now() - start;
 
+    // eslint-disable-next-line no-console
     console.log(`CBOR encode 1000 maps: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
     expect(elapsed).toBeLessThan(50);
   });
@@ -69,6 +69,7 @@ describe('Performance', () => {
     }
     const elapsed = performance.now() - start;
 
+    // eslint-disable-next-line no-console
     console.log(`CBOR decode 1000 maps: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
     expect(elapsed).toBeLessThan(50);
   });
@@ -80,6 +81,7 @@ describe('Performance', () => {
     }
     const elapsed = performance.now() - start;
 
+    // eslint-disable-next-line no-console
     console.log(`CAT decode 1000 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
     expect(elapsed).toBeLessThan(100);
   });
@@ -93,6 +95,7 @@ describe('Performance', () => {
     }
     const elapsed = performance.now() - start;
 
+    // eslint-disable-next-line no-console
     console.log(`CAT decode base64url 1000 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
     expect(elapsed).toBeLessThan(150);
   });
@@ -116,6 +119,7 @@ describe('Performance', () => {
     }
     const elapsed = performance.now() - start;
 
+    // eslint-disable-next-line no-console
     console.log(`CAT sign 100 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 100).toFixed(2)}ms/op)`);
     expect(elapsed).toBeLessThan(5000);
   });
@@ -127,6 +131,7 @@ describe('Performance', () => {
     }
     const elapsed = performance.now() - start;
 
+    // eslint-disable-next-line no-console
     console.log(`CAT validate 100 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 100).toFixed(2)}ms/op)`);
     expect(elapsed).toBeLessThan(10000);
   });

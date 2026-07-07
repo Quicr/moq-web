@@ -383,8 +383,8 @@ describe('HMAC-SHA256 (COSE_Mac0) support', () => {
     const macDecoded = cborDecode(macStruct);
     const sigDecoded = cborDecode(sigStruct);
 
-    expect((macDecoded.value as any[])[0]).toBe('MAC0');
-    expect((sigDecoded.value as any[])[0]).toBe('Signature1');
+    expect((macDecoded.value as CborValue[])[0]).toBe('MAC0');
+    expect((sigDecoded.value as CborValue[])[0]).toBe('Signature1');
   });
 });
 

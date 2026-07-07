@@ -14,7 +14,6 @@ import {
   cborDecode,
   CoseAlgorithm,
   CoseHeaderParam,
-  COSE_ALG_PARAMS,
   CoseError,
 } from '../index.js';
 import type { CborValue, CoseSign1 } from '../index.js';

@@ -2822,7 +2822,7 @@ export class MOQTSession {
         });
       } else {
         // P-frame: write to existing stream
-        let existing = this.activeVideoStreams.get(aliasKey);
+        const existing = this.activeVideoStreams.get(aliasKey);
 
         if (!existing) {
           // No active stream — open one (treat this object as the start of a subgroup)
