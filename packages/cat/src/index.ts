@@ -53,6 +53,7 @@ export {
   type CatToken,
   type CatValidationResult,
   type CatValidationOptions,
+  type CoseAlgParams,
 } from './types.js';
 
 // CBOR
@@ -71,6 +72,7 @@ export {
   coseSign1Sign,
   coseSign1Verify,
   coseSign1SigStructure,
+  coseMac0MacStructure,
   coseSign1GetAlgorithm,
   coseSign1DecodeProtectedHeader,
   CoseError,

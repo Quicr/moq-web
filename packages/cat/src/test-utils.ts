@@ -39,8 +39,18 @@ export async function generateTestKeyPair(
   extractable = true,
 ): Promise<CryptoKeyPair> {
   const params = COSE_ALG_PARAMS[algorithm];
+  if (params.isMac) {
+    // HMAC key generation
+    const key = await crypto.subtle.generateKey(
+      { name: 'HMAC', hash: params.hash },
+      extractable,
+      ['sign', 'verify'],
+    );
+    // Return same key for both sign and verify (symmetric)
+    return { privateKey: key, publicKey: key } as unknown as CryptoKeyPair;
+  }
   return crypto.subtle.generateKey(
-    { name: params.name, namedCurve: params.namedCurve },
+    { name: params.name, namedCurve: params.namedCurve! },
     extractable,
     ['sign', 'verify'],
   );

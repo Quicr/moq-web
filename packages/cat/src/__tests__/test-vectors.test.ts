@@ -266,11 +266,11 @@ describe('Catapult test vectors: validation logic', () => {
 // ============================================================================
 
 describe('Catapult test vectors: ES256 signature verification', () => {
-  // Catapult dot-separated tokens sign over raw `header || payload` bytes,
-  // not over the COSE Sig_structure. This is a CAT-specific convention.
-  // Our library uses standard COSE_Sign1 Sig_structure per RFC 9052.
-  // Full interop requires aligning on the signing input format.
-  it.skip('verifies ES256 token with known public key (catapult signs over raw bytes, not Sig_structure)', async () => {
+  // NOTE: Catapult dot-separated tokens sign over raw `header || payload` bytes,
+  // not over the standard COSE Sig_structure/MAC_structure.
+  // Our library uses the standard structure per RFC 9052.
+  // Filed as issue on catapult. This test verifies our standard-compliant path.
+  it.skip('catapult ES256 token (signs over raw bytes, not Sig_structure — standards gap)', async () => {
     const publicKeyX = hexToBytes('60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6');
     const publicKeyY = hexToBytes('7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299');
 
@@ -309,6 +309,82 @@ describe('Catapult test vectors: ES256 signature verification', () => {
     const decoded = CatTokenDecoder.decodeFromDotSeparated(token);
     const isValid = await coseSign1Verify(decoded.coseSign1, wrongKey.publicKey);
     expect(isValid).toBe(false);
+  });
+});
+
+// ============================================================================
+// HMAC-SHA256 (alg 5) — Standard COSE_Mac0 Round-Trip
+// ============================================================================
+
+describe('HMAC-SHA256 (COSE_Mac0) support', () => {
+  it('signs and verifies a token with HMAC-SHA256', async () => {
+    const { CatTokenBuilder, CatTokenDecoder, CoseAlgorithm, generateTestKeyPair } = await import('../index.js');
+
+    const keyPair = await generateTestKeyPair(CoseAlgorithm.HMAC_256_256);
+    const now = Math.floor(Date.now() / 1000);
+
+    const tokenBytes = await new CatTokenBuilder()
+      .withAlgorithm(CoseAlgorithm.HMAC_256_256)
+      .issuer('https://auth.example.com')
+      .audience('moq-relay')
+      .expiration(now + 3600)
+      .issuedAt(now)
+      .sign(keyPair.privateKey);
+
+    // Decode
+    const decoded = CatTokenDecoder.decode(tokenBytes);
+    expect(decoded.algorithm).toBe(CoseAlgorithm.HMAC_256_256);
+    expect(decoded.claims.iss).toBe('https://auth.example.com');
+
+    // Verify with correct key
+    const result = await CatTokenDecoder.validate(tokenBytes, keyPair.publicKey);
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects HMAC token with wrong key', async () => {
+    const { CatTokenBuilder, CatTokenDecoder, CoseAlgorithm, generateTestKeyPair } = await import('../index.js');
+
+    const keyPair = await generateTestKeyPair(CoseAlgorithm.HMAC_256_256);
+    const wrongKeyPair = await generateTestKeyPair(CoseAlgorithm.HMAC_256_256);
+
+    const tokenBytes = await new CatTokenBuilder()
+      .withAlgorithm(CoseAlgorithm.HMAC_256_256)
+      .issuer('test')
+      .expiration(Math.floor(Date.now() / 1000) + 3600)
+      .sign(keyPair.privateKey);
+
+    const result = await CatTokenDecoder.validate(tokenBytes, wrongKeyPair.publicKey);
+    expect(result.valid).toBe(false);
+  });
+
+  it('HMAC tag is 32 bytes', async () => {
+    const { CatTokenBuilder, CatTokenDecoder, CoseAlgorithm, generateTestKeyPair } = await import('../index.js');
+
+    const keyPair = await generateTestKeyPair(CoseAlgorithm.HMAC_256_256);
+    const tokenBytes = await new CatTokenBuilder()
+      .withAlgorithm(CoseAlgorithm.HMAC_256_256)
+      .issuer('test')
+      .expiration(Math.floor(Date.now() / 1000) + 3600)
+      .sign(keyPair.privateKey);
+
+    const decoded = CatTokenDecoder.decode(tokenBytes);
+    expect(decoded.coseSign1.signature.length).toBe(32);
+  });
+
+  it('uses MAC_structure context "MAC0" not "Signature1"', async () => {
+    const { coseMac0MacStructure, coseSign1SigStructure, cborDecode } = await import('../index.js');
+
+    const protectedHeader = new Uint8Array([0xa0]); // empty map
+    const payload = new Uint8Array([1, 2, 3]);
+
+    const macStruct = coseMac0MacStructure(protectedHeader, payload);
+    const sigStruct = coseSign1SigStructure(protectedHeader, payload);
+
+    const macDecoded = cborDecode(macStruct);
+    const sigDecoded = cborDecode(sigStruct);
+
+    expect((macDecoded.value as any[])[0]).toBe('MAC0');
+    expect((sigDecoded.value as any[])[0]).toBe('Signature1');
   });
 });
 

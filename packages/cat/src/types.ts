@@ -47,6 +47,8 @@ export enum CoseAlgorithm {
   ES384 = -35,
   /** ECDSA w/ SHA-512 on P-521 */
   ES512 = -36,
+  /** HMAC w/ SHA-256 (full 256-bit tag) — COSE_Mac0 */
+  HMAC_256_256 = 5,
 }
 
 /**
@@ -80,16 +82,28 @@ export interface CoseSign1 {
 /**
  * Maps CoseAlgorithm to WebCrypto parameters.
  */
-// Frozen to prevent runtime mutation of algorithm parameters
-export const COSE_ALG_PARAMS: Readonly<Record<CoseAlgorithm, Readonly<{
+/**
+ * COSE algorithm parameter details.
+ */
+export interface CoseAlgParams {
+  /** WebCrypto algorithm name */
   name: string;
+  /** Hash algorithm */
   hash: string;
-  namedCurve: string;
+  /** EC named curve (ECDSA only) */
+  namedCurve?: string;
+  /** Expected signature/tag length in bytes */
   sigLength: number;
-}>>> = Object.freeze({
-  [CoseAlgorithm.ES256]: Object.freeze({ name: 'ECDSA', hash: 'SHA-256', namedCurve: 'P-256', sigLength: 64 }),
-  [CoseAlgorithm.ES384]: Object.freeze({ name: 'ECDSA', hash: 'SHA-384', namedCurve: 'P-384', sigLength: 96 }),
-  [CoseAlgorithm.ES512]: Object.freeze({ name: 'ECDSA', hash: 'SHA-512', namedCurve: 'P-521', sigLength: 132 }),
+  /** Whether this is a MAC algorithm (COSE_Mac0) vs signing (COSE_Sign1) */
+  isMac: boolean;
+}
+
+// Frozen to prevent runtime mutation of algorithm parameters
+export const COSE_ALG_PARAMS: Readonly<Record<CoseAlgorithm, Readonly<CoseAlgParams>>> = Object.freeze({
+  [CoseAlgorithm.ES256]: Object.freeze({ name: 'ECDSA', hash: 'SHA-256', namedCurve: 'P-256', sigLength: 64, isMac: false }),
+  [CoseAlgorithm.ES384]: Object.freeze({ name: 'ECDSA', hash: 'SHA-384', namedCurve: 'P-384', sigLength: 96, isMac: false }),
+  [CoseAlgorithm.ES512]: Object.freeze({ name: 'ECDSA', hash: 'SHA-512', namedCurve: 'P-521', sigLength: 132, isMac: false }),
+  [CoseAlgorithm.HMAC_256_256]: Object.freeze({ name: 'HMAC', hash: 'SHA-256', sigLength: 32, isMac: true }),
 });
 
 // ============================================================================

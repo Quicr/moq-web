@@ -119,12 +119,37 @@ export function coseSign1SigStructure(
   return cborEncode(structure);
 }
 
+/**
+ * Construct the MAC_structure for COSE_Mac0 (RFC 9052 Section 6.3).
+ *
+ * MAC_structure = [
+ *   context : "MAC0",
+ *   body_protected : bstr,
+ *   external_aad : bstr,
+ *   payload : bstr
+ * ]
+ */
+export function coseMac0MacStructure(
+  protectedHeader: Uint8Array,
+  payload: Uint8Array,
+  externalAAD: Uint8Array = new Uint8Array(0),
+): Uint8Array {
+  const structure: CborValue[] = [
+    'MAC0',
+    protectedHeader,
+    externalAAD,
+    payload,
+  ];
+  return cborEncode(structure);
+}
+
 // ============================================================================
 // Sign / Verify
 // ============================================================================
 
 /**
- * Create and sign a COSE_Sign1 structure.
+ * Create and sign a COSE_Sign1 or COSE_Mac0 structure.
+ * Automatically selects Sig_structure vs MAC_structure based on algorithm.
  */
 export async function coseSign1Sign(
   algorithm: CoseAlgorithm,
@@ -145,19 +170,30 @@ export async function coseSign1Sign(
   // Encode protected header to CBOR
   const protectedHeader = cborEncode(headerMap);
 
-  // Construct Sig_structure
-  const sigStructure = coseSign1SigStructure(protectedHeader, payload);
+  // Construct signing/MAC input based on algorithm type
+  const toBeSigned = algParams.isMac
+    ? coseMac0MacStructure(protectedHeader, payload)
+    : coseSign1SigStructure(protectedHeader, payload);
 
-  // Sign with WebCrypto ECDSA
-  const signatureBuffer = await crypto.subtle.sign(
-    { name: algParams.name, hash: algParams.hash },
-    privateKey,
-    toArrayBuffer(sigStructure),
-  );
+  // Sign or MAC with WebCrypto
+  let signatureBuffer: ArrayBuffer;
+  if (algParams.isMac) {
+    signatureBuffer = await crypto.subtle.sign(
+      algParams.name,
+      privateKey,
+      toArrayBuffer(toBeSigned),
+    );
+  } else {
+    signatureBuffer = await crypto.subtle.sign(
+      { name: algParams.name, hash: algParams.hash },
+      privateKey,
+      toArrayBuffer(toBeSigned),
+    );
+  }
 
   const signature = new Uint8Array(signatureBuffer);
 
-  // Validate signature length
+  // Validate signature/tag length
   if (signature.length !== algParams.sigLength) {
     throw new CoseError(
       `Unexpected signature length: ${signature.length}, expected ${algParams.sigLength}`,
@@ -197,27 +233,39 @@ export async function coseSign1Verify(
     return false;
   }
 
-  // Verify algorithm matches the public key's curve
-  const keyAlg = publicKey.algorithm as EcKeyAlgorithm;
-  if (keyAlg.namedCurve && keyAlg.namedCurve !== algParams.namedCurve) {
-    return false;
+  // For ECDSA: verify algorithm matches the public key's curve
+  if (!algParams.isMac) {
+    const keyAlg = publicKey.algorithm as EcKeyAlgorithm;
+    if (keyAlg.namedCurve && keyAlg.namedCurve !== algParams.namedCurve) {
+      return false;
+    }
   }
 
-  // Validate signature length
+  // Validate signature/tag length
   if (sign1.signature.length !== algParams.sigLength) {
     return false;
   }
 
-  // Construct Sig_structure
-  const sigStructure = coseSign1SigStructure(sign1.protectedHeader, sign1.payload);
+  // Construct signing/MAC input based on algorithm type
+  const toBeVerified = algParams.isMac
+    ? coseMac0MacStructure(sign1.protectedHeader, sign1.payload)
+    : coseSign1SigStructure(sign1.protectedHeader, sign1.payload);
 
-  // H4: Only catch DOMException from WebCrypto verify, let other errors propagate
+  // Only catch DOMException from WebCrypto, let other errors propagate
   try {
+    if (algParams.isMac) {
+      return await crypto.subtle.verify(
+        algParams.name,
+        publicKey, // for HMAC, this is the shared secret key
+        toArrayBuffer(sign1.signature),
+        toArrayBuffer(toBeVerified),
+      );
+    }
     return await crypto.subtle.verify(
       { name: algParams.name, hash: algParams.hash },
       publicKey,
       toArrayBuffer(sign1.signature),
-      toArrayBuffer(sigStructure),
+      toArrayBuffer(toBeVerified),
     );
   } catch (e) {
     if (e instanceof DOMException) {
