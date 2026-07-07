@@ -11,8 +11,8 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType, type SwitchingSetAssignment } from '@web-moq/core';
-import type { VADProvider, ExperienceProfileName } from '@web-moq/media';
+import { MOQTransport, Logger, LogLevel as CoreLogLevel, VarIntType, setVarIntType, type SwitchingSetAssignment } from '@moq-web/core';
+import type { VADProvider, ExperienceProfileName } from '@moq-web/media';
 import {
   MediaSession,
   type SessionState,
@@ -26,7 +26,7 @@ import {
   AbrFetchStrategy,
   ABRController,
   type FetchStrategy,
-} from '@web-moq/media';
+} from '@moq-web/media';
 import { TransportState, LogLevel } from '../types';
 import { isDebugMode } from '../components/common/DevSettingsPanel';
 
@@ -220,7 +220,7 @@ interface ConnectionSlice {
   } | null;
   startSubscription: (namespace: string, trackName: string, mediaType?: 'video' | 'audio', dtsAssignment?: SwitchingSetAssignment, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
   /** Start VOD subscription using FETCH with adaptive buffer management */
-  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number, abrOptions?: { abrController: import('@web-moq/media').ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
+  startVodSubscription: (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup?: number, abrOptions?: { abrController: import('@moq-web/media').ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => Promise<number>;
   /** Standalone FETCH for previously published content (no media pipeline) */
   fetchTrack: (
     namespace: string,

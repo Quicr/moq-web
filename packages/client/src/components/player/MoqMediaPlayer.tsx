@@ -23,7 +23,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VideoRenderer, VideoRendererMetrics, type OnFrameTimestamp } from '../subscribe/VideoRenderer';
 import { useStore } from '../../store';
-import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@web-moq/media';
+import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@moq-web/media';
 
 export interface MoqMediaPlayerProps {
   /** The VideoFrame to render (legacy prop-based mode) */

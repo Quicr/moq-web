@@ -9,7 +9,7 @@
  * adaptive bitrate signaling.
  */
 
-import { Logger, Priority } from '@web-moq/core';
+import { Logger, Priority } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:backpressure');
 

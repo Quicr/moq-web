@@ -28,7 +28,7 @@
  *   StreamManager,
  *   DatagramManager,
  *   IS_DRAFT_16,
- * } from '@web-moq/core';
+ * } from '@moq-web/core';
  *
  * // Configure logging
  * Logger.setLevel(LogLevel.DEBUG);

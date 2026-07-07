@@ -11,7 +11,7 @@
  *
  * @example
  * ```typescript
- * import { serializeSwitchingSetAssignment, RequestParameter } from '@web-moq/core';
+ * import { serializeSwitchingSetAssignment, RequestParameter } from '@moq-web/core';
  *
  * // Create DTS assignment for a 720p track in switching set 1
  * const dtsBytes = serializeSwitchingSetAssignment({

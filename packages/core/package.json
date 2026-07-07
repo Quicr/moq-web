@@ -1,5 +1,5 @@
 {
-  "name": "@web-moq/core",
+  "name": "@moq-web/core",
   "version": "0.1.0",
   "description": "Core MOQT protocol types, encoding, state management, and transport layer",
   "type": "module",

@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { LiveTrickPlayController, type SeekMode, type SeekResult } from '../live-trick-play';
-import { TrackStatusCode } from '@web-moq/core';
+import { TrackStatusCode } from '@moq-web/core';
 
 const createMockSession = () => ({
   requestTrackStatus: vi.fn(),

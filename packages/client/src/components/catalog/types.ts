@@ -7,7 +7,7 @@
  * Types for the catalog builder and subscriber components.
  */
 
-import type { VODLoadProgress } from '@web-moq/media';
+import type { VODLoadProgress } from '@moq-web/media';
 
 /**
  * Simplified experience profile for catalog builder

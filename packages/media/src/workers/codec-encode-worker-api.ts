@@ -102,7 +102,7 @@ function getRegistry(worker: Worker): Map<number, CodecEncodeWorkerClient> {
  * ```typescript
  * // Application creates a shared worker
  * const worker = new Worker(
- *   new URL('@web-moq/media/codec-encode-worker', import.meta.url),
+ *   new URL('@moq-web/media/codec-encode-worker', import.meta.url),
  *   { type: 'module' }
  * );
  *

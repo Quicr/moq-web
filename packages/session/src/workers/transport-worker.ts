@@ -15,7 +15,7 @@ import type {
   TransportState,
   StreamInfo,
 } from './transport-worker-types.js';
-import { getCurrentALPNProtocol, IS_DRAFT_16 } from '@web-moq/core';
+import { getCurrentALPNProtocol, IS_DRAFT_16 } from '@moq-web/core';
 
 // Worker state
 let transport: WebTransport | null = null;

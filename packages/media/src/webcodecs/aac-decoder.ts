@@ -9,7 +9,7 @@
  *
  * @example
  * ```typescript
- * import { AACDecoder } from '@web-moq/media';
+ * import { AACDecoder } from '@moq-web/media';
  *
  * const decoder = new AACDecoder();
  *
@@ -30,7 +30,7 @@
  * ```
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:aac-decoder');
 

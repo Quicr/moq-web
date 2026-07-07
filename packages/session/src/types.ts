@@ -9,7 +9,7 @@
  * any media-specific dependencies.
  */
 
-import type { GroupOrder } from '@web-moq/core';
+import type { GroupOrder } from '@moq-web/core';
 
 /**
  * Session state

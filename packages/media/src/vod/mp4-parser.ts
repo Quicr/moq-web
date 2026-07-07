@@ -10,7 +10,7 @@
  * - Allows direct extraction of encoded NAL units without re-encoding
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:mp4-parser');
 

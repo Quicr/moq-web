@@ -3,7 +3,7 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { MOQTransport, Logger, LogLevel } from '@web-moq/core';
+import { MOQTransport, Logger, LogLevel } from '@moq-web/core';
 import App from './App';
 import { setTransportFactory } from './store';
 import './index.css';

@@ -7,7 +7,7 @@
  * Provides high-level APIs for subscribing to and publishing MSF catalogs.
  */
 
-import type { MOQTSession } from '@web-moq/session';
+import type { MOQTSession } from '@moq-web/session';
 import { CATALOG_TRACK_NAME } from '../version.js';
 import { parseCatalogFromBytes, serializeCatalogToBytes } from '../catalog/index.js';
 import { applyDelta } from '../catalog/delta.js';

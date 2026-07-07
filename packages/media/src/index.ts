@@ -18,7 +18,7 @@
  *   H264Encoder,
  *   OpusEncoder,
  *   LOCPackager,
- * } from '@web-moq/media';
+ * } from '@moq-web/media';
  *
  * // Publishing pipeline
  * const publishPipeline = new PublishPipeline({

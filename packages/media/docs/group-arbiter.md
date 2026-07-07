@@ -28,7 +28,7 @@ With GroupArbiter: Frames buffered and output in correct (groupId, objectId) ord
 ### Enable via MediaConfig
 
 ```typescript
-import { MediaSession } from '@web-moq/media';
+import { MediaSession } from '@moq-web/media';
 
 const session = new MediaSession(transport);
 await session.setup();
@@ -51,7 +51,7 @@ const subscriptionId = await session.subscribe(
 ### Direct Usage (Advanced)
 
 ```typescript
-import { GroupArbiter, MonotonicTickProvider } from '@web-moq/media';
+import { GroupArbiter, MonotonicTickProvider } from '@moq-web/media';
 
 const ticker = new MonotonicTickProvider();
 const arbiter = new GroupArbiter<Uint8Array>({
@@ -189,7 +189,7 @@ GroupArbiter runs inside the decode worker for best performance:
 const session = new MediaSession({
   workers: {
     decodeWorker: new Worker(
-      new URL('@web-moq/media/codec-decode-worker', import.meta.url),
+      new URL('@moq-web/media/codec-decode-worker', import.meta.url),
       { type: 'module' }
     ),
   },

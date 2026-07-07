@@ -9,7 +9,7 @@
  *
  * @example
  * ```typescript
- * import { OpusDecoder } from '@web-moq/media';
+ * import { OpusDecoder } from '@moq-web/media';
  *
  * const decoder = new OpusDecoder();
  *
@@ -29,7 +29,7 @@
  * ```
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:audio-decoder');
 

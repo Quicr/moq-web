@@ -13,8 +13,8 @@ import { useStore } from '../../store';
 import { CatalogBuilderPanel } from './CatalogBuilderPanel';
 import { CatalogSubscriberPanel } from './CatalogSubscriberPanel';
 import type { CatalogTrackConfig, VODTrackConfig } from './types';
-import { createMSFSession, type FullCatalog, type MSFSession } from '@web-moq/msf';
-import { VODLoader } from '@web-moq/media';
+import { createMSFSession, type FullCatalog, type MSFSession } from '@moq-web/msf';
+import { VODLoader } from '@moq-web/media';
 
 type CatalogMode = 'publish' | 'subscribe';
 

@@ -10,7 +10,7 @@
  *
  * @example
  * ```typescript
- * import { PublishPipeline } from '@web-moq/media';
+ * import { PublishPipeline } from '@moq-web/media';
  *
  * const pipeline = new PublishPipeline({
  *   video: {
@@ -33,7 +33,7 @@
  * ```
  */
 
-import { Logger, Priority } from '@web-moq/core';
+import { Logger, Priority } from '@moq-web/core';
 import { H264Encoder, VideoEncoderConfig, EncodedVideoFrame } from '../webcodecs/video-encoder.js';
 import { OpusEncoder, OpusEncoderOptions, EncodedAudioFrame } from '../webcodecs/audio-encoder.js';
 import { LOCPackager } from '../loc/loc-container.js';
@@ -54,7 +54,7 @@ export interface PublishPipelineConfig {
   /**
    * Optional worker for offloading encoding to a web worker.
    * If provided, video/audio encoding will run in the worker.
-   * The worker should be created from '@web-moq/media/codec-encode-worker'.
+   * The worker should be created from '@moq-web/media/codec-encode-worker'.
    */
   encodeWorker?: Worker;
   /** Enable QuicR-Mac interop mode (fixed-size LOC extensions) */

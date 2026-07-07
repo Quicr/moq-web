@@ -4,7 +4,7 @@
 /**
  * End-to-End Example: Secure Video Publishing and Subscribing
  *
- * This example demonstrates how to use @web-moq/secure-objects for
+ * This example demonstrates how to use @moq-web/secure-objects for
  * encrypting video frames in a MOQT publish/subscribe scenario.
  *
  * Run with: npx tsx examples/e2e-example.ts

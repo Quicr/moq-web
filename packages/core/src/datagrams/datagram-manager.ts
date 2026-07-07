@@ -10,7 +10,7 @@
  *
  * @example
  * ```typescript
- * import { DatagramManager } from '@web-moq/core';
+ * import { DatagramManager } from '@moq-web/core';
  *
  * const manager = new DatagramManager(transport);
  *

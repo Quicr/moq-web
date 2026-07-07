@@ -1,4 +1,4 @@
-# @web-moq/media
+# @moq-web/media
 
 WebCodecs encoding/decoding with LOC (Low Overhead Container) format for MOQT media streaming.
 
@@ -16,7 +16,7 @@ This package provides complete media capture, encoding, packaging, decoding, and
 ## Installation
 
 ```bash
-bun add @web-moq/media
+bun add @moq-web/media
 ```
 
 ## Building
@@ -47,7 +47,7 @@ bun test:watch
 ### MediaSession (High-Level API)
 
 ```typescript
-import { MediaSession } from '@web-moq/media';
+import { MediaSession } from '@moq-web/media';
 
 // Create media session
 const session = new MediaSession({
@@ -98,7 +98,7 @@ await session.close();
 ### PublishPipeline
 
 ```typescript
-import { PublishPipeline } from '@web-moq/media';
+import { PublishPipeline } from '@moq-web/media';
 
 const pipeline = new PublishPipeline({
   video: {
@@ -136,7 +136,7 @@ await pipeline.stop();
 ### SubscribePipeline
 
 ```typescript
-import { SubscribePipeline } from '@web-moq/media';
+import { SubscribePipeline } from '@moq-web/media';
 
 const pipeline = new SubscribePipeline({
   video: {
@@ -175,7 +175,7 @@ await pipeline.stop();
 ### Video Encoder
 
 ```typescript
-import { H264Encoder, H264Profiles } from '@web-moq/media';
+import { H264Encoder, H264Profiles } from '@moq-web/media';
 
 const encoder = new H264Encoder({
   width: 1280,
@@ -202,7 +202,7 @@ await encoder.close();
 ### Audio Encoder
 
 ```typescript
-import { OpusEncoder } from '@web-moq/media';
+import { OpusEncoder } from '@moq-web/media';
 
 const encoder = new OpusEncoder({
   sampleRate: 48000,
@@ -222,7 +222,7 @@ await encoder.close();
 ### LOC Container
 
 ```typescript
-import { LOCPackager, LOCUnpackager, MediaType } from '@web-moq/media';
+import { LOCPackager, LOCUnpackager, MediaType } from '@moq-web/media';
 
 // Package video frame
 const packager = new LOCPackager();
@@ -245,11 +245,11 @@ console.log('Media type:', frame.mediaType === MediaType.VIDEO ? 'video' : 'audi
 import {
   CodecEncodeWorkerClient,
   CodecDecodeWorkerClient,
-} from '@web-moq/media';
+} from '@moq-web/media';
 
 // Create encode worker client
 const encodeWorker = new CodecEncodeWorkerClient(
-  new Worker(new URL('@web-moq/media/codec-encode-worker', import.meta.url))
+  new Worker(new URL('@moq-web/media/codec-encode-worker', import.meta.url))
 );
 
 await encodeWorker.configure({
@@ -266,7 +266,7 @@ encodeWorker.encodeVideo(videoFrame);
 
 // Create decode worker client
 const decodeWorker = new CodecDecodeWorkerClient(
-  new Worker(new URL('@web-moq/media/codec-decode-worker', import.meta.url))
+  new Worker(new URL('@moq-web/media/codec-decode-worker', import.meta.url))
 );
 
 await decodeWorker.configure({
@@ -323,7 +323,7 @@ High-level media streaming session.
 ## Resolution Presets
 
 ```typescript
-import { getResolutionConfig } from '@web-moq/media';
+import { getResolutionConfig } from '@moq-web/media';
 
 // Get preset configuration
 const config = getResolutionConfig('720p');

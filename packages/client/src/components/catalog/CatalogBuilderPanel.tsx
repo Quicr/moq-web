@@ -22,8 +22,8 @@ import type {
   TimelineTrackConfig,
 } from './types';
 import { DEFAULT_TRACK_CONFIGS } from './types';
-import { createCatalog, type FullCatalog } from '@web-moq/msf';
-import { VODLoader, type VODPreloadMetadata } from '@web-moq/media';
+import { createCatalog, type FullCatalog } from '@moq-web/msf';
+import { VODLoader, type VODPreloadMetadata } from '@moq-web/media';
 
 interface CatalogBuilderPanelProps {
   namespace: string;

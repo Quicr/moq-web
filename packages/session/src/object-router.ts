@@ -8,8 +8,8 @@
  * appropriate subscriptions.
  */
 
-import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16, DataStreamType, BufferReader } from '@web-moq/core';
-import type { FetchDecoderState } from '@web-moq/core';
+import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16, DataStreamType, BufferReader } from '@moq-web/core';
+import type { FetchDecoderState } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 
 const log = Logger.create('moqt:session:object-router');

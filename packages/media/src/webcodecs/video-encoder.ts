@@ -11,7 +11,7 @@
  *
  * @example
  * ```typescript
- * import { H264Encoder } from '@web-moq/media';
+ * import { H264Encoder } from '@moq-web/media';
  *
  * const encoder = new H264Encoder({
  *   width: 1280,
@@ -29,7 +29,7 @@
  * ```
  */
 
-import { Logger, acquireBufferForChunk } from '@web-moq/core';
+import { Logger, acquireBufferForChunk } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:video-encoder');
 

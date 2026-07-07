@@ -11,7 +11,7 @@
 import React from 'react';
 import { useStore } from '../../store';
 import { LogLevel } from '../../types';
-import { VarIntType } from '@web-moq/core';
+import { VarIntType } from '@moq-web/core';
 
 /**
  * Check if debug mode is enabled via query parameter

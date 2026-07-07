@@ -6,9 +6,9 @@
  * 3. Denied Subscriber: Invalid token → relay rejects subscribe
  */
 
-import { MOQTransport } from '@web-moq/core';
-import { MOQTSession } from '@web-moq/session';
-import { MediaSession, type MediaConfig } from '@web-moq/media';
+import { MOQTransport } from '@moq-web/core';
+import { MOQTSession } from '@moq-web/session';
+import { MediaSession, type MediaConfig } from '@moq-web/media';
 import {
   CatTokenDecoder,
   CatTokenBuilder,
@@ -21,7 +21,7 @@ import {
   catTokenToBase64url,
   type CatToken,
   type MoqtScope,
-} from '@web-moq/cat';
+} from '@moq-web/cat';
 
 // ============================================================================
 // Types
@@ -127,7 +127,7 @@ function setStatus(panelId: string, text: string, cls: string) {
 }
 
 // ============================================================================
-// Token helpers (using @web-moq/cat library)
+// Token helpers (using @moq-web/cat library)
 // ============================================================================
 
 const MOQT_ACTION_NAMES: Record<number, string> = {

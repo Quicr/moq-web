@@ -15,7 +15,7 @@
  * Strategies only decide what to fetch and when.
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 import { type FetchStrategy, type FetchStrategyContext } from './fetch-strategy';
 
 const log = Logger.create('moqt:media:vod-fetch-controller');

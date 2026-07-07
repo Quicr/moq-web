@@ -8,7 +8,7 @@
  * encoding/decoding pipelines. Use this for video/audio streaming.
  */
 
-import { MOQTransport, Logger } from '@web-moq/core';
+import { MOQTransport, Logger } from '@moq-web/core';
 import {
   MOQTSession,
   type SessionState,
@@ -25,12 +25,12 @@ import {
   type FetchErrorEvent,
   type VODPublishOptions,
   type ForwardStateChangeEvent,
-} from '@web-moq/session';
+} from '@moq-web/session';
 import {
   SecureObjectsContext,
   CipherSuite,
   type TrackIdentifier,
-} from '@web-moq/secure-objects';
+} from '@moq-web/secure-objects';
 import { PublishPipeline, type PublishedObject } from '../pipeline/publish-pipeline.js';
 import { SubscribePipeline, type JitterSample, type LatencyStatsSample } from '../pipeline/subscribe-pipeline.js';
 import type {
@@ -105,8 +105,8 @@ interface ActiveSubscription {
  *
  * @example
  * ```typescript
- * import { MediaSession } from '@web-moq/media';
- * import { MOQTransport } from '@web-moq/core';
+ * import { MediaSession } from '@moq-web/media';
+ * import { MOQTransport } from '@moq-web/core';
  *
  * // Create transport and session
  * const transport = new MOQTransport();

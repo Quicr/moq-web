@@ -7,8 +7,8 @@
  * Type definitions for the media-specific session layer.
  */
 
-import type { GroupOrder } from '@web-moq/core';
-import type { RequestAuthToken } from '@web-moq/session';
+import type { GroupOrder } from '@moq-web/core';
+import type { RequestAuthToken } from '@moq-web/session';
 
 /**
  * Session state
@@ -47,7 +47,7 @@ export interface WorkerConfig {
    * @example
    * ```typescript
    * const transportWorker = new Worker(
-   *   new URL('@web-moq/session/worker', import.meta.url),
+   *   new URL('@moq-web/session/worker', import.meta.url),
    *   { type: 'module' }
    * );
    * ```
@@ -61,7 +61,7 @@ export interface WorkerConfig {
    * @example
    * ```typescript
    * const encodeWorker = new Worker(
-   *   new URL('@web-moq/media/codec-encode-worker', import.meta.url),
+   *   new URL('@moq-web/media/codec-encode-worker', import.meta.url),
    *   { type: 'module' }
    * );
    * ```
@@ -75,7 +75,7 @@ export interface WorkerConfig {
    * @example
    * ```typescript
    * const decodeWorker = new Worker(
-   *   new URL('@web-moq/media/codec-decode-worker', import.meta.url),
+   *   new URL('@moq-web/media/codec-decode-worker', import.meta.url),
    *   { type: 'module' }
    * );
    * ```

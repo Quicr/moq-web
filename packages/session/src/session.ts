@@ -54,8 +54,8 @@ import {
   type TrackStatusMessage,
   type TrackStatusOkMessage,
   type TrackStatusErrorMessage,
-} from '@web-moq/core';
-import { base64urlDecode, coseSign1Encode, C4M_TOKEN_TYPE } from '@web-moq/cat';
+} from '@moq-web/core';
+import { base64urlDecode, coseSign1Encode, C4M_TOKEN_TYPE } from '@moq-web/cat';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
 import { ObjectRouter } from './object-router.js';
@@ -132,7 +132,7 @@ export interface MOQTSessionConfig {
  * const session = new MOQTSession(transport);
  *
  * // Worker mode (new)
- * const worker = new Worker(new URL('@web-moq/session/worker', import.meta.url));
+ * const worker = new Worker(new URL('@moq-web/session/worker', import.meta.url));
  * const session = new MOQTSession({ worker });
  * await session.connect('https://relay.example.com/moq');
  * ```
@@ -2505,7 +2505,7 @@ export class MOQTSession {
     const fetchError: FetchErrorMessage = {
       type: MessageType.FETCH_ERROR,
       requestId,
-      errorCode: errorCode as import('@web-moq/core').RequestErrorCode,
+      errorCode: errorCode as import('@moq-web/core').RequestErrorCode,
       reasonPhrase,
     };
 

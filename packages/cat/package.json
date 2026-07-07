@@ -1,5 +1,5 @@
 {
-  "name": "@web-moq/cat",
+  "name": "@moq-web/cat",
   "version": "0.1.0",
   "description": "Common Access Token (CAT/C4M) for MoQ Transport — CBOR/COSE/CWT token library",
   "type": "module",

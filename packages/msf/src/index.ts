@@ -21,7 +21,7 @@
  *   createCatalog,
  *   parseCatalog,
  *   createMSFSession,
- * } from '@web-moq/msf';
+ * } from '@moq-web/msf';
  *
  * // Build a catalog
  * const catalog = createCatalog()

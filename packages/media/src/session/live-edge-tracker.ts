@@ -8,8 +8,8 @@
  * TRACK_STATUS. Used for DVR/trick play to know the current live position.
  */
 
-import { Logger, TrackStatusCode } from '@web-moq/core';
-import type { MOQTSession } from '@web-moq/session';
+import { Logger, TrackStatusCode } from '@moq-web/core';
+import type { MOQTSession } from '@moq-web/session';
 
 const log = Logger.create('moqt:media:live-edge-tracker');
 

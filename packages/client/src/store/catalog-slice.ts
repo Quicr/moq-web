@@ -8,8 +8,8 @@
  */
 
 import type { StateCreator } from 'zustand';
-import type { FullCatalog } from '@web-moq/msf';
-import { VODLoader, type VODLoadProgress } from '@web-moq/media';
+import type { FullCatalog } from '@moq-web/msf';
+import { VODLoader, type VODLoadProgress } from '@moq-web/media';
 import type {
   CatalogTrackConfig,
   CatalogTrackType,
