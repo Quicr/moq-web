@@ -581,12 +581,76 @@ async function stopSubscribe() {
 // Denied subscriber flow
 // ============================================================================
 
+/**
+ * "Bad Subscribe Token" mode:
+ * 1. Mint a VALID token and use it for CLIENT_SETUP (session establishes OK)
+ * 2. Generate an INVALID token and send it as per-request AUTHORIZATION_TOKEN in SUBSCRIBE
+ * 3. Tests whether the relay enforces per-action auth, not just session-level
+ */
+async function tryBadSubscribeToken(panelId: string) {
+  // Step 1: Get a valid subscriber session (reuse existing or create new)
+  const moatSession = subMoatSession ?? pubMoatSession;
+  if (!moatSession) {
+    addEvent(panelId, { time: new Date(), type: 'error', label: 'Sign in first', detail: 'Need Google sign-in to get a valid session token' });
+    setStatus(panelId, 'ERROR', 'red');
+    return;
+  }
+
+  // Step 2: Mint a VALID token for CLIENT_SETUP
+  const validToken = await mintToken(moatSession, 'subscriber', panelId);
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'Minted VALID token', detail: 'For CLIENT_SETUP (session-level auth)' });
+
+  // Step 3: Create session with valid token
+  const relayUrl = getRelayUrl();
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'WebTransport CONNECT', detail: relayUrl });
+
+  const transport = new MOQTransport();
+  await transport.connect(relayUrl);
+  addEvent(panelId, { time: new Date(), type: 'recv', label: 'WebTransport Ready' });
+
+  const session = new MOQTSession(transport);
+  session.setAuthToken(validToken, 0x63346d);
+
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'CLIENT_SETUP', detail: 'Using VALID token — should succeed' });
+  await session.setup();
+  addEvent(panelId, { time: new Date(), type: 'recv', label: 'SERVER_SETUP OK', detail: 'Session established with valid token' });
+
+  // Step 4: Generate an INVALID token for the SUBSCRIBE request parameter
+  const invalidToken = await generateInvalidToken('bad-sig');
+  const invalidTokenBytes = base64urlDecode(invalidToken);
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'Generated INVALID token', detail: 'Bad signature — will send in SUBSCRIBE request parameter' });
+
+  // Show both tokens in the inspector
+  renderToken(panelId, invalidToken);
+
+  // Step 5: Subscribe with invalid per-request auth token
+  const ns = getNamespace();
+  addEvent(panelId, { time: new Date(), type: 'send', label: 'SUBSCRIBE', detail: `namespace=[${ns.join('/')}], track=video\n⚠ Per-request AUTHORIZATION_TOKEN = INVALID (bad-sig)` });
+
+  const mediaSession = new MediaSession({ session });
+  await mediaSession.subscribe(ns, 'video', {
+    ...MEDIA_CONFIG,
+    authToken: { tokenBytes: invalidTokenBytes, tokenType: 0x63346d },
+  }, 'video');
+
+  // If we got here, relay didn't check per-request token
+  addEvent(panelId, { time: new Date(), type: 'recv', label: 'Subscribe accepted (!)', detail: 'Relay did NOT check per-request AUTHORIZATION_TOKEN in SUBSCRIBE' });
+  setStatus(panelId, 'UNEXPECTED', 'yellow');
+
+  await mediaSession.close();
+}
+
 async function trySubscribeDenied() {
   const panelId = 'denied';
   const mode = (document.getElementById('denied-mode') as HTMLSelectElement).value;
 
   try {
     setStatus(panelId, 'CONNECTING', 'yellow');
+
+    // "bad-subscribe" mode: valid CLIENT_SETUP, invalid per-request SUBSCRIBE token
+    if (mode === 'bad-subscribe') {
+      return await tryBadSubscribeToken(panelId);
+    }
 
     const token = await generateInvalidToken(mode);
     if (token) {
