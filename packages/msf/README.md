@@ -1,4 +1,4 @@
-# @web-moq/msf
+# @moq-web/msf
 
 MOQT Streaming Format (MSF) implementation - JSON catalogs for LOC-compliant media delivery over MOQT.
 
@@ -7,7 +7,7 @@ Based on the [MSF specification](https://github.com/moq-wg/msf).
 ## Installation
 
 ```bash
-pnpm add @web-moq/msf
+pnpm add @moq-web/msf
 ```
 
 ## Build
@@ -28,7 +28,7 @@ pnpm test:watch     # Run tests in watch mode
 ### Creating a Catalog
 
 ```typescript
-import { createCatalog } from '@web-moq/msf';
+import { createCatalog } from '@moq-web/msf';
 
 const catalog = createCatalog()
   .generatedAt()
@@ -54,7 +54,7 @@ const catalog = createCatalog()
 ### Parsing and Validating Catalogs
 
 ```typescript
-import { parseCatalog, parseFullCatalog } from '@web-moq/msf';
+import { parseCatalog, parseFullCatalog } from '@moq-web/msf';
 
 // Parse any catalog (full or delta)
 const catalog = parseCatalog(jsonString);
@@ -63,14 +63,14 @@ const catalog = parseCatalog(jsonString);
 const fullCatalog = parseFullCatalog(jsonString);
 
 // Parse from bytes
-import { parseCatalogFromBytes } from '@web-moq/msf';
+import { parseCatalogFromBytes } from '@moq-web/msf';
 const catalog = parseCatalogFromBytes(uint8Array);
 ```
 
 ### Delta Updates
 
 ```typescript
-import { generateDelta, applyDelta, createDelta } from '@web-moq/msf';
+import { generateDelta, applyDelta, createDelta } from '@moq-web/msf';
 
 // Generate delta between two catalogs
 const delta = generateDelta(oldCatalog, newCatalog);
@@ -94,7 +94,7 @@ import {
   decodeMediaTimeline,
   findLocationForTime,
   MediaTimelineCalculator,
-} from '@web-moq/msf';
+} from '@moq-web/msf';
 
 // Explicit timeline entries
 const points = [
@@ -125,7 +125,7 @@ import {
   createLocationEvent,
   createMediaTimeEvent,
   encodeEventTimeline,
-} from '@web-moq/msf';
+} from '@moq-web/msf';
 
 const events = [
   createWallclockEvent(Date.now(), { type: 'ad-start' }),
@@ -139,7 +139,7 @@ const encoded = encodeEventTimeline(events);
 ### URL Encoding
 
 ```typescript
-import { generateMsfUrl, parseMsfUrl, generateCatalogUrl } from '@web-moq/msf';
+import { generateMsfUrl, parseMsfUrl, generateCatalogUrl } from '@moq-web/msf';
 
 // Generate URL for a track
 const url = generateMsfUrl(
@@ -163,7 +163,7 @@ const catalogUrl = generateCatalogUrl(
 ### Session Integration
 
 ```typescript
-import { createMSFSession } from '@web-moq/msf';
+import { createMSFSession } from '@moq-web/msf';
 
 // Create MSF session from MOQT session
 const msfSession = createMSFSession(moqtSession, ['conference', 'room-1']);

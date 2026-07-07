@@ -10,8 +10,8 @@
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useStore } from '../../store';
-import { createMSFSession, type MSFSession, type FullCatalog, type Track } from '@web-moq/msf';
-import { ABRController, type ABRTrack } from '@web-moq/media';
+import { createMSFSession, type MSFSession, type FullCatalog, type Track } from '@moq-web/msf';
+import { ABRController, type ABRTrack } from '@moq-web/media';
 import { parseSubtitles, type SubtitleCue } from '../player/SubtitleOverlay';
 import { MoqMediaPlayer } from '../player/MoqMediaPlayer';
 import { useVideoFrameQueue } from '../../hooks/useVideoFrameQueue';

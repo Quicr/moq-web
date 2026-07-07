@@ -1,5 +1,5 @@
 {
-  "name": "@web-moq/msf-compression-benchmark",
+  "name": "@moq-web/msf-compression-benchmark",
   "version": "0.1.0",
   "private": true,
   "description": "Benchmark tool for MSF compression on catalogs, media timelines, and event timelines",
@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@web-moq/msf": "workspace:*",
+    "@moq-web/msf": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

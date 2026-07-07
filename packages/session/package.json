@@ -1,5 +1,5 @@
 {
-  "name": "@web-moq/session",
+  "name": "@moq-web/session",
   "version": "0.1.0",
   "description": "Generic MOQT session management - protocol layer without media",
   "type": "module",
@@ -27,8 +27,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@web-moq/core": "workspace:*",
-    "@web-moq/cat": "workspace:*"
+    "@moq-web/core": "workspace:*",
+    "@moq-web/cat": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

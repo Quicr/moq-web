@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../../store';
-import type { VADResult } from '@web-moq/media';
+import type { VADResult } from '@moq-web/media';
 
 interface VADIndicatorProps {
   /** Audio context for analysis */

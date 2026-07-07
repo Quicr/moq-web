@@ -1,4 +1,4 @@
-# @web-moq/core
+# @moq-web/core
 
 Core MOQT (Media over QUIC Transport) protocol types, encoding, state management, and transport layer.
 
@@ -16,7 +16,7 @@ This package provides the fundamental building blocks for implementing MOQT in T
 ## Installation
 
 ```bash
-bun add @web-moq/core
+bun add @moq-web/core
 ```
 
 ## Building
@@ -55,7 +55,7 @@ import {
   MessageType,
   Version,
   SetupParameter,
-} from '@web-moq/core';
+} from '@moq-web/core';
 
 // Encode a CLIENT_SETUP message
 const clientSetup = {
@@ -73,7 +73,7 @@ const [message, bytesRead] = MessageCodec.decode(bytes);
 ### WebTransport Connection
 
 ```typescript
-import { MOQTransport, Logger, LogLevel } from '@web-moq/core';
+import { MOQTransport, Logger, LogLevel } from '@moq-web/core';
 
 // Configure logging
 Logger.setLevel(LogLevel.DEBUG);
@@ -109,7 +109,7 @@ await transport.sendDatagram(data);
 ### Track Management
 
 ```typescript
-import { TrackManager, trackNameToKey } from '@web-moq/core';
+import { TrackManager, trackNameToKey } from '@moq-web/core';
 
 const trackManager = new TrackManager();
 
@@ -127,7 +127,7 @@ const key = trackNameToKey(['conference', 'room-1'], 'video');
 ### VarInt Encoding
 
 ```typescript
-import { VarInt, BufferWriter, BufferReader } from '@web-moq/core';
+import { VarInt, BufferWriter, BufferReader } from '@moq-web/core';
 
 // Encode a varint
 const encoded = VarInt.encode(12345n);

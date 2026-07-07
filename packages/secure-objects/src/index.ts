@@ -14,7 +14,7 @@
  * import {
  *   SecureObjectsContext,
  *   CipherSuite,
- * } from '@web-moq/secure-objects';
+ * } from '@moq-web/secure-objects';
  *
  * // Create encryption context
  * const ctx = await SecureObjectsContext.create({

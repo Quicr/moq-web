@@ -10,7 +10,7 @@
  *
  * @example
  * ```typescript
- * import { RingBuffer } from '@web-moq/core';
+ * import { RingBuffer } from '@moq-web/core';
  *
  * // Create a buffer for 100 items
  * const buffer = new RingBuffer<VideoFrame>(100);

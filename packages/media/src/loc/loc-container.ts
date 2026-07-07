@@ -18,7 +18,7 @@
  *
  * @example
  * ```typescript
- * import { LOCPackager, LOCUnpackager, MediaType } from '@web-moq/media';
+ * import { LOCPackager, LOCUnpackager, MediaType } from '@moq-web/media';
  *
  * // Package a video frame
  * const packager = new LOCPackager();
@@ -34,7 +34,7 @@
  * ```
  */
 
-import { Logger, BufferReader } from '@web-moq/core';
+import { Logger, BufferReader } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:loc');
 

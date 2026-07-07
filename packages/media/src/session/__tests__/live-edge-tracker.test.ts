@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { LiveEdgeTracker } from '../live-edge-tracker';
-import { TrackStatusCode } from '@web-moq/core';
+import { TrackStatusCode } from '@moq-web/core';
 
 // Mock session
 const createMockSession = () => ({

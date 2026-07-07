@@ -9,7 +9,7 @@
  *
  * @example
  * ```typescript
- * import { StreamManager } from '@web-moq/core';
+ * import { StreamManager } from '@moq-web/core';
  *
  * const manager = new StreamManager(transport);
  *

@@ -1,5 +1,5 @@
 {
-  "name": "@web-moq/auth-demo",
+  "name": "@moq-web/auth-demo",
   "version": "0.1.0",
   "private": true,
   "description": "MoQ C4M Authorization Demo — shows successful and denied auth flows with live video",
@@ -10,10 +10,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@web-moq/core": "workspace:*",
-    "@web-moq/session": "workspace:*",
-    "@web-moq/media": "workspace:*",
-    "@web-moq/cat": "workspace:*"
+    "@moq-web/core": "workspace:*",
+    "@moq-web/session": "workspace:*",
+    "@moq-web/media": "workspace:*",
+    "@moq-web/cat": "workspace:*"
   },
   "devDependencies": {
     "@vitejs/plugin-basic-ssl": "2.1.4",

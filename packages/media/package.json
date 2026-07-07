@@ -1,5 +1,5 @@
 {
-  "name": "@web-moq/media",
+  "name": "@moq-web/media",
   "version": "0.1.0",
   "description": "WebCodecs encoding/decoding with LOC container format",
   "type": "module",
@@ -39,9 +39,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@web-moq/core": "workspace:*",
-    "@web-moq/secure-objects": "workspace:*",
-    "@web-moq/session": "workspace:*"
+    "@moq-web/core": "workspace:*",
+    "@moq-web/secure-objects": "workspace:*",
+    "@moq-web/session": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

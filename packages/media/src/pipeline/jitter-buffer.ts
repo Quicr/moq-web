@@ -10,7 +10,7 @@
  *
  * @example
  * ```typescript
- * import { JitterBuffer } from '@web-moq/media';
+ * import { JitterBuffer } from '@moq-web/media';
  *
  * const buffer = new JitterBuffer({
  *   targetDelay: 100,  // 100ms buffer
@@ -28,7 +28,7 @@
  * ```
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:jitter-buffer');
 

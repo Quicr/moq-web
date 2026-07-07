@@ -17,7 +17,7 @@
  *   CatTokenDecoder,
  *   CoseAlgorithm,
  *   MoqtAction,
- * } from '@web-moq/cat';
+ * } from '@moq-web/cat';
  *
  * // Create a token
  * const token = await new CatTokenBuilder()

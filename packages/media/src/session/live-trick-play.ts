@@ -11,8 +11,8 @@
  * Integrates with LiveEdgeTracker to know the current live position.
  */
 
-import { Logger } from '@web-moq/core';
-import type { MOQTSession } from '@web-moq/session';
+import { Logger } from '@moq-web/core';
+import type { MOQTSession } from '@moq-web/session';
 import { LiveEdgeTracker, type LiveEdgeInfo, type LiveEdgeTrackerConfig } from './live-edge-tracker.js';
 
 const log = Logger.create('moqt:media:live-trick-play');

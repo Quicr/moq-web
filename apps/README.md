@@ -10,7 +10,7 @@ Each app is a self-contained web application that can be built and deployed inde
 
 Benchmark tool for testing GZIP compression effectiveness on MSF catalogs, media timelines, and event timelines.
 
-**Packages used:** `@web-moq/msf` (catalog builder, timeline serializers)
+**Packages used:** `@moq-web/msf` (catalog builder, timeline serializers)
 
 ## Development
 
@@ -32,5 +32,5 @@ To view the apps landing page, open `apps/index.html` directly in a browser or s
 ## Adding a new app
 
 1. Create a new folder under `apps/`
-2. Add a `package.json` with the app name following the pattern `@web-moq/<app-name>`
+2. Add a `package.json` with the app name following the pattern `@moq-web/<app-name>`
 3. Add the app to the landing page (`apps/index.html`)

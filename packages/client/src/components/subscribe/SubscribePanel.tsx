@@ -16,8 +16,8 @@ import { JitterGraph } from './JitterGraph';
 import { LatencyStatsGraph } from './LatencyStatsGraph';
 import { SubscribeNamespacePanel } from './SubscribeNamespacePanel';
 import { isDebugMode } from '../common/DevSettingsPanel';
-import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@web-moq/media';
-import type { SwitchingSetAssignment } from '@web-moq/core';
+import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@moq-web/media';
+import type { SwitchingSetAssignment } from '@moq-web/core';
 
 type MediaType = 'video' | 'audio';
 

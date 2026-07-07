@@ -8,7 +8,7 @@
  * management and track discovery.
  */
 
-import type { MOQTSession, VODPublishOptions } from '@web-moq/session';
+import type { MOQTSession, VODPublishOptions } from '@moq-web/session';
 import type { FullCatalog, Track } from '../schemas/index.js';
 import {
   CatalogSubscriber,

@@ -1,4 +1,4 @@
-# @web-moq/session
+# @moq-web/session
 
 Generic MOQT session management - protocol layer without media-specific dependencies.
 
@@ -15,7 +15,7 @@ This package provides a complete MOQT session implementation:
 ## Installation
 
 ```bash
-bun add @web-moq/session
+bun add @moq-web/session
 ```
 
 ## Building
@@ -46,8 +46,8 @@ bun test:watch
 ### Basic Session (Main Thread)
 
 ```typescript
-import { MOQTSession } from '@web-moq/session';
-import { MOQTransport } from '@web-moq/core';
+import { MOQTSession } from '@moq-web/session';
+import { MOQTransport } from '@moq-web/core';
 
 // Create and connect transport
 const transport = new MOQTransport();
@@ -65,11 +65,11 @@ console.log('Session ready:', session.isReady);
 ### Worker-Based Session
 
 ```typescript
-import { MOQTSession } from '@web-moq/session';
+import { MOQTSession } from '@moq-web/session';
 
 // Create transport worker
 const worker = new Worker(
-  new URL('@web-moq/session/worker', import.meta.url),
+  new URL('@moq-web/session/worker', import.meta.url),
   { type: 'module' }
 );
 

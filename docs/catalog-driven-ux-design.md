@@ -606,7 +606,7 @@ import {
   createMSFSession,
   type FullCatalog,
   type Track,
-} from '@web-moq/msf';
+} from '@moq-web/msf';
 
 // Build catalog
 const catalog = createCatalog()

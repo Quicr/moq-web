@@ -12,13 +12,13 @@
     "test": "MOQT_VERSION=draft-16 pnpm -r run test",
     "test:draft-14": "MOQT_VERSION=draft-14 pnpm -r run test",
     "lint": "pnpm -r run lint",
-    "dev": "MOQT_VERSION=draft-16 pnpm --filter @web-moq/client run dev",
-    "dev:draft-14": "MOQT_VERSION=draft-14 pnpm --filter @web-moq/client run dev",
+    "dev": "MOQT_VERSION=draft-16 pnpm --filter @moq-web/client run dev",
+    "dev:draft-14": "MOQT_VERSION=draft-14 pnpm --filter @moq-web/client run dev",
     "clean": "pnpm -r run clean",
     "bun:build": "MOQT_VERSION=draft-16 bun run --filter '*' build",
     "bun:test": "MOQT_VERSION=draft-16 bun run --filter '*' test",
     "bun:lint": "bun run --filter '*' lint",
-    "bun:dev": "MOQT_VERSION=draft-16 bun run --filter @web-moq/client dev"
+    "bun:dev": "MOQT_VERSION=draft-16 bun run --filter @moq-web/client dev"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

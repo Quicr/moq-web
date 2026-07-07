@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { getResolutionConfig, VODLoader, type VODLoadProgress } from '@web-moq/media';
+import { getResolutionConfig, VODLoader, type VODLoadProgress } from '@moq-web/media';
 import { useStore } from '../../store';
 import { isDebugMode } from '../common/DevSettingsPanel';
 import { useVAD } from '../../hooks/useVAD';

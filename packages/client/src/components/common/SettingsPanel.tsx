@@ -11,12 +11,12 @@
 import React, { useState } from 'react';
 import { useStore } from '../../store';
 import { LogLevel } from '../../types';
-import { VarIntType } from '@web-moq/core';
+import { VarIntType } from '@moq-web/core';
 import {
   EXPERIENCE_PROFILES,
   EXPERIENCE_PROFILE_ORDER,
   type ExperienceProfileName,
-} from '@web-moq/media';
+} from '@moq-web/media';
 
 // Tab types
 type SettingsTab = 'general' | 'media' | 'playback' | 'security';

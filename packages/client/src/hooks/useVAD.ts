@@ -10,8 +10,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
-import type { VAD, VADResult, LibfvadModule, SileroVADFactory } from '@web-moq/media';
-import { LibfvadVAD, SileroVAD } from '@web-moq/media';
+import type { VAD, VADResult, LibfvadModule, SileroVADFactory } from '@moq-web/media';
+import { LibfvadVAD, SileroVAD } from '@moq-web/media';
 import { loadLibfvadModule, createSileroVAD } from '../lib/vad-loaders';
 
 interface UseVADOptions {

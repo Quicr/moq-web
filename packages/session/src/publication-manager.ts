@@ -7,7 +7,7 @@
  * Manages publications and their associated state for MOQT sessions.
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 import type { PublicationInfo } from './types.js';
 
 const log = Logger.create('moqt:session:publication-manager');

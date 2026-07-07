@@ -32,7 +32,7 @@ export default defineConfig({
   },
   define: {
     // Build-time constant for MOQT version selection
-    // Sets __MOQT_VERSION__ which is used by @web-moq/core
+    // Sets __MOQT_VERSION__ which is used by @moq-web/core
     __MOQT_VERSION__: JSON.stringify(moqtVersion),
     // Also set as VITE env for runtime access
     'import.meta.env.VITE_MOQT_VERSION': JSON.stringify(moqtVersion),
@@ -56,6 +56,6 @@ export default defineConfig({
   },
   optimizeDeps: {
     // Include workspace packages in pre-bundling for dev mode
-    include: ['@web-moq/core', '@web-moq/session', '@web-moq/media'],
+    include: ['@moq-web/core', '@moq-web/session', '@moq-web/media'],
   },
 });

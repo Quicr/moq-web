@@ -5,7 +5,7 @@ import {
   serializeEventTimeline,
   type MediaTimelinePoint,
   type EventTimelinePoint,
-} from '@web-moq/msf';
+} from '@moq-web/msf';
 
 export interface CatalogOptions {
   numTracks: number;

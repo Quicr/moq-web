@@ -9,7 +9,7 @@
  * (server-assigned, client-assigned, request ID) and subscriptions.
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 import type { SubscriptionInfo } from './types.js';
 
 const log = Logger.create('moqt:session:subscription-manager');

@@ -10,7 +10,7 @@
  *
  * @example
  * ```typescript
- * import { SubscribePipeline } from '@web-moq/media';
+ * import { SubscribePipeline } from '@moq-web/media';
  *
  * const pipeline = new SubscribePipeline({
  *   video: {
@@ -34,7 +34,7 @@
  * ```
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 import { H264Decoder, VideoDecoderConfig } from '../webcodecs/video-decoder.js';
 import { OpusDecoder, AudioDecoderConfig } from '../webcodecs/audio-decoder.js';
 import { AACDecoder } from '../webcodecs/aac-decoder.js';
@@ -134,7 +134,7 @@ export interface SubscribePipelineConfig {
    * @example
    * ```typescript
    * const decodeWorker = new Worker(
-   *   new URL('@web-moq/media/codec-decode-worker', import.meta.url),
+   *   new URL('@moq-web/media/codec-decode-worker', import.meta.url),
    *   { type: 'module' }
    * );
    * const pipeline = new SubscribePipeline({

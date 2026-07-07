@@ -41,16 +41,16 @@ importers:
 
   apps/auth-demo:
     dependencies:
-      '@web-moq/cat':
+      '@moq-web/cat':
         specifier: workspace:*
         version: link:../../packages/cat
-      '@web-moq/core':
+      '@moq-web/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@web-moq/media':
+      '@moq-web/media':
         specifier: workspace:*
         version: link:../../packages/media
-      '@web-moq/session':
+      '@moq-web/session':
         specifier: workspace:*
         version: link:../../packages/session
     devDependencies:
@@ -66,7 +66,7 @@ importers:
 
   apps/msf-compression-benchmark:
     dependencies:
-      '@web-moq/msf':
+      '@moq-web/msf':
         specifier: workspace:*
         version: link:../../packages/msf
       react:
@@ -112,21 +112,21 @@ importers:
       '@echogarden/fvad-wasm':
         specifier: ^0.2.0
         version: 0.2.0
+      '@moq-web/core':
+        specifier: workspace:*
+        version: link:../core
+      '@moq-web/media':
+        specifier: workspace:*
+        version: link:../media
+      '@moq-web/msf':
+        specifier: workspace:*
+        version: link:../msf
+      '@moq-web/secure-objects':
+        specifier: workspace:*
+        version: link:../secure-objects
       '@ricky0123/vad-web':
         specifier: ^0.0.30
         version: 0.0.30
-      '@web-moq/core':
-        specifier: workspace:*
-        version: link:../core
-      '@web-moq/media':
-        specifier: workspace:*
-        version: link:../media
-      '@web-moq/msf':
-        specifier: workspace:*
-        version: link:../msf
-      '@web-moq/secure-objects':
-        specifier: workspace:*
-        version: link:../secure-objects
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -176,13 +176,13 @@ importers:
 
   packages/media:
     dependencies:
-      '@web-moq/core':
+      '@moq-web/core':
         specifier: workspace:*
         version: link:../core
-      '@web-moq/secure-objects':
+      '@moq-web/secure-objects':
         specifier: workspace:*
         version: link:../secure-objects
-      '@web-moq/session':
+      '@moq-web/session':
         specifier: workspace:*
         version: link:../session
     devDependencies:
@@ -192,10 +192,10 @@ importers:
 
   packages/msf:
     dependencies:
-      '@web-moq/core':
+      '@moq-web/core':
         specifier: workspace:*
         version: link:../core
-      '@web-moq/session':
+      '@moq-web/session':
         specifier: workspace:*
         version: link:../session
       zod:
@@ -214,10 +214,10 @@ importers:
 
   packages/session:
     dependencies:
-      '@web-moq/cat':
+      '@moq-web/cat':
         specifier: workspace:*
         version: link:../cat
-      '@web-moq/core':
+      '@moq-web/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:

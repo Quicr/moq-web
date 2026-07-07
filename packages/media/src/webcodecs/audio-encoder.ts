@@ -11,7 +11,7 @@
  *
  * @example
  * ```typescript
- * import { OpusEncoder } from '@web-moq/media';
+ * import { OpusEncoder } from '@moq-web/media';
  *
  * const encoder = new OpusEncoder({
  *   sampleRate: 48000,
@@ -28,7 +28,7 @@
  * ```
  */
 
-import { Logger, acquireBufferForChunk } from '@web-moq/core';
+import { Logger, acquireBufferForChunk } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:audio-encoder');
 

@@ -119,7 +119,7 @@ function getRegistry(worker: Worker): Map<number, CodecDecodeWorkerClient> {
  * ```typescript
  * // Application creates a shared worker
  * const worker = new Worker(
- *   new URL('@web-moq/media/codec-decode-worker', import.meta.url),
+ *   new URL('@moq-web/media/codec-decode-worker', import.meta.url),
  *   { type: 'module' }
  * );
  *

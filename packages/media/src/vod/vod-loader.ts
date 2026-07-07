@@ -8,9 +8,9 @@
  * Stores frames indexed by group/object for serving FETCH requests.
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 import { LOCPackager } from '../loc/loc-container.js';
-import type { VODPublishOptions, VODMetadata } from '@web-moq/session';
+import type { VODPublishOptions, VODMetadata } from '@moq-web/session';
 import { MP4Parser, type VideoTrackInfo, type AudioTrackInfo } from './mp4-parser.js';
 
 const log = Logger.create('moqt:media:vod-loader');

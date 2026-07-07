@@ -256,7 +256,7 @@ interface CatalogSlice {
 Wire up catalog building to actual MSF publishing.
 
 ### Tasks
-- [ ] Integrate `MSFSession` from `@web-moq/msf`
+- [ ] Integrate `MSFSession` from `@moq-web/msf`
 - [ ] Publish catalog track on namespace
 - [ ] Start media track publishing based on catalog
 - [ ] Handle VOD frame serving via FETCH
@@ -462,13 +462,13 @@ packages/client/src/store/
 ## Dependencies
 
 ### Existing (already available)
-- `@web-moq/msf` - Full MSF catalog support
+- `@moq-web/msf` - Full MSF catalog support
   - `createCatalog()` - Builder API
   - `CatalogPublisher` / `CatalogSubscriber`
   - `MSFSession` - High-level wrapper
   - Media timeline support
-- `@web-moq/media` - VODLoader, experience profiles
-- `@web-moq/session` - MOQT session, FETCH support
+- `@moq-web/media` - VODLoader, experience profiles
+- `@moq-web/session` - MOQT session, FETCH support
 
 ### To Verify
 - [ ] MSFSession.subscribe with object callback

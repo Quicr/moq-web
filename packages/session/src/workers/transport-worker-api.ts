@@ -39,7 +39,7 @@ export type TransportWorkerEventType =
  * ```typescript
  * // Create worker (in application code)
  * const worker = new Worker(
- *   new URL('@web-moq/session/worker', import.meta.url),
+ *   new URL('@moq-web/session/worker', import.meta.url),
  *   { type: 'module' }
  * );
  *

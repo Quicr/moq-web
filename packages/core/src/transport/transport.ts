@@ -12,7 +12,7 @@
  *
  * @example
  * ```typescript
- * import { MOQTransport } from '@web-moq/core';
+ * import { MOQTransport } from '@moq-web/core';
  *
  * const transport = new MOQTransport();
  *
