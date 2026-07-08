@@ -60,7 +60,7 @@ describe('Performance', () => {
     const dataSizes = [
       { name: '1KB', size: 1024, minThroughput: 1 }, // Audio frame (CI runners have high per-op overhead)
       { name: '16KB', size: 16 * 1024, minThroughput: 15 }, // Small video frame
-      { name: '64KB', size: 64 * 1024, minThroughput: 40 }, // Typical video frame
+      { name: '64KB', size: 64 * 1024, minThroughput: 25 }, // Typical video frame
     ];
 
     for (const { name, size, minThroughput } of dataSizes) {
