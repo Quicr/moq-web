@@ -107,35 +107,32 @@ export interface SwitchingSetAssignment {
 export function serializeSwitchingSetAssignment(
   assignment: SwitchingSetAssignment
 ): Uint8Array {
-  // Calculate total size
   const setIdBytes = VarInt.encode(assignment.switchingSetId);
   const thresholdBytes = VarInt.encode(assignment.throughputThresholdKbps);
   const fractionBytes = VarInt.encode(assignment.setThroughputFraction);
+  const activateBytes = VarInt.encode(assignment.activateSwitching ? 1 : 0);
+  const rankBytes = VarInt.encode(assignment.setRank);
 
-  // Total: varints + 1 byte (activate) + 1 byte (rank)
   const totalLength =
-    setIdBytes.length + thresholdBytes.length + fractionBytes.length + 2;
+    setIdBytes.length + thresholdBytes.length + fractionBytes.length +
+    activateBytes.length + rankBytes.length;
 
   const result = new Uint8Array(totalLength);
   let offset = 0;
 
-  // Write switching_set_id (varint)
   result.set(setIdBytes, offset);
   offset += setIdBytes.length;
 
-  // Write throughput_threshold_kbps (varint)
   result.set(thresholdBytes, offset);
   offset += thresholdBytes.length;
 
-  // Write set_throughput_fraction (varint)
   result.set(fractionBytes, offset);
   offset += fractionBytes.length;
 
-  // Write activate_switching (1 byte)
-  result[offset++] = assignment.activateSwitching ? 1 : 0;
+  result.set(activateBytes, offset);
+  offset += activateBytes.length;
 
-  // Write set_rank (1 byte)
-  result[offset] = assignment.setRank;
+  result.set(rankBytes, offset);
 
   return result;
 }
@@ -152,39 +149,29 @@ export function deserializeSwitchingSetAssignment(
 ): SwitchingSetAssignment {
   let offset = 0;
 
-  // Read switching_set_id (varint)
   const [switchingSetId, setIdLen] = VarInt.decode(data.subarray(offset));
   offset += setIdLen;
 
-  // Read throughput_threshold_kbps (varint)
   const [throughputThresholdKbps, thresholdLen] = VarInt.decode(
     data.subarray(offset)
   );
   offset += thresholdLen;
 
-  // Read set_throughput_fraction (varint)
   const [setThroughputFraction, fractionLen] = VarInt.decode(
     data.subarray(offset)
   );
   offset += fractionLen;
 
-  // Read activate_switching (1 byte)
-  if (offset >= data.length) {
-    throw new Error('Invalid DTS assignment: missing activate_switching');
-  }
-  const activateSwitching = data[offset++] !== 0;
+  const [activateRaw, activateLen] = VarInt.decode(data.subarray(offset));
+  offset += activateLen;
 
-  // Read set_rank (1 byte)
-  if (offset >= data.length) {
-    throw new Error('Invalid DTS assignment: missing set_rank');
-  }
-  const setRank = data[offset];
+  const [setRank] = VarInt.decode(data.subarray(offset));
 
   return {
     switchingSetId: Number(switchingSetId),
     throughputThresholdKbps: Number(throughputThresholdKbps),
     setThroughputFraction: Number(setThroughputFraction),
-    activateSwitching,
-    setRank,
+    activateSwitching: Number(activateRaw) !== 0,
+    setRank: Number(setRank),
   };
 }

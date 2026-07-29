@@ -1,6 +1,7 @@
 import { useRef, useCallback } from 'react';
 import { MOQTSession, type IncomingPublishEvent } from '@moq-web/session';
 import { SubscribePipeline } from '@moq-web/media';
+import { serializeSwitchingSetAssignment, GroupOrder } from '@moq-web/core';
 import { useStore } from '../store';
 import { DEFAULTS, SPEECH_ACTIVITY_KEY, SIMULCAST_LAYERS } from '../lib/constants';
 
@@ -22,6 +23,11 @@ export function useSubscribe() {
   const staleIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Track which rendition is currently active per participant (DTS selected)
   const activeRenditionRef = useRef<Map<string, string>>(new Map());
+  // Track switching set IDs assigned per participant
+  const switchingSetIdsRef = useRef<Map<string, number>>(new Map());
+  const nextSetIdRef = useRef(1);
+  // Track how many renditions have been received per participant (for activate flag)
+  const renditionsReceivedRef = useRef<Map<string, Set<string>>>(new Map());
   const topNVideo = useStore((s) => s.topNVideo);
   const simulcastEnabled = useStore((s) => s.simulcastEnabled);
 
@@ -79,6 +85,11 @@ export function useSubscribe() {
         ? SIMULCAST_LAYERS.map((l) => l.label)
         : [SIMULCAST_LAYERS[0].label];
 
+      // Enable deferred PUBLISH_OK for SSTS when simulcast is active
+      if (simulcastEnabled) {
+        session.setDeferPublishOk(true);
+      }
+
       // Subscribe to each rendition namespace with Top-N filter
       for (const rendition of renditions) {
         await session.subscribeNamespace([roomId, rendition], {
@@ -93,7 +104,7 @@ export function useSubscribe() {
       await session.subscribeNamespace([roomId, 'audio'], {});
 
       session.on('incoming-publish', (event: IncomingPublishEvent) => {
-        const { namespace, trackName, subscriptionId } = event;
+        const { namespace, trackName, subscriptionId, requestId, groupOrder } = event;
         // Namespace structure: [roomId, rendition, participantId]
         const participantId = namespace[namespace.length - 1];
         const rendition = namespace[namespace.length - 2];
@@ -104,6 +115,42 @@ export function useSubscribe() {
         // Filter self (own participant ID is last element)
         const ownName = useStore.getState().displayName;
         if (participantId === ownName) return;
+
+        // Send PUBLISH_OK with SSTS assignment for video tracks in simulcast mode
+        if (simulcastEnabled && isVideo) {
+          // Assign switching set ID per participant
+          if (!switchingSetIdsRef.current.has(participantId)) {
+            switchingSetIdsRef.current.set(participantId, nextSetIdRef.current++);
+          }
+          const setId = switchingSetIdsRef.current.get(participantId)!;
+
+          // Track renditions received for this participant
+          if (!renditionsReceivedRef.current.has(participantId)) {
+            renditionsReceivedRef.current.set(participantId, new Set());
+          }
+          renditionsReceivedRef.current.get(participantId)!.add(rendition);
+          const receivedCount = renditionsReceivedRef.current.get(participantId)!.size;
+          const isLast = receivedCount >= renditions.length;
+
+          // Determine rank: first set (lowest ID) = rank 0 (active speaker priority)
+          const { rankMode } = useStore.getState();
+          const rank = rankMode === 'speaker-priority' && setId === 1 ? 0 : 1;
+
+          const layerConfig = SIMULCAST_LAYERS.find((l) => l.label === rendition);
+          const thresholdKbps = layerConfig?.thresholdKbps ?? 1000;
+
+          const sstsBytes = serializeSwitchingSetAssignment({
+            switchingSetId: setId,
+            throughputThresholdKbps: thresholdKbps,
+            setThroughputFraction: 5,
+            activateSwitching: isLast,
+            setRank: rank,
+          });
+
+          session.sendPublishOkWithSsts(requestId, groupOrder, sstsBytes);
+        } else if (simulcastEnabled && isAudio) {
+          session.acceptIncomingPublish(requestId, groupOrder);
+        }
 
         // Re-publish for an existing track
         const existing = pipelinesRef.current.get(key);

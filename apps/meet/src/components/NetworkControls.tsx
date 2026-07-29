@@ -1,4 +1,6 @@
+import { useCallback } from 'react';
 import { useStore } from '../store';
+import { DEFAULTS } from '../lib/constants';
 
 const PRESETS = [
   { label: 'Normal', kbps: 6000 },
@@ -8,11 +10,7 @@ const PRESETS = [
   { label: 'Critical', kbps: 800 },
 ];
 
-interface NetworkControlsProps {
-  onBandwidthChange?: (kbps: number) => void;
-}
-
-export function NetworkControls({ onBandwidthChange }: NetworkControlsProps) {
+export function NetworkControls() {
   const bandwidthCapKbps = useStore((s) => s.bandwidthCapKbps);
   const setBandwidthCapKbps = useStore((s) => s.setBandwidthCapKbps);
   const gridLayout = useStore((s) => s.gridLayout);
@@ -22,9 +20,21 @@ export function NetworkControls({ onBandwidthChange }: NetworkControlsProps) {
   const simulcastEnabled = useStore((s) => s.simulcastEnabled);
   const setSimulcastEnabled = useStore((s) => s.setSimulcastEnabled);
 
+  const pushBudgetToRelay = useCallback(async (kbps: number) => {
+    try {
+      await fetch(`${DEFAULTS.liveViewUrl}/dts/budget`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ budget_kbps: kbps }),
+      });
+    } catch {
+      // Relay may not be reachable — ignore
+    }
+  }, []);
+
   const handleBandwidthChange = (kbps: number) => {
     setBandwidthCapKbps(kbps);
-    onBandwidthChange?.(kbps);
+    pushBudgetToRelay(kbps);
   };
 
   return (

@@ -693,8 +693,11 @@ export class MessageCodec {
         previousKey = key;
 
         if (key % 2 === 0) {
-          // Even key: read value as varint directly
-          const value = reader.readVarIntNumber();
+          // Even key: read value as varint directly (cap at MAX_SAFE_INTEGER for large values)
+          const bigValue = reader.readVarInt();
+          const value = bigValue > BigInt(Number.MAX_SAFE_INTEGER)
+            ? Number.MAX_SAFE_INTEGER
+            : Number(bigValue);
           parameters.set(key, value);
         } else {
           // Odd key: read length + bytes
@@ -1784,6 +1787,15 @@ export class MessageCodec {
         params.set(RequestParameter.GROUP_ORDER, VarInt.encode(message.groupOrder));
       }
 
+      // Pass through any additional parameters (e.g. SWITCHING_SET_ASSIGNMENT)
+      if (message.parameters) {
+        for (const [key, value] of message.parameters) {
+          if (!params.has(key)) {
+            params.set(key, value);
+          }
+        }
+      }
+
       MessageCodec.encodeRequestParameters(writer, params);
     } else {
       // Draft-14: direct fields
@@ -1976,11 +1988,7 @@ export class MessageCodec {
     const paramCount = message.parameters?.size ?? 0;
     writer.writeVarInt(paramCount);
     if (message.parameters) {
-      for (const [key, value] of message.parameters) {
-        writer.writeVarInt(key);
-        writer.writeVarInt(value.length);
-        writer.writeBytes(value);
-      }
+      MessageCodec.encodeDeltaParameters(writer, message.parameters);
     }
   }
 
@@ -2046,6 +2054,15 @@ export class MessageCodec {
   }
 
   private static decodePublishNamespaceErrorPayload(reader: BufferReader): PublishNamespaceErrorMessage {
+    if (IS_DRAFT_16) {
+      // Draft-16: wire 0x08 = NAMESPACE (namespace suffix only, no error fields)
+      return {
+        type: MessageType.PUBLISH_NAMESPACE_ERROR,
+        namespace: MessageCodec.decodeNamespace(reader),
+        errorCode: 0 as NamespaceErrorCode,
+        reasonPhrase: '',
+      };
+    }
     return {
       type: MessageType.PUBLISH_NAMESPACE_ERROR,
       namespace: MessageCodec.decodeNamespace(reader),
@@ -2095,11 +2112,7 @@ export class MessageCodec {
     const paramCount = message.parameters?.size ?? 0;
     writer.writeVarInt(paramCount);
     if (message.parameters) {
-      for (const [key, value] of message.parameters) {
-        writer.writeVarInt(key);
-        writer.writeVarInt(value.length);
-        writer.writeBytes(value);
-      }
+      MessageCodec.encodeDeltaParameters(writer, message.parameters);
     }
   }
 
@@ -2501,6 +2514,23 @@ export class MessageCodec {
       reasonPhrase: reader.readString(),
     };
   }
+
+  private static encodeDeltaParameters(writer: BufferWriter, parameters: Map<number, Uint8Array>): void {
+    const sorted = [...parameters.entries()].sort((a, b) => a[0] - b[0]);
+    let prevKey = 0;
+    for (const [key, value] of sorted) {
+      const deltaKey = key - prevKey;
+      writer.writeVarInt(deltaKey);
+      if (key % 2 === 0) {
+        const [val] = VarInt.decodeNumber(value);
+        writer.writeVarInt(val);
+      } else {
+        writer.writeVarInt(value.length);
+        writer.writeBytes(value);
+      }
+      prevKey = key;
+    }
+  }
 }
 
 /**
@@ -2518,22 +2548,60 @@ export class ObjectCodec {
    * @param header - Object header to encode
    * @returns Encoded bytes
    */
-  static encodeDatagramHeader(header: ObjectHeader): Uint8Array {
+  static encodeDatagramHeader(header: ObjectHeader, extensions?: Map<number, number | Uint8Array>): Uint8Array {
     const writer = new BufferWriter();
-    writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
-    writer.writeVarInt(header.trackAlias);
-    writer.writeVarInt(header.groupId);
-    if (!IS_DRAFT_16) {
-      // Draft-14 includes subgroupId; draft-16 datagrams don't belong to subgroups
-      writer.writeVarInt(header.subgroupId);
-    }
-    writer.writeVarInt(header.objectId);
     if (IS_DRAFT_16) {
-      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
-      writer.writeVarInt(0); // No extensions for now
+      // Draft-16 ObjectDatagramType bitfield: EXTENSIONS(0x01) | END_OF_GROUP(0x02) | ZERO_OBJECT_ID(0x04) | DEFAULT_PRIORITY(0x08) | STATUS(0x20)
+      const hasExtensions = extensions !== undefined && extensions.size > 0;
+      const objectIdIsZero = header.objectId === 0;
+      let dtype = 0;
+      if (hasExtensions) dtype |= 0x01;
+      if (objectIdIsZero) dtype |= 0x04;
+      writer.writeVarInt(dtype);
+      writer.writeVarInt(header.trackAlias);
+      writer.writeVarInt(header.groupId);
+      if (!objectIdIsZero) {
+        writer.writeVarInt(header.objectId);
+      }
+      // publisherPriority always present (DEFAULT_PRIORITY bit not set)
+      writer.writeByte(header.publisherPriority);
+      // Extensions
+      if (hasExtensions) {
+        const extWriter = new BufferWriter();
+        const sortedEntries = Array.from(extensions!.entries()).sort((a, b) => a[0] - b[0]);
+        let previousKey = 0;
+        for (const [key, value] of sortedEntries) {
+          extWriter.writeVarInt(key - previousKey);
+          previousKey = key;
+          if (key % 2 === 0) {
+            if (typeof value === 'number') {
+              extWriter.writeVarInt(value);
+            } else {
+              extWriter.writeVarInt(Number(VarInt.decode(value)[0]));
+            }
+          } else {
+            if (typeof value === 'number') {
+              const encodedValue = VarInt.encode(value);
+              extWriter.writeVarInt(encodedValue.length);
+              extWriter.writeBytes(encodedValue);
+            } else {
+              extWriter.writeVarInt(value.length);
+              extWriter.writeBytes(value);
+            }
+          }
+        }
+        const extBytes = extWriter.toUint8Array();
+        writer.writeVarInt(extBytes.length);
+        writer.writeBytes(extBytes);
+      }
     } else {
-      // Draft-14 includes publisherPriority and objectStatus in datagram header
-      writer.writeByte(header.publisherPriority); // 1 byte, not varint
+      // Draft-14 format
+      writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
+      writer.writeVarInt(header.trackAlias);
+      writer.writeVarInt(header.groupId);
+      writer.writeVarInt(header.subgroupId);
+      writer.writeVarInt(header.objectId);
+      writer.writeByte(header.publisherPriority);
       writer.writeVarInt(header.objectStatus);
     }
     return writer.toUint8Array();
@@ -2547,56 +2615,76 @@ export class ObjectCodec {
    */
   static decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
     const reader = new BufferReader(buffer);
-    const streamType = reader.readVarIntNumber();
-
-    if (streamType !== DataStreamType.OBJECT_DATAGRAM) {
-      throw new MessageCodecError(
-        `Expected OBJECT_DATAGRAM (${DataStreamType.OBJECT_DATAGRAM}), got ${streamType}`,
-        streamType
-      );
-    }
-
-    // trackAlias can be a 62-bit hash - keep as bigint to preserve full value
-    const trackAliasBigInt = reader.readVarInt();
-    const groupId = reader.readVarIntNumber();
-    // Draft-16 datagrams don't have subgroupId; draft-14 does
-    const subgroupId = IS_DRAFT_16 ? 0 : reader.readVarIntNumber();
-    const objectId = reader.readVarIntNumber();
-
-    let publisherPriority: number;
-    let objectStatus: ObjectStatus;
 
     if (IS_DRAFT_16) {
-      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
-      const extensionLength = reader.readVarIntNumber();
-      if (extensionLength > 0) {
-        // Skip extension bytes
-        reader.readBytes(extensionLength);
+      // Draft-16: ObjectDatagramType bitfield | trackAlias | groupId | [objectId] | [priority] | [extLen | ext] | payload
+      const dtype = reader.readVarIntNumber();
+      const hasExtensions = (dtype & 0x01) !== 0;
+      const objectIdIsZero = (dtype & 0x04) !== 0;
+      const defaultPriority = (dtype & 0x08) !== 0;
+
+      const trackAliasBigInt = reader.readVarInt();
+      const groupId = reader.readVarIntNumber();
+      const objectId = objectIdIsZero ? 0 : reader.readVarIntNumber();
+      const publisherPriority = defaultPriority ? 128 : reader.readByte();
+
+      if (hasExtensions) {
+        const extensionLength = reader.readVarIntNumber();
+        if (extensionLength > 0) {
+          reader.readBytes(extensionLength);
+        }
       }
-      publisherPriority = 128; // default priority
-      objectStatus = ObjectStatus.NORMAL;
+
+      const header: ObjectHeader = {
+        trackAlias: trackAliasBigInt,
+        groupId,
+        subgroupId: 0,
+        objectId,
+        publisherPriority,
+        objectStatus: ObjectStatus.NORMAL,
+      };
+
+      log.trace('Decoded datagram header', {
+        trackAlias: trackAliasBigInt.toString(),
+        groupId,
+        objectId
+      });
+
+      return [header, reader.offset];
     } else {
-      // Draft-14 includes publisherPriority (1 byte) and objectStatus (varint)
-      publisherPriority = reader.readByte();
-      objectStatus = reader.readVarIntNumber() as ObjectStatus;
+      // Draft-14: streamType | trackAlias | groupId | subgroupId | objectId | priority(u8) | status
+      const streamType = reader.readVarIntNumber();
+      if (streamType !== DataStreamType.OBJECT_DATAGRAM) {
+        throw new MessageCodecError(
+          `Expected OBJECT_DATAGRAM (${DataStreamType.OBJECT_DATAGRAM}), got ${streamType}`,
+          streamType
+        );
+      }
+
+      const trackAliasBigInt = reader.readVarInt();
+      const groupId = reader.readVarIntNumber();
+      const subgroupId = reader.readVarIntNumber();
+      const objectId = reader.readVarIntNumber();
+      const publisherPriority = reader.readByte();
+      const objectStatus = reader.readVarIntNumber() as ObjectStatus;
+
+      const header: ObjectHeader = {
+        trackAlias: trackAliasBigInt,
+        groupId,
+        subgroupId,
+        objectId,
+        publisherPriority,
+        objectStatus,
+      };
+
+      log.trace('Decoded datagram header', {
+        trackAlias: trackAliasBigInt.toString(),
+        groupId,
+        objectId
+      });
+
+      return [header, reader.offset];
     }
-
-    const header: ObjectHeader = {
-      trackAlias: trackAliasBigInt,
-      groupId,
-      subgroupId,
-      objectId,
-      publisherPriority,
-      objectStatus,
-    };
-
-    log.trace('Decoded datagram header', {
-      trackAlias: trackAliasBigInt.toString(),
-      groupId: header.groupId,
-      objectId: header.objectId
-    });
-
-    return [header, reader.offset];
   }
 
   /**
@@ -2605,8 +2693,8 @@ export class ObjectCodec {
    * @param object - Object to encode
    * @returns Encoded bytes including header and payload
    */
-  static encodeDatagramObject(object: MOQTObject): Uint8Array {
-    const headerBytes = ObjectCodec.encodeDatagramHeader(object.header);
+  static encodeDatagramObject(object: MOQTObject, extensions?: Map<number, number | Uint8Array>): Uint8Array {
+    const headerBytes = ObjectCodec.encodeDatagramHeader(object.header, extensions);
     const result = new Uint8Array(headerBytes.length + object.payload.length);
     result.set(headerBytes);
     result.set(object.payload, headerBytes.length);
@@ -2858,19 +2946,30 @@ export class ObjectCodec {
       // Types with Ext suffix (0x11, 0x19, etc.) have extensions; others (0x10, 0x18, etc.) don't
       if (hasExtensions) {
         if (extensions && extensions.size > 0) {
-          // Encode extensions into a temporary buffer to get total length
+          // Delta-encoded KVP per draft-16 §1.4.2
           const extWriter = new BufferWriter();
-          for (const [key, value] of extensions) {
-            extWriter.writeVarInt(key);
-            if (typeof value === 'number') {
-              // Varint value - write length then varint-encoded value
-              const encodedValue = VarInt.encode(value);
-              extWriter.writeVarInt(encodedValue.length);
-              extWriter.writeBytes(encodedValue);
+          const sortedEntries = Array.from(extensions.entries()).sort((a, b) => a[0] - b[0]);
+          let previousKey = 0;
+          for (const [key, value] of sortedEntries) {
+            extWriter.writeVarInt(key - previousKey);
+            previousKey = key;
+            if (key % 2 === 0) {
+              // Even key: value is a direct varint
+              if (typeof value === 'number') {
+                extWriter.writeVarInt(value);
+              } else {
+                extWriter.writeVarInt(Number(VarInt.decode(value)[0]));
+              }
             } else {
-              // Raw bytes value
-              extWriter.writeVarInt(value.length);
-              extWriter.writeBytes(value);
+              // Odd key: length-prefixed bytes
+              if (typeof value === 'number') {
+                const encodedValue = VarInt.encode(value);
+                extWriter.writeVarInt(encodedValue.length);
+                extWriter.writeBytes(encodedValue);
+              } else {
+                extWriter.writeVarInt(value.length);
+                extWriter.writeBytes(value);
+              }
             }
           }
           const extBytes = extWriter.toUint8Array();

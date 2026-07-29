@@ -28,6 +28,7 @@ export type SessionEventType =
   | 'subscribe-ok'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
+  | 'namespace-discovered'
   | 'incoming-publish'
   | 'fetch-object'
   | 'fetch-complete'
@@ -103,6 +104,8 @@ export interface ObjectMetadata {
   type?: string;
   /** Max cache duration in milliseconds - tells relay how long to cache this object */
   maxCacheDuration?: number;
+  /** Object extension headers (key → varint value) visible to the relay */
+  extensions?: Map<number, number>;
 }
 
 /**
@@ -275,6 +278,8 @@ export interface SubscribeNamespaceOptions {
   priority?: number;
   /** Callback for received objects from tracks under this namespace */
   onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  /** Top-N track filter: relay selects at most maxSelected tracks ranked by propertyType extension */
+  trackFilter?: { propertyType: number; maxSelected: number };
 }
 
 /**

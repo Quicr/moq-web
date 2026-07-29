@@ -194,6 +194,8 @@ export class MOQTSession {
   private namespaceSubscriptionStreams = new Map<number, number>();
   /** Our own namespace prefix for filtering out self-publishes */
   private ownNamespacePrefix: string | null = null;
+  /** When true, PUBLISH_OK is not auto-sent; application must call sendPublishOkWithSsts() */
+  private deferPublishOk = false;
   /** Authorization token for CLIENT_SETUP */
   private authToken: string | null = null;
   /** Token type for AUTHORIZATION_TOKEN parameter (default: C4M = 0x63346d) */
@@ -1505,6 +1507,15 @@ export class MOQTSession {
   }
 
   /**
+   * Enable deferred PUBLISH_OK mode for SSTS/DTS.
+   * When enabled, incoming PUBLISH messages will NOT automatically receive PUBLISH_OK.
+   * The application must call sendPublishOkWithSsts() for each incoming publish.
+   */
+  setDeferPublishOk(defer: boolean): void {
+    this.deferPublishOk = defer;
+  }
+
+  /**
    * Get all namespace subscriptions
    */
   getNamespaceSubscriptions(): NamespaceSubscriptionInfo[] {
@@ -1993,9 +2004,11 @@ export class MOQTSession {
     };
     matchingSubscription.tracks.set(fullTrackNameStr, trackInfo);
 
-    // Send PUBLISH_OK to accept the track
-    await this.sendPublishOk(message.requestId, message.groupOrder);
-    trackInfo.acknowledged = true;
+    // Send PUBLISH_OK to accept the track (unless deferred for SSTS)
+    if (!this.deferPublishOk) {
+      await this.sendPublishOk(message.requestId, message.groupOrder);
+      trackInfo.acknowledged = true;
+    }
 
     // Register this as a subscription so objects can be routed
     const subscriptionId = this.getNextRequestId();
@@ -2032,7 +2045,11 @@ export class MOQTSession {
   /**
    * Send PUBLISH_OK response
    */
-  private async sendPublishOk(requestId: number, groupOrder: GroupOrder): Promise<void> {
+  private async sendPublishOk(
+    requestId: number,
+    groupOrder: GroupOrder,
+    extraParameters?: Map<number, Uint8Array>
+  ): Promise<void> {
     const publishOk = {
       type: MessageType.PUBLISH_OK as const,
       requestId,
@@ -2040,11 +2057,34 @@ export class MOQTSession {
       subscriberPriority: 128,
       groupOrder,
       filterType: FilterType.LATEST_GROUP,
+      parameters: extraParameters,
     };
 
     const bytes = MessageCodec.encode(publishOk);
     await this.doSendControl(bytes);
-    log.info('Sent PUBLISH_OK', { requestId });
+    log.info('Sent PUBLISH_OK', { requestId, hasExtraParams: !!extraParameters });
+  }
+
+  /**
+   * Send PUBLISH_OK with SWITCHING_SET_ASSIGNMENT for DTS/SSTS.
+   * Called by the application after receiving 'incoming-publish' event.
+   */
+  async sendPublishOkWithSsts(
+    requestId: number,
+    groupOrder: GroupOrder,
+    switchingSetAssignment: Uint8Array
+  ): Promise<void> {
+    const params = new Map<number, Uint8Array>();
+    params.set(RequestParameter.SWITCHING_SET_ASSIGNMENT, switchingSetAssignment);
+    await this.sendPublishOk(requestId, groupOrder, params);
+  }
+
+  /**
+   * Send a plain PUBLISH_OK (no extra parameters).
+   * Use when deferPublishOk is enabled but no SSTS assignment is needed (e.g. audio tracks).
+   */
+  async acceptIncomingPublish(requestId: number, groupOrder: GroupOrder): Promise<void> {
+    await this.sendPublishOk(requestId, groupOrder);
   }
 
   /**

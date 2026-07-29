@@ -177,6 +177,8 @@ export class PublishPipeline {
   private audioObjectId = 0;
   /** Abort controller */
   private abortController?: AbortController;
+  /** Pending force-keyframe request */
+  private _pendingForceKeyframe = false;
 
   /**
    * Create a new PublishPipeline
@@ -429,12 +431,13 @@ export class PublishPipeline {
           }
 
           if (this.useWorker && this.encodeWorkerClient) {
-            // Worker mode - transfer frame to worker (zero-copy)
-            // Note: frame ownership transfers, no need to close
-            this.encodeWorkerClient.encodeVideo(frame);
+            const forceKf = this._pendingForceKeyframe;
+            this._pendingForceKeyframe = false;
+            this.encodeWorkerClient.encodeVideo(frame, forceKf);
           } else if (this.videoEncoder) {
-            // Main thread mode - encode locally
-            await this.videoEncoder.encode(frame);
+            const forceKf = this._pendingForceKeyframe;
+            this._pendingForceKeyframe = false;
+            await this.videoEncoder.encode(frame, forceKf);
             frame.close();
           } else {
             frame.close();
@@ -780,14 +783,10 @@ export class PublishPipeline {
   }
 
   /**
-   * Force a video keyframe
+   * Force a video keyframe on the next encoded frame.
    */
-  async forceKeyframe(): Promise<void> {
-    if (this.videoEncoder) {
-      log.debug('Forcing keyframe');
-      // The next encode call will be forced to keyframe
-      // This is handled by tracking in the encoder
-    }
+  forceKeyframe(): void {
+    this._pendingForceKeyframe = true;
   }
 
   /**
