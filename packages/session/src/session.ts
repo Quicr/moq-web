@@ -664,10 +664,36 @@ export class MOQTSession {
           streamId,
         });
 
-        this.routeMessage(message);
+        // Context-aware routing for bidi stream messages
+        if (IS_DRAFT_16 && message.type === MessageType.PUBLISH_NAMESPACE_OK) {
+          const reqOk = message as { requestId?: number };
+          const subId = reqOk.requestId !== undefined
+            ? this.namespaceSubscriptionByRequestId.get(reqOk.requestId)
+            : subscriptionId;
+          const sub = this.namespaceSubscriptions.get(subId ?? subscriptionId);
+          if (sub) {
+            log.info('SUBSCRIBE_NAMESPACE acknowledged (worker)', {
+              requestId: reqOk.requestId,
+              namespacePrefix: sub.namespacePrefix.join('/'),
+            });
+          }
+        } else if (IS_DRAFT_16 && message.type === MessageType.PUBLISH_NAMESPACE_ERROR) {
+          const nsMsg = message as { namespace?: string[] };
+          const sub = this.namespaceSubscriptions.get(subscriptionId);
+          if (sub && nsMsg.namespace) {
+            const fullNamespace = [...sub.namespacePrefix, ...nsMsg.namespace];
+            log.info('Namespace discovered via subscription (worker)', {
+              suffix: nsMsg.namespace.join('/'),
+              fullNamespace: fullNamespace.join('/'),
+            });
+            this.emit('namespace-discovered', { namespace: fullNamespace, subscriptionId });
+          }
+        } else {
+          this.routeMessage(message);
+        }
       } catch (err) {
-        if ((err as Error).message?.includes('Incomplete') ||
-            (err as Error).message?.includes('buffer')) {
+        const errMsg = (err as Error).message?.toLowerCase() ?? '';
+        if (errMsg.includes('incomplete') || errMsg.includes('buffer') || errMsg.includes('underflow')) {
           break;
         }
         log.error('Error decoding bidi stream message', { error: (err as Error).message });
@@ -1255,11 +1281,21 @@ export class MOQTSession {
 
     // Build SUBSCRIBE_NAMESPACE message
     // Note: In draft-16, subscriber priority is not a valid parameter for SUBSCRIBE_NAMESPACE
+    const parameters = new Map<number, Uint8Array>();
+    if (_options?.trackFilter) {
+      const { propertyType, maxSelected } = _options.trackFilter;
+      const filterValue = (propertyType << 8) | (maxSelected & 0xFF);
+      const writer = new BufferWriter();
+      writer.writeVarInt(filterValue);
+      parameters.set(0x12, writer.toUint8Array());
+    }
+
     const message = {
       type: MessageType.SUBSCRIBE_NAMESPACE as const,
       requestId,
       namespacePrefix,
       subscribeOptions: 0x00, // Request PUBLISH messages
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
 
     const bytes = MessageCodec.encode(message);
@@ -1358,10 +1394,38 @@ export class MOQTSession {
               subscriptionId,
             });
 
-            this.routeMessage(message);
+            // Context-aware routing for bidi stream messages
+            if (IS_DRAFT_16 && message.type === MessageType.PUBLISH_NAMESPACE_OK) {
+              // Wire 0x07 = RequestOk = SUBSCRIBE_NAMESPACE acknowledgement on this stream
+              const reqOk = message as { requestId?: number };
+              const subId = reqOk.requestId !== undefined
+                ? this.namespaceSubscriptionByRequestId.get(reqOk.requestId)
+                : subscriptionId;
+              const sub = this.namespaceSubscriptions.get(subId ?? subscriptionId);
+              if (sub) {
+                log.info('SUBSCRIBE_NAMESPACE acknowledged', {
+                  requestId: reqOk.requestId,
+                  namespacePrefix: sub.namespacePrefix.join('/'),
+                });
+              }
+            } else if (IS_DRAFT_16 && message.type === MessageType.PUBLISH_NAMESPACE_ERROR) {
+              // Wire 0x08 = NAMESPACE notification (namespace suffix discovery)
+              const nsMsg = message as { namespace?: string[] };
+              const sub = this.namespaceSubscriptions.get(subscriptionId);
+              if (sub && nsMsg.namespace) {
+                const fullNamespace = [...sub.namespacePrefix, ...nsMsg.namespace];
+                log.info('Namespace discovered via subscription', {
+                  suffix: nsMsg.namespace.join('/'),
+                  fullNamespace: fullNamespace.join('/'),
+                });
+                this.emit('namespace-discovered', { namespace: fullNamespace, subscriptionId });
+              }
+            } else {
+              this.routeMessage(message);
+            }
           } catch (err) {
-            if ((err as Error).message?.includes('Incomplete') ||
-                (err as Error).message?.includes('buffer')) {
+            const msg = (err as Error).message?.toLowerCase() ?? '';
+            if (msg.includes('incomplete') || msg.includes('buffer') || msg.includes('underflow')) {
               break;
             }
             throw err;
@@ -1878,9 +1942,14 @@ export class MOQTSession {
     });
 
     // Check if this is our own publish (filter out self)
-    if (this.ownNamespacePrefix && namespaceStr.startsWith(this.ownNamespacePrefix)) {
-      log.debug('Ignoring own PUBLISH', { namespace: namespaceStr });
-      return;
+    // Match if namespace string starts with prefix OR ends with /prefix (suffix match for participant ID)
+    if (this.ownNamespacePrefix) {
+      const isOwnPrefix = namespaceStr.startsWith(this.ownNamespacePrefix);
+      const isOwnSuffix = namespaceStr.endsWith('/' + this.ownNamespacePrefix) || namespaceStr === this.ownNamespacePrefix;
+      if (isOwnPrefix || isOwnSuffix) {
+        log.debug('Ignoring own PUBLISH', { namespace: namespaceStr });
+        return;
+      }
     }
 
     // Find most specific (longest prefix) matching namespace subscription
@@ -2628,11 +2697,16 @@ export class MOQTSession {
       objectStatus: ObjectStatus.NORMAL,
     };
 
+    let extensions: Map<number, number> | undefined;
+    if (metadata.extensions) {
+      extensions = new Map(metadata.extensions);
+    }
+
     const datagram = ObjectCodec.encodeDatagramObject({
       header,
       payload: data,
       payloadLength: data.byteLength,
-    });
+    }, extensions);
 
     if (datagram.byteLength <= this.maxDatagramSize) {
       try {
@@ -2680,10 +2754,13 @@ export class MOQTSession {
         publisherPriority: priority ?? 128,
       }, true /* endOfGroup */);
 
-      // Build extensions map if maxCacheDuration is specified
+      // Build extensions map from metadata
       let extensions: Map<number, number> | undefined;
+      if (metadata.extensions) {
+        extensions = new Map(metadata.extensions);
+      }
       if (metadata.maxCacheDuration !== undefined && metadata.maxCacheDuration > 0) {
-        extensions = new Map();
+        if (!extensions) extensions = new Map();
         extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
       }
 
@@ -2782,10 +2859,13 @@ export class MOQTSession {
           publisherPriority: priority,
         }, true /* endOfGroup */);
 
-        // Build extensions map if maxCacheDuration is specified
+        // Build extensions map from metadata
         let extensions: Map<number, number> | undefined;
+        if (metadata.extensions) {
+          extensions = new Map(metadata.extensions);
+        }
         if (metadata.maxCacheDuration !== undefined && metadata.maxCacheDuration > 0) {
-          extensions = new Map();
+          if (!extensions) extensions = new Map();
           extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
         }
 
@@ -2881,10 +2961,13 @@ export class MOQTSession {
           return;
         }
 
-        // Build extensions map if maxCacheDuration was set on the keyframe
+        // Build extensions map from metadata and/or maxCacheDuration from keyframe
         let extensions: Map<number, number> | undefined;
+        if (metadata.extensions) {
+          extensions = new Map(metadata.extensions);
+        }
         if (existing.maxCacheDuration !== undefined && existing.maxCacheDuration > 0) {
-          extensions = new Map();
+          if (!extensions) extensions = new Map();
           extensions.set(ObjectExtension.MAX_CACHE_DURATION, existing.maxCacheDuration);
         }
 
@@ -3270,9 +3353,11 @@ export class MOQTSession {
           // Route message
           this.routeMessage(message);
         } catch (err) {
-          if ((err as Error).message?.includes('Incomplete') ||
-              (err as Error).message?.includes('buffer') ||
-              (err as Error).message?.includes('beyond')) {
+          const errMsg = (err as Error).message?.toLowerCase() ?? '';
+          if (errMsg.includes('incomplete') ||
+              errMsg.includes('buffer') ||
+              errMsg.includes('underflow') ||
+              errMsg.includes('beyond')) {
             log.debug('Waiting for more data', {
               bufferSize: bufferLength - this.controlBufferOffset,
               messagesDecoded,
