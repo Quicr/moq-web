@@ -19,7 +19,7 @@ export const SIMULCAST_LAYERS: SimulcastLayer[] = [
 
 export const DEFAULTS = {
   relayUrl: 'auto',
-  liveViewUrl: 'http://localhost:9091',
+  liveViewUrl: 'http://44.233.114.143:9091',
   topNVideo: 2,
   topNAudio: 3,
   gridLayout: '1x2' as '1x2' | '2x2',
