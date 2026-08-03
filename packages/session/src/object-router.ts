@@ -478,9 +478,14 @@ export class ObjectRouter {
       dataSize: data.length,
     });
 
-    // Call subscription's object handler if set
+    // Call subscription's object handler if set, or buffer for late callback binding
     if (subscription.onObject) {
       subscription.onObject(data, groupId, objectId, timestamp);
+    } else {
+      if (!subscription.pendingObjects) {
+        subscription.pendingObjects = [];
+      }
+      subscription.pendingObjects.push({ data, groupId, objectId, timestamp });
     }
 
     // Call global callback
