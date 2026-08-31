@@ -2,20 +2,33 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * @fileoverview MOQT Core Library (Draft 14/16)
+ * @fileoverview MOQT Core Library
  *
  * Core MOQT protocol types, encoding, state management, and transport layer.
  * This package provides the fundamental building blocks for implementing
  * MOQT (Media over QUIC Transport) in TypeScript.
  *
  * Supports:
- * - Draft-14 (default)
- * - Draft-16 (build with MOQT_VERSION=draft-16)
+ * - Draft-14
+ * - Draft-16 (default)
+ * - Draft-18 (build with MOQT_VERSION=draft-18)
  *
  * @packageDocumentation
  *
  * @example
  * ```typescript
+ * // Unified API (recommended)
+ * import {
+ *   SubscriptionFilter,
+ *   GroupOrder,
+ *   capabilities,
+ *   currentVersion,
+ * } from '@web-moq/core';
+ *
+ * console.log('Protocol version:', currentVersion);
+ * console.log('Has SUBSCRIBE_TRACKS:', capabilities.subscribeTracks);
+ *
+ * // Legacy API (still supported)
  * import {
  *   MessageCodec,
  *   MessageType,
@@ -28,6 +41,7 @@
  *   StreamManager,
  *   DatagramManager,
  *   IS_DRAFT_16,
+ *   IS_DRAFT_18,
  * } from '@moq-web/core';
  *
  * // Configure logging
@@ -56,11 +70,77 @@
  * ```
  */
 
+// ============================================================================
+// Unified Public API (recommended)
+// ============================================================================
+
+// Unified API Types
+export type {
+  TrackNamespace as UnifiedTrackNamespace,
+  Location as UnifiedLocation,
+  FullTrackName as UnifiedFullTrackName,
+  Properties,
+  SessionOptions,
+  SessionState,
+  SubscribeRequest,
+  SubscribeResponse,
+  SubscribeUpdateOptions,
+  Subscription,
+  PublishRequest,
+  PublishResponse,
+  OutgoingObject,
+  Publication,
+  FetchRequest,
+  FetchResponse,
+  Fetch,
+  SubscribeNamespaceRequest,
+  AnnouncedNamespace,
+  TrackObject,
+  NamespaceSubscription,
+  PublishNamespaceRequest,
+  NamespacePublication,
+  MOQTObject as UnifiedMOQTObject,
+  RequestError,
+  RequestOk,
+  CodecCapabilities,
+  ISession,
+} from './api/types.js';
+
+// Enums
+export {
+  Version as ApiVersion,
+  SubscriptionFilter,
+  GroupOrder as ApiGroupOrder,
+  ObjectStatus as ApiObjectStatus,
+  Role,
+  NamespaceSubscribeMode,
+} from './api/types.js';
+
+// Codec utilities
+export {
+  capabilities,
+  currentVersion,
+  subscribeRequestToWire,
+  subscribeResponseFromWire,
+  publishRequestToWire,
+  publishResponseFromWire,
+  fetchRequestToWire,
+  fetchResponseFromWire,
+  subscribeNamespaceRequestToWire,
+  publishNamespaceRequestToWire,
+  errorFromWire,
+  filterFromWireV14,
+  filterFromWireV18,
+} from './api/codec.js';
+
+// ============================================================================
 // Version constants (build-time selection)
+// ============================================================================
+
 export {
   MOQT_VERSION,
+  IS_DRAFT_18,
   IS_DRAFT_16,
-  IS_DRAFT_14,
   VERSION_NUMBER,
   ALPN_PROTOCOL,
   getCurrentVersionNumber,
@@ -86,6 +166,16 @@ export {
   ObjectExistence,
   Priority,
   DeliveryMode,
+  // Draft-18 types
+  MessageTypeDraft18,
+  StreamTypeDraft18,
+  SetupOptionDraft18,
+  RoleDraft18,
+  RequestParameterDraft18,
+  SubscriptionFilterDraft18,
+  ObjectStatusDraft18,
+  SessionErrorCodeDraft18,
+  StreamResetErrorCodeDraft18,
 } from './messages/types.js';
 
 // Message interfaces (Draft 14/16)
@@ -140,6 +230,32 @@ export type {
   SubgroupHeader,
   FetchHeader,
   MOQTObject,
+  // Draft-18 types
+  Location,
+  ControlMessageDraft18,
+  ClientSetupMessageDraft18,
+  ServerSetupMessageDraft18,
+  SubscribeMessageDraft18,
+  SubscribeOkMessageDraft18,
+  PublishMessageDraft18,
+  PublishDoneMessageDraft18,
+  RequestErrorMessageDraft18,
+  RequestOkMessageDraft18,
+  RequestUpdateMessageDraft18,
+  FetchMessageDraft18,
+  FetchOkMessageDraft18,
+  GoAwayMessageDraft18,
+  TrackStatusMessageDraft18,
+  PublishNamespaceMessageDraft18,
+  SubscribeNamespaceMessageDraft18,
+  NamespaceMessageDraft18,
+  NamespaceDoneMessageDraft18,
+  SubscribeTracksMessageDraft18,
+  PublishBlockedMessageDraft18,
+  SubgroupHeaderDraft18,
+  ObjectHeaderDraft18,
+  ObjectDatagramDraft18,
+  FetchObjectDraft18,
 } from './messages/types.js';
 
 // Type guards
@@ -193,6 +309,27 @@ export {
   deserializeSwitchingSetAssignment,
 } from './encoding/dts.js';
 export type { SwitchingSetAssignment } from './encoding/dts.js';
+
+// Protocol codec abstraction (draft-version-agnostic)
+export {
+  getProtocolCodec,
+  getProtocolCodecForVersion,
+  usesMoqtVarInt,
+  usesQuicVarInt,
+  Draft18BufferWriter,
+  Draft18BufferReader,
+} from './encoding/protocol-codec.js';
+export type { IProtocolCodec } from './encoding/protocol-codec.js';
+
+// Draft-18 message codec
+export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
+
+// Draft-18 stream codec
+export {
+  Draft18StreamCodec,
+  Draft18StreamCodecError,
+  SubgroupFlags,
+} from './encoding/draft18-stream-codec.js';
 
 // State machines
 export {

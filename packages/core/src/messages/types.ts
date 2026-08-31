@@ -33,12 +33,12 @@
  * The library supports Draft 14, 15, and 16 of the MoQ Transport specification.
  */
 export enum Version {
-  /** Draft version 14 */
-  DRAFT_14 = 0xff00000e,
-  /** Draft version 15 */
-  DRAFT_15 = 0xff00000f,
-  /** Draft version 16 (final ALPN = 'moqt') */
+  /** Draft version 16 */
   DRAFT_16 = 0xff000010,
+  /** Draft version 17 */
+  DRAFT_17 = 0xff000011,
+  /** Draft version 18 */
+  DRAFT_18 = 0xff000012,
 }
 
 /**
@@ -162,6 +162,159 @@ export enum MessageType {
   TRACK_STATUS_OK = 0x0e,
   /** Track status error */
   TRACK_STATUS_ERROR = 0x0f,
+}
+
+/**
+ * Draft-18 Control Message Types
+ *
+ * Draft-18 uses completely different wire format IDs than draft-14/16.
+ * These are sent on bidirectional streams or the control stream.
+ */
+export enum MessageTypeDraft18 {
+  REQUEST_UPDATE = 0x02,
+  SUBSCRIBE = 0x03,
+  SUBSCRIBE_OK = 0x04,
+  REQUEST_ERROR = 0x05,
+  PUBLISH_NAMESPACE = 0x06,
+  REQUEST_OK = 0x07,
+  NAMESPACE = 0x08,
+  PUBLISH_DONE = 0x0B,
+  TRACK_STATUS = 0x0D,
+  NAMESPACE_DONE = 0x0E,
+  PUBLISH_BLOCKED = 0x0F,
+  GOAWAY = 0x10,
+  FETCH = 0x16,
+  FETCH_OK = 0x18,
+  PUBLISH = 0x1D,
+  PUBLISH_OK = 0x1E,
+  SUBSCRIBE_NAMESPACE = 0x50,
+  SUBSCRIBE_TRACKS = 0x51,
+  // Draft-18 has a single SETUP message (no separate CLIENT/SERVER); CLIENT_SETUP
+  // and SERVER_SETUP are intentional aliases used in session code to keep the
+  // draft-14/16 → draft-18 call sites symmetric.
+  /* eslint-disable @typescript-eslint/no-duplicate-enum-values */
+  SETUP = 0x2F00,
+  CLIENT_SETUP = 0x2F00,
+  SERVER_SETUP = 0x2F00,
+  /* eslint-enable @typescript-eslint/no-duplicate-enum-values */
+}
+
+/**
+ * Draft-18 Stream Types for unidirectional streams
+ */
+export enum StreamTypeDraft18 {
+  FETCH_HEADER = 0x05,
+  SETUP = 0x2f00,
+  PADDING = 0x132b3e28,
+}
+
+/**
+ * Draft-18 Setup Option Types
+ */
+export enum SetupOptionDraft18 {
+  PATH = 0x01,
+  AUTHORIZATION_TOKEN = 0x03,
+  MAX_AUTH_TOKEN_CACHE_SIZE = 0x04,
+  AUTHORITY = 0x05,
+  MOQT_IMPLEMENTATION = 0x07,
+}
+
+/**
+ * Draft-18 Role (deprecated — draft-18 has no role in SETUP, kept for compatibility)
+ */
+export enum RoleDraft18 {
+  PUBLISHER = 0x01,
+  SUBSCRIBER = 0x02,
+  BOTH = 0x03,
+}
+
+/**
+ * Draft-18 Message Parameter Types (per spec section 10.2)
+ */
+export enum RequestParameterDraft18 {
+  OBJECT_DELIVERY_TIMEOUT = 0x02,
+  AUTHORIZATION_TOKEN = 0x03,
+  RENDEZVOUS_TIMEOUT = 0x04,
+  SUBGROUP_DELIVERY_TIMEOUT = 0x06,
+  EXPIRES = 0x08,
+  LARGEST_OBJECT = 0x09,
+  FILL_TIMEOUT = 0x0A,
+  FORWARD = 0x10,
+  SUBSCRIBER_PRIORITY = 0x20,
+  SUBSCRIPTION_FILTER = 0x21,
+  GROUP_ORDER = 0x22,
+  NEW_GROUP_REQUEST = 0x32,
+  TRACK_NAMESPACE_PREFIX = 0x34,
+}
+
+/**
+ * Draft-18 Subscription Filter Types
+ */
+export enum SubscriptionFilterDraft18 {
+  NEXT_GROUP_START = 0x01,
+  LARGEST_OBJECT = 0x02,
+  ABSOLUTE_START = 0x03,
+  ABSOLUTE_RANGE = 0x04,
+}
+
+/**
+ * Draft-18 Object Status Values
+ */
+export enum ObjectStatusDraft18 {
+  NORMAL = 0x00,
+  DOES_NOT_EXIST = 0x01,
+  END_OF_GROUP = 0x03,
+  END_OF_TRACK = 0x04,
+}
+
+/**
+ * Draft-18 Session Error Codes
+ */
+export enum SessionErrorCodeDraft18 {
+  NO_ERROR = 0x0,
+  INTERNAL_ERROR = 0x1,
+  UNAUTHORIZED = 0x2,
+  PROTOCOL_VIOLATION = 0x3,
+  INVALID_REQUEST_ID = 0x4,
+  DUPLICATE_TRACK_ALIAS = 0x5,
+  KEY_VALUE_FORMATTING_ERROR = 0x6,
+  INVALID_PATH = 0x8,
+  MALFORMED_PATH = 0x9,
+  GOAWAY_TIMEOUT = 0x10,
+  CONTROL_MESSAGE_TIMEOUT = 0x11,
+  DATA_STREAM_TIMEOUT = 0x12,
+  AUTH_TOKEN_CACHE_OVERFLOW = 0x13,
+  DUPLICATE_AUTH_TOKEN_ALIAS = 0x14,
+  VERSION_NEGOTIATION_FAILED = 0x15,
+  MALFORMED_AUTH_TOKEN = 0x16,
+  UNKNOWN_AUTH_TOKEN_ALIAS = 0x17,
+  EXPIRED_AUTH_TOKEN = 0x18,
+  INVALID_AUTHORITY = 0x19,
+  MALFORMED_AUTHORITY = 0x1a,
+}
+
+/**
+ * Draft-18 Stream Reset Error Codes
+ */
+export enum StreamResetErrorCodeDraft18 {
+  INTERNAL_ERROR = 0x0,
+  CANCELLED = 0x1,
+  DELIVERY_TIMEOUT = 0x2,
+  SESSION_CLOSED = 0x3,
+  GOING_AWAY = 0x4,
+  TOO_FAR_BEHIND = 0x5,
+  UNKNOWN_OBJECT_STATUS = 0x6,
+  EXPIRED_AUTH_TOKEN = 0x7,
+  EXCESSIVE_LOAD = 0x9,
+  MALFORMED_TRACK = 0x12,
+}
+
+/**
+ * Location structure for draft-18 (group, object pair)
+ */
+export interface Location {
+  group: bigint;
+  object: bigint;
 }
 
 /**
@@ -1308,3 +1461,299 @@ export function isSetupMessage(
   return message.type === MessageType.CLIENT_SETUP ||
     message.type === MessageType.SERVER_SETUP;
 }
+
+// ============================================================================
+// Draft-18 Message Interfaces
+// ============================================================================
+
+/**
+ * Draft-18 CLIENT_SETUP message
+ */
+export interface ClientSetupMessageDraft18 {
+  type: MessageTypeDraft18.CLIENT_SETUP;
+  supportedVersions?: Version[];
+  role?: number;
+  path?: string;
+  authority?: string;
+  maxAuthTokenCacheSize?: number;
+  authToken?: Uint8Array;
+  moqtImplementation?: string;
+}
+
+/**
+ * Draft-18 SERVER_SETUP (same as SETUP — single message type in draft-18)
+ */
+export interface ServerSetupMessageDraft18 {
+  type: MessageTypeDraft18.SERVER_SETUP;
+  selectedVersion?: Version;
+  role?: number;
+  path?: string;
+  authority?: string;
+  maxAuthTokenCacheSize?: number;
+}
+
+/**
+ * Draft-18 SUBSCRIBE message
+ */
+export interface SubscribeMessageDraft18 {
+  type: MessageTypeDraft18.SUBSCRIBE;
+  requestId: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  forwardState: boolean;
+  filter: SubscriptionFilterDraft18;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 SUBSCRIBE_OK message
+ */
+export interface SubscribeOkMessageDraft18 {
+  type: MessageTypeDraft18.SUBSCRIBE_OK;
+  requestId: bigint;
+  trackAlias?: bigint;
+  largestLocation: Location;
+  trackProperties?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 PUBLISH message
+ */
+export interface PublishMessageDraft18 {
+  type: MessageTypeDraft18.PUBLISH;
+  requestId: bigint;
+  trackAlias: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  forwardState: boolean;
+  largestLocation: Location;
+  trackProperties?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 REQUEST_ERROR message
+ */
+export interface RequestErrorMessageDraft18 {
+  type: MessageTypeDraft18.REQUEST_ERROR;
+  requestId: bigint;
+  errorCode: number;
+  retryInterval?: bigint;
+  reasonPhrase: string;
+}
+
+/**
+ * Draft-18 REQUEST_OK message
+ */
+export interface RequestOkMessageDraft18 {
+  type: MessageTypeDraft18.REQUEST_OK;
+  requestId: bigint;
+  expires?: bigint;
+}
+
+/**
+ * Draft-18 FETCH message
+ */
+export interface FetchMessageDraft18 {
+  type: MessageTypeDraft18.FETCH;
+  requestId: bigint;
+  joiningFlag: boolean;
+  trackNamespace?: TrackNamespace;
+  trackName?: string;
+  subscribeRequestId?: bigint;
+  subscriberPriority: number;
+  groupOrder: GroupOrder;
+  startLocation: Location;
+  endLocation: Location;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 FETCH_OK message
+ */
+export interface FetchOkMessageDraft18 {
+  type: MessageTypeDraft18.FETCH_OK;
+  requestId: bigint;
+  endOfTrack: boolean;
+  endLocation: Location;
+  trackProperties?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 GOAWAY message
+ */
+export interface GoAwayMessageDraft18 {
+  type: MessageTypeDraft18.GOAWAY;
+  newSessionUri?: string;
+}
+
+/**
+ * Draft-18 TRACK_STATUS message
+ */
+export interface TrackStatusMessageDraft18 {
+  type: MessageTypeDraft18.TRACK_STATUS;
+  requestId: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+}
+
+/**
+ * Draft-18 Subgroup Header
+ */
+export interface SubgroupHeaderDraft18 {
+  streamType: number;
+  trackAlias: bigint;
+  groupId: bigint;
+  subgroupId: bigint;
+  publisherPriority: number;
+  firstObject?: bigint;
+}
+
+/**
+ * Draft-18 Object Header (within streams)
+ */
+export interface ObjectHeaderDraft18 {
+  objectIdDelta: bigint;
+  objectProperties?: Map<number, Uint8Array>;
+  payloadLength: bigint;
+}
+
+/**
+ * Draft-18 Object Datagram
+ */
+export interface ObjectDatagramDraft18 {
+  trackAlias: bigint;
+  groupId: bigint;
+  objectId: bigint;
+  publisherPriority: number;
+  objectProperties?: Map<number, Uint8Array>;
+  payload: Uint8Array;
+}
+
+/**
+ * Draft-18 Fetch Object
+ */
+export interface FetchObjectDraft18 {
+  endOfFetch: boolean;
+  groupId: bigint;
+  subgroupId: bigint;
+  objectId: bigint;
+  publisherPriority: number;
+  objectProperties?: Map<number, Uint8Array>;
+  payloadLength: bigint;
+}
+
+/**
+ * Draft-18 PUBLISH_DONE message
+ * Sent by publisher when it will no longer send objects on a track
+ */
+export interface PublishDoneMessageDraft18 {
+  type: MessageTypeDraft18.PUBLISH_DONE;
+  requestId: bigint;
+  finalLocation: Location;
+  statusCode?: bigint;
+  streamCount?: bigint;
+  reasonPhrase?: string;
+}
+
+/**
+ * Draft-18 REQUEST_UPDATE message
+ * Updates an existing subscription's forward state or parameters
+ */
+export interface RequestUpdateMessageDraft18 {
+  type: MessageTypeDraft18.REQUEST_UPDATE;
+  requestId: bigint;
+  forwardState: boolean;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 PUBLISH_NAMESPACE message
+ * Publisher announces availability of a namespace
+ */
+export interface PublishNamespaceMessageDraft18 {
+  type: MessageTypeDraft18.PUBLISH_NAMESPACE;
+  requestId: bigint;
+  trackNamespacePrefix: TrackNamespace;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 SUBSCRIBE_NAMESPACE message
+ * Subscriber requests announcements matching a namespace prefix
+ */
+export interface SubscribeNamespaceMessageDraft18 {
+  type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE;
+  requestId: bigint;
+  trackNamespacePrefix: TrackNamespace;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 NAMESPACE message
+ * Sent by publisher in response to SUBSCRIBE_NAMESPACE to announce a namespace
+ */
+export interface NamespaceMessageDraft18 {
+  type: MessageTypeDraft18.NAMESPACE;
+  trackNamespace: TrackNamespace;
+  trackNamespaceParameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 NAMESPACE_DONE message
+ * Signals end of namespace announcements for a SUBSCRIBE_NAMESPACE request
+ */
+export interface NamespaceDoneMessageDraft18 {
+  type: MessageTypeDraft18.NAMESPACE_DONE;
+  finalNamespace: TrackNamespace;
+}
+
+/**
+ * Draft-18 SUBSCRIBE_TRACKS message
+ * Subscribe to multiple tracks within matching namespaces
+ */
+export interface SubscribeTracksMessageDraft18 {
+  type: MessageTypeDraft18.SUBSCRIBE_TRACKS;
+  requestId: bigint;
+  trackNamespacePrefix: TrackNamespace;
+  trackNamePattern?: string;
+  forwardState: boolean;
+  filter: SubscriptionFilterDraft18;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-18 PUBLISH_BLOCKED message
+ * Publisher signals it is blocked from sending due to flow control
+ */
+export interface PublishBlockedMessageDraft18 {
+  type: MessageTypeDraft18.PUBLISH_BLOCKED;
+  trackAlias: bigint;
+}
+
+/**
+ * Union of Draft-18 control messages
+ */
+export type ControlMessageDraft18 =
+  | ClientSetupMessageDraft18
+  | ServerSetupMessageDraft18
+  | SubscribeMessageDraft18
+  | SubscribeOkMessageDraft18
+  | PublishMessageDraft18
+  | PublishDoneMessageDraft18
+  | RequestErrorMessageDraft18
+  | RequestOkMessageDraft18
+  | RequestUpdateMessageDraft18
+  | FetchMessageDraft18
+  | FetchOkMessageDraft18
+  | GoAwayMessageDraft18
+  | TrackStatusMessageDraft18
+  | PublishNamespaceMessageDraft18
+  | SubscribeNamespaceMessageDraft18
+  | NamespaceMessageDraft18
+  | NamespaceDoneMessageDraft18
+  | SubscribeTracksMessageDraft18
+  | PublishBlockedMessageDraft18;

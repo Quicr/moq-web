@@ -14,7 +14,7 @@ import type { GroupOrder } from '@moq-web/core';
 /**
  * Session state
  */
-export type SessionState = 'none' | 'setup' | 'ready' | 'error';
+export type SessionState = 'none' | 'setup' | 'ready' | 'closing' | 'error';
 
 /**
  * Session event types
@@ -29,6 +29,10 @@ export type SessionEventType =
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
   | 'incoming-publish'
+  | 'forward-paused'
+  | 'forward-resumed'
+  | 'goaway'
+  | 'publish-blocked'
   | 'fetch-object'
   | 'fetch-complete'
   | 'fetch-stream-complete'
@@ -83,6 +87,8 @@ export interface PublishOptions {
   deliveryMode?: 'stream' | 'datagram';
   /** Audio delivery mode when main mode is 'stream' (default: 'datagram' for low latency) */
   audioDeliveryMode?: 'datagram' | 'stream';
+  /** Skip waiting for forward=1 (for fire-and-forget feedback tracks) */
+  skipForwardWait?: boolean;
   /** Per-request authorization token */
   authToken?: RequestAuthToken;
 }

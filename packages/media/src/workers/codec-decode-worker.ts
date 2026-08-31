@@ -42,6 +42,8 @@ interface VideoBufferData {
   isKeyframe: boolean;
   codecDescription?: Uint8Array;
   arrivedAt: number; // performance.now() when object arrived
+  captureTimestamp?: number; // Date.now() when frame was captured (from LOC)
+  clockOffset?: number; // Clock skew correction in ms (subscriber - publisher), from LOC extension
 }
 
 interface AudioBufferData {
@@ -86,7 +88,7 @@ interface DecodeChannel {
   audioSequence: number;
   pendingVideoFrames: PendingVideoFrame[];
   pendingAudioData: PendingAudioData[];
-  currentVideoMeta: { groupId: number; objectId: number; timestamp: number; arrivedAt: number } | null;
+  currentVideoMeta: { groupId: number; objectId: number; timestamp: number; arrivedAt: number; captureTimestamp?: number; clockOffset?: number } | null;
   currentAudioMeta: { groupId: number; objectId: number; timestamp: number } | null;
   videoConfig: VideoDecoderWorkerConfig | null;
   audioConfig: AudioDecoderWorkerConfig | null;
@@ -95,6 +97,10 @@ interface DecodeChannel {
   enableStats: boolean;
   lastDecodedSequence: number;
   framesOutOfOrder: number;
+  // Clock skew correction: minimum observed e2e delay
+  minObservedE2e: number;
+  // Previous raw e2e for jitter calculation
+  prevRawE2e: number | null;
   // Diagnostic tracking
   videoFramesDecoded: number;
   videoKeyframesReceived: number;
@@ -176,6 +182,8 @@ function createChannel(channelId: number, config: CodecDecodeWorkerConfig): Deco
     enableStats: config.enableStats ?? false,
     lastDecodedSequence: -1,
     framesOutOfOrder: 0,
+    minObservedE2e: Infinity,
+    prevRawE2e: null,
     // Diagnostic tracking
     videoFramesDecoded: 0,
     videoKeyframesReceived: 0,
@@ -425,11 +433,38 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
         const framesDropped = bufferStats?.framesDropped ?? 0;
         const framesDroppedBeforeKeyframe = channel.droppedFramesBeforeKeyframe;
         const framesOutOfOrder = channel.framesOutOfOrder;
-        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder });
+        // Calculate queuing delay and jitter with clock skew correction
+        let queuingDelay: number | undefined;
+        let baselineDelay: number | undefined;
+        let jitter: number | undefined;
+        let correctedE2e: number | undefined;
+        const clockOffset = meta.clockOffset;
+        if (meta.captureTimestamp) {
+          const rawE2e = Date.now() - meta.captureTimestamp;
+          // Track minimum (captures clock_offset + min_network_delay)
+          if (rawE2e < channel.minObservedE2e) {
+            channel.minObservedE2e = rawE2e;
+          }
+          // Queuing delay = raw - baseline (clock skew cancels out via min-delay heuristic)
+          queuingDelay = rawE2e - channel.minObservedE2e;
+          baselineDelay = channel.minObservedE2e;
+          // Jitter = inter-frame variation (absolute difference from previous)
+          if (channel.prevRawE2e !== null) {
+            jitter = Math.abs(rawE2e - channel.prevRawE2e);
+          }
+          channel.prevRawE2e = rawE2e;
+          // Corrected E2E using octoping-computed clock offset from LOC header
+          // clockOffset = subscriber_clock - publisher_clock
+          // correctedE2E = rawE2E - clockOffset
+          if (clockOffset !== undefined) {
+            correctedE2e = rawE2e - clockOffset;
+          }
+        }
+        log(`Emitting latency-stats (ch=${channel.channelId})`, { processingDelay: Math.round(processingDelay), queuingDelay: queuingDelay !== undefined ? Math.round(queuingDelay) : undefined, jitter: jitter !== undefined ? Math.round(jitter) : undefined, baseline: baselineDelay !== undefined ? Math.round(baselineDelay) : undefined, clockOffset, correctedE2e: correctedE2e !== undefined ? Math.round(correctedE2e) : undefined, bufferDepth, bufferDelay });
         respond({
           type: 'latency-stats',
           channelId: channel.channelId,
-          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder },
+          stats: { processingDelay, bufferDepth, bufferDelay, framesDropped, framesDroppedBeforeKeyframe, framesOutOfOrder, queuingDelay, baselineDelay, jitter, clockOffset, correctedE2e },
         });
       }
     },
@@ -680,6 +715,8 @@ function pushData(
         isKeyframe,
         codecDescription: frame.codecDescription,
         arrivedAt,
+        captureTimestamp: frame.captureTimestamp,
+        clockOffset: frame.clockOffset,
       };
 
       if (channel.videoPlayoutBuffer) {
@@ -980,6 +1017,8 @@ function decodeVideoFrame(
       objectId,
       timestamp: timestampMs * 1000, // Back to microseconds
       arrivedAt: frameData.arrivedAt,
+      captureTimestamp: frameData.captureTimestamp,
+      clockOffset: frameData.clockOffset,
     };
 
     // Track frame info for diagnostics

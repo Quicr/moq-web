@@ -15,12 +15,13 @@ import type {
   TransportState,
   StreamInfo,
 } from './transport-worker-types.js';
-import { getCurrentALPNProtocol, IS_DRAFT_16 } from '@moq-web/core';
+import { getCurrentALPNProtocol, IS_DRAFT_16, IS_DRAFT_18, MOQTVarInt, StreamTypeDraft18 } from '@moq-web/core';
 
 // Worker state
 let transport: WebTransport | null = null;
 let controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let controlReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+let setupWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let currentState: TransportState = 'disconnected';
 let debug = false;
 
@@ -78,10 +79,11 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     const alpnProtocol = getCurrentALPNProtocol();
     console.log('[transport-worker] Version check:', {
       IS_DRAFT_16,
+      IS_DRAFT_18,
       alpnProtocol,
-      willSetProtocols: IS_DRAFT_16,
+      willSetProtocols: IS_DRAFT_16 || IS_DRAFT_18,
     });
-    if (IS_DRAFT_16) {
+    if (IS_DRAFT_16 || IS_DRAFT_18) {
       options.protocols = [alpnProtocol];
     }
     console.log('[transport-worker] WebTransport options:', JSON.stringify(options));
@@ -104,16 +106,27 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     await Promise.race([transport.ready, timeoutPromise]);
     log('WebTransport connected');
 
-    // Set up bidirectional control stream
-    const controlStream = await transport.createBidirectionalStream();
-    controlWriter = controlStream.writable.getWriter();
-    controlReader = controlStream.readable.getReader();
-    log('Control stream established');
+    if (IS_DRAFT_18) {
+      // Draft-18: Setup uses unidirectional stream with 0x2F00 type prefix
+      const setupStream = await transport.createUnidirectionalStream();
+      log('Draft-18 setup stream created', { streamId: (setupStream as any).id ?? (setupStream as any).streamId ?? 'unknown' });
+      setupWriter = setupStream.getWriter();
+      log('Draft-18 setup stream established');
+    } else {
+      // Draft-14/16: Single bidirectional control stream
+      const controlStream = await transport.createBidirectionalStream();
+      controlWriter = controlStream.writable.getWriter();
+      controlReader = controlStream.readable.getReader();
+      log('Control stream established');
+    }
 
     // Start listeners
-    listenForControlMessages();
+    if (!IS_DRAFT_18) {
+      listenForControlMessages();
+    }
     listenForDatagrams();
     listenForIncomingStreams();
+    listenForIncomingBidiStreams();
     handleConnectionClosed();
 
     setState('connected');
@@ -169,6 +182,8 @@ function cleanup(): void {
   transport = null;
   controlWriter = null;
   controlReader = null;
+  setupWriter = null;
+  setupStreamTypeSent = false;
   outgoingStreams.clear();
   nextStreamId = 0;
 }
@@ -233,28 +248,94 @@ async function listenForDatagrams(): Promise<void> {
 async function listenForIncomingStreams(): Promise<void> {
   if (!transport) return;
 
+  console.log('[transport-worker] Starting incoming unidirectional stream listener');
   const reader = transport.incomingUnidirectionalStreams.getReader();
   try {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const { value: stream, done } = await reader.read();
       if (done) {
-        log('Incoming streams ended');
+        console.log('[transport-worker] Incoming streams ended');
         break;
       }
 
-      // Assign stream ID and notify main thread
-      const streamId = nextStreamId++;
-      log('Incoming stream', { streamId });
-      respond({ type: 'incoming-stream', streamId });
-
-      // Read stream data in background
-      handleIncomingStreamData(streamId, stream);
+      console.log('[transport-worker] Received incoming unidirectional stream');
+      if (IS_DRAFT_18) {
+        handleDraft18IncomingStream(stream);
+      } else {
+        const streamId = nextStreamId++;
+        log('Incoming stream', { streamId });
+        respond({ type: 'incoming-stream', streamId });
+        handleIncomingStreamData(streamId, stream);
+      }
     }
   } catch (err) {
     if (transport) {
       log('Stream listener error', err);
     }
+  }
+}
+
+/**
+ * Handle incoming unidirectional stream for draft-18
+ * Detects stream type (0x2F00 = setup, otherwise data stream)
+ */
+async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = stream.getReader();
+  try {
+    const { value: firstChunk, done } = await reader.read();
+    if (done || !firstChunk || firstChunk.length === 0) {
+      console.log('[transport-worker] Draft-18 incoming stream: empty or done', { done, length: firstChunk?.length });
+      reader.releaseLock();
+      return;
+    }
+
+    const hex = Array.from(firstChunk.subarray(0, Math.min(32, firstChunk.length)))
+      .map(b => b.toString(16).padStart(2, '0')).join(' ');
+    console.log('[transport-worker] Draft-18 incoming uni stream first bytes', { length: firstChunk.length, hex });
+
+    const [streamType, bytesRead] = MOQTVarInt.decode(firstChunk);
+    const streamTypeNum = Number(streamType);
+    console.log('[transport-worker] Draft-18 stream type decoded', { streamType: `0x${streamTypeNum.toString(16)}`, bytesRead, isSetup: streamTypeNum === StreamTypeDraft18.SETUP });
+
+    if (streamTypeNum === StreamTypeDraft18.SETUP) {
+      // Setup stream from server — forward remaining bytes + continue reading as setup messages
+      const remaining = firstChunk.subarray(bytesRead);
+      if (remaining.length > 0) {
+        const data = new Uint8Array(remaining);
+        respond({ type: 'setup-message', data }, [data.buffer]);
+      }
+      // Continue reading setup stream messages
+      while (true) {
+        const { value, done: d } = await reader.read();
+        if (d) break;
+        const data = new Uint8Array(value);
+        respond({ type: 'setup-message', data }, [data.buffer]);
+      }
+    } else {
+      // Data stream (subgroup) — forward full chunk including stream type byte
+      // (object router's decodeSubgroupHeader reads stream type as first field)
+      const streamId = nextStreamId++;
+      console.log('[transport-worker] Incoming DATA stream', { streamId, streamType: `0x${streamTypeNum.toString(16)}`, chunkSize: firstChunk.length });
+      respond({ type: 'incoming-stream', streamId });
+
+      // Send full first chunk (stream type byte is part of the subgroup header)
+      const data = new Uint8Array(firstChunk);
+      respond({ type: 'stream-data', streamId, data }, [data.buffer]);
+      // Continue forwarding data
+      let totalForwarded = firstChunk.length;
+      while (true) {
+        const { value, done: d } = await reader.read();
+        if (d) break;
+        totalForwarded += value.length;
+        const d2 = new Uint8Array(value);
+        respond({ type: 'stream-data', streamId, data: d2 }, [d2.buffer]);
+      }
+      console.log('[transport-worker] Data stream ended', { streamId, totalForwarded });
+      respond({ type: 'stream-closed', streamId });
+    }
+  } catch (err) {
+    console.log('[transport-worker] Draft-18 stream error', { error: (err as Error).message });
   }
 }
 
@@ -280,6 +361,41 @@ async function handleIncomingStreamData(
     log('Stream read error', { streamId, error: (err as Error).message });
   } finally {
     respond({ type: 'stream-closed', streamId });
+  }
+}
+
+/**
+ * Listen for incoming bidirectional streams (draft-18 relay-initiated requests)
+ */
+async function listenForIncomingBidiStreams(): Promise<void> {
+  if (!transport) return;
+
+  log('Starting incoming bidirectional stream listener');
+  const reader = transport.incomingBidirectionalStreams.getReader();
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { value: stream, done } = await reader.read();
+      if (done) {
+        log('Incoming bidi streams ended');
+        break;
+      }
+
+      const streamId = nextStreamId++;
+      const writer = stream.writable.getWriter();
+      outgoingStreams.set(streamId, { id: streamId, writer });
+      log('Incoming bidi stream', { streamId });
+      respond({ type: 'incoming-bidi-stream', streamId });
+
+      // Read from the readable side
+      readBidiStream(streamId, stream.readable).catch(err => {
+        log('Error reading incoming bidi stream', err);
+      });
+    }
+  } catch (err) {
+    if (transport) {
+      log('Bidi stream listener error', err);
+    }
   }
 }
 
@@ -311,16 +427,45 @@ function handleConnectionClosed(): void {
 /**
  * Send data on control stream
  */
-async function sendControl(data: Uint8Array): Promise<void> {
-  if (!controlWriter) {
-    respond({ type: 'error', message: 'Not connected' });
-    return;
-  }
+let setupStreamTypeSent = false;
 
-  try {
-    await controlWriter.write(data);
-  } catch (err) {
-    respond({ type: 'error', message: (err as Error).message });
+async function sendControl(data: Uint8Array): Promise<void> {
+  if (IS_DRAFT_18) {
+    if (!setupWriter) {
+      respond({ type: 'error', message: 'Setup stream not connected' });
+      return;
+    }
+    try {
+      let toWrite: Uint8Array;
+      if (!setupStreamTypeSent) {
+        // First write: prepend stream type (0x2F00) to the message
+        const streamTypeBytes = MOQTVarInt.encode(BigInt(StreamTypeDraft18.SETUP));
+        toWrite = new Uint8Array(streamTypeBytes.length + data.length);
+        toWrite.set(streamTypeBytes, 0);
+        toWrite.set(data, streamTypeBytes.length);
+        setupStreamTypeSent = true;
+      } else {
+        toWrite = data;
+      }
+      const hex = Array.from(toWrite.subarray(0, Math.min(32, toWrite.length)))
+        .map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log('sendControl (draft-18)', { length: toWrite.length, hex, firstMessage: !setupStreamTypeSent });
+      await setupWriter.write(toWrite);
+      log('sendControl written successfully');
+    } catch (err) {
+      log('sendControl error', { error: (err as Error).message });
+      respond({ type: 'error', message: (err as Error).message });
+    }
+  } else {
+    if (!controlWriter) {
+      respond({ type: 'error', message: 'Not connected' });
+      return;
+    }
+    try {
+      await controlWriter.write(data);
+    } catch (err) {
+      respond({ type: 'error', message: (err as Error).message });
+    }
   }
 }
 

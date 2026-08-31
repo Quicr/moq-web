@@ -14,6 +14,7 @@ import { VideoRenderer } from './VideoRenderer';
 import { AudioPlayer } from './AudioPlayer';
 import { JitterGraph } from './JitterGraph';
 import { LatencyStatsGraph } from './LatencyStatsGraph';
+import { E2ELatencyGraph } from './E2ELatencyGraph';
 import { SubscribeNamespacePanel } from './SubscribeNamespacePanel';
 import { isDebugMode } from '../common/DevSettingsPanel';
 import { EXPERIENCE_PROFILES, type ExperienceProfileName } from '@moq-web/media';
@@ -881,6 +882,11 @@ export const SubscribePanel: React.FC = () => {
                         onLatencyStats={onLatencyStats}
                         targetLatency={targetLatency}
                       />
+                      <E2ELatencyGraph
+                        subscriptionId={config.subscriptionId}
+                        onLatencyStats={onLatencyStats}
+                        targetLatency={targetLatency}
+                      />
                     </div>
                   )}
                 </div>
@@ -928,6 +934,11 @@ export const SubscribePanel: React.FC = () => {
                       targetLatency={targetLatency}
                     />
                     <LatencyStatsGraph
+                      subscriptionId={config.subscriptionId}
+                      onLatencyStats={onLatencyStats}
+                      targetLatency={targetLatency}
+                    />
+                    <E2ELatencyGraph
                       subscriptionId={config.subscriptionId}
                       onLatencyStats={onLatencyStats}
                       targetLatency={targetLatency}

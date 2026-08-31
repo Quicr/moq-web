@@ -33,6 +33,12 @@ import {
 } from '@moq-web/secure-objects';
 import { PublishPipeline, type PublishedObject } from '../pipeline/publish-pipeline.js';
 import { SubscribePipeline, type JitterSample, type LatencyStatsSample } from '../pipeline/subscribe-pipeline.js';
+import {
+  ClockSkewEstimator,
+  createTimingFeedback,
+  serializeTimingFeedback,
+  deserializeTimingFeedback,
+} from '../pipeline/clock-skew-estimator.js';
 import type {
   MediaConfig,
   MediaSessionEventType,
@@ -79,6 +85,10 @@ interface ActivePublication {
   cleanupHandlers: Array<() => void>;
   /** Secure Objects context for encryption (if enabled) */
   secureContext?: SecureObjectsContext;
+  /** Clock skew estimator for octoping-style correction */
+  clockSkewEstimator?: ClockSkewEstimator;
+  /** Subscription ID for timing feedback track */
+  feedbackSubscriptionId?: number;
 }
 
 /**
@@ -92,6 +102,10 @@ interface ActiveSubscription {
   mediaType?: 'video' | 'audio';
   /** Secure Objects context for decryption (if enabled) */
   secureContext?: SecureObjectsContext;
+  /** Track alias for timing feedback publication */
+  feedbackTrackAlias?: bigint;
+  /** Group ID for feedback objects */
+  feedbackGroupId?: number;
 }
 
 /**
@@ -497,19 +511,29 @@ export class MediaSession {
     });
     cleanupHandlers.push(errorCleanup);
 
+    // Create clock skew estimator for octoping-style correction
+    const clockSkewEstimator = new ClockSkewEstimator();
+
     // Store publication
-    this.publications.set(trackAlias.toString(), {
+    const publication: ActivePublication = {
       trackAlias,
       namespace,
       trackName,
       pipeline,
       cleanupHandlers,
       secureContext,
-    });
+      clockSkewEstimator,
+    };
+    this.publications.set(trackAlias.toString(), publication);
 
     // Start the pipeline
     await pipeline.start(stream);
     log.info('Publishing started', { trackAlias: trackAlias.toString(), encrypted: !!secureContext });
+
+    // Subscribe to timing feedback track (async, don't block publish)
+    this.subscribeToTimingFeedback(publication).catch((err) => {
+      log.warn('Failed to subscribe to timing feedback', err as Error);
+    });
 
     return trackAlias;
   }
@@ -611,6 +635,7 @@ export class MediaSession {
     mediaType?: 'video' | 'audio',
     options?: MediaSubscribeOptions
   ): Promise<number> {
+    console.log('[MediaSession] subscribe() called', { namespace, trackName, mediaType, enableStats: config.enableStats });
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
@@ -716,10 +741,54 @@ export class MediaSession {
     });
 
     // Handle latency stats (only when stats enabled)
+    // Track last feedback time per subscription
+    let lastFeedbackTime = 0;
+    let feedbackAttempts = 0;
+    let statsReceived = 0;
     pipeline.on('latency-stats', (stats: LatencyStatsSample) => {
+      statsReceived++;
       const subscriptionId = this.pipelineToSubscriptionId.get(pipeline);
-      if (subscriptionId !== undefined) {
-        this.emit('latency-stats', { subscriptionId, stats });
+      if (subscriptionId === undefined) {
+        // Pipeline not yet mapped - skip this stats event (will get more soon)
+        if (statsReceived <= 3) {
+          console.log('[TimingFeedback] No subscriptionId yet, stats #', statsReceived);
+        }
+        return;
+      }
+      this.emit('latency-stats', { subscriptionId, stats });
+
+      // Send timing feedback for octoping clock skew estimation
+      // Only send periodically (every ~1 second) to avoid flooding
+      const subscription = this.subscriptions.get(subscriptionId);
+      const now = Date.now();
+      if (statsReceived <= 3) {
+        console.log('[TimingFeedback] Stats received', {
+          statsReceived,
+          subscriptionId,
+          hasSubscription: !!subscription,
+          baselineDelay: stats.baselineDelay,
+          queuingDelay: stats.queuingDelay,
+        });
+      }
+      if (subscription && stats.baselineDelay !== undefined && stats.queuingDelay !== undefined) {
+        // Send feedback at most once per second
+        if (now - lastFeedbackTime >= 1000) {
+          lastFeedbackTime = now;
+          feedbackAttempts++;
+          const rawE2e = stats.baselineDelay + stats.queuingDelay;
+          const captureTimestamp = now - rawE2e;
+          const receiveTime = now - stats.queuingDelay;
+
+          console.log('[TimingFeedback] Sending feedback attempt', feedbackAttempts, {
+            subscriptionId,
+            trackName: subscription.trackName,
+            rawE2e,
+          });
+
+          this.publishTimingFeedback(subscription, captureTimestamp, receiveTime).catch((err) => {
+            console.log('[TimingFeedback] Feedback send failed', { error: (err as Error).message });
+          });
+        }
       }
     });
 
@@ -1213,19 +1282,29 @@ export class MediaSession {
     });
     cleanupHandlers.push(errorCleanup);
 
+    // Create clock skew estimator for octoping-style correction
+    const clockSkewEstimator = new ClockSkewEstimator();
+
     // Store publication
-    this.publications.set(trackAlias.toString(), {
+    const publication: ActivePublication = {
       trackAlias,
       namespace,
       trackName,
       pipeline,
       cleanupHandlers,
       secureContext,
-    });
+      clockSkewEstimator,
+    };
+    this.publications.set(trackAlias.toString(), publication);
 
     // Start the pipeline
     await pipeline.start(stream);
     log.info('Announce publish started', { trackAlias: trackAlias.toString(), encrypted: !!secureContext });
+
+    // Subscribe to timing feedback track (async, don't block publish)
+    this.subscribeToTimingFeedback(publication).catch((err) => {
+      log.warn('Failed to subscribe to timing feedback', err as Error);
+    });
   }
 
   // ============================================================================
@@ -1573,6 +1652,157 @@ export class MediaSession {
   // =========================================================================
 
   /**
+   * Stop all active pipelines (called on session error)
+   */
+  private async stopAllPipelines(): Promise<void> {
+    log.info('Stopping all pipelines due to session error', {
+      publications: this.publications.size,
+      subscriptions: this.subscriptions.size,
+    });
+
+    // Stop all publish pipelines
+    for (const [trackAlias, publication] of this.publications) {
+      try {
+        await publication.pipeline.stop();
+        for (const cleanup of publication.cleanupHandlers) {
+          cleanup();
+        }
+        log.info('Stopped publish pipeline', { trackAlias });
+      } catch (err) {
+        log.error('Error stopping publish pipeline', err as Error);
+      }
+    }
+    this.publications.clear();
+
+    // Stop all subscribe pipelines
+    for (const [subscriptionId, subscription] of this.subscriptions) {
+      try {
+        await subscription.pipeline.stop();
+        this.pipelineToSubscriptionId.delete(subscription.pipeline);
+        log.info('Stopped subscribe pipeline', { subscriptionId });
+      } catch (err) {
+        log.error('Error stopping subscribe pipeline', err as Error);
+      }
+    }
+    this.subscriptions.clear();
+  }
+
+  /**
+   * Get timing feedback track name for a media track
+   */
+  private getTimingFeedbackTrackName(trackName: string): string {
+    return `${trackName}/_timing`;
+  }
+
+  /**
+   * Subscribe to timing feedback track for a publication (publisher side)
+   * Receives timing echoes from subscribers to compute clock offset
+   */
+  private async subscribeToTimingFeedback(publication: ActivePublication): Promise<void> {
+    const feedbackTrackName = this.getTimingFeedbackTrackName(publication.trackName);
+
+    try {
+      // Subscribe to the timing feedback track
+      const subscriptionId = await this.session.subscribe(
+        publication.namespace,
+        feedbackTrackName,
+        {},
+        (data, _groupId, _objectId, _timestamp) => {
+          // Process timing feedback
+          if (publication.clockSkewEstimator && data.byteLength >= 16) {
+            try {
+              const feedback = deserializeTimingFeedback(data);
+              const receiveTime = Date.now();
+              publication.clockSkewEstimator.addFeedback(feedback, receiveTime);
+
+              // Update pipeline with new clock offset
+              const offset = publication.clockSkewEstimator.getClockOffset();
+              const estimate = publication.clockSkewEstimator.getEstimate();
+              console.log('[TimingFeedback] Received feedback, offset:', offset, 'stable:', estimate.isStable, 'samples:', estimate.sampleCount);
+              if (publication.clockSkewEstimator.isStable()) {
+                publication.pipeline.setClockOffset(offset);
+              }
+            } catch (err) {
+              log.warn('Failed to parse timing feedback', err as Error);
+            }
+          }
+        }
+      );
+
+      publication.feedbackSubscriptionId = subscriptionId;
+      log.info('Subscribed to timing feedback', {
+        trackAlias: publication.trackAlias.toString(),
+        feedbackTrackName,
+        subscriptionId,
+      });
+    } catch (err) {
+      // Timing feedback is optional - don't fail publish if it fails
+      console.log('[TimingFeedback] Could not subscribe to feedback (may not exist yet)', {
+        trackName: feedbackTrackName,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  // Track pending feedback publication to avoid concurrent attempts
+  private feedbackPublishPending = new Set<number>();
+
+  /**
+   * Publish timing feedback for a subscription (subscriber side)
+   * Sends timing echoes back to publisher for clock skew estimation
+   */
+  private async publishTimingFeedback(
+    subscription: ActiveSubscription,
+    captureTimestamp: number,
+    receiveTime: number
+  ): Promise<void> {
+    if (!subscription.feedbackTrackAlias) {
+      // Check if publication is already in progress
+      if (this.feedbackPublishPending.has(subscription.subscriptionId)) {
+        return;
+      }
+      // First feedback - publish the track
+      const feedbackTrackName = this.getTimingFeedbackTrackName(subscription.trackName);
+      console.log('[TimingFeedback] Starting feedback publication', { feedbackTrackName, namespace: subscription.namespace });
+      this.feedbackPublishPending.add(subscription.subscriptionId);
+      try {
+        const trackAlias = await this.session.publish(
+          subscription.namespace,
+          feedbackTrackName,
+          { priority: 64, deliveryMode: 'datagram', skipForwardWait: true }
+        );
+        subscription.feedbackTrackAlias = trackAlias;
+        subscription.feedbackGroupId = 0;
+        console.log('[TimingFeedback] Started feedback publication', {
+          subscriptionId: subscription.subscriptionId,
+          feedbackTrackName,
+          trackAlias: trackAlias.toString(),
+        });
+      } catch (err) {
+        console.log('[TimingFeedback] Could not publish feedback track', {
+          error: (err as Error).message,
+        });
+        return;
+      } finally {
+        this.feedbackPublishPending.delete(subscription.subscriptionId);
+      }
+    }
+
+    // Send timing feedback
+    const feedback = createTimingFeedback(captureTimestamp, receiveTime);
+    const data = serializeTimingFeedback(feedback);
+
+    subscription.feedbackGroupId = (subscription.feedbackGroupId ?? 0) + 1;
+
+    this.session.sendObject(subscription.feedbackTrackAlias!, data, {
+      groupId: subscription.feedbackGroupId,
+      objectId: 0,
+      isKeyframe: true,
+      type: 'data',
+    });
+  }
+
+  /**
    * Set up session event forwarding
    */
   private setupSessionEvents(): void {
@@ -1582,9 +1812,12 @@ export class MediaSession {
     });
     this.sessionCleanup.push(stateCleanup);
 
-    // Forward errors
+    // Forward errors and stop pipelines on session error
     const errorCleanup = this.session.on('error', (err: Error) => {
       this.emit('error', err);
+      this.stopAllPipelines().catch((stopErr) => {
+        log.error('Failed to stop pipelines on session error', stopErr as Error);
+      });
     });
     this.sessionCleanup.push(errorCleanup);
 
@@ -1755,8 +1988,32 @@ export class MediaSession {
       this.emit('jitter-sample', { subscriptionId, sample });
     });
 
+    // Track feedback timing for this pipeline
+    let lastFeedbackTime = 0;
+    let feedbackAttempts = 0;
     pipeline.on('latency-stats', (stats: LatencyStatsSample) => {
       this.emit('latency-stats', { subscriptionId, stats });
+
+      // Send timing feedback for octoping clock skew estimation
+      const subscription = this.subscriptions.get(subscriptionId);
+      const now = Date.now();
+      if (subscription && stats.baselineDelay !== undefined && stats.queuingDelay !== undefined) {
+        if (now - lastFeedbackTime >= 1000) {
+          lastFeedbackTime = now;
+          feedbackAttempts++;
+          const rawE2e = stats.baselineDelay + stats.queuingDelay;
+          const captureTimestamp = now - rawE2e;
+          const receiveTime = now - stats.queuingDelay;
+          console.log('[TimingFeedback:NS] Sending feedback attempt', feedbackAttempts, {
+            subscriptionId,
+            trackName: subscription.trackName,
+            rawE2e,
+          });
+          this.publishTimingFeedback(subscription, captureTimestamp, receiveTime).catch((err) => {
+            console.log('[TimingFeedback:NS] Feedback send failed', { error: (err as Error).message });
+          });
+        }
+      }
     });
 
     pipeline.on('error', (err: Error) => {

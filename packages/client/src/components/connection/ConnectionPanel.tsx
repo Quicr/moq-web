@@ -12,7 +12,7 @@ import React, { useState } from 'react';
 import { useStore } from '../../store';
 
 export const ConnectionPanel: React.FC = () => {
-  const { serverUrl, state, error, connect, disconnect, setServerUrl, localDevelopment, setLocalDevelopment, useWorkers, setUseWorkers } = useStore();
+  const { serverUrl, state, error, connect, disconnect, setServerUrl, localDevelopment, setLocalDevelopment } = useStore();
   const [inputUrl, setInputUrl] = useState(serverUrl);
 
   const isConnecting = state === 'connecting';
@@ -112,21 +112,6 @@ export const ConnectionPanel: React.FC = () => {
         </div>
         <p className="text-xs text-subtle -mt-2">
           Enable for self-signed certificates
-        </p>
-
-        <div className="flex items-center justify-between">
-          <label htmlFor="useWorkers" className="text-sm text-tertiary">
-            Web Workers
-          </label>
-          <Toggle
-            id="useWorkers"
-            checked={useWorkers}
-            onChange={() => setUseWorkers(!useWorkers)}
-            disabled={isConnected || isConnecting}
-          />
-        </div>
-        <p className="text-xs text-subtle -mt-2">
-          Offload encoding/decoding to background threads
         </p>
 
         {error && (

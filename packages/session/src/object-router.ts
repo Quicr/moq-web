@@ -8,7 +8,7 @@
  * appropriate subscriptions.
  */
 
-import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16, DataStreamType, BufferReader } from '@moq-web/core';
+import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16, IS_DRAFT_18, DataStreamType, BufferReader } from '@moq-web/core';
 import type { FetchDecoderState } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 
@@ -180,12 +180,12 @@ export class ObjectRouter {
 
         // Parse header if not yet done
         if (!headerParsed && viewLength > 0) {
-          if (IS_DRAFT_16) {
-            // Draft-16: Stream starts with Type (0x10-0x3D range for subgroups, 0x05 for FETCH)
+          if (IS_DRAFT_18 || IS_DRAFT_16) {
+            // Draft-16/18: Stream starts with Type (0x10-0x3D range for subgroups, 0x05 for FETCH)
             const firstByte = bufferView[0];
             const streamType = firstByte & 0x3f;
 
-            log.info('Incoming stream first bytes (draft-16)', {
+            log.info('Incoming stream first bytes (draft-16/18)', {
               streamType: `0x${streamType.toString(16)}`,
               viewLength,
               preview: Array.from(bufferView.slice(0, Math.min(20, viewLength))).map(b => b.toString(16).padStart(2, '0')).join(' '),
@@ -202,7 +202,7 @@ export class ObjectRouter {
               [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = ObjectCodec.decodeSubgroupHeader(bufferView);
               headerParsed = true;
 
-              log.info('Decoded subgroup header (draft-16)', {
+              log.info('Decoded subgroup header', {
                 trackAlias: subgroupHeader.trackAlias,
                 groupId: subgroupHeader.groupId,
                 subgroupId: subgroupHeader.subgroupId,
@@ -212,7 +212,7 @@ export class ObjectRouter {
 
               bufferOffset += headerBytes;
             } catch (decodeErr) {
-              log.warn('Failed to decode subgroup header (draft-16)', {
+              log.warn('Failed to decode subgroup header', {
                 error: (decodeErr as Error).message,
                 bufferLength: bufferView.length,
                 totalBytesReceived,
@@ -329,12 +329,14 @@ export class ObjectRouter {
 
               if (subscription) {
                 const timestamp = performance.now() * 1000;
-                this.deliverObject(subscription, payload, subgroupHeader.groupId, objectId, timestamp);
+                // Copy payload to avoid detaching the shared buffer when transferred via postMessage
+                const payloadCopy = new Uint8Array(payload);
+                this.deliverObject(subscription, payloadCopy, subgroupHeader.groupId, objectId, timestamp);
 
                 log.trace('Processed stream object', {
                   groupId: subgroupHeader.groupId,
                   objectId,
-                  payloadSize: payload.length,
+                  payloadSize: payloadCopy.length,
                 });
               } else {
                 log.warn('Received stream object for unknown track alias', {

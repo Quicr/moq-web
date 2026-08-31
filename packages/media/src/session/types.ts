@@ -13,7 +13,7 @@ import type { RequestAuthToken } from '@moq-web/session';
 /**
  * Session state
  */
-export type SessionState = 'none' | 'setup' | 'ready' | 'error';
+export type SessionState = 'none' | 'setup' | 'ready' | 'closing' | 'error';
 
 /**
  * Media session event types
