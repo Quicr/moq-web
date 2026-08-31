@@ -1027,7 +1027,7 @@ describe('ObjectCodec', () => {
       const [objectId, decodedPayload, status] = ObjectCodec.decodeStreamObject(
         encoded,
         0,
-        true,
+        false,
         false
       );
 

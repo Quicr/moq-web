@@ -2982,27 +2982,29 @@ export class ObjectCodec {
     } else {
       // Draft-14: Object ID is absolute
       writer.writeVarInt(objectId);
-      // Draft-14 LAPS format: Object ID | Extension Length | Payload Length | Payload
-      // Write extension length (0 = no extensions) for type 0x11 compatibility
-      if (extensions && extensions.size > 0) {
-        // Encode extensions
-        const extWriter = new BufferWriter();
-        for (const [key, value] of extensions) {
-          extWriter.writeVarInt(key);
-          if (typeof value === 'number') {
-            const encodedValue = VarInt.encode(value);
-            extWriter.writeVarInt(encodedValue.length);
-            extWriter.writeBytes(encodedValue);
-          } else {
-            extWriter.writeVarInt(value.length);
-            extWriter.writeBytes(value);
+      // Draft-14 LAPS format: Object ID | [Extension Length | Extensions] | Payload Length | Payload
+      // Extension length field is present only when EXTENSIONS bit is set in subgroup header type
+      // (types with Ext suffix like 0x11 have extensions; plain types like 0x10 do not).
+      if (hasExtensions) {
+        if (extensions && extensions.size > 0) {
+          const extWriter = new BufferWriter();
+          for (const [key, value] of extensions) {
+            extWriter.writeVarInt(key);
+            if (typeof value === 'number') {
+              const encodedValue = VarInt.encode(value);
+              extWriter.writeVarInt(encodedValue.length);
+              extWriter.writeBytes(encodedValue);
+            } else {
+              extWriter.writeVarInt(value.length);
+              extWriter.writeBytes(value);
+            }
           }
+          const extBytes = extWriter.toUint8Array();
+          writer.writeVarInt(extBytes.length);
+          writer.writeBytes(extBytes);
+        } else {
+          writer.writeVarInt(0);
         }
-        const extBytes = extWriter.toUint8Array();
-        writer.writeVarInt(extBytes.length);
-        writer.writeBytes(extBytes);
-      } else {
-        writer.writeVarInt(0);
       }
       if (payload.length === 0) {
         writer.writeVarInt(0);
