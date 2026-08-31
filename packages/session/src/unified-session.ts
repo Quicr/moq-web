@@ -205,6 +205,7 @@ export class UnifiedSession implements ISession {
     request: SubscribeRequest,
     response: SubscribeResponse
   ): Subscription {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
 
     return {
@@ -294,6 +295,7 @@ export class UnifiedSession implements ISession {
     request: PublishRequest,
     response: PublishResponse
   ): Publication {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
 
     return {
@@ -348,6 +350,7 @@ export class UnifiedSession implements ISession {
     request: SubscribeNamespaceRequest,
     mode: NamespaceSubscribeMode
   ): NamespaceSubscription {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
 
     return {
@@ -391,6 +394,7 @@ export class UnifiedSession implements ISession {
   private createNamespacePublicationHandle(
     request: PublishNamespaceRequest
   ): NamespacePublication {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
 
     return {

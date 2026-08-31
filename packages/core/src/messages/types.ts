@@ -193,10 +193,14 @@ export enum MessageTypeDraft18 {
   PUBLISH_OK = 0x1E,
   SUBSCRIBE_NAMESPACE = 0x50,
   SUBSCRIBE_TRACKS = 0x51,
+  // Draft-18 has a single SETUP message (no separate CLIENT/SERVER); CLIENT_SETUP
+  // and SERVER_SETUP are intentional aliases used in session code to keep the
+  // draft-14/16 → draft-18 call sites symmetric.
+  /* eslint-disable @typescript-eslint/no-duplicate-enum-values */
   SETUP = 0x2F00,
-  // Aliases used in session code (SETUP is single message in draft-18)
   CLIENT_SETUP = 0x2F00,
   SERVER_SETUP = 0x2F00,
+  /* eslint-enable @typescript-eslint/no-duplicate-enum-values */
 }
 
 /**

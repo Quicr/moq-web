@@ -17,6 +17,8 @@ import type {
   FullTrackName,
   Location,
 } from '../messages/types.js';
+import { MessageCodec } from './message-codec.js';
+import { Draft18MessageCodec } from './draft18-message-codec.js';
 
 /**
  * Common interface for protocol-version-specific codecs
@@ -100,13 +102,10 @@ class Draft14Codec implements IProtocolCodec {
   private constructor() {}
 
   encodeControlMessage(message: ControlMessage): Uint8Array {
-    // Delegate to existing MessageCodec for draft-14/16
-    const { MessageCodec } = require('./message-codec.js');
     return MessageCodec.encode(message);
   }
 
   decodeControlMessage(buffer: Uint8Array, offset = 0): [ControlMessage, number] {
-    const { MessageCodec } = require('./message-codec.js');
     return MessageCodec.decode(buffer, offset);
   }
 
@@ -241,13 +240,10 @@ class Draft18Codec implements IProtocolCodec {
   private constructor() {}
 
   encodeControlMessage(message: ControlMessageDraft18): Uint8Array {
-    // Will be implemented in the draft-18 message codec
-    const { Draft18MessageCodec } = require('./draft18-message-codec.js');
     return Draft18MessageCodec.encode(message);
   }
 
   decodeControlMessage(buffer: Uint8Array, offset = 0): [ControlMessageDraft18, number] {
-    const { Draft18MessageCodec } = require('./draft18-message-codec.js');
     return Draft18MessageCodec.decode(buffer, offset);
   }
 
