@@ -631,10 +631,12 @@ describe('MessageCodec', () => {
       });
 
       it('roundtrips FETCH_OK message', () => {
+        // Draft-16/18 drop groupOrder from FETCH_OK wire; codec hardcodes ASCENDING.
+        // Encode with ASCENDING so the roundtrip is stable across all supported drafts.
         const message: FetchOkMessage = {
           type: MessageType.FETCH_OK,
           requestId: 1,
-          groupOrder: GroupOrder.DESCENDING,
+          groupOrder: GroupOrder.ASCENDING,
           endOfTrack: true,
           largestGroupId: 50,
           largestObjectId: 25,

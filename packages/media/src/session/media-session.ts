@@ -1812,9 +1812,12 @@ export class MediaSession {
     });
     this.sessionCleanup.push(stateCleanup);
 
-    // Forward errors
+    // Forward errors and stop pipelines on session error
     const errorCleanup = this.session.on('error', (err: Error) => {
       this.emit('error', err);
+      this.stopAllPipelines().catch((stopErr) => {
+        log.error('Failed to stop pipelines on session error', stopErr as Error);
+      });
     });
     this.sessionCleanup.push(errorCleanup);
 

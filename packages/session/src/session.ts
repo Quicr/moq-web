@@ -266,9 +266,6 @@ export class MOQTSession {
     objectsPerGroup?: number;
   }>();
 
-  /** Pending fetch callbacks, keyed by requestId */
-  private pendingFetches = new Map<number, (data: Uint8Array, groupId: number, objectId: number) => void>();
-
   /**
    * Create a new MOQTSession
    *
@@ -1002,72 +999,6 @@ export class MOQTSession {
     await this.doSendControl(bytes);
     this.setState('closing');
     log.info('Sent GOAWAY', { newSessionUri });
-  }
-
-  /**
-   * Fetch objects from a track (draft-18)
-   *
-   * @param namespace - Track namespace
-   * @param trackName - Track name
-   * @param startGroup - Start group ID
-   * @param startObject - Start object ID
-   * @param endGroup - End group ID
-   * @param endObject - End object ID
-   * @param onObject - Callback for fetched objects
-   */
-  async fetch(
-    namespace: string[],
-    trackName: string,
-    startGroup: number,
-    startObject: number,
-    endGroup: number,
-    endObject: number,
-    onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
-  ): Promise<void> {
-    if (!IS_DRAFT_18) {
-      throw new Error('fetch() requires draft-18');
-    }
-    if (!this.isReady) {
-      throw new Error('Session not ready');
-    }
-
-    const requestId = this.getNextRequestId();
-
-    const fetchMessage: FetchMessageDraft18 = {
-      type: MessageTypeDraft18.FETCH,
-      requestId: BigInt(requestId),
-      joiningFlag: false,
-      trackNamespace: namespace,
-      trackName,
-      subscriberPriority: 128,
-      groupOrder: GroupOrder.ASCENDING,
-      startLocation: { group: BigInt(startGroup), object: BigInt(startObject) },
-      endLocation: { group: BigInt(endGroup), object: BigInt(endObject) },
-    };
-
-    const encoded = Draft18MessageCodec.encode(fetchMessage);
-    log.info('Sent FETCH (draft-18)', {
-      requestId,
-      namespace: namespace.join('/'),
-      trackName,
-      startGroup, startObject, endGroup, endObject,
-    });
-
-    const response = await this.sendRequestAndWaitResponse(encoded);
-
-    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
-      const error = response as RequestErrorMessageDraft18;
-      throw new Error(`FETCH failed: ${error.reasonPhrase} (code ${error.errorCode})`);
-    }
-
-    log.info('Received FETCH_OK (draft-18)', { requestId });
-
-    // Objects arrive on a unidirectional fetch stream (type 0x05) with our requestId
-    // The transport will emit them via 'unidirectional-stream' events
-    // Register a temporary handler keyed by requestId
-    if (onObject) {
-      this.pendingFetches.set(requestId, onObject);
-    }
   }
 
   /**
@@ -4329,6 +4260,7 @@ export class MOQTSession {
       audioDeliveryMode: announceInfo.options.audioDeliveryMode ?? 'datagram',
       requestId: Number(message.requestId),
       cleanupHandlers: [],
+      forward: 1,
     };
     this.publicationManager.add(publication);
 

@@ -39,7 +39,7 @@ import {
   currentVersion,
   GroupOrder as LegacyGroupOrder,
   MOQTransport,
-} from '@web-moq/core';
+} from '@moq-web/core';
 import { MOQTSession } from './session.js';
 import type { SubscribeOptions, PublishOptions, ObjectMetadata } from './types.js';
 

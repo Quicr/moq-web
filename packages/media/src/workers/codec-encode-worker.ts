@@ -107,6 +107,7 @@ function createChannel(channelId: number, config: CodecEncodeWorkerConfig): Enco
     keyframeIntervalFrames,
     quicrInteropEnabled: config.quicrInteropEnabled ?? false,
     quicrParticipantId: config.quicrParticipantId ?? 0,
+    destroyed: false,
   };
 
   log(`Channel ${channelId} created with keyframeIntervalFrames=${keyframeIntervalFrames}, quicrInterop=${channel.quicrInteropEnabled}`);

@@ -22,7 +22,6 @@ let transport: WebTransport | null = null;
 let controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let controlReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 let setupWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
-let datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let currentState: TransportState = 'disconnected';
 let debug = false;
 
@@ -185,7 +184,6 @@ function cleanup(): void {
   controlReader = null;
   setupWriter = null;
   setupStreamTypeSent = false;
-  datagramWriter = null;
   outgoingStreams.clear();
   nextStreamId = 0;
 }
