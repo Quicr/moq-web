@@ -141,7 +141,6 @@ export {
   MOQT_VERSION,
   IS_DRAFT_18,
   IS_DRAFT_16,
-  IS_DRAFT_14,
   VERSION_NUMBER,
   ALPN_PROTOCOL,
   getCurrentVersionNumber,

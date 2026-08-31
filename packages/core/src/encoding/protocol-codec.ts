@@ -4,11 +4,11 @@
 /**
  * Protocol codec abstraction for version-specific encoding/decoding.
  *
- * This module provides a clean separation between draft-14/16 and draft-18
+ * This module provides a clean separation between draft-16 and draft-18
  * wire formats without spaghetti conditionals throughout the codebase.
  */
 
-import { IS_DRAFT_18, IS_DRAFT_16 } from '../version/constants.js';
+import { IS_DRAFT_18 } from '../version/constants.js';
 import { Version } from '../messages/types.js';
 import type {
   ControlMessage,
@@ -53,7 +53,7 @@ export function getProtocolCodec(): IProtocolCodec {
   if (IS_DRAFT_18) {
     return Draft18Codec.instance;
   }
-  return Draft14Codec.instance;
+  return Draft16Codec.instance;
 }
 
 /**
@@ -65,10 +65,8 @@ export function getProtocolCodecForVersion(version: Version): IProtocolCodec {
     case Version.DRAFT_17:
       return Draft18Codec.instance;
     case Version.DRAFT_16:
-    case Version.DRAFT_15:
-    case Version.DRAFT_14:
     default:
-      return Draft14Codec.instance;
+      return Draft16Codec.instance;
   }
 }
 
@@ -80,7 +78,7 @@ export function usesMoqtVarInt(): boolean {
 }
 
 /**
- * Check if the current build uses QUIC varints (draft-14/15/16)
+ * Check if the current build uses QUIC varints (draft-16)
  */
 export function usesQuicVarInt(): boolean {
   return !IS_DRAFT_18;
@@ -91,13 +89,13 @@ import { VarInt, BufferReader, BufferWriter } from './varint.js';
 import { MOQTVarInt } from './moqt-varint.js';
 
 /**
- * Draft-14/15/16 Codec Implementation
+ * Draft-16 Codec Implementation
  *
  * Uses QUIC-style varints and the existing message-codec.ts encoding.
  */
-class Draft14Codec implements IProtocolCodec {
-  static readonly instance = new Draft14Codec();
-  readonly version = IS_DRAFT_16 ? Version.DRAFT_16 : Version.DRAFT_14;
+class Draft16Codec implements IProtocolCodec {
+  static readonly instance = new Draft16Codec();
+  readonly version = Version.DRAFT_16;
 
   private constructor() {}
 
@@ -175,7 +173,7 @@ class Draft14Codec implements IProtocolCodec {
     const writer = new BufferWriter();
     writer.writeVarInt(pairs.size);
 
-    if (deltaEncoded && IS_DRAFT_16) {
+    if (deltaEncoded) {
       const sortedEntries = Array.from(pairs.entries()).sort((a, b) => a[0] - b[0]);
       let previousKey = 0;
       for (const [key, value] of sortedEntries) {
@@ -203,23 +201,15 @@ class Draft14Codec implements IProtocolCodec {
     const pairCount = count ?? reader.readVarIntNumber();
     const pairs = new Map<number, Uint8Array>();
 
-    if (IS_DRAFT_16) {
-      let previousKey = 0;
-      for (let i = 0; i < pairCount; i++) {
-        const deltaKey = reader.readVarIntNumber();
-        const key = previousKey + deltaKey;
-        previousKey = key;
-        if (key % 2 === 0) {
-          const value = reader.readVarIntNumber();
-          pairs.set(key, VarInt.encode(value));
-        } else {
-          const length = reader.readVarIntNumber();
-          pairs.set(key, reader.readBytes(length));
-        }
-      }
-    } else {
-      for (let i = 0; i < pairCount; i++) {
-        const key = reader.readVarIntNumber();
+    let previousKey = 0;
+    for (let i = 0; i < pairCount; i++) {
+      const deltaKey = reader.readVarIntNumber();
+      const key = previousKey + deltaKey;
+      previousKey = key;
+      if (key % 2 === 0) {
+        const value = reader.readVarIntNumber();
+        pairs.set(key, VarInt.encode(value));
+      } else {
         const length = reader.readVarIntNumber();
         pairs.set(key, reader.readBytes(length));
       }
@@ -496,4 +486,4 @@ export class Draft18BufferReader {
   }
 }
 
-export { Draft14Codec, Draft18Codec };
+export { Draft16Codec, Draft18Codec };

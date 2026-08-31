@@ -56,10 +56,8 @@ describe('Unified Codec', () => {
     it('should report correct current version', () => {
       if (IS_DRAFT_18) {
         expect(currentVersion).toBe(Version.DRAFT_18);
-      } else if (IS_DRAFT_16) {
-        expect(currentVersion).toBe(Version.DRAFT_16);
       } else {
-        expect(currentVersion).toBe(Version.DRAFT_14);
+        expect(currentVersion).toBe(Version.DRAFT_16);
       }
     });
   });

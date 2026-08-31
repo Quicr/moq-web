@@ -33,10 +33,6 @@
  * The library supports Draft 14, 15, and 16 of the MoQ Transport specification.
  */
 export enum Version {
-  /** Draft version 14 */
-  DRAFT_14 = 0xff00000e,
-  /** Draft version 15 */
-  DRAFT_15 = 0xff00000f,
   /** Draft version 16 */
   DRAFT_16 = 0xff000010,
   /** Draft version 17 */

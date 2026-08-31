@@ -127,6 +127,3 @@ jobs:
 
       - name: Test (draft-16)
         run: pnpm run test:draft-16
-
-      - name: Test (draft-14)
-        run: pnpm run test:draft-14

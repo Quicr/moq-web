@@ -951,9 +951,7 @@ export class MOQTSession {
 
       const clientSetup: ClientSetupMessage = {
         type: MessageType.CLIENT_SETUP,
-        supportedVersions: IS_DRAFT_16
-          ? [Version.DRAFT_16]
-          : [Version.DRAFT_14, Version.DRAFT_15],
+        supportedVersions: [Version.DRAFT_16],
         parameters: setupParams,
       };
 
@@ -969,7 +967,7 @@ export class MOQTSession {
 
       await this.doSendControl(setupBytes);
       log.info('Sent CLIENT_SETUP');
-      this.emitMessageSent('CLIENT_SETUP', setupBytes.length, IS_DRAFT_16 ? 'draft-16' : 'draft-14', { isDraft16: IS_DRAFT_16 });
+      this.emitMessageSent('CLIENT_SETUP', setupBytes.length, 'draft-16', { isDraft16: IS_DRAFT_16 });
 
       // Wait for SERVER_SETUP
       await this.waitForServerSetup();

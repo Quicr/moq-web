@@ -17,11 +17,11 @@ const getMoqtVersionInfo = () => {
   switch (version) {
     case 'draft-18':
       return { label: 'Draft-18', className: 'badge-green' };
+    case 'draft-17':
+      return { label: 'Draft-17', className: 'badge-blue' };
     case 'draft-16':
-      return { label: 'Draft-16', className: 'badge-purple' };
-    case 'draft-14':
     default:
-      return { label: 'Draft-14', className: 'badge-blue' };
+      return { label: 'Draft-16', className: 'badge-purple' };
   }
 };
 

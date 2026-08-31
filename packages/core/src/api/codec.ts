@@ -77,9 +77,7 @@ export const capabilities: CodecCapabilities = {
  */
 export const currentVersion: Version = IS_DRAFT_18
   ? Version.DRAFT_18
-  : IS_DRAFT_16
-    ? Version.DRAFT_16
-    : Version.DRAFT_14;
+  : Version.DRAFT_16;
 
 // =============================================================================
 // Filter/GroupOrder Mapping

@@ -50,8 +50,6 @@ export type Properties = Map<number, Uint8Array>;
  * Protocol version identifiers
  */
 export enum Version {
-  DRAFT_14 = 0xff00000e,
-  DRAFT_15 = 0xff00000f,
   DRAFT_16 = 0xff000010,
   DRAFT_17 = 0xff000011,
   DRAFT_18 = 0xff000012,

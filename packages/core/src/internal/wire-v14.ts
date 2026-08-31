@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * @fileoverview Internal Wire Types for Draft-14/15/16
+ * @fileoverview Internal Wire Types for Draft-16
  *
- * These types represent the exact wire format for draft-14/15/16.
+ * These types represent the exact wire format for draft-16.
  * They are NOT exported from the public API.
  *
- * To retire draft-14/16 support: delete this file and wire-v14.test.ts
+ * (File name retains "v14" for historical continuity with prior draft naming;
+ * the wire format on the current supported set is draft-16.)
  */
 
 // =============================================================================
