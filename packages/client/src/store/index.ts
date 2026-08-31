@@ -87,25 +87,6 @@ function emitSeekStart(subscriptionId: number, targetGroup: number): void {
   }
 }
 
-interface TransportConfig {
-  serverCertificateHashes?: ArrayBuffer[];
-  connectionTimeout?: number;
-}
-
-// Transport factory - can be set at runtime when moqt-transport is loaded
-let createTransport: (config?: TransportConfig) => MOQTransport = () => {
-  throw new Error('MOQTransport not initialized. Call setTransportFactory() first.');
-};
-
-/**
- * Set the transport factory function
- * This should be called from main.tsx after importing moqt-transport
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function setTransportFactory(factory: (config?: TransportConfig) => any): void {
-  createTransport = factory;
-}
-
 /**
  * Fetch pre-computed certificate fingerprint for WebTransport
  * The fingerprint is a raw binary SHA-256 hash of the DER-encoded certificate
@@ -248,7 +229,7 @@ interface ConnectionSlice {
   // Jitter sample handler registration (only active when enableStats is true)
   onJitterSample: (handler: (data: { subscriptionId: number; sample: { interArrivalTimes: number[]; avgJitter: number; maxJitter: number } }) => void) => () => void;
   // Latency stats handler registration (only active when enableStats is true)
-  onLatencyStats: (handler: (data: { subscriptionId: number; stats: { processingDelay: number; bufferDepth: number; bufferDelay: number } }) => void) => () => void;
+  onLatencyStats: (handler: (data: { subscriptionId: number; stats: { processingDelay: number; bufferDepth: number; bufferDelay: number; framesDropped?: number; framesDroppedBeforeKeyframe?: number; framesOutOfOrder?: number; queuingDelay?: number; baselineDelay?: number; jitter?: number; clockOffset?: number; correctedE2e?: number } }) => void) => () => void;
   // Incoming FETCH event handler (for VOD publisher local playback)
   onIncomingFetch: (handler: (data: { namespace: string[]; trackName: string; startGroup: number; endGroup: number }) => void) => () => void;
 }
@@ -385,7 +366,6 @@ interface SettingsSlice {
   keyframeInterval: number;
   deliveryMode: 'stream' | 'datagram';
   localDevelopment: boolean;
-  useWorkers: boolean;
   /** Use announce flow (PUBLISH_NAMESPACE) instead of direct PUBLISH */
   useAnnounceFlow: boolean;
   /** Connection timeout in milliseconds (default: 300000 = 5 minutes) */
@@ -468,7 +448,6 @@ interface SettingsSlice {
   setKeyframeInterval: (seconds: number) => void;
   setDeliveryMode: (mode: 'stream' | 'datagram') => void;
   setLocalDevelopment: (value: boolean) => void;
-  setUseWorkers: (value: boolean) => void;
   setUseAnnounceFlow: (value: boolean) => void;
   setConnectionTimeout: (value: number) => void;
   setEnableStats: (value: boolean) => void;
@@ -533,7 +512,7 @@ export const useStore = create<AppStore>()(
       pendingAnnounceConfig: null,
 
       connect: async (url: string) => {
-        const { transport: existingTransport, session: existingSession, localDevelopment, useWorkers } = get();
+        const { transport: existingTransport, session: existingSession, localDevelopment } = get();
         if (existingSession) {
           await existingSession.close();
         }
@@ -554,53 +533,25 @@ export const useStore = create<AppStore>()(
           }
         }
 
-        let transport: MOQTransport | null = null;
         let session: MediaSession;
 
         try {
           set({ state: 'connecting', error: null, serverUrl: url });
 
-          if (useWorkers) {
-            // Worker mode: Transport runs in a web worker
-            log.info('Using worker mode for transport + encoding/decoding');
+          // Always use worker mode for transport + encoding/decoding
+          log.info('Using worker mode for transport + encoding/decoding');
 
-            session = new MediaSession({
-              workers: getWorkers(),
-              serverCertificateHashes,
-              connectionTimeout: get().connectionTimeout,
-            });
+          session = new MediaSession({
+            workers: getWorkers(),
+            serverCertificateHashes,
+            connectionTimeout: get().connectionTimeout,
+          });
 
-            // Connect via the transport worker
-            await session.connect(url);
-            log.info('Connected to relay via transport worker', { url });
-          } else {
-            // Main thread mode: Transport runs on main thread
-            log.info('Using main thread mode');
+          await session.connect(url);
+          log.info('Connected to relay via transport worker', { url });
 
-            transport = createTransport({
-              serverCertificateHashes,
-              connectionTimeout: get().connectionTimeout,
-            });
-
-            transport.on('state-change', (newState: unknown) => {
-              set({ state: newState as TransportState });
-            });
-
-            transport.on('error', (err: unknown) => {
-              const error = err as Error;
-              log.error('Transport error', error);
-              set({ error: error.message });
-            });
-
-            await transport.connect(url);
-            log.info('Connected to relay', { url });
-
-            // Create MediaSession with main thread transport (no workers)
-            session = new MediaSession(transport);
-          }
-
-          set({ transport, state: 'connected' });
-          log.info('MediaSession created', { useWorkers });
+          set({ transport: null, state: 'connected' });
+          log.info('MediaSession created');
 
           session.on('state-change', (sessionState) => {
             set({ sessionState });
@@ -1910,7 +1861,6 @@ export const useStore = create<AppStore>()(
       keyframeInterval: 1,
       deliveryMode: 'stream',
       localDevelopment: true,
-      useWorkers: true, // Default to using workers for better performance
       useAnnounceFlow: false, // Default to direct PUBLISH flow
       connectionTimeout: 300000, // Default 5 minutes (was 10 seconds)
       enableStats: false, // Default to off for performance
@@ -1968,7 +1918,6 @@ export const useStore = create<AppStore>()(
       setKeyframeInterval: (seconds) => set({ keyframeInterval: seconds }),
       setDeliveryMode: (mode) => set({ deliveryMode: mode }),
       setLocalDevelopment: (value) => set({ localDevelopment: value }),
-      setUseWorkers: (value) => set({ useWorkers: value }),
       setUseAnnounceFlow: (value) => set({ useAnnounceFlow: value }),
       setConnectionTimeout: (value) => set({ connectionTimeout: value }),
       setEnableStats: (value) => set({ enableStats: value }),
@@ -2060,7 +2009,6 @@ export const useStore = create<AppStore>()(
         keyframeInterval: state.keyframeInterval,
         deliveryMode: state.deliveryMode,
         localDevelopment: state.localDevelopment,
-        useWorkers: state.useWorkers,
         useAnnounceFlow: state.useAnnounceFlow,
         enableStats: state.enableStats,
         jitterBufferDelay: state.jitterBufferDelay,

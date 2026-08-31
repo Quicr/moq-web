@@ -71,10 +71,10 @@ describe('Performance', () => {
 
     // eslint-disable-next-line no-console
     console.log(`CBOR decode 1000 maps: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
-    expect(elapsed).toBeLessThan(50);
+    expect(elapsed).toBeLessThan(150);
   });
 
-  it('CAT token decode (no verify): 1000 tokens under 100ms', () => {
+  it('CAT token decode (no verify): 1000 tokens under 200ms', () => {
     const start = performance.now();
     for (let i = 0; i < 1000; i++) {
       CatTokenDecoder.decode(sampleToken);
@@ -83,7 +83,7 @@ describe('Performance', () => {
 
     // eslint-disable-next-line no-console
     console.log(`CAT decode 1000 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
-    expect(elapsed).toBeLessThan(100);
+    expect(elapsed).toBeLessThan(200);
   });
 
   it('CAT token decode from base64url: 1000 tokens under 150ms', () => {

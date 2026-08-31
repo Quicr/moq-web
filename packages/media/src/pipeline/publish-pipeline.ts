@@ -288,6 +288,20 @@ export class PublishPipeline {
   }
 
   /**
+   * Set clock offset for octoping-style skew correction
+   * This value is embedded in LOC headers for subscriber-side correction
+   *
+   * @param offsetMs - Clock offset in ms (subscriber_clock - publisher_clock)
+   */
+  setClockOffset(offsetMs: number): void {
+    if (this.useWorker && this.encodeWorkerClient) {
+      this.encodeWorkerClient.setClockOffset(offsetMs);
+    }
+    // Main thread mode: packager handles it directly (already has clockOffset support)
+    log.debug('Clock offset updated', { offsetMs });
+  }
+
+  /**
    * Start the pipeline
    *
    * @param stream - MediaStream to capture from
@@ -463,9 +477,10 @@ export class PublishPipeline {
     }
 
     // Package with LOC (zero-copy: calculate exact size, allocate, write directly)
+    // Use Date.now() for captureTimestamp to enable end-to-end latency measurement
     const options = {
       isKeyframe: frame.isKeyframe,
-      captureTimestamp: performance.now(),
+      captureTimestamp: Date.now(),
       codecDescription: frame.codecDescription,
       quicrInterop: this.config.quicrInteropEnabled,
     };

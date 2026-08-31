@@ -15,16 +15,18 @@ import { useStore } from '../../store';
 const getMoqtVersionInfo = () => {
   const version = __MOQT_VERSION__;
   switch (version) {
+    case 'draft-18':
+      return { label: 'Draft-18', className: 'badge-green' };
+    case 'draft-17':
+      return { label: 'Draft-17', className: 'badge-blue' };
     case 'draft-16':
-      return { label: 'Draft-16', className: 'badge-purple' };
-    case 'draft-14':
     default:
-      return { label: 'Draft-14', className: 'badge-blue' };
+      return { label: 'Draft-16', className: 'badge-purple' };
   }
 };
 
 export const StatusPanel: React.FC = () => {
-  const { state, sessionState, error, serverUrl, useWorkers } = useStore();
+  const { state, sessionState, error, serverUrl } = useStore();
   const versionInfo = getMoqtVersionInfo();
 
   // Determine status indicator
@@ -59,9 +61,7 @@ export const StatusPanel: React.FC = () => {
         {/* Badges row */}
         <div className="flex flex-wrap gap-2">
           <span className={versionInfo.className}>{versionInfo.label}</span>
-          <span className={useWorkers ? 'badge-green' : 'badge'}>
-            {useWorkers ? 'Workers' : 'Main Thread'}
-          </span>
+          <span className="badge-green">Workers</span>
         </div>
 
         {/* Connection info */}

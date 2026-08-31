@@ -74,6 +74,7 @@ export type CodecEncodeWorkerRequest =
   | { type: 'update-audio-bitrate'; channelId: number; bitrate: number }
   | { type: 'reconfigure-audio'; channelId: number; config: AudioEncoderWorkerConfig }
   | { type: 'force-keyframe'; channelId: number }
+  | { type: 'set-clock-offset'; channelId: number; offsetMs: number }
   | { type: 'flush'; channelId: number }
   | { type: 'reset'; channelId: number }
   | { type: 'destroy'; channelId: number }
