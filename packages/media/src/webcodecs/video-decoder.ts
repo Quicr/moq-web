@@ -9,7 +9,7 @@
  *
  * @example
  * ```typescript
- * import { H264Decoder } from '@web-moq/media';
+ * import { H264Decoder } from '@moq-web/media';
  *
  * const decoder = new H264Decoder();
  *
@@ -30,7 +30,7 @@
  * ```
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 
 const log = Logger.create('moqt:media:video-decoder');
 

@@ -40,8 +40,33 @@
  *   MOQTransport,
  *   StreamManager,
  *   DatagramManager,
+ *   IS_DRAFT_16,
  *   IS_DRAFT_18,
- * } from '@web-moq/core';
+ * } from '@moq-web/core';
+ *
+ * // Configure logging
+ * Logger.setLevel(LogLevel.DEBUG);
+ *
+ * // Check version at runtime
+ * console.log('Building for draft-16:', IS_DRAFT_16);
+ *
+ * // Create track manager
+ * const tracks = new TrackManager();
+ *
+ * // Connect transport
+ * const transport = new MOQTransport();
+ * await transport.connect('https://relay.example.com/moq');
+ *
+ * // Create stream/datagram managers
+ * const streams = new StreamManager(transport);
+ * const datagrams = new DatagramManager(transport);
+ *
+ * // Encode a message
+ * const bytes = MessageCodec.encode({
+ *   type: MessageType.CLIENT_SETUP,
+ *   supportedVersions: [Version.DRAFT_14],
+ *   parameters: new Map([[SetupParameter.PATH, '/moq']]),
+ * });
  * ```
  */
 
@@ -131,6 +156,7 @@ export {
   DataStreamType,
   SetupParameter,
   RequestParameter,
+  ObjectExtension,
   GroupOrder,
   FilterType,
   SessionErrorCode,
@@ -276,6 +302,14 @@ export {
 
 // Message codec
 export { MessageCodec, MessageCodecError, ObjectCodec } from './encoding/message-codec.js';
+export type { FetchEncoderState, FetchDecoderState, FetchObjectResult } from './encoding/message-codec.js';
+
+// DTS (Dynamic Track Switching)
+export {
+  serializeSwitchingSetAssignment,
+  deserializeSwitchingSetAssignment,
+} from './encoding/dts.js';
+export type { SwitchingSetAssignment } from './encoding/dts.js';
 
 // Protocol codec abstraction (draft-version-agnostic)
 export {

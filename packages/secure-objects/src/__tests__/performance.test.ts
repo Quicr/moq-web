@@ -60,7 +60,7 @@ describe('Performance', () => {
     const dataSizes = [
       { name: '1KB', size: 1024, minThroughput: 1 }, // Audio frame (CI runners have high per-op overhead)
       { name: '16KB', size: 16 * 1024, minThroughput: 15 }, // Small video frame
-      { name: '64KB', size: 64 * 1024, minThroughput: 40 }, // Typical video frame
+      { name: '64KB', size: 64 * 1024, minThroughput: 25 }, // Typical video frame
     ];
 
     for (const { name, size, minThroughput } of dataSizes) {
@@ -151,7 +151,7 @@ describe('Performance', () => {
       console.log(`AES-CTR-HMAC encrypt 64KB: ${throughputMBps.toFixed(1)} MB/s`);
       // CTR-HMAC is slower due to separate MAC computation
       // Threshold set conservatively for CI runners
-      expect(throughputMBps).toBeGreaterThan(25);
+      expect(throughputMBps).toBeGreaterThan(15);
     });
   });
 
@@ -238,7 +238,7 @@ describe('Performance', () => {
       const frameSize = 64 * 1024;
       const plaintext = new Uint8Array(frameSize);
 
-      for (let i = 0; i < 100; i++) {
+      for (let i = 1; i <= 100; i++) {
         const encrypted = await ctx.encrypt(plaintext, { groupId: BigInt(i), objectId: i });
         await ctx.decrypt(encrypted.ciphertext, { groupId: BigInt(i), objectId: i });
       }

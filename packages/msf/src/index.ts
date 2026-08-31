@@ -21,7 +21,7 @@
  *   createCatalog,
  *   parseCatalog,
  *   createMSFSession,
- * } from '@web-moq/msf';
+ * } from '@moq-web/msf';
  *
  * // Build a catalog
  * const catalog = createCatalog()
@@ -252,4 +252,5 @@ export {
   createMSFSession,
   type MSFSessionConfig,
   type TrackInfo,
+  type PublishedTrackInfo,
 } from './session/index.js';

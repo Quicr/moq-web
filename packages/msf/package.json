@@ -1,5 +1,5 @@
 {
-  "name": "@web-moq/msf",
+  "name": "@moq-web/msf",
   "version": "0.1.0",
   "description": "MOQT Streaming Format (MSF) - JSON catalogs for LOC-compliant media delivery",
   "type": "module",
@@ -23,8 +23,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@web-moq/core": "workspace:*",
-    "@web-moq/session": "workspace:*",
+    "@moq-web/core": "workspace:*",
+    "@moq-web/session": "workspace:*",
     "zod": "^3.23.0"
   },
   "devDependencies": {

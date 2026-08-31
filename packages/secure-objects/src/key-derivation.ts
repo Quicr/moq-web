@@ -21,6 +21,11 @@ const KEY_LABEL_PREFIX = 'MOQ 1.0 Secure Objects Secret key';
 const SALT_LABEL_PREFIX = 'MOQ 1.0 Secret salt';
 
 /**
+ * Fixed application-specific salt for HKDF-Extract domain separation.
+ */
+const HKDF_SALT = new TextEncoder().encode('MOQ Secure Objects v1');
+
+/**
  * Text encoder for label construction.
  */
 const textEncoder = new TextEncoder();
@@ -34,26 +39,42 @@ function toArrayBuffer(arr: Uint8Array): ArrayBuffer {
 }
 
 /**
+ * Encode a value as a QUIC-style varint.
+ */
+function encodeVarInt(value: number): Uint8Array {
+  if (value < 0x40) {
+    return new Uint8Array([value]);
+  } else if (value < 0x4000) {
+    return new Uint8Array([0x40 | (value >> 8), value & 0xff]);
+  } else if (value < 0x40000000) {
+    return new Uint8Array([
+      0x80 | (value >> 24),
+      (value >> 16) & 0xff,
+      (value >> 8) & 0xff,
+      value & 0xff,
+    ]);
+  } else {
+    throw new Error(`Length value ${value} exceeds varint 4-byte range`);
+  }
+}
+
+/**
  * Serialize a track name for use in key derivation labels.
  * Format: namespace tuple count (varint) + each tuple as length-prefixed bytes + track name length + track name bytes
  */
 export function serializeTrackName(track: TrackIdentifier): Uint8Array {
   const parts: Uint8Array[] = [];
 
-  // Encode namespace tuple count as varint (simplified - single byte for small counts)
-  parts.push(new Uint8Array([track.namespace.length]));
+  parts.push(encodeVarInt(track.namespace.length));
 
-  // Encode each namespace tuple as length-prefixed bytes
   for (const tuple of track.namespace) {
     const tupleBytes = textEncoder.encode(tuple);
-    // Length as varint (simplified for small lengths)
-    parts.push(new Uint8Array([tupleBytes.length]));
+    parts.push(encodeVarInt(tupleBytes.length));
     parts.push(tupleBytes);
   }
 
-  // Encode track name as length-prefixed bytes
   const trackNameBytes = textEncoder.encode(track.trackName);
-  parts.push(new Uint8Array([trackNameBytes.length]));
+  parts.push(encodeVarInt(trackNameBytes.length));
   parts.push(trackNameBytes);
 
   // Concatenate all parts
@@ -110,11 +131,17 @@ function constructLabel(
   return label;
 }
 
+const MIN_KEY_LENGTH = 16;
+
 /**
  * Derive the MOQ secret using HKDF-Extract.
  * moq_secret = HKDF-Extract("", track_base_key)
  */
 async function deriveSecret(trackBaseKey: Uint8Array): Promise<CryptoKey> {
+  if (trackBaseKey.length < MIN_KEY_LENGTH) {
+    throw new Error(`trackBaseKey must be at least ${MIN_KEY_LENGTH} bytes (got ${trackBaseKey.length})`);
+  }
+
   // Import track_base_key as HKDF key material
   const baseKey = await crypto.subtle.importKey(
     'raw',
@@ -144,7 +171,7 @@ export async function deriveEncryptionKey(
 
   // Convert label to ArrayBuffer for WebCrypto API
   const labelBuffer = toArrayBuffer(label);
-  const emptySalt = new ArrayBuffer(0);
+  const salt = toArrayBuffer(HKDF_SALT);
 
   if (params.aeadAlgorithm === 'AES-GCM') {
     // Derive AES-GCM key directly
@@ -152,7 +179,7 @@ export async function deriveEncryptionKey(
       {
         name: 'HKDF',
         hash: params.hashAlgorithm,
-        salt: emptySalt,
+        salt,
         info: labelBuffer,
       },
       baseKey,
@@ -170,7 +197,7 @@ export async function deriveEncryptionKey(
       {
         name: 'HKDF',
         hash: params.hashAlgorithm,
-        salt: emptySalt,
+        salt,
         info: labelBuffer,
       },
       baseKey,
@@ -179,13 +206,15 @@ export async function deriveEncryptionKey(
 
     // First 16 bytes for AES-CTR
     const aesKeyBytes = new Uint8Array(keyBits, 0, 16);
-    return crypto.subtle.importKey(
+    const key = await crypto.subtle.importKey(
       'raw',
       toArrayBuffer(aesKeyBytes),
       { name: 'AES-CTR' },
       false,
       ['encrypt', 'decrypt']
     );
+    new Uint8Array(keyBits).fill(0);
+    return key;
   }
 }
 
@@ -209,14 +238,14 @@ export async function deriveHmacKey(
 
   // Convert to ArrayBuffer for WebCrypto API
   const labelBuffer = toArrayBuffer(label);
-  const emptySalt = new ArrayBuffer(0);
+  const salt = toArrayBuffer(HKDF_SALT);
 
   // Derive full key material
   const keyBits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: params.hashAlgorithm,
-      salt: emptySalt,
+      salt,
       info: labelBuffer,
     },
     baseKey,
@@ -225,13 +254,15 @@ export async function deriveHmacKey(
 
   // Last 32 bytes for HMAC-SHA256
   const hmacKeyBytes = new Uint8Array(keyBits, 16, 32);
-  return crypto.subtle.importKey(
+  const key = await crypto.subtle.importKey(
     'raw',
     toArrayBuffer(hmacKeyBytes),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign', 'verify']
   );
+  new Uint8Array(keyBits).fill(0);
+  return key;
 }
 
 /**
@@ -251,14 +282,14 @@ export async function deriveSalt(
 
   // Convert to ArrayBuffer for WebCrypto API
   const labelBuffer = toArrayBuffer(label);
-  const emptySalt = new ArrayBuffer(0);
+  const hkdfSalt = toArrayBuffer(HKDF_SALT);
 
   // Derive salt bytes
   const saltBits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: params.hashAlgorithm,
-      salt: emptySalt,
+      salt: hkdfSalt,
       info: labelBuffer,
     },
     baseKey,

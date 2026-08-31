@@ -12,8 +12,8 @@
  *
  * @example
  * ```typescript
- * import { MOQTSession } from '@web-moq/session';
- * import { MOQTransport } from '@web-moq/core';
+ * import { MOQTSession } from '@moq-web/session';
+ * import { MOQTransport } from '@moq-web/core';
  *
  * // Option 1: Main thread transport (default)
  * const transport = new MOQTransport();
@@ -22,7 +22,7 @@
  *
  * // Option 2: Worker-based transport (application provides worker)
  * const worker = new Worker(
- *   new URL('@web-moq/session/worker', import.meta.url),
+ *   new URL('@moq-web/session/worker', import.meta.url),
  *   { type: 'module' }
  * );
  * const session = new MOQTSession({ worker });
@@ -69,6 +69,8 @@ export type {
   PublicationInfo,
   PublishStatsEvent,
   SubscribeStatsEvent,
+  SubscribeOkEvent,
+  MessageLogEvent,
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
@@ -76,6 +78,22 @@ export type {
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,
+  RequestAuthToken,
+  // FETCH / DVR types
+  FetchOptions,
+  FetchRange,
+  FetchInfo,
+  FetchObjectEvent,
+  FetchCompleteEvent,
+  FetchStreamCompleteEvent,
+  FetchErrorEvent,
+  // VOD types
+  VODMetadata,
+  VODPublishOptions,
+  VODTrackInfo,
+  IncomingFetchEvent,
+  // Forward state types
+  ForwardStateChangeEvent,
 } from './types.js';
 
 // Worker API

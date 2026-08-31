@@ -9,7 +9,7 @@
  * (server-assigned, client-assigned, request ID) and subscriptions.
  */
 
-import { Logger } from '@web-moq/core';
+import { Logger } from '@moq-web/core';
 import type { SubscriptionInfo } from './types.js';
 
 const log = Logger.create('moqt:session:subscription-manager');
@@ -22,6 +22,8 @@ export interface InternalSubscription extends SubscriptionInfo {
   onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
   /** End of group callback - called when END_OF_GROUP status is received */
   onEndOfGroup?: (groupId: number) => void;
+  /** Buffer for objects that arrive before onObject is set */
+  pendingObjects?: Array<{ data: Uint8Array; groupId: number; objectId: number; timestamp: number }>;
 }
 
 /**

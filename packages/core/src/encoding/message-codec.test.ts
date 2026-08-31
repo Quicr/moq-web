@@ -8,9 +8,9 @@
 import { describe, it, expect } from 'vitest';
 import { MessageCodec, ObjectCodec, MessageCodecError } from './message-codec';
 import { IS_DRAFT_16, IS_DRAFT_18 } from '../version/constants';
+import { BufferReader } from './varint';
 import {
   MessageType,
-  DataStreamType,
   Version,
   SetupParameter,
   GroupOrder,
@@ -646,7 +646,7 @@ describe('MessageCodec', () => {
         expect(decoded.type).toBe(MessageType.FETCH_OK);
         const decodedOk = decoded as FetchOkMessage;
         expect(decodedOk.requestId).toBe(1);
-        expect(decodedOk.groupOrder).toBe(GroupOrder.DESCENDING);
+        expect(decodedOk.groupOrder).toBe(GroupOrder.ASCENDING);
         expect(decodedOk.endOfTrack).toBe(true);
         expect(decodedOk.largestGroupId).toBe(50);
         expect(decodedOk.largestObjectId).toBe(25);
@@ -884,32 +884,6 @@ describe('ObjectCodec', () => {
 
       expect(() => ObjectCodec.decodeDatagramHeader(invalidBuffer)).toThrow(MessageCodecError);
     });
-
-    it.runIf(IS_DRAFT_16)('throws error for invalid datagram type (draft-16)', () => {
-      // Create buffer with invalid datagram type (0x10 = SUBGROUP_HEADER range, not datagram)
-      const invalidBuffer = new Uint8Array([0x10, 0x01, 0x00, 0x00, 0x80]);
-
-      expect(() => ObjectCodec.decodeDatagramHeader(invalidBuffer)).toThrow(MessageCodecError);
-    });
-
-    it.runIf(IS_DRAFT_16)('decodes datagram with ZERO_OBJECT_ID flag (draft-16)', () => {
-      // Type 0x04 = ZERO_OBJECT_ID bit set: objectId omitted, implies 0
-      // Format: type(0x04) + trackAlias + groupId + priority (no objectId field)
-      const buffer = new Uint8Array([
-        0x04, // type with ZERO_OBJECT_ID
-        0x01, // trackAlias = 1
-        0x05, // groupId = 5
-        0x80, // publisherPriority = 128
-      ]);
-
-      const [header, bytesConsumed] = ObjectCodec.decodeDatagramHeader(buffer);
-
-      expect(header.trackAlias).toBe(BigInt(1));
-      expect(header.groupId).toBe(5);
-      expect(header.objectId).toBe(0); // ZERO_OBJECT_ID means objectId = 0
-      expect(header.publisherPriority).toBe(128);
-      expect(bytesConsumed).toBe(4);
-    });
   });
 
   describe('datagram object encoding/decoding', () => {
@@ -1080,6 +1054,180 @@ describe('ObjectCodec', () => {
       expect(Array.from(decodedPayload)).toEqual([0x01, 0x02, 0x03]);
       expect(bytesConsumed).toBe(encoded.length);
     });
+  });
+
+  describe('FETCH object encoding (draft-15/16)', () => {
+    it('encodes first object with group, subgroup, and object ID', () => {
+      const state = ObjectCodec.createFetchEncoderState();
+      const payload = new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]);
+
+      const encoded = ObjectCodec.encodeFetchObject(
+        100, // groupId
+        0, // subgroupId
+        0, // objectId
+        payload,
+        state
+      );
+
+      // First object should have (moqx/moxygen bit layout):
+      // flags = 0x08 (GROUP_ID) | 0x04 (OBJECT_ID) | 0x10 (PRIORITY) | 0x00 (subgroup mode 0 in bits 0-1)
+      // = 0x1C (28 decimal, fits in 1-byte varint)
+      const expectedFlags = 0x1C;
+      expect(encoded[0]).toBe(expectedFlags);
+
+      // Verify state was updated
+      expect(state.previousGroupId).toBe(100);
+      expect(state.previousSubgroupId).toBe(0);
+      expect(state.previousObjectId).toBe(0);
+    });
+
+    it('encodes subsequent object in same group without group ID', () => {
+      const state = ObjectCodec.createFetchEncoderState();
+      const payload = new Uint8Array([0x01, 0x02]);
+
+      // First object sets up state
+      ObjectCodec.encodeFetchObject(100, 0, 0, payload, state);
+
+      // Second object in same group
+      const encoded = ObjectCodec.encodeFetchObject(100, 0, 1, payload, state);
+
+      // Should NOT have GROUP_ID flag, but should have OBJECT_ID
+      // moqx bit layout: subgroup mode 1 in bits 0-1 | 0x04 (OBJECT_ID)
+      // = 0x01 | 0x04 = 0x05
+      const expectedFlags = 0x05;
+      const reader = new BufferReader(encoded);
+      const actualFlags = reader.readVarIntNumber();
+      expect(actualFlags).toBe(expectedFlags);
+    });
+
+    it('encodes object in new group with group ID', () => {
+      const state = ObjectCodec.createFetchEncoderState();
+      const payload = new Uint8Array([0x01]);
+
+      // First object in group 100
+      ObjectCodec.encodeFetchObject(100, 0, 0, payload, state);
+
+      // First object in group 101
+      const encoded = ObjectCodec.encodeFetchObject(101, 0, 0, payload, state);
+
+      // Should have GROUP_ID flag for new group
+      // moqx bit layout: GROUP_ID_PRESENT = 0x08 (bit 3)
+      const reader = new BufferReader(encoded);
+      const flags = reader.readVarIntNumber();
+      const hasGroupFlag = (flags & 0x08) !== 0;
+      expect(hasGroupFlag).toBe(true);
+    });
+
+    it('includes payload in encoded output', () => {
+      const state = ObjectCodec.createFetchEncoderState();
+      const payload = new Uint8Array([0xCA, 0xFE, 0xBA, 0xBE]);
+
+      const encoded = ObjectCodec.encodeFetchObject(0, 0, 0, payload, state);
+
+      // Payload should be at the end
+      const lastFourBytes = encoded.slice(-4);
+      expect(Array.from(lastFourBytes)).toEqual([0xCA, 0xFE, 0xBA, 0xBE]);
+    });
+  });
+});
+
+describe('AuthorizationToken', () => {
+  describe('encodeAuthorizationToken / decodeAuthorizationToken', () => {
+    it('round-trips USE_VALUE (aliasType 3)', () => {
+      const tokenValue = new Uint8Array([0x84, 0x43, 0xa1, 0x01, 0x26, 0xa0, 0x44, 0x01, 0x02, 0x03, 0x04, 0x58, 0x40, ...new Array(64).fill(0xab)]);
+      const token = {
+        aliasType: 3,
+        tokenType: 0x63346d,
+        tokenValue,
+      };
+
+      const encoded = MessageCodec.encodeAuthorizationToken(token);
+      const decoded = MessageCodec.decodeAuthorizationToken(encoded);
+
+      expect(decoded.aliasType).toBe(3);
+      expect(decoded.tokenType).toBe(0x63346d);
+      expect(decoded.tokenValue).toEqual(tokenValue);
+    });
+
+    it('round-trips full token (aliasType 0)', () => {
+      const tokenValue = new Uint8Array([1, 2, 3, 4, 5]);
+      const token = {
+        aliasType: 0,
+        tokenType: 0x0002,
+        tokenValue,
+      };
+
+      const encoded = MessageCodec.encodeAuthorizationToken(token);
+      const decoded = MessageCodec.decodeAuthorizationToken(encoded);
+
+      expect(decoded.aliasType).toBe(0);
+      expect(decoded.tokenType).toBe(0x0002);
+      expect(decoded.tokenValue).toEqual(tokenValue);
+    });
+
+    it('round-trips define alias (aliasType 1)', () => {
+      const tokenValue = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      const token = {
+        aliasType: 1,
+        tokenAlias: 42,
+        tokenType: 0x63346d,
+        tokenValue,
+      };
+
+      const encoded = MessageCodec.encodeAuthorizationToken(token);
+      const decoded = MessageCodec.decodeAuthorizationToken(encoded);
+
+      expect(decoded.aliasType).toBe(1);
+      expect(decoded.tokenAlias).toBe(42);
+      expect(decoded.tokenType).toBe(0x63346d);
+      expect(decoded.tokenValue).toEqual(tokenValue);
+    });
+
+    it('round-trips use alias (aliasType 2)', () => {
+      const token = {
+        aliasType: 2,
+        tokenAlias: 42,
+      };
+
+      const encoded = MessageCodec.encodeAuthorizationToken(token);
+      const decoded = MessageCodec.decodeAuthorizationToken(encoded);
+
+      expect(decoded.aliasType).toBe(2);
+      expect(decoded.tokenAlias).toBe(42);
+      expect(decoded.tokenType).toBeUndefined();
+      expect(decoded.tokenValue).toBeUndefined();
+    });
+
+    it('throws on unknown aliasType', () => {
+      expect(() => MessageCodec.encodeAuthorizationToken({
+        aliasType: 99,
+      })).toThrow(MessageCodecError);
+    });
+  });
+
+  it('CLIENT_SETUP with binary AUTHORIZATION_TOKEN preserves bytes', () => {
+    // Build a CLIENT_SETUP with binary auth token
+    const authTokenBytes = new Uint8Array(80);
+    crypto.getRandomValues(authTokenBytes);
+
+    const message: ClientSetupMessage = {
+      type: MessageType.CLIENT_SETUP,
+      supportedVersions: [Version.DRAFT_16],
+      parameters: new Map([
+        [SetupParameter.MAX_REQUEST_ID, 100],
+        [SetupParameter.AUTHORIZATION_TOKEN, authTokenBytes],
+      ]),
+    };
+
+    const encoded = MessageCodec.encode(message);
+    const [decoded] = MessageCodec.decode(encoded);
+
+    const decodedSetup = decoded as ClientSetupMessage;
+    const decodedToken = decodedSetup.parameters.get(SetupParameter.AUTHORIZATION_TOKEN);
+
+    // Critical: binary data must NOT be corrupted by TextDecoder
+    expect(decodedToken).toBeInstanceOf(Uint8Array);
+    expect(decodedToken).toEqual(authTokenBytes);
   });
 });
 

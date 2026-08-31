@@ -4,151 +4,326 @@
 /**
  * @fileoverview Video Renderer Component
  *
- * Canvas-based renderer for WebCodecs VideoFrames.
- * Uses requestAnimationFrame for smooth playback instead of React state.
+ * Simple canvas-based renderer for WebCodecs VideoFrames.
+ * Renders frames immediately as they arrive - trusts upstream (PlayoutBuffer)
+ * for ordering and pacing.
  */
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+
+/** Diagnostic metrics for frame rendering */
+export interface VideoRendererMetrics {
+  framesRendered: number;
+  framesDropped: number;
+  framesQueued: number;
+  framesReordered: number;
+  framesWithoutTimestamp: number;
+  avgRenderInterval: number;
+  lastFrameTimestamp: number;
+  frameJumps: number;
+  backwardJumps: number;
+  forwardJumps: number;
+  targetFps: number;
+}
+
+/** Lightweight callback for real-time frame timestamps (called on every frame) */
+export type OnFrameTimestamp = (timestampUs: number) => void;
 
 interface VideoRendererProps {
-  /** The VideoFrame to render */
-  frame: VideoFrame | null;
+  /** The VideoFrame to render (legacy prop-based mode) */
+  frame?: VideoFrame | null;
+  /** Frame getter function for high-frequency updates (preferred for 60fps) */
+  getFrame?: () => VideoFrame | null;
+  /** Subscription ID for frame queue (used with useVideoFrameQueue) */
+  subscriptionId?: number;
   /** Optional width override */
   width?: number;
   /** Optional height override */
   height?: number;
   /** Optional className for styling */
   className?: string;
+  /** Enable diagnostic logging */
+  enableDiagnostics?: boolean;
+  /** Callback for metrics updates (throttled to ~1Hz) */
+  onMetricsUpdate?: (metrics: VideoRendererMetrics) => void;
+  /** Callback for real-time frame timestamps (called on every frame, for A/V sync) */
+  onFrameTimestamp?: OnFrameTimestamp;
+  /** Framerate from catalog for diagnostics (default: 30) */
+  framerate?: number;
+  /** Whether content is live (affects frame drain strategy) */
+  isLive?: boolean;
+  /** Track name for display/debugging */
+  trackName?: string;
+  /** Whether this track is currently selected by DTS */
+  isDtsSelected?: boolean;
+  /** Current bitrate in kbps */
+  bitrateKbps?: number;
+  /** Expected resolution from track name */
+  expectedResolution?: string;
 }
 
 /**
  * VideoRenderer Component
  *
- * Renders WebCodecs VideoFrames to a canvas element using requestAnimationFrame
- * for smooth playback. Frames are rendered immediately when received.
+ * Simple renderer that draws frames immediately as they arrive.
+ * Upstream PlayoutBuffer handles ordering and pacing.
  */
 export const VideoRenderer: React.FC<VideoRendererProps> = ({
-  frame,
+  frame: frameProp,
+  getFrame,
+  subscriptionId: _subscriptionId,
   width,
   height: _height,
   className = '',
+  enableDiagnostics: _enableDiagnostics = false,
+  onMetricsUpdate,
+  onFrameTimestamp,
+  framerate = 30,
+  isLive = true,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const frameRef = useRef<VideoFrame | null>(null);
-  const prevFrameRef = useRef<VideoFrame | null>(null);
-  const rafIdRef = useRef<number | null>(null);
-  const frameCountRef = useRef<number>(0);
+  const lastRenderedFrameRef = useRef<VideoFrame | null>(null);
+  const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 1280, height: 720 });
+  const rafRef = useRef<number | null>(null);
+  const isRafModeRef = useRef(false);
+  const isLiveRef = useRef(isLive);
 
-  // Render function that draws the current frame
-  const renderFrame = useCallback(() => {
+  // Track if canvas has been initialized with video resolution (only set once)
+  const canvasInitializedRef = useRef(false);
+
+  // Diagnostic metrics refs
+  const metricsRef = useRef<VideoRendererMetrics>({
+    framesRendered: 0,
+    framesDropped: 0,
+    framesQueued: 0,
+    framesReordered: 0,
+    framesWithoutTimestamp: 0,
+    avgRenderInterval: 0,
+    lastFrameTimestamp: 0,
+    frameJumps: 0,
+    backwardJumps: 0,
+    forwardJumps: 0,
+    targetFps: framerate,
+  });
+  const lastRenderTimeRef = useRef<number>(0);
+  const renderIntervalsRef = useRef<number[]>([]);
+  const lastFrameTimestampRef = useRef<number>(0);
+
+  const FRAME_JUMP_THRESHOLD_MS = 100000; // 100ms in microseconds
+
+  // Canvas 2D context ref — cached to avoid getContext() per frame
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+
+  // Store onFrameTimestamp in ref to avoid renderFrame dependency changes
+  const onFrameTimestampRef = useRef(onFrameTimestamp);
+  useEffect(() => {
+    onFrameTimestampRef.current = onFrameTimestamp;
+  }, [onFrameTimestamp]);
+
+  // Shared render function for both modes
+  const renderFrame = useCallback((frame: VideoFrame): boolean => {
     const canvas = canvasRef.current;
-    const currentFrame = frameRef.current;
-
-    if (!canvas || !currentFrame) {
-      return;
+    if (!canvas) {
+      try { frame.close(); } catch { /* ignore */ }
+      return false;
     }
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      return;
+    // Check if frame is valid
+    try {
+      void frame.codedWidth;
+    } catch {
+      metricsRef.current.framesDropped++;
+      return false;
     }
 
-    // Update canvas size to match frame if needed
-    const frameWidth = currentFrame.displayWidth || currentFrame.codedWidth;
-    const frameHeight = currentFrame.displayHeight || currentFrame.codedHeight;
+    const frameWidth = frame.displayWidth || frame.codedWidth;
+    const frameHeight = frame.displayHeight || frame.codedHeight;
 
-    if (canvas.width !== frameWidth || canvas.height !== frameHeight) {
+    // Set canvas size ONCE to match video resolution. CSS handles all scaling.
+    // This prevents decode errors and context recreation during fullscreen/resize.
+    if (!canvasInitializedRef.current || canvas.width === 0) {
       canvas.width = frameWidth;
       canvas.height = frameHeight;
+      setCanvasDimensions({ width: frameWidth, height: frameHeight });
+      ctxRef.current = null;
+      canvasInitializedRef.current = true;
     }
 
-    // Draw the frame
+    if (!ctxRef.current) {
+      ctxRef.current = canvas.getContext('2d');
+    }
+
+    if (!ctxRef.current) {
+      try { frame.close(); } catch { /* ignore */ }
+      return false;
+    }
+
     try {
-      ctx.drawImage(currentFrame, 0, 0);
-      frameCountRef.current++;
+      // Synchronous drawImage — frame displays on this vsync, no async jitter
+      // Draw at native resolution; CSS scales to display size
+      ctxRef.current.drawImage(frame, 0, 0, frameWidth, frameHeight);
+
+      metricsRef.current.framesRendered++;
+
+      // Track render intervals for diagnostics
+      const now = performance.now();
+      if (lastRenderTimeRef.current > 0) {
+        const interval = now - lastRenderTimeRef.current;
+        renderIntervalsRef.current.push(interval);
+        if (renderIntervalsRef.current.length > 30) {
+          renderIntervalsRef.current.shift();
+        }
+        const avgInterval = renderIntervalsRef.current.reduce((a, b) => a + b, 0) / renderIntervalsRef.current.length;
+        metricsRef.current.avgRenderInterval = avgInterval;
+      }
+      lastRenderTimeRef.current = now;
+
+      // Detect frame jumps (non-sequential timestamps)
+      const frameTs = frame.timestamp;
+      if (lastFrameTimestampRef.current > 0 && frameTs > 0) {
+        const tsDiff = frameTs - lastFrameTimestampRef.current;
+        if (tsDiff < 0) {
+          metricsRef.current.frameJumps++;
+          metricsRef.current.backwardJumps++;
+        } else if (tsDiff > FRAME_JUMP_THRESHOLD_MS) {
+          metricsRef.current.frameJumps++;
+          metricsRef.current.forwardJumps++;
+        }
+      }
+      lastFrameTimestampRef.current = frameTs;
+      metricsRef.current.lastFrameTimestamp = frameTs;
+      metricsRef.current.targetFps = framerate;
+
+      // Call real-time timestamp callback for A/V sync (every frame)
+      if (onFrameTimestampRef.current && frameTs > 0) {
+        onFrameTimestampRef.current(frameTs);
+      }
+
+      if (!hasReceivedFrame) {
+        setHasReceivedFrame(true);
+      }
 
       // Close the previous frame AFTER successfully drawing the new one
-      // This avoids race conditions where frames are closed before rendering
-      if (prevFrameRef.current && prevFrameRef.current !== currentFrame) {
+      if (lastRenderedFrameRef.current && lastRenderedFrameRef.current !== frame) {
         try {
-          prevFrameRef.current.close();
+          lastRenderedFrameRef.current.close();
         } catch {
           // Frame may already be closed
         }
       }
-      prevFrameRef.current = currentFrame;
+      lastRenderedFrameRef.current = frame;
 
-      // Log stats every 30 frames (roughly once per second at 30fps)
-      if (frameCountRef.current % 30 === 0) {
-        console.log('[VideoRenderer] Rendering stats', {
-          framesRendered: frameCountRef.current,
-          frameWidth,
-          frameHeight,
-          timestamp: currentFrame.timestamp,
-        });
+      // Report metrics at ~1fps to avoid per-frame callback overhead
+      if (onMetricsUpdate && metricsRef.current.framesRendered % 60 === 0) {
+        onMetricsUpdate({ ...metricsRef.current });
       }
+
+      return true;
     } catch (err) {
-      // Frame might have been closed
       console.error('[VideoRenderer] Error drawing frame', err);
+      try { frame.close(); } catch { /* ignore */ }
+      return false;
     }
-  }, []);
+  }, [framerate, hasReceivedFrame, onMetricsUpdate]);
 
-  // Update frameRef when frame prop changes and trigger immediate render
+  // Store getFrame and isLive in refs so RAF loop doesn't restart when parent re-renders
+  const getFrameRef = useRef(getFrame);
   useEffect(() => {
-    if (frame) {
-      // If we have a pending RAF that hasn't rendered yet, the old frame
-      // will be skipped - close it to avoid GC warning
-      if (rafIdRef.current && frameRef.current && frameRef.current !== prevFrameRef.current) {
-        try {
-          frameRef.current.close();
-        } catch {
-          // Frame may already be closed
+    getFrameRef.current = getFrame;
+  }, [getFrame]);
+  useEffect(() => {
+    isLiveRef.current = isLive;
+  }, [isLive]);
+
+  // RAF-based render loop for getFrame mode (high-frequency 60fps)
+  // Uses ref for getFrame to avoid restarting the loop on parent re-renders
+  useEffect(() => {
+    if (!getFrame) {
+      isRafModeRef.current = false;
+      return;
+    }
+
+    isRafModeRef.current = true;
+    let running = true;
+
+    const tick = () => {
+      if (!running) return;
+
+      // Use ref to always get latest getFrame without restarting RAF loop
+      const currentGetFrame = getFrameRef.current;
+      if (currentGetFrame) {
+        if (isLiveRef.current) {
+          // Live: drain all frames and render the latest (minimize latency)
+          let frame = currentGetFrame();
+          let frameToRender: VideoFrame | null = null;
+
+          while (frame) {
+            if (frameToRender && frameToRender !== lastRenderedFrameRef.current) {
+              try {
+                frameToRender.close();
+              } catch {
+                // Already closed
+              }
+              metricsRef.current.framesDropped++;
+            }
+            frameToRender = frame;
+            frame = currentGetFrame();
+          }
+
+          if (frameToRender && frameToRender !== lastRenderedFrameRef.current) {
+            renderFrame(frameToRender);
+          }
+        } else {
+          // VOD: take exactly one frame per RAF tick for smooth sequential playback.
+          // The upstream release policy and frame queue handle pacing; draining
+          // multiple frames here causes skips and visible jitter.
+          const frame = currentGetFrame();
+          if (frame && frame !== lastRenderedFrameRef.current) {
+            renderFrame(frame);
+          }
         }
-        cancelAnimationFrame(rafIdRef.current);
       }
 
-      // Store the new frame
-      frameRef.current = frame;
+      rafRef.current = requestAnimationFrame(tick);
+    };
 
-      // Render immediately using requestAnimationFrame for proper timing
-      rafIdRef.current = requestAnimationFrame(() => {
-        renderFrame();
-        rafIdRef.current = null;
-      });
-    }
-  }, [frame, renderFrame]);
+    // Start the RAF loop
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      running = false;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [!!getFrame, renderFrame]);
+
+  // Legacy prop-based mode - render frame when it changes via React state
+  useEffect(() => {
+    // Skip if using RAF mode
+    if (isRafModeRef.current || !frameProp) return;
+
+    renderFrame(frameProp);
+  }, [frameProp, renderFrame]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (rafIdRef.current) {
-        cancelAnimationFrame(rafIdRef.current);
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
-      // Close any remaining frames to prevent GC warnings
-      // Close frameRef if it's different from prevFrameRef (hasn't been rendered yet)
-      if (frameRef.current && frameRef.current !== prevFrameRef.current) {
-        try {
-          frameRef.current.close();
-        } catch {
-          // Frame may already be closed
-        }
-      }
-      // Close the last rendered frame
-      if (prevFrameRef.current) {
-        try {
-          prevFrameRef.current.close();
-        } catch {
-          // Frame may already be closed
-        }
+      if (lastRenderedFrameRef.current) {
+        try { lastRenderedFrameRef.current.close(); } catch { /* ignore */ }
       }
     };
   }, []);
 
   // Calculate dimensions for responsive sizing
-  const frameWidth = frame?.displayWidth || frame?.codedWidth || 1280;
-  const frameHeight = frame?.displayHeight || frame?.codedHeight || 720;
-  const aspectRatio = frameWidth / frameHeight;
+  const aspectRatio = canvasDimensions.width / canvasDimensions.height;
 
   return (
     <div
@@ -160,19 +335,19 @@ export const VideoRenderer: React.FC<VideoRendererProps> = ({
         position: 'relative',
       }}
     >
-      {frame ? (
-        <canvas
-          ref={canvasRef}
-          style={{
-            display: 'block',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-          }}
-        />
-      ) : (
+      <canvas
+        ref={canvasRef}
+        style={{
+          display: hasReceivedFrame ? 'block' : 'none',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          objectFit: 'contain',
+        }}
+      />
+      {!hasReceivedFrame && (
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center text-gray-400">
             <svg

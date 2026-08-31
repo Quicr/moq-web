@@ -7,7 +7,7 @@
  * Factory functions for loading VAD implementations.
  */
 
-import type { LibfvadModule, SileroVADFactory } from '@web-moq/media';
+import type { LibfvadModule, SileroVADFactory } from '@moq-web/media';
 
 /**
  * Load libfvad WASM module using @echogarden/fvad-wasm

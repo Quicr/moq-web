@@ -107,7 +107,6 @@ function createChannel(channelId: number, config: CodecEncodeWorkerConfig): Enco
     keyframeIntervalFrames,
     quicrInteropEnabled: config.quicrInteropEnabled ?? false,
     quicrParticipantId: config.quicrParticipantId ?? 0,
-    destroyed: false,
   };
 
   log(`Channel ${channelId} created with keyframeIntervalFrames=${keyframeIntervalFrames}, quicrInterop=${channel.quicrInteropEnabled}`);
@@ -184,12 +183,6 @@ function handleEncodedVideoChunk(
   chunk: EncodedVideoChunk,
   metadata?: EncodedVideoChunkMetadata
 ): void {
-  // Suppress output if channel has been destroyed
-  if (channel.destroyed) {
-    log(`Ignoring video chunk - channel ${channel.channelId} destroyed`);
-    return;
-  }
-
   // Extract chunk data
   const data = new Uint8Array(chunk.byteLength);
   chunk.copyTo(data);
@@ -253,12 +246,6 @@ function handleEncodedVideoChunk(
  * Handle encoded audio chunk from AudioEncoder
  */
 function handleEncodedAudioChunk(channel: EncodeChannel, chunk: EncodedAudioChunk): void {
-  // Suppress output if channel has been destroyed
-  if (channel.destroyed) {
-    log(`Ignoring audio chunk - channel ${channel.channelId} destroyed`);
-    return;
-  }
-
   // Extract chunk data
   const data = new Uint8Array(chunk.byteLength);
   chunk.copyTo(data);
@@ -388,9 +375,6 @@ function destroyChannel(channelId: number): void {
     log(`Channel ${channelId} not found`);
     return;
   }
-
-  // Mark as destroyed FIRST to suppress any pending output callbacks
-  channel.destroyed = true;
 
   // Close encoders (check state to avoid closing already-closed encoders)
   if (channel.videoEncoder && channel.videoEncoder.state !== 'closed') {

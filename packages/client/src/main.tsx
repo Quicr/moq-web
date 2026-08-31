@@ -3,7 +3,7 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { Logger, LogLevel } from '@web-moq/core';
+import { Logger, LogLevel } from '@moq-web/core';
 import App from './App';
 import './index.css';
 

@@ -9,9 +9,9 @@ This document describes the architecture and design of the MOQT (Media over QUIC
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           Web Application                                    │
-│                        (@web-moq/client React)                               │
+│                        (@moq-web/client React)                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                      @web-moq/media (Media Layer)                            │
+│                      @moq-web/media (Media Layer)                            │
 │  ┌────────────────┐  ┌─────────────────┐  ┌───────────────────────────────┐ │
 │  │ MediaSession   │  │ PublishPipeline │  │     SubscribePipeline         │ │
 │  └────────────────┘  └─────────────────┘  └───────────────────────────────┘ │
@@ -23,7 +23,7 @@ This document describes the architecture and design of the MOQT (Media over QUIC
 │  │  LOCPackager   │  │  LOCUnpackager  │   (LOC Container Format)           │
 │  └────────────────┘  └─────────────────┘                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                    @web-moq/session (Session Layer)                          │
+│                    @moq-web/session (Session Layer)                          │
 │  ┌────────────────┐  ┌─────────────────┐  ┌───────────────────────────────┐ │
 │  │  MOQTSession   │  │  ObjectRouter   │  │    SubscriptionManager        │ │
 │  └────────────────┘  └─────────────────┘  └───────────────────────────────┘ │
@@ -31,7 +31,7 @@ This document describes the architecture and design of the MOQT (Media over QUIC
 │  │                      PublicationManager                                 │ │
 │  └────────────────────────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                 @web-moq/core (Protocol + Transport)                         │
+│                 @moq-web/core (Protocol + Transport)                         │
 │  ┌────────────────┐  ┌─────────────────┐  ┌───────────────────────────────┐ │
 │  │  MOQTransport  │  │  StreamManager  │  │     DatagramManager           │ │
 │  └────────────────┘  └─────────────────┘  └───────────────────────────────┘ │
@@ -50,7 +50,7 @@ This document describes the architecture and design of the MOQT (Media over QUIC
 
 ## Package Structure
 
-### @web-moq/core
+### @moq-web/core
 
 Core protocol implementation and transport layer.
 
@@ -91,7 +91,7 @@ Core protocol implementation and transport layer.
 - `MOQT_VERSION` - Current protocol version
 - `getCurrentALPNProtocol()` - Version-appropriate ALPN string
 
-### @web-moq/session
+### @moq-web/session
 
 Generic MOQT session management without media dependencies.
 
@@ -111,7 +111,7 @@ Generic MOQT session management without media dependencies.
 - `TransportWorkerClient` - RPC client for communicating with transport worker
 - Full session protocol runs in worker for main thread responsiveness
 
-### @web-moq/media
+### @moq-web/media
 
 WebCodecs integration with LOC container format.
 
@@ -143,7 +143,7 @@ WebCodecs integration with LOC container format.
 - `codec-decode-worker.ts` - LOC unpacking + WebCodecs decoding in worker
 - `CodecEncodeWorkerClient` / `CodecDecodeWorkerClient` - Worker RPC clients
 
-### @web-moq/client
+### @moq-web/client
 
 React web application for MOQT testing and demonstration.
 
@@ -205,7 +205,7 @@ The library supports offloading CPU-intensive work to Web Workers for improved m
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            Main Thread                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │  @web-moq/client (React UI)                                             ││
+│  │  @moq-web/client (React UI)                                             ││
 │  │    ↓ MediaStream                    ↑ VideoFrame/AudioData              ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
@@ -439,7 +439,7 @@ The library implements the Low Overhead Container (LOC) format per draft-ietf-mo
 Multi-level logging with namespace filtering:
 
 ```typescript
-import { Logger, LogLevel } from '@web-moq/core';
+import { Logger, LogLevel } from '@moq-web/core';
 
 // Configure global level
 Logger.setLevel(LogLevel.DEBUG);
@@ -544,8 +544,8 @@ packages/
 ### Basic Publishing
 
 ```typescript
-import { MOQTransport } from '@web-moq/core';
-import { MediaSession } from '@web-moq/media';
+import { MOQTransport } from '@moq-web/core';
+import { MediaSession } from '@moq-web/media';
 
 // Create transport and session
 const transport = new MOQTransport();
@@ -577,8 +577,8 @@ const trackAlias = await session.publish(
 ### Basic Subscribing
 
 ```typescript
-import { MOQTransport } from '@web-moq/core';
-import { MediaSession } from '@web-moq/media';
+import { MOQTransport } from '@moq-web/core';
+import { MediaSession } from '@moq-web/media';
 
 const transport = new MOQTransport();
 await transport.connect('https://relay.example.com/moq');
@@ -604,19 +604,19 @@ const subscriptionId = await session.subscribe(
 ### Worker Mode
 
 ```typescript
-import { MediaSession } from '@web-moq/media';
+import { MediaSession } from '@moq-web/media';
 
 // Create workers
 const transportWorker = new Worker(
-  new URL('@web-moq/session/worker', import.meta.url),
+  new URL('@moq-web/session/worker', import.meta.url),
   { type: 'module' }
 );
 const encodeWorker = new Worker(
-  new URL('@web-moq/media/codec-encode-worker', import.meta.url),
+  new URL('@moq-web/media/codec-encode-worker', import.meta.url),
   { type: 'module' }
 );
 const decodeWorker = new Worker(
-  new URL('@web-moq/media/codec-decode-worker', import.meta.url),
+  new URL('@moq-web/media/codec-decode-worker', import.meta.url),
   { type: 'module' }
 );
 

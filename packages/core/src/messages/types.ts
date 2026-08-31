@@ -417,6 +417,8 @@ export enum RequestParameter {
   DELIVERY_TIMEOUT = 0x02,
   /** Authorization token for the request */
   AUTHORIZATION_TOKEN = 0x03,
+  /** Max cache duration in ms — relay evicts objects after this time */
+  MAX_CACHE_DURATION = 0x04,
   /** Expires parameter */
   EXPIRES = 0x06,
   /** Largest object parameter */
@@ -429,6 +431,39 @@ export enum RequestParameter {
   SUBSCRIPTION_FILTER = 0x21,
   /** Group order (Draft-16) */
   GROUP_ORDER = 0x22,
+  /** DTS Switching Set Assignment (DTS4MoQ extension) */
+  SWITCHING_SET_ASSIGNMENT = 0x41,
+}
+
+/**
+ * Object extension header keys (Draft-16)
+ *
+ * @remarks
+ * Extension headers are sent with objects to provide relay-visible metadata.
+ * They control caching, delivery timeouts, and other relay behaviors.
+ */
+export enum ObjectExtension {
+  /** Delivery timeout in milliseconds - how long to wait for delivery */
+  DELIVERY_TIMEOUT = 0x01,
+  /** Max cache duration in milliseconds - how long relay should cache the object */
+  MAX_CACHE_DURATION = 0x02,
+}
+
+/**
+ * Fetch Type (Draft-15+)
+ *
+ * @remarks
+ * Determines how the fetch range is specified.
+ */
+export enum FetchType {
+  /** Standalone fetch with full track name and absolute range */
+  STANDALONE = 0x01,
+  /** Joining fetch - inherits track from existing subscription */
+  JOINING = 0x02,
+  /** Absolute standalone with explicit range */
+  ABSOLUTE_STANDALONE = 0x03,
+  /** Absolute joining fetch */
+  ABSOLUTE_JOINING = 0x04,
 }
 
 /**
@@ -643,7 +678,7 @@ export interface ClientSetupMessage extends MOQTMessage {
   /** List of protocol versions supported by the client */
   supportedVersions: Version[];
   /** Session setup parameters */
-  parameters: Map<SetupParameter, number | string>;
+  parameters: Map<SetupParameter, number | string | Uint8Array>;
 }
 
 /**
@@ -658,7 +693,7 @@ export interface ServerSetupMessage extends MOQTMessage {
   /** Selected protocol version */
   selectedVersion: Version;
   /** Session setup parameters */
-  parameters: Map<SetupParameter, number | string>;
+  parameters: Map<SetupParameter, number | string | Uint8Array>;
 }
 
 /**
