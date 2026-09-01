@@ -378,13 +378,13 @@ export class MOQTransport {
         // Setup stream from server - save reader for receiving SERVER_SETUP
         this.setupReader = streamReader;
 
-        // Create a new stream that combines the remaining first chunk bytes with future reads
+        // Consume the SETUP stream type varint; hand the rest to the setup listener.
         const remaining = firstChunk.subarray(bytesRead);
         this.startSetupListener(remaining);
       } else {
-        // Data stream - create a new ReadableStream that includes the remaining bytes
-        const remaining = firstChunk.subarray(bytesRead);
-        const reconstructedStream = this.reconstructStream(streamReader, remaining);
+        // Data stream - downstream decoder re-parses the stream type as the first
+        // field of the subgroup/fetch header, so forward the full first chunk.
+        const reconstructedStream = this.reconstructStream(streamReader, firstChunk);
         this.emit('unidirectional-stream', reconstructedStream);
       }
     } catch (err) {

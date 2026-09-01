@@ -1,0 +1,73 @@
+name: session-e2e (live relay)
+
+on:
+  schedule:
+    # Daily at 02:00 UTC. Non-blocking — this suite hits a live relay
+    # and can flake for reasons unrelated to any PR. Use workflow_dispatch
+    # to trigger it on demand.
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      relay_url:
+        description: 'Relay URL override (defaults to profile value)'
+        required: false
+        default: ''
+
+jobs:
+  e2e:
+    name: session-e2e (draft-18)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MOQT_VERSION: draft-18
+      # openmoq accepts unauthenticated setup today; the secret is
+      # optional and only forwarded when configured.
+      MOQ_AUTH_TOKEN: ${{ secrets.MOQ_AUTH_TOKEN }}
+      RELAY_URL: ${{ inputs.relay_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (draft-18)
+        run: pnpm run build:draft-18
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter @moq-web/session-e2e exec playwright install --with-deps chromium
+
+      - name: Run session-e2e
+        run: pnpm --filter @moq-web/session-e2e test
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-e2e-screenshots
+          path: packages/session-e2e/tests/__screenshots__
+          retention-days: 7
+          if-no-files-found: ignore
