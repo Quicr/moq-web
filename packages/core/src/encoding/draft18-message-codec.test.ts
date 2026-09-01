@@ -520,7 +520,7 @@ describe('Draft18MessageCodec', () => {
     it('roundtrips basic REQUEST_UPDATE', () => {
       const message: RequestUpdateMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_UPDATE,
-        requestId: 10n,
+        requestId: 4n,
         forwardState: true,
       };
 
@@ -529,13 +529,14 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as RequestUpdateMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.REQUEST_UPDATE);
-      expect(d.requestId).toBe(10n);
+      expect(d.requestId).toBe(4n);
+      expect(d.forwardState).toBe(true);
     });
 
-    it('roundtrips REQUEST_UPDATE with different request IDs', () => {
+    it('roundtrips REQUEST_UPDATE with a different request ID', () => {
       const message: RequestUpdateMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_UPDATE,
-        requestId: 5n,
+        requestId: 3n,
         forwardState: true,
       };
 
@@ -543,7 +544,24 @@ describe('Draft18MessageCodec', () => {
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as RequestUpdateMessageDraft18;
-      expect(d.requestId).toBe(5n);
+      expect(d.requestId).toBe(3n);
+      expect(d.forwardState).toBe(true);
+    });
+
+    it('roundtrips REQUEST_UPDATE with forwardState=false (pause)', () => {
+      const message: RequestUpdateMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_UPDATE,
+        requestId: 1n,
+        forwardState: false,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestUpdateMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.REQUEST_UPDATE);
+      expect(d.requestId).toBe(1n);
+      expect(d.forwardState).toBe(false);
     });
   });
 

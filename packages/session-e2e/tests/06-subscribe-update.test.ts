@@ -80,18 +80,18 @@ describe.each([
     await new Promise((r) => setTimeout(r, 250));
     const afterPause = received;
 
-    // Send second batch while paused. The relay MAY still deliver some
-    // in-flight objects that were queued before the pause propagated;
-    // we don't assert on that. The important guarantee is that resume
-    // brings delivery back to life.
+    // Draft-18 §5 / §9.2: with Forward State=0 the publisher/relay does not
+    // send Objects; objects produced while paused are not required to be
+    // buffered. Resume the subscription first, then send the second batch —
+    // that batch is what proves delivery is live again.
+    await sub.session.resumeSubscription(subscriptionId);
+
     for (const msg of messages.slice(half)) {
       await pub.session.sendObject(trackAlias, msg.bytes, {
         groupId: msg.groupId,
         objectId: msg.objectId,
       });
     }
-
-    await sub.session.resumeSubscription(subscriptionId);
 
     // After resume, expect additional objects to trickle in.
     const deadline = Date.now() + 5_000;
