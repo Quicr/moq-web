@@ -18,6 +18,7 @@ import {
   SubscriptionFilterDraft18,
   SetupOptionDraft18,
   RequestParameterDraft18,
+  RequestErrorCodeDraft18,
   type ControlMessageDraft18,
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
@@ -26,6 +27,7 @@ import {
   type PublishMessageDraft18,
   type PublishDoneMessageDraft18,
   type RequestErrorMessageDraft18,
+  type RequestErrorRedirectDraft18,
   type RequestOkMessageDraft18,
   type RequestUpdateMessageDraft18,
   type FetchMessageDraft18,
@@ -623,25 +625,56 @@ export class Draft18MessageCodec {
   // ============================================================================
 
   private static encodeRequestError(writer: Draft18BufferWriter, message: RequestErrorMessageDraft18): void {
-    // Draft-18: Error Code | Retry Interval | Error Reason
+    // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
     writer.writeVarInt(message.errorCode);
     writer.writeVarInt(message.retryInterval ?? 0n);
     Draft18MessageCodec.encodeString(writer, message.reasonPhrase);
+
+    // Redirect is present only when Error Code === REDIRECT (0x34)
+    if (message.errorCode === RequestErrorCodeDraft18.REDIRECT) {
+      if (!message.redirect) {
+        throw new Draft18CodecError(
+          'REQUEST_ERROR with REDIRECT error code requires a redirect payload',
+          MessageTypeDraft18.REQUEST_ERROR,
+        );
+      }
+      Draft18MessageCodec.encodeRedirect(writer, message.redirect);
+    }
   }
 
   private static decodeRequestError(reader: Draft18BufferReader): RequestErrorMessageDraft18 {
-    // Draft-18: Error Code | Retry Interval | Error Reason
+    // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
     const errorCode = reader.readVarIntNumber();
     const retryInterval = reader.readVarInt();
     const reasonPhrase = Draft18MessageCodec.decodeString(reader);
 
-    return {
+    const message: RequestErrorMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_ERROR,
       requestId: 0n,
       errorCode,
       retryInterval,
       reasonPhrase,
     };
+
+    if (errorCode === RequestErrorCodeDraft18.REDIRECT) {
+      message.redirect = Draft18MessageCodec.decodeRedirect(reader);
+    }
+
+    return message;
+  }
+
+  private static encodeRedirect(writer: Draft18BufferWriter, redirect: RequestErrorRedirectDraft18): void {
+    // Draft-18 §10.6.1: Connect URI Length | Connect URI | Track Namespace | Track Name Length | Track Name
+    Draft18MessageCodec.encodeString(writer, redirect.connectUri);
+    Draft18MessageCodec.encodeTrackNamespace(writer, redirect.trackNamespace);
+    Draft18MessageCodec.encodeString(writer, redirect.trackName);
+  }
+
+  private static decodeRedirect(reader: Draft18BufferReader): RequestErrorRedirectDraft18 {
+    const connectUri = Draft18MessageCodec.decodeString(reader);
+    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
+    const trackName = Draft18MessageCodec.decodeString(reader);
+    return { connectUri, trackNamespace, trackName };
   }
 
   private static encodeRequestOk(writer: Draft18BufferWriter, message: RequestOkMessageDraft18): void {
@@ -817,17 +850,25 @@ export class Draft18MessageCodec {
   // ============================================================================
 
   private static encodeGoAway(writer: Draft18BufferWriter, message: GoAwayMessageDraft18): void {
-    if (message.newSessionUri !== undefined) {
-      Draft18MessageCodec.encodeString(writer, message.newSessionUri);
+    // Draft-18 §10.4: New Session URI Length | New Session URI | Timeout (vi) | [Request ID (vi)]
+    Draft18MessageCodec.encodeString(writer, message.newSessionUri ?? '');
+    writer.writeVarInt(message.timeout);
+    if (message.requestId !== undefined) {
+      writer.writeVarInt(message.requestId);
     }
   }
 
   private static decodeGoAway(reader: Draft18BufferReader): GoAwayMessageDraft18 {
-    const newSessionUri = reader.hasMore ? Draft18MessageCodec.decodeString(reader) : undefined;
+    // Draft-18 §10.4: New Session URI Length | New Session URI | Timeout (vi) | [Request ID (vi)]
+    const newSessionUri = Draft18MessageCodec.decodeString(reader);
+    const timeout = reader.readVarInt();
+    const requestId = reader.hasMore ? reader.readVarInt() : undefined;
 
     return {
       type: MessageTypeDraft18.GOAWAY,
-      newSessionUri,
+      newSessionUri: newSessionUri.length > 0 ? newSessionUri : undefined,
+      timeout,
+      requestId,
     };
   }
 

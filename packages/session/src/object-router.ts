@@ -288,7 +288,7 @@ export class ObjectRouter {
           while (bufferOffset < buffer.length) {
             try {
               const view = buffer.subarray(bufferOffset);
-              const [objectId, payload, status, bytesConsumed] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, false, previousObjectId);
+              const [objectId, payload, status, bytesConsumed] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, previousObjectId);
               previousObjectId = objectId; // Update for next delta decode
               objectCount++;
 
