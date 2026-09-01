@@ -1,17 +1,18 @@
 {
-  "name": "@moq-web/session-e2e",
+  "name": "@moq-web/media-e2e",
   "version": "0.1.0",
   "private": true,
-  "description": "End-to-end MOQT protocol conformance tests against a live relay (headless Chromium via Vitest browser mode)",
+  "description": "End-to-end MOQT media conformance tests (WebCodecs) against a live relay",
   "type": "module",
   "scripts": {
-    "test": "if [ \"$RUN_E2E\" = \"1\" ]; then vitest run --config vitest.browser.config.ts; else echo 'session-e2e skipped (set RUN_E2E=1 to enable)'; fi",
+    "test": "if [ \"$RUN_E2E\" = \"1\" ]; then vitest run --config vitest.browser.config.ts; else echo 'media-e2e skipped (set RUN_E2E=1 to enable)'; fi",
     "test:watch": "vitest --config vitest.browser.config.ts",
     "lint": "eslint tests lib --ext .ts",
     "clean": "rm -rf node_modules/.vite"
   },
   "dependencies": {
     "@moq-web/core": "workspace:*",
+    "@moq-web/media": "workspace:*",
     "@moq-web/session": "workspace:*"
   },
   "devDependencies": {
