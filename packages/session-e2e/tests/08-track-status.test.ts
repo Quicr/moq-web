@@ -57,14 +57,14 @@ describe.skipIf(!isDraft18).each([
     // Either resolution or a REQUEST_ERROR rejection counts as a
     // successful wire exchange (the relay parsed our request and replied).
     // We only fail if it hangs past the vitest timeout.
-    let settled = false;
+    let settled: 'ok' | 'error' | undefined;
     try {
       await requester.session.trackStatus(namespace, track.name);
-      settled = true;
+      settled = 'ok';
     } catch (err) {
-      if (/TRACK_STATUS failed/.test((err as Error).message)) settled = true;
+      if (/TRACK_STATUS failed/.test((err as Error).message)) settled = 'error';
       else throw err;
     }
-    expect(settled).toBe(true);
+    expect(settled).toBeDefined();
   });
 });
