@@ -180,6 +180,8 @@ export {
   ObjectStatusDraft18,
   SessionErrorCodeDraft18,
   StreamResetErrorCodeDraft18,
+  FetchSubgroupMode,
+  FetchObjectEndOfRange,
 } from './messages/types.js';
 
 // Message interfaces (Draft 14/16)
