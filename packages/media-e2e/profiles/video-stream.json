@@ -1,0 +1,26 @@
+{
+  "relayUrl": "https://moqx-main.ci.openmoq.org:4433/moq-relay",
+  "auth": {
+    "tokenEnv": "MOQ_AUTH_TOKEN",
+    "tokenType": "c4m",
+    "scope": "setup"
+  },
+  "namespacePrefix": ["moq-web-media-e2e", "video-stream"],
+  "tracks": [
+    {
+      "name": "video",
+      "delivery": "stream",
+      "priority": 128,
+      "deliveryTimeout": 5000,
+      "spec": {
+        "kind": "video",
+        "width": 854,
+        "height": 480,
+        "bitrate": 500000,
+        "framerate": 30,
+        "durationSeconds": 3,
+        "keyframeIntervalSeconds": 1
+      }
+    }
+  ]
+}

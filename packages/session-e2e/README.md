@@ -36,6 +36,11 @@ Current coverage:
 - 10-fetch-cancel — FETCH then FETCH_CANCEL
 - 11-goaway — client-initiated GOAWAY drives 'closing' state (draft-18)
 
+Tests 08 and 11 target draft-18 wire features and skip on other drafts;
+everything else runs on both draft-16 and draft-18. Nightly CI runs the
+matrix; locally, override with `MOQT_VERSION=draft-16 pnpm --filter
+@moq-web/session-e2e test`.
+
 ## Profile schema
 
 See `lib/profile.ts` for the full TypeScript definition.
