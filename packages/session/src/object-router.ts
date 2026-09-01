@@ -515,8 +515,8 @@ export class ObjectRouter {
     initialBuffer: Uint8Array,
     initialDone: boolean
   ): Promise<void> {
-    let buffer = initialBuffer;
-    let done = initialDone;
+    const buffer = initialBuffer;
+    const done = initialDone;
 
     // Parse FETCH_HEADER: stream type (already consumed) + request ID
     const headerReader = new BufferReader(buffer);
