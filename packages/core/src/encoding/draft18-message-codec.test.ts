@@ -171,7 +171,7 @@ describe('Draft18MessageCodec', () => {
   });
 
   describe('REQUEST_ERROR', () => {
-    it('roundtrips REQUEST_ERROR', () => {
+    it('roundtrips REQUEST_ERROR (non-redirect)', () => {
       const message: RequestErrorMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_ERROR,
         requestId: 0n,
@@ -188,6 +188,70 @@ describe('Draft18MessageCodec', () => {
       expect(d.errorCode).toBe(3);
       expect(d.retryInterval).toBe(1000n);
       expect(d.reasonPhrase).toBe('Track not found');
+      expect(d.redirect).toBeUndefined();
+    });
+
+    it('roundtrips REQUEST_ERROR with REDIRECT structure (spec §10.6.1)', () => {
+      const message: RequestErrorMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_ERROR,
+        requestId: 0n,
+        errorCode: 0x34, // REDIRECT
+        retryInterval: 0n,
+        reasonPhrase: 'Try elsewhere',
+        redirect: {
+          connectUri: 'moqt://other.example.com/moq',
+          trackNamespace: ['pub', 'ns'],
+          trackName: 'audio',
+        },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestErrorMessageDraft18;
+      expect(d.errorCode).toBe(0x34);
+      expect(d.redirect).toEqual({
+        connectUri: 'moqt://other.example.com/moq',
+        trackNamespace: ['pub', 'ns'],
+        trackName: 'audio',
+      });
+    });
+
+    it('encodes REDIRECT with empty connect URI and track name (same-URI redirect)', () => {
+      const message: RequestErrorMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_ERROR,
+        requestId: 0n,
+        errorCode: 0x34,
+        retryInterval: 0n,
+        reasonPhrase: '',
+        redirect: {
+          connectUri: '',
+          trackNamespace: [],
+          trackName: '',
+        },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestErrorMessageDraft18;
+      expect(d.redirect).toEqual({
+        connectUri: '',
+        trackNamespace: [],
+        trackName: '',
+      });
+    });
+
+    it('throws when REDIRECT error code has no redirect payload', () => {
+      const message: RequestErrorMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_ERROR,
+        requestId: 0n,
+        errorCode: 0x34,
+        retryInterval: 0n,
+        reasonPhrase: 'oops',
+      };
+
+      expect(() => Draft18MessageCodec.encode(message)).toThrow(/REDIRECT/);
     });
   });
 
@@ -288,28 +352,52 @@ describe('Draft18MessageCodec', () => {
   });
 
   describe('GOAWAY', () => {
-    it('roundtrips GOAWAY without URI', () => {
+    it('roundtrips GOAWAY without URI (control stream)', () => {
       const message: GoAwayMessageDraft18 = {
         type: MessageTypeDraft18.GOAWAY,
+        timeout: 5000n,
       };
 
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       expect(decoded.type).toBe(MessageTypeDraft18.GOAWAY);
-      expect((decoded as GoAwayMessageDraft18).newSessionUri).toBeUndefined();
+      const d = decoded as GoAwayMessageDraft18;
+      expect(d.newSessionUri).toBeUndefined();
+      expect(d.timeout).toBe(5000n);
+      expect(d.requestId).toBeUndefined();
     });
 
-    it('roundtrips GOAWAY with URI', () => {
+    it('roundtrips GOAWAY with URI (control stream)', () => {
       const message: GoAwayMessageDraft18 = {
         type: MessageTypeDraft18.GOAWAY,
         newSessionUri: 'moqt://new-relay.example.com/moq',
+        timeout: 10000n,
       };
 
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
-      expect((decoded as GoAwayMessageDraft18).newSessionUri).toBe('moqt://new-relay.example.com/moq');
+      const d = decoded as GoAwayMessageDraft18;
+      expect(d.newSessionUri).toBe('moqt://new-relay.example.com/moq');
+      expect(d.timeout).toBe(10000n);
+      expect(d.requestId).toBeUndefined();
+    });
+
+    it('roundtrips GOAWAY with Request ID (request stream)', () => {
+      const message: GoAwayMessageDraft18 = {
+        type: MessageTypeDraft18.GOAWAY,
+        timeout: 2000n,
+        requestId: 42n,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as GoAwayMessageDraft18;
+      expect(d.newSessionUri).toBeUndefined();
+      expect(d.timeout).toBe(2000n);
+      expect(d.requestId).toBe(42n);
     });
   });
 
@@ -611,6 +699,84 @@ describe('Draft18MessageCodec', () => {
       const d = decoded as PublishBlockedMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.PUBLISH_BLOCKED);
       expect(d.trackAlias).toBe(999n);
+    });
+  });
+
+  // ==========================================================================
+  // Byte-level golden regression tests.
+  //
+  // These fix the exact on-wire output for canonical messages so any accidental
+  // change to type IDs, field ordering, framing, or varint layout will fail.
+  // Byte layouts are derived directly from draft-18 §10 message format tables
+  // and §1.4.1 (MOQT varints).
+  // ==========================================================================
+  describe('golden bytes (§10 wire format)', () => {
+    it('GOAWAY control-stream with empty URI and zero timeout (§10.4)', () => {
+      // Framing: Type=0x10 (vi) | Length=2 (16-bit BE) | UriLen=0 (vi) | Timeout=0 (vi)
+      const expected = new Uint8Array([0x10, 0x00, 0x02, 0x00, 0x00]);
+      const encoded = Draft18MessageCodec.encode({
+        type: MessageTypeDraft18.GOAWAY,
+        timeout: 0n,
+      });
+      expect(Array.from(encoded)).toEqual(Array.from(expected));
+    });
+
+    it('GOAWAY control-stream with URI "/v2" and timeout=5000 (§10.4)', () => {
+      // Type=0x10 | Length=6 | UriLen=3 | "/v2" | Timeout=5000 (14-bit vi = 0x93 0x88)
+      const expected = new Uint8Array([
+        0x10, 0x00, 0x06,
+        0x03, 0x2f, 0x76, 0x32,
+        0x93, 0x88,
+      ]);
+      const encoded = Draft18MessageCodec.encode({
+        type: MessageTypeDraft18.GOAWAY,
+        newSessionUri: '/v2',
+        timeout: 5000n,
+      });
+      expect(Array.from(encoded)).toEqual(Array.from(expected));
+    });
+
+    it('GOAWAY request-stream includes trailing Request ID (§10.4)', () => {
+      // Type=0x10 | Length=3 | UriLen=0 | Timeout=0 | RequestID=42
+      const expected = new Uint8Array([0x10, 0x00, 0x03, 0x00, 0x00, 0x2a]);
+      const encoded = Draft18MessageCodec.encode({
+        type: MessageTypeDraft18.GOAWAY,
+        timeout: 0n,
+        requestId: 42n,
+      });
+      expect(Array.from(encoded)).toEqual(Array.from(expected));
+    });
+
+    it('REQUEST_OK with no parameters (§10.9)', () => {
+      // Type=0x07 | Length=1 | NumParams=0
+      const expected = new Uint8Array([0x07, 0x00, 0x01, 0x00]);
+      const encoded = Draft18MessageCodec.encode({
+        type: MessageTypeDraft18.REQUEST_OK,
+        requestId: 0n,
+      });
+      expect(Array.from(encoded)).toEqual(Array.from(expected));
+    });
+
+    it('PUBLISH_BLOCKED with small track alias (§10.19)', () => {
+      // Type=0x0F | Length=1 | TrackAlias=5 (vi)
+      const expected = new Uint8Array([0x0f, 0x00, 0x01, 0x05]);
+      const encoded = Draft18MessageCodec.encode({
+        type: MessageTypeDraft18.PUBLISH_BLOCKED,
+        trackAlias: 5n,
+      });
+      expect(Array.from(encoded)).toEqual(Array.from(expected));
+    });
+
+    it('MOQT varint uses leading-1s (14-bit form) — 5000 = 0x93 0x88', () => {
+      // Regression guard against reintroducing QUIC varints for MOQT framing.
+      // 5000 in QUIC varint would be 0x53 0x88; MOQT uses 0x93 0x88.
+      const encoded = Draft18MessageCodec.encode({
+        type: MessageTypeDraft18.GOAWAY,
+        timeout: 5000n,
+      });
+      // After type(0x10), length(0x00 0x02), UriLen(0x00), the timeout starts at index 4.
+      expect(encoded[4]).toBe(0x93);
+      expect(encoded[5]).toBe(0x88);
     });
   });
 });

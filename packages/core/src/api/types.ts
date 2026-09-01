@@ -544,7 +544,17 @@ export interface CodecCapabilities {
  * Event handler types
  */
 export type SessionErrorHandler = (error: RequestError) => void;
-export type SessionGoAwayHandler = (newUri?: string) => void;
+/**
+ * GOAWAY event payload (draft-18 §10.4).
+ * `timeoutMs` — grace period the sender will wait before enforcing closure (0 = no specific timeout).
+ * `requestId` — set when GOAWAY was received on a request stream rather than the control stream.
+ */
+export interface GoAwayEvent {
+  newSessionUri?: string;
+  timeoutMs?: bigint;
+  requestId?: bigint;
+}
+export type SessionGoAwayHandler = (event: GoAwayEvent) => void;
 export type SessionCloseHandler = () => void;
 
 /**
@@ -568,7 +578,7 @@ export interface ISession {
   publishNamespace(request: PublishNamespaceRequest): Promise<NamespacePublication>;
 
   // Session Lifecycle
-  goAway(newSessionUri?: string): Promise<void>;
+  goAway(newSessionUri?: string, timeoutMs?: bigint): Promise<void>;
   close(): Promise<void>;
 
   // Events

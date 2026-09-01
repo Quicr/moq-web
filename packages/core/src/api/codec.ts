@@ -219,7 +219,6 @@ function subscribeRequestToWireV14(req: SubscribeRequest, requestId: number): Wi
 
 function subscribeRequestToWireV18(req: SubscribeRequest, requestId: bigint): WireSubscribeV18 {
   const wire: WireSubscribeV18 = {
-    type: 0x03,
     requestId,
     trackNamespace: req.trackNamespace,
     trackName: req.trackName,
@@ -325,7 +324,6 @@ function publishRequestToWireV18(
   trackAlias: bigint
 ): WirePublishV18 {
   return {
-    type: 0x05,
     requestId,
     trackAlias,
     trackNamespace: req.trackNamespace,
@@ -385,7 +383,6 @@ function fetchRequestToWireV14(req: FetchRequest, requestId: number): WireFetchV
 
 function fetchRequestToWireV18(req: FetchRequest, requestId: bigint): WireFetchV18 {
   return {
-    type: 0x0d,
     requestId,
     joiningFlag: false,
     trackNamespace: req.trackNamespace,
@@ -478,7 +475,6 @@ function subscribeNamespaceRequestToWireV18(
   tracksWire?: WireSubscribeTracksV18;
 } {
   const namespaceWire: WireSubscribeNamespaceV18 = {
-    type: 0x11,
     requestId,
     trackNamespacePrefix: req.trackNamespacePrefix,
     parameters: req.parameters ?? new Map(),
@@ -487,7 +483,6 @@ function subscribeNamespaceRequestToWireV18(
   // In v18, if mode is SUBSCRIBE or BOTH, we also need SUBSCRIBE_TRACKS
   if (mode === NamespaceSubscribeMode.SUBSCRIBE || mode === NamespaceSubscribeMode.BOTH) {
     const tracksWire: WireSubscribeTracksV18 = {
-      type: 0x14,
       requestId: requestId + 1n, // Use next request ID
       trackNamespacePrefix: req.trackNamespacePrefix,
       trackNamePattern: req.trackNamePattern,
@@ -518,7 +513,6 @@ export function publishNamespaceRequestToWire(
 ): WirePublishNamespaceV14 | WirePublishNamespaceV18 {
   if (IS_DRAFT_18) {
     return {
-      type: 0x10,
       requestId,
       trackNamespacePrefix: req.trackNamespacePrefix,
       parameters: req.parameters ?? new Map(),

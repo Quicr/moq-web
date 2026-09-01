@@ -104,6 +104,10 @@ export type {
   RequestOk,
   CodecCapabilities,
   ISession,
+  GoAwayEvent,
+  SessionErrorHandler,
+  SessionGoAwayHandler,
+  SessionCloseHandler,
 } from './api/types.js';
 
 // Enums
@@ -319,7 +323,7 @@ export {
   Draft18BufferWriter,
   Draft18BufferReader,
 } from './encoding/protocol-codec.js';
-export type { IProtocolCodec } from './encoding/protocol-codec.js';
+export type { IProtocolCodec, ProtocolCodecCapabilities } from './encoding/protocol-codec.js';
 
 // Draft-18 message codec
 export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
