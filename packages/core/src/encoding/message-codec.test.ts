@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { MessageCodec, ObjectCodec, MessageCodecError } from './message-codec';
-import { IS_DRAFT_16, IS_DRAFT_18 } from '../version/constants';
+import { IS_DRAFT_18 } from '../version/constants';
 import { BufferReader } from './varint';
 import {
   MessageType,
@@ -176,58 +176,6 @@ describe('MessageCodec', () => {
         expect(decodedSub.filterType).toBe(FilterType.LATEST_GROUP);
       });
 
-      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE message with ABSOLUTE_START filter', () => {
-        const message: SubscribeMessage = {
-          type: MessageType.SUBSCRIBE,
-          requestId: 2,
-          fullTrackName: {
-            namespace: ['media'],
-            trackName: 'audio',
-          },
-          subscriberPriority: 64,
-          groupOrder: GroupOrder.DESCENDING,
-          filterType: FilterType.ABSOLUTE_START,
-          startGroup: 10,
-          startObject: 5,
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.SUBSCRIBE);
-        const decodedSub = decoded as SubscribeMessage;
-        expect(decodedSub.filterType).toBe(FilterType.ABSOLUTE_START);
-        expect(decodedSub.startGroup).toBe(10);
-        expect(decodedSub.startObject).toBe(5);
-      });
-
-      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE message with ABSOLUTE_RANGE filter', () => {
-        const message: SubscribeMessage = {
-          type: MessageType.SUBSCRIBE,
-          requestId: 3,
-          fullTrackName: {
-            namespace: ['test'],
-            trackName: 'data',
-          },
-          subscriberPriority: 255,
-          groupOrder: GroupOrder.ASCENDING,
-          filterType: FilterType.ABSOLUTE_RANGE,
-          startGroup: 0,
-          startObject: 0,
-          endGroup: 100,
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.SUBSCRIBE);
-        const decodedSub = decoded as SubscribeMessage;
-        expect(decodedSub.filterType).toBe(FilterType.ABSOLUTE_RANGE);
-        expect(decodedSub.startGroup).toBe(0);
-        expect(decodedSub.startObject).toBe(0);
-        expect(decodedSub.endGroup).toBe(100);
-      });
-
       it('roundtrips SUBSCRIBE_UPDATE message', () => {
         const message: SubscribeUpdateMessage = {
           type: MessageType.SUBSCRIBE_UPDATE,
@@ -250,51 +198,6 @@ describe('MessageCodec', () => {
         expect(decodedUpdate.endGroup).toBe(20);
         expect(decodedUpdate.subscriberPriority).toBe(200);
         expect(decodedUpdate.forward).toBe(1);
-      });
-
-      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE_OK message without content', () => {
-        const message: SubscribeOkMessage = {
-          type: MessageType.SUBSCRIBE_OK,
-          requestId: 1,
-          trackAlias: 12345,
-          expires: 3600,
-          groupOrder: GroupOrder.ASCENDING,
-          contentExists: false,
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.SUBSCRIBE_OK);
-        const decodedOk = decoded as SubscribeOkMessage;
-        expect(decodedOk.requestId).toBe(1);
-        expect(BigInt(decodedOk.trackAlias)).toBe(BigInt(12345));
-        expect(decodedOk.expires).toBe(3600);
-        expect(decodedOk.groupOrder).toBe(GroupOrder.ASCENDING);
-        expect(decodedOk.contentExists).toBe(false);
-      });
-
-      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE_OK message with content', () => {
-        const message: SubscribeOkMessage = {
-          type: MessageType.SUBSCRIBE_OK,
-          requestId: 2,
-          trackAlias: BigInt('4611686018427387903'), // Max valid 62-bit varint value
-          expires: 0,
-          groupOrder: GroupOrder.DESCENDING,
-          contentExists: true,
-          largestGroupId: 100,
-          largestObjectId: 50,
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.SUBSCRIBE_OK);
-        const decodedOk = decoded as SubscribeOkMessage;
-        expect(decodedOk.trackAlias).toBe(BigInt('4611686018427387903'));
-        expect(decodedOk.contentExists).toBe(true);
-        expect(decodedOk.largestGroupId).toBe(100);
-        expect(decodedOk.largestObjectId).toBe(50);
       });
 
       it('roundtrips SUBSCRIBE_ERROR message', () => {
@@ -424,46 +327,6 @@ describe('MessageCodec', () => {
         expect(decodedError.trackAlias).toBe(100);
       });
 
-      it.skipIf(IS_DRAFT_16)('roundtrips PUBLISH_DONE message without content', () => {
-        const message: PublishDoneMessage = {
-          type: MessageType.PUBLISH_DONE,
-          requestId: 1,
-          statusCode: RequestErrorCode.INTERNAL_ERROR,
-          reasonPhrase: 'Completed successfully',
-          contentExists: false,
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.PUBLISH_DONE);
-        const decodedDone = decoded as PublishDoneMessage;
-        expect(decodedDone.requestId).toBe(1);
-        expect(decodedDone.statusCode).toBe(RequestErrorCode.INTERNAL_ERROR);
-        expect(decodedDone.reasonPhrase).toBe('Completed successfully');
-        expect(decodedDone.contentExists).toBe(false);
-      });
-
-      it.skipIf(IS_DRAFT_16)('roundtrips PUBLISH_DONE message with content', () => {
-        const message: PublishDoneMessage = {
-          type: MessageType.PUBLISH_DONE,
-          requestId: 2,
-          statusCode: RequestErrorCode.INTERNAL_ERROR,
-          reasonPhrase: '',
-          contentExists: true,
-          finalGroupId: 100,
-          finalObjectId: 50,
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.PUBLISH_DONE);
-        const decodedDone = decoded as PublishDoneMessage;
-        expect(decodedDone.contentExists).toBe(true);
-        expect(decodedDone.finalGroupId).toBe(100);
-        expect(decodedDone.finalObjectId).toBe(50);
-      });
     });
 
     describe('Namespace Publishing Messages', () => {
@@ -478,19 +341,6 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.PUBLISH_NAMESPACE);
         expect((decoded as PublishNamespaceMessage).namespace).toEqual(['conference', 'room-1', 'media']);
-      });
-
-      it.skipIf(IS_DRAFT_16)('roundtrips PUBLISH_NAMESPACE_OK message', () => {
-        const message: PublishNamespaceOkMessage = {
-          type: MessageType.PUBLISH_NAMESPACE_OK,
-          namespace: ['conference', 'room-1'],
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.PUBLISH_NAMESPACE_OK);
-        expect((decoded as PublishNamespaceOkMessage).namespace).toEqual(['conference', 'room-1']);
       });
 
       it('roundtrips PUBLISH_NAMESPACE_ERROR message', () => {
@@ -550,37 +400,6 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.SUBSCRIBE_NAMESPACE);
         expect((decoded as SubscribeNamespaceMessage).namespacePrefix).toEqual(['conference', 'room-1']);
-      });
-
-      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE_NAMESPACE_OK message', () => {
-        const message: SubscribeNamespaceOkMessage = {
-          type: MessageType.SUBSCRIBE_NAMESPACE_OK,
-          namespacePrefix: ['conference'],
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.SUBSCRIBE_NAMESPACE_OK);
-        expect((decoded as SubscribeNamespaceOkMessage).namespacePrefix).toEqual(['conference']);
-      });
-
-      it.skipIf(IS_DRAFT_16)('roundtrips SUBSCRIBE_NAMESPACE_ERROR message', () => {
-        const message: SubscribeNamespaceErrorMessage = {
-          type: MessageType.SUBSCRIBE_NAMESPACE_ERROR,
-          namespacePrefix: ['media'],
-          errorCode: 1,
-          reasonPhrase: 'Access denied',
-        };
-
-        const encoded = MessageCodec.encode(message);
-        const [decoded] = MessageCodec.decode(encoded);
-
-        expect(decoded.type).toBe(MessageType.SUBSCRIBE_NAMESPACE_ERROR);
-        const decodedError = decoded as SubscribeNamespaceErrorMessage;
-        expect(decodedError.namespacePrefix).toEqual(['media']);
-        expect(decodedError.errorCode).toBe(1);
-        expect(decodedError.reasonPhrase).toBe('Access denied');
       });
 
       it('roundtrips UNSUBSCRIBE_NAMESPACE message', () => {
@@ -857,35 +676,6 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it.skipIf(IS_DRAFT_16 || IS_DRAFT_18)('roundtrips datagram header with large 62-bit track alias', () => {
-      const largeAlias = BigInt('4611686018427387903'); // Close to max 62-bit value
-      const header: ObjectHeader = {
-        trackAlias: largeAlias,
-        groupId: 1000000,
-        subgroupId: 100,
-        objectId: 50000,
-        publisherPriority: 255,
-        objectStatus: ObjectStatus.END_OF_GROUP,
-      };
-
-      const encoded = ObjectCodec.encodeDatagramHeader(header);
-      const [decoded] = ObjectCodec.decodeDatagramHeader(encoded);
-
-      expect(decoded.trackAlias).toBe(largeAlias);
-      expect(decoded.groupId).toBe(1000000);
-      expect(decoded.subgroupId).toBe(100);
-      expect(decoded.objectId).toBe(50000);
-      expect(decoded.publisherPriority).toBe(255);
-      expect(decoded.objectStatus).toBe(ObjectStatus.END_OF_GROUP);
-    });
-
-    it.skipIf(IS_DRAFT_16 || IS_DRAFT_18)('throws error for wrong stream type', () => {
-      // Create buffer with wrong stream type (0x04 = SUBGROUP_HEADER instead of 0x01)
-      // This test only applies to draft-14 since draft-16/18 use different type formats
-      const invalidBuffer = new Uint8Array([0x04, 0x01, 0x00, 0x00, 0x00, 0x80, 0x00]);
-
-      expect(() => ObjectCodec.decodeDatagramHeader(invalidBuffer)).toThrow(MessageCodecError);
-    });
   });
 
   describe('datagram object encoding/decoding', () => {
@@ -974,12 +764,6 @@ describe('ObjectCodec', () => {
       expect(decoded.publisherPriority).toBe(128);
     });
 
-    it.skipIf(IS_DRAFT_16 || IS_DRAFT_18)('throws error for invalid stream type', () => {
-      // Create buffer with invalid stream type
-      const invalidBuffer = new Uint8Array([0x99, 0x01, 0x00, 0x00]);
-
-      expect(() => ObjectCodec.decodeSubgroupHeader(invalidBuffer)).toThrow(MessageCodecError);
-    });
   });
 
   describe('fetch header encoding/decoding', () => {
@@ -1004,7 +788,7 @@ describe('ObjectCodec', () => {
   });
 
   describe('stream object encoding/decoding', () => {
-    it.skipIf(IS_DRAFT_16)('roundtrips stream object with payload', () => {
+    it('roundtrips stream object with payload', () => {
       const payload = new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]);
       const encoded = ObjectCodec.encodeStreamObject(42, payload, ObjectStatus.NORMAL);
 
@@ -1012,7 +796,6 @@ describe('ObjectCodec', () => {
         encoded,
         0,
         false, // hasExtensions/hasProperties - encode doesn't write properties
-        false // useRemainingAsPayload
       );
 
       expect(objectId).toBe(42);
@@ -1021,22 +804,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it.skipIf(IS_DRAFT_16 || IS_DRAFT_18)('roundtrips stream object with empty payload and status', () => {
-      const encoded = ObjectCodec.encodeStreamObject(0, new Uint8Array(0), ObjectStatus.END_OF_TRACK);
-
-      const [objectId, decodedPayload, status] = ObjectCodec.decodeStreamObject(
-        encoded,
-        0,
-        false,
-        false
-      );
-
-      expect(objectId).toBe(0);
-      expect(decodedPayload.length).toBe(0);
-      expect(status).toBe(ObjectStatus.END_OF_TRACK);
-    });
-
-    it.skipIf(IS_DRAFT_16)('decodes stream object at offset', () => {
+    it('decodes stream object at offset', () => {
       const payload = new Uint8Array([0x01, 0x02, 0x03]);
       const encoded = ObjectCodec.encodeStreamObject(10, payload);
 
@@ -1049,7 +817,6 @@ describe('ObjectCodec', () => {
         withPrefix,
         3,
         false,
-        false
       );
 
       expect(objectId).toBe(10);

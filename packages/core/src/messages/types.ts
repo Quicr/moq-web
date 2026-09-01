@@ -260,9 +260,13 @@ export enum SubscriptionFilterDraft18 {
 /**
  * Draft-18 Object Status Values
  */
+/**
+ * Draft-18 Object Status values (§11.2.1.1).
+ * Only NORMAL, END_OF_GROUP, and END_OF_TRACK are defined by the spec; any
+ * other value MUST close the session with PROTOCOL_VIOLATION.
+ */
 export enum ObjectStatusDraft18 {
   NORMAL = 0x00,
-  DOES_NOT_EXIST = 0x01,
   END_OF_GROUP = 0x03,
   END_OF_TRACK = 0x04,
 }
@@ -294,7 +298,7 @@ export enum SessionErrorCodeDraft18 {
 }
 
 /**
- * Draft-18 Stream Reset Error Codes
+ * Draft-18 Stream Reset Error Codes (spec §15.10.4)
  */
 export enum StreamResetErrorCodeDraft18 {
   INTERNAL_ERROR = 0x0,
@@ -305,6 +309,46 @@ export enum StreamResetErrorCodeDraft18 {
   TOO_FAR_BEHIND = 0x5,
   UNKNOWN_OBJECT_STATUS = 0x6,
   EXPIRED_AUTH_TOKEN = 0x7,
+  EXCESSIVE_LOAD = 0x9,
+  MALFORMED_TRACK = 0x12,
+}
+
+/**
+ * Draft-18 REQUEST_ERROR Codes (spec §15.10.2)
+ */
+export enum RequestErrorCodeDraft18 {
+  INTERNAL_ERROR = 0x0,
+  UNAUTHORIZED = 0x1,
+  TIMEOUT = 0x2,
+  NOT_SUPPORTED = 0x3,
+  MALFORMED_AUTH_TOKEN = 0x4,
+  EXPIRED_AUTH_TOKEN = 0x5,
+  GOING_AWAY = 0x6,
+  EXCESSIVE_LOAD = 0x9,
+  DOES_NOT_EXIST = 0x10,
+  INVALID_RANGE = 0x11,
+  MALFORMED_TRACK = 0x12,
+  DUPLICATE_SUBSCRIPTION = 0x19,
+  UNINTERESTED = 0x20,
+  PREFIX_OVERLAP = 0x30,
+  NAMESPACE_TOO_LARGE = 0x31,
+  INVALID_JOINING_REQUEST_ID = 0x32,
+  UNSUPPORTED_EXTENSION = 0x33,
+  REDIRECT = 0x34,
+}
+
+/**
+ * Draft-18 PUBLISH_DONE Codes (spec §15.10.3)
+ */
+export enum PublishDoneErrorCodeDraft18 {
+  INTERNAL_ERROR = 0x0,
+  UNAUTHORIZED = 0x1,
+  TRACK_ENDED = 0x2,
+  SUBSCRIPTION_ENDED = 0x3,
+  GOING_AWAY = 0x4,
+  TOO_FAR_BEHIND = 0x5,
+  EXPIRED = 0x6,
+  UPDATE_FAILED = 0x8,
   EXCESSIVE_LOAD = 0x9,
   MALFORMED_TRACK = 0x12,
 }
@@ -338,47 +382,19 @@ export const MessageTypeDraft16 = {
 } as const;
 
 /**
- * Data Stream Types (Draft 14)
+ * Data Stream Types (draft-16).
  *
- * @remarks
- * These type identifiers are used on data streams (separate from control messages).
- * They identify how objects are transmitted on unidirectional streams.
+ * Subgroup streams use the 0x10-0x1D range where the type byte encodes
+ * bit-flags (SUBGROUP_ID_MODE, EXTENSIONS, END_OF_GROUP, DEFAULT_PRIORITY).
+ * See decodeSubgroupHeader for the bit layout.
  */
 export enum DataStreamType {
   /** Object with subgroup header */
   OBJECT_DATAGRAM = 0x01,
-  /** Subgroup stream header (standard Draft 14) */
+  /** Subgroup stream header (standard) */
   SUBGROUP_HEADER = 0x04,
   /** Fetch stream header */
   FETCH_HEADER = 0x05,
-
-  // Draft-14/16 Subgroup Header Types (0x10-0x1D range)
-  // Bit layout: 0b000EPSMM where E=EndOfGroup, P=Priority, S=hasExtensions, MM=SubgroupIdMode
-
-  /** Subgroup header: subgroup_id=0 implicit, no extensions */
-  SUBGROUP_ZERO_ID = 0x10,
-  /** Subgroup header: subgroup_id=0 implicit, has extensions */
-  SUBGROUP_ZERO_ID_EXT = 0x11,
-  /** Subgroup header: subgroup_id from first object, no extensions */
-  SUBGROUP_FIRST_OBJECT_ID = 0x12,
-  /** Subgroup header: subgroup_id from first object, has extensions */
-  SUBGROUP_FIRST_OBJECT_ID_EXT = 0x13,
-  /** Subgroup header: subgroup_id explicit, no extensions */
-  SUBGROUP_ID = 0x14,
-  /** Subgroup header: subgroup_id explicit, has extensions */
-  SUBGROUP_ID_EXT = 0x15,
-  /** Subgroup header: subgroup_id=0 implicit, no extensions, signals EndOfGroup */
-  SUBGROUP_ZERO_ID_END_OF_GROUP = 0x18,
-  /** Subgroup header: subgroup_id=0 implicit, has extensions, signals EndOfGroup */
-  SUBGROUP_ZERO_ID_EXT_END_OF_GROUP = 0x19,
-  /** Subgroup header: subgroup_id from first object, no extensions, signals EndOfGroup */
-  SUBGROUP_FIRST_OBJECT_ID_END_OF_GROUP = 0x1a,
-  /** Subgroup header: subgroup_id from first object, has extensions, signals EndOfGroup */
-  SUBGROUP_FIRST_OBJECT_ID_EXT_END_OF_GROUP = 0x1b,
-  /** Subgroup header: subgroup_id explicit, no extensions, signals EndOfGroup */
-  SUBGROUP_ID_END_OF_GROUP = 0x1c,
-  /** Subgroup header: subgroup_id explicit, has extensions, signals EndOfGroup */
-  SUBGROUP_ID_EXT_END_OF_GROUP = 0x1d,
 }
 
 /**
@@ -1533,7 +1549,17 @@ export interface PublishMessageDraft18 {
 }
 
 /**
- * Draft-18 REQUEST_ERROR message
+ * Draft-18 Redirect structure (spec §10.6.1)
+ * Present in REQUEST_ERROR body when errorCode === RequestErrorCodeDraft18.REDIRECT (0x34).
+ */
+export interface RequestErrorRedirectDraft18 {
+  connectUri: string;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+}
+
+/**
+ * Draft-18 REQUEST_ERROR message (spec §10.6)
  */
 export interface RequestErrorMessageDraft18 {
   type: MessageTypeDraft18.REQUEST_ERROR;
@@ -1541,6 +1567,7 @@ export interface RequestErrorMessageDraft18 {
   errorCode: number;
   retryInterval?: bigint;
   reasonPhrase: string;
+  redirect?: RequestErrorRedirectDraft18;
 }
 
 /**
@@ -1581,11 +1608,17 @@ export interface FetchOkMessageDraft18 {
 }
 
 /**
- * Draft-18 GOAWAY message
+ * Draft-18 GOAWAY message (spec §10.4)
+ *
+ * @remarks
+ * Wire format: New Session URI Length (vi) | New Session URI (..) | Timeout (vi) | [Request ID (vi)]
+ * Request ID is present only when GOAWAY is sent on a request stream (not the control stream).
  */
 export interface GoAwayMessageDraft18 {
   type: MessageTypeDraft18.GOAWAY;
   newSessionUri?: string;
+  timeout: bigint;
+  requestId?: bigint;
 }
 
 /**
@@ -1599,15 +1632,45 @@ export interface TrackStatusMessageDraft18 {
 }
 
 /**
- * Draft-18 Subgroup Header
+ * Draft-18 Subgroup ID mode (spec §11.4.2, bits 1-2 of stream type).
+ */
+export enum SubgroupIdModeDraft18 {
+  ZERO = 0,
+  FIRST_OBJECT_ID = 1,
+  EXPLICIT = 2,
+  // 3 is reserved (spec §11.4.2 PROTOCOL_VIOLATION)
+}
+
+/**
+ * Draft-18 Subgroup Header (spec §11.4.2).
+ *
+ * @remarks
+ * The Type byte follows the form 0b0XX1XXXX (bit 4 always set). Flag bits:
+ *   0x01 PROPERTIES (per-object properties present in this stream)
+ *   0x06 SUBGROUP_ID_MODE (2 bits)
+ *   0x08 END_OF_GROUP
+ *   0x10 (always 1)
+ *   0x20 DEFAULT_PRIORITY (when set, Publisher Priority field is absent)
+ *   0x40 FIRST_OBJECT (first object in this stream is first in the subgroup)
+ *
+ * The encoder derives the Type byte from the fields provided:
+ *   - `subgroupIdMode` chooses bits 1-2; `subgroupId` is required only when EXPLICIT.
+ *   - `hasProperties` sets bit 0; per-object properties are then expected on every object.
+ *   - `endOfGroup` sets bit 3.
+ *   - `defaultPriority`/omitting `publisherPriority` sets bit 5.
+ *   - `firstObject` sets bit 6 (default true when the field is omitted for spec-compatibility).
  */
 export interface SubgroupHeaderDraft18 {
-  streamType: number;
   trackAlias: bigint;
   groupId: bigint;
-  subgroupId: bigint;
-  publisherPriority: number;
-  firstObject?: bigint;
+  subgroupIdMode?: SubgroupIdModeDraft18;
+  subgroupId?: bigint;
+  publisherPriority?: number;
+  hasProperties?: boolean;
+  endOfGroup?: boolean;
+  firstObject?: boolean;
+  /** Raw stream type byte (populated on decode; ignored on encode). */
+  streamType?: number;
 }
 
 /**
@@ -1620,28 +1683,69 @@ export interface ObjectHeaderDraft18 {
 }
 
 /**
- * Draft-18 Object Datagram
+ * Draft-18 Object Datagram (spec §11.3.1)
+ *
+ * @remarks
+ * The Type field encodes which optional fields are present via bit flags:
+ *   0x01 PROPERTIES, 0x02 END_OF_GROUP, 0x04 ZERO_OBJECT_ID, 0x08 DEFAULT_PRIORITY, 0x20 STATUS.
+ *
+ * `endOfGroup` — when true, no larger Object ID exists in this group.
+ * `objectStatus` — when defined, this datagram carries a status (no payload); otherwise payload carries the object.
+ *
+ * The encoder derives ZERO_OBJECT_ID/DEFAULT_PRIORITY bits automatically:
+ * omit `objectId` (or pass 0n) to omit the field on the wire; omit `publisherPriority` to inherit the subscription default.
  */
 export interface ObjectDatagramDraft18 {
   trackAlias: bigint;
   groupId: bigint;
-  objectId: bigint;
-  publisherPriority: number;
+  objectId?: bigint;
+  publisherPriority?: number;
   objectProperties?: Map<number, Uint8Array>;
-  payload: Uint8Array;
+  endOfGroup?: boolean;
+  objectStatus?: ObjectStatusDraft18 | number;
+  payload?: Uint8Array;
 }
 
 /**
- * Draft-18 Fetch Object
+ * Draft-18 Fetch Subgroup ID mode (spec §11.4.4.1 Table 8).
+ * Encoded in the 2 LSB of the Fetch Object serialization flags.
+ */
+export enum FetchSubgroupMode {
+  ZERO = 0,
+  PRIOR = 1,
+  PRIOR_PLUS_ONE = 2,
+  EXPLICIT = 3,
+}
+
+/**
+ * Draft-18 Fetch Object End-of-Range marker (spec §11.4.4.2).
+ * Serialization Flags values 0x8C = end of non-existent range, 0x10C = end of unknown range.
+ */
+export enum FetchObjectEndOfRange {
+  NON_EXISTENT = 0x8c,
+  UNKNOWN = 0x10c,
+}
+
+/**
+ * Draft-18 Fetch Object (spec §11.4.4).
+ *
+ * @remarks
+ * `serializationFlags` is either a normal flag byte (< 128, bits per §11.4.4.1)
+ * or a special End of Range marker (0x8C or 0x10C, §11.4.4.2).
+ *
+ * When `endOfRange` is defined, this is an End-of-Range marker; only groupId and objectId are meaningful.
+ * Otherwise, presence of each optional field is dictated by the flag bits (encoder derives them from the fields provided).
  */
 export interface FetchObjectDraft18 {
-  endOfFetch: boolean;
-  groupId: bigint;
-  subgroupId: bigint;
-  objectId: bigint;
-  publisherPriority: number;
+  subgroupMode: FetchSubgroupMode;
+  groupIdDelta?: bigint;
+  subgroupId?: bigint;
+  objectIdDelta?: bigint;
+  publisherPriority?: number;
   objectProperties?: Map<number, Uint8Array>;
-  payloadLength: bigint;
+  payloadLength?: bigint;
+  datagramMode?: boolean;
+  endOfRange?: FetchObjectEndOfRange;
 }
 
 /**

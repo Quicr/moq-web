@@ -19,7 +19,6 @@
 import {
   MOQTransport,
   MessageCodec,
-  ObjectCodec,
   MessageType,
   MessageTypeDraft18,
   Version,
@@ -37,7 +36,6 @@ import {
   IS_DRAFT_18,
   getCurrentALPNProtocol,
   getProtocolCodec,
-  Draft18MessageCodec,
   DataStreamType,
   type ClientSetupMessage,
   type ServerSetupMessage,
@@ -792,7 +790,7 @@ export class MOQTSession {
     while (consumed < buffer.length) {
       try {
         const view = buffer.subarray(consumed);
-        const [message, bytesRead] = MessageCodec.decode(view);
+        const [message, bytesRead] = this.codec.decodeControlMessage(view);
         consumed += bytesRead;
 
         log.info('Received message on namespace subscription stream (worker)', {
@@ -801,7 +799,7 @@ export class MOQTSession {
           streamId,
         });
 
-        this.routeMessage(message);
+        this.routeMessage(message as ControlMessage);
       } catch (err) {
         if ((err as Error).message?.includes('Incomplete') ||
             (err as Error).message?.includes('buffer')) {
@@ -920,7 +918,7 @@ export class MOQTSession {
         moqtImplementation: 'moq-web 0.1.0',
       };
 
-      const setupBytes = Draft18MessageCodec.encodeSetupStream(clientSetup);
+      const setupBytes = this.codec.encodeSetupStream(clientSetup);
 
       const hexBytes = Array.from(setupBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
       log.info('SETUP bytes (draft-18)', {
@@ -955,7 +953,7 @@ export class MOQTSession {
         parameters: setupParams,
       };
 
-      const setupBytes = MessageCodec.encode(clientSetup);
+      const setupBytes = this.codec.encodeControlMessage(clientSetup);
 
       const hexBytes = Array.from(setupBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
       log.info('CLIENT_SETUP bytes', {
@@ -981,8 +979,11 @@ export class MOQTSession {
 
   /**
    * Send GOAWAY to signal graceful session termination (draft-18)
+   *
+   * @param newSessionUri Optional URI for the client to migrate to (must be zero-length when sent by client, spec §10.4)
+   * @param timeoutMs Grace period in milliseconds before the sender enforces closure (spec §10.4)
    */
-  async goAway(newSessionUri?: string): Promise<void> {
+  async goAway(newSessionUri?: string, timeoutMs: bigint = 0n): Promise<void> {
     if (!IS_DRAFT_18) {
       log.warn('goAway only supported in draft-18');
       return;
@@ -991,12 +992,13 @@ export class MOQTSession {
     const goAwayMessage: GoAwayMessageDraft18 = {
       type: MessageTypeDraft18.GOAWAY,
       newSessionUri,
+      timeout: timeoutMs,
     };
 
-    const bytes = Draft18MessageCodec.encode(goAwayMessage);
+    const bytes = this.codec.encodeControlMessage(goAwayMessage);
     await this.doSendControl(bytes);
     this.setState('closing');
-    log.info('Sent GOAWAY', { newSessionUri });
+    log.info('Sent GOAWAY', { newSessionUri, timeoutMs: timeoutMs.toString() });
   }
 
   /**
@@ -1025,7 +1027,7 @@ export class MOQTSession {
       trackName,
     };
 
-    const encoded = Draft18MessageCodec.encode(trackStatusMessage);
+    const encoded = this.codec.encodeControlMessage(trackStatusMessage);
     log.info('Sent TRACK_STATUS (draft-18)', {
       requestId,
       namespace: namespace.join('/'),
@@ -1069,7 +1071,7 @@ export class MOQTSession {
       filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
     };
 
-    const encoded = Draft18MessageCodec.encode(subscribeTracksMessage);
+    const encoded = this.codec.encodeControlMessage(subscribeTracksMessage);
     log.info('Sent SUBSCRIBE_TRACKS (draft-18)', {
       requestId,
       prefix: namespacePrefix.join('/'),
@@ -1116,7 +1118,7 @@ export class MOQTSession {
     };
 
     // REQUEST_UPDATE is sent on the setup/control stream
-    const bytes = Draft18MessageCodec.encode(updateMessage);
+    const bytes = this.codec.encodeControlMessage(updateMessage);
     await this.doSendControl(bytes);
     log.info('Sent REQUEST_UPDATE (draft-18)', { requestId, forwardState });
   }
@@ -1145,7 +1147,7 @@ export class MOQTSession {
       reasonPhrase,
     };
 
-    const bytes = Draft18MessageCodec.encode(publishDone);
+    const bytes = this.codec.encodeControlMessage(publishDone);
     await this.doSendControl(bytes);
     log.info('Sent PUBLISH_DONE (draft-18)', { requestId, finalGroup, finalObject });
   }
@@ -1270,7 +1272,7 @@ export class MOQTSession {
         subscribeMessage.parameters!.set(RequestParameter.AUTHORIZATION_TOKEN, authData);
       }
 
-      const subscribeBytes = MessageCodec.encode(subscribeMessage);
+      const subscribeBytes = this.codec.encodeControlMessage(subscribeMessage);
 
       const hexBytes = Array.from(subscribeBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
       log.info('SUBSCRIBE bytes', { length: subscribeBytes.length, hex: hexBytes });
@@ -1309,7 +1311,7 @@ export class MOQTSession {
       parameters: new Map(),
     };
 
-    const encoded = Draft18MessageCodec.encode(subscribeMessage);
+    const encoded = this.codec.encodeControlMessage(subscribeMessage);
     const subHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent SUBSCRIBE (draft-18)', {
       requestId,
@@ -1375,7 +1377,7 @@ export class MOQTSession {
       largestLocation: { group: 0n, object: 0n },
     };
 
-    const encoded = Draft18MessageCodec.encode(publishMessage);
+    const encoded = this.codec.encodeControlMessage(publishMessage);
     const pubHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent PUBLISH (draft-18)', {
       requestId,
@@ -1436,8 +1438,8 @@ export class MOQTSession {
 
         // Try to decode
         try {
-          const [message, _bytesRead] = Draft18MessageCodec.decode(buffer);
-          return message;
+          const [message, _bytesRead] = this.codec.decodeControlMessage(buffer);
+          return message as ControlMessageDraft18;
         } catch (err) {
           if ((err as Error).message?.includes('Incomplete') ||
               (err as Error).message?.includes('buffer')) {
@@ -1480,7 +1482,7 @@ export class MOQTSession {
       };
 
       try {
-        const unsubscribeBytes = MessageCodec.encode(unsubscribeMessage);
+        const unsubscribeBytes = this.codec.encodeControlMessage(unsubscribeMessage);
         await this.doSendControl(unsubscribeBytes);
         log.info('Sent UNSUBSCRIBE message', { requestId: subscription.requestId });
       } catch (err) {
@@ -1577,7 +1579,7 @@ export class MOQTSession {
       parameters: new Map(),
     };
 
-    const fetchBytes = MessageCodec.encode(fetchMessage);
+    const fetchBytes = this.codec.encodeControlMessage(fetchMessage);
     const hexBytes = Array.from(fetchBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('FETCH bytes', { length: fetchBytes.length, hex: hexBytes });
 
@@ -1624,7 +1626,7 @@ export class MOQTSession {
     };
 
     try {
-      const cancelBytes = MessageCodec.encode(cancelMessage);
+      const cancelBytes = this.codec.encodeControlMessage(cancelMessage);
       await this.doSendControl(cancelBytes);
       log.info('Sent FETCH_CANCEL message', { requestId });
     } catch (err) {
@@ -1701,7 +1703,7 @@ export class MOQTSession {
       fullTrackName: { namespace, trackName },
     };
 
-    const bytes = MessageCodec.encode(trackStatusMessage);
+    const bytes = this.codec.encodeControlMessage(trackStatusMessage);
     await this.doSendControl(bytes);
 
     log.info('Sent TRACK_STATUS message', { requestId });
@@ -1776,7 +1778,7 @@ export class MOQTSession {
         subscribeOptions: 0x00,
       };
 
-      const bytes = MessageCodec.encode(message);
+      const bytes = this.codec.encodeControlMessage(message);
 
       // Draft-16: SUBSCRIBE_NAMESPACE must be sent on a new bidirectional stream
       if (IS_DRAFT_16) {
@@ -1857,7 +1859,7 @@ export class MOQTSession {
         while (consumed < buffer.length) {
           try {
             const view = buffer.subarray(consumed);
-            const [message, bytesRead] = MessageCodec.decode(view);
+            const [message, bytesRead] = this.codec.decodeControlMessage(view);
             consumed += bytesRead;
 
             log.info('Received message on namespace subscription stream', {
@@ -1865,7 +1867,7 @@ export class MOQTSession {
               subscriptionId,
             });
 
-            this.routeMessage(message);
+            this.routeMessage(message as ControlMessage);
           } catch (err) {
             if ((err as Error).message?.includes('Incomplete') ||
                 (err as Error).message?.includes('buffer')) {
@@ -1915,7 +1917,7 @@ export class MOQTSession {
       trackNamespacePrefix: namespacePrefix,
     };
 
-    const encoded = Draft18MessageCodec.encode(subscribeNsMessage);
+    const encoded = this.codec.encodeControlMessage(subscribeNsMessage);
 
     if (this.useWorker && this.transportWorker) {
       const streamId = await this.transportWorker.createBidiStream();
@@ -1993,7 +1995,7 @@ export class MOQTSession {
         while (consumed < buffer.length) {
           try {
             const view = buffer.subarray(consumed);
-            const [message, bytesRead] = Draft18MessageCodec.decode(view);
+            const [message, bytesRead] = this.codec.decodeControlMessage(view);
             consumed += bytesRead;
 
             log.info('Received message on namespace subscription stream (draft-18)', {
@@ -2001,7 +2003,7 @@ export class MOQTSession {
               subscriptionId,
             });
 
-            this.routeMessageDraft18(message, subscriptionId);
+            this.routeMessageDraft18(message as ControlMessageDraft18, subscriptionId);
           } catch (err) {
             if ((err as Error).message?.includes('Incomplete') || (err as Error).message?.includes('buffer')) {
               break;
@@ -2104,7 +2106,7 @@ export class MOQTSession {
     };
 
     try {
-      const bytes = MessageCodec.encode(message);
+      const bytes = this.codec.encodeControlMessage(message);
       await this.doSendControl(bytes);
       log.info('Sent UNSUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr });
     } catch (err) {
@@ -2265,7 +2267,7 @@ export class MOQTSession {
         hasDeliveryTimeoutParam: parameters.has(RequestParameter.DELIVERY_TIMEOUT),
       });
 
-      const publishBytes = MessageCodec.encode(publishMessage);
+      const publishBytes = this.codec.encodeControlMessage(publishMessage);
 
       const hexBytes = Array.from(publishBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
       log.info('PUBLISH bytes', { length: publishBytes.length, hex: hexBytes });
@@ -2380,7 +2382,7 @@ export class MOQTSession {
         namespace,
       };
 
-      const bytes = MessageCodec.encode(publishNamespaceMessage);
+      const bytes = this.codec.encodeControlMessage(publishNamespaceMessage);
       const hexBytes = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
       log.info('PUBLISH_NAMESPACE bytes', { length: bytes.length, hex: hexBytes, namespace: namespaceStr, requestId });
 
@@ -2429,7 +2431,7 @@ export class MOQTSession {
       trackNamespacePrefix: namespace,
     };
 
-    const encoded = Draft18MessageCodec.encode(publishNsMessage);
+    const encoded = this.codec.encodeControlMessage(publishNsMessage);
 
     if (this.useWorker && this.transportWorker) {
       const streamId = await this.transportWorker.createBidiStream();
@@ -2489,7 +2491,7 @@ export class MOQTSession {
       type: MessageType.PUBLISH_NAMESPACE_CANCEL,
       namespace,
     };
-    const bytes = MessageCodec.encode(cancelMessage as ControlMessage);
+    const bytes = this.codec.encodeControlMessage(cancelMessage as ControlMessage);
     await this.doSendControl(bytes);
 
     // Clean up local state
@@ -2728,7 +2730,7 @@ export class MOQTSession {
       filterType: FilterType.LATEST_GROUP,
     };
 
-    const bytes = MessageCodec.encode(publishOk);
+    const bytes = this.codec.encodeControlMessage(publishOk);
     await this.doSendControl(bytes);
     log.info('Sent PUBLISH_OK', { requestId });
   }
@@ -2750,7 +2752,7 @@ export class MOQTSession {
       contentExists: false,
     };
 
-    const bytes = MessageCodec.encode(subscribeOk);
+    const bytes = this.codec.encodeControlMessage(subscribeOk);
     const hexBytes = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('SUBSCRIBE_OK bytes', { length: bytes.length, hex: hexBytes });
     await this.doSendControl(bytes);
@@ -2773,7 +2775,7 @@ export class MOQTSession {
       trackAlias: 0,
     };
 
-    const bytes = MessageCodec.encode(subscribeError as ControlMessage);
+    const bytes = this.codec.encodeControlMessage(subscribeError as ControlMessage);
     await this.doSendControl(bytes);
     log.info('Sent SUBSCRIBE_ERROR', { requestId, errorCode, reasonPhrase });
   }
@@ -2871,7 +2873,7 @@ export class MOQTSession {
       parameters: new Map(),
     };
 
-    const publishBytes = MessageCodec.encode(publishMessage);
+    const publishBytes = this.codec.encodeControlMessage(publishMessage);
     await this.doSendControl(publishBytes);
     log.info('Sent VOD PUBLISH message', {
       requestId,
@@ -3121,7 +3123,7 @@ export class MOQTSession {
       largestObjectId: (vodOptions.objectsPerGroup ?? 1) - 1,
     };
 
-    const fetchOkBytes = MessageCodec.encode(fetchOk);
+    const fetchOkBytes = this.codec.encodeControlMessage(fetchOk);
     await this.doSendControl(fetchOkBytes);
     log.info('Sent FETCH_OK', {
       requestId: message.requestId,
@@ -3174,7 +3176,7 @@ export class MOQTSession {
       await this.doWriteStream(streamInfo, headerWriter.toUint8Array());
 
       // Create encoder state for delta encoding across objects
-      const fetchState = ObjectCodec.createFetchEncoderState();
+      const fetchState = this.codec.createFetchEncoderState();
 
       // Send objects in requested range
       for (let groupId = startGroup; groupId <= endGroup; groupId++) {
@@ -3201,7 +3203,7 @@ export class MOQTSession {
           const isKeyframe = vodOptions.isKeyframe?.(groupId, objectId) ?? objectId === 0;
 
           // Encode using draft-15/16 FETCH object format (serialization flags)
-          const objectData = ObjectCodec.encodeFetchObject(
+          const objectData = this.codec.encodeFetchObject(
             groupId,
             0, // subgroupId
             objectId,
@@ -3264,7 +3266,7 @@ export class MOQTSession {
       reasonPhrase,
     };
 
-    const bytes = MessageCodec.encode(fetchError);
+    const bytes = this.codec.encodeControlMessage(fetchError);
     await this.doSendControl(bytes);
     log.info('Sent FETCH_ERROR', { requestId, errorCode, reasonPhrase });
   }
@@ -3313,7 +3315,7 @@ export class MOQTSession {
       reasonPhrase: '',
       contentExists: false,
     };
-    const bytes = MessageCodec.encode(publishDone);
+    const bytes = this.codec.encodeControlMessage(publishDone);
     await this.doSendControl(bytes).catch(() => {});
     log.info('Sent PUBLISH_DONE', { trackAlias: key, requestId: publication.requestId });
 
@@ -3383,7 +3385,7 @@ export class MOQTSession {
       objectStatus: ObjectStatus.NORMAL,
     };
 
-    const datagram = ObjectCodec.encodeDatagramObject({
+    const datagram = this.codec.encodeDatagramObject({
       header,
       payload: data,
       payloadLength: data.byteLength,
@@ -3428,7 +3430,7 @@ export class MOQTSession {
       const streamInfo = await this.doCreateStream();
 
       // Set END_OF_GROUP=true since this stream contains one complete object/group
-      const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
+      const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
         trackAlias,
         groupId: metadata.groupId,
         subgroupId: 0,
@@ -3442,7 +3444,7 @@ export class MOQTSession {
         extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
       }
 
-      const objectData = ObjectCodec.encodeStreamObject(
+      const objectData = this.codec.encodeStreamObject(
         metadata.objectId,
         data,
         ObjectStatus.NORMAL,
@@ -3522,7 +3524,7 @@ export class MOQTSession {
         const streamInfo = await this.doCreateStream();
 
         // Set END_OF_GROUP=true since each stream contains exactly one complete group (one GOP)
-        const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
+        const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
           trackAlias,
           groupId: metadata.groupId,
           subgroupId: 0,
@@ -3536,7 +3538,7 @@ export class MOQTSession {
           extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
         }
 
-        const objectData = ObjectCodec.encodeStreamObject(
+        const objectData = this.codec.encodeStreamObject(
           metadata.objectId,
           data,
           ObjectStatus.NORMAL,
@@ -3580,14 +3582,14 @@ export class MOQTSession {
           });
 
           const streamInfo = await this.doCreateStream();
-          const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
+          const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
             trackAlias,
             groupId: metadata.groupId,
             subgroupId: 0,
             publisherPriority: priority,
           }, false);
 
-          const objectData = ObjectCodec.encodeStreamObject(
+          const objectData = this.codec.encodeStreamObject(
             metadata.objectId,
             data,
             ObjectStatus.NORMAL,
@@ -3635,7 +3637,7 @@ export class MOQTSession {
           extensions.set(ObjectExtension.MAX_CACHE_DURATION, existing.maxCacheDuration);
         }
 
-        const objectData = ObjectCodec.encodeStreamObject(
+        const objectData = this.codec.encodeStreamObject(
           metadata.objectId,
           data,
           ObjectStatus.NORMAL,
@@ -3668,14 +3670,14 @@ export class MOQTSession {
 
             // Reopen stream and retry as if this is a new keyframe for the same group
             const streamInfo = await this.doCreateStream();
-            const [subgroupHeader, hasExtensions] = ObjectCodec.encodeSubgroupHeader({
+            const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
               trackAlias,
               groupId: metadata.groupId,
               subgroupId: 0,
               publisherPriority: priority,
             }, false /* not endOfGroup - stream stays open */);
 
-            const retryObjectData = ObjectCodec.encodeStreamObject(
+            const retryObjectData = this.codec.encodeStreamObject(
               metadata.objectId,
               data,
               ObjectStatus.NORMAL,
@@ -3769,7 +3771,7 @@ export class MOQTSession {
       };
 
       try {
-        const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
+        const updateBytes = this.codec.encodeControlMessage(subscribeUpdateMessage);
         await this.doSendControl(updateBytes);
         subscription.paused = true;
         log.info('Sent SUBSCRIBE_UPDATE (pause)', { subscriptionId, requestId: subscribeUpdateMessage.requestId });
@@ -3812,7 +3814,7 @@ export class MOQTSession {
       };
 
       try {
-        const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
+        const updateBytes = this.codec.encodeControlMessage(subscribeUpdateMessage);
         await this.doSendControl(updateBytes);
         subscription.paused = false;
         log.info('Sent SUBSCRIBE_UPDATE (resume)', { subscriptionId, requestId: subscribeUpdateMessage.requestId });
@@ -3851,7 +3853,7 @@ export class MOQTSession {
     };
 
     try {
-      const updateBytes = MessageCodec.encode(subscribeUpdateMessage);
+      const updateBytes = this.codec.encodeControlMessage(subscribeUpdateMessage);
       await this.doSendControl(updateBytes);
       log.info('Sent SUBSCRIBE_UPDATE (seek)', {
         subscriptionId,
@@ -4028,7 +4030,7 @@ export class MOQTSession {
       while (this.setupBufferOffset < this.setupBuffer.length) {
         try {
           const view = this.setupBuffer.subarray(this.setupBufferOffset);
-          const [message, bytesRead] = Draft18MessageCodec.decodeSetupStream(view);
+          const [message, bytesRead] = this.codec.decodeSetupStream(view);
 
           this.setupBufferOffset += bytesRead;
 
@@ -4138,8 +4140,8 @@ export class MOQTSession {
         }
 
         try {
-          const [decoded] = Draft18MessageCodec.decode(buffer);
-          message = decoded;
+          const [decoded] = this.codec.decodeControlMessage(buffer);
+          message = decoded as ControlMessageDraft18;
         } catch (err) {
           if ((err as Error).message?.includes('Incomplete') || (err as Error).message?.includes('buffer')) {
             continue;
@@ -4243,7 +4245,7 @@ export class MOQTSession {
       trackAlias,
       largestLocation: { group: 0n, object: 0n },
     };
-    const responseBytes = Draft18MessageCodec.encode(subscribeOk);
+    const responseBytes = this.codec.encodeControlMessage(subscribeOk);
     const writer = writable.getWriter();
     await writer.write(responseBytes);
     writer.releaseLock();
@@ -4330,7 +4332,7 @@ export class MOQTSession {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: message.requestId,
     };
-    const responseBytes = Draft18MessageCodec.encode(requestOk);
+    const responseBytes = this.codec.encodeControlMessage(requestOk);
     const writer = writable.getWriter();
     await writer.write(responseBytes);
     writer.releaseLock();
@@ -4421,7 +4423,7 @@ export class MOQTSession {
       requestId: message.requestId,
     };
     const writer = writable.getWriter();
-    await writer.write(Draft18MessageCodec.encode(requestOk));
+    await writer.write(this.codec.encodeControlMessage(requestOk));
 
     // Send NAMESPACE messages for matching announced namespaces
     for (const [, announceInfo] of this.announcedNamespaces) {
@@ -4431,7 +4433,7 @@ export class MOQTSession {
           type: MessageTypeDraft18.NAMESPACE,
           trackNamespace: announceInfo.namespace,
         };
-        await writer.write(Draft18MessageCodec.encode(nsMsg));
+        await writer.write(this.codec.encodeControlMessage(nsMsg));
       }
     }
 
@@ -4440,7 +4442,7 @@ export class MOQTSession {
       type: MessageTypeDraft18.NAMESPACE_DONE,
       finalNamespace: message.trackNamespacePrefix,
     };
-    await writer.write(Draft18MessageCodec.encode(nsDone));
+    await writer.write(this.codec.encodeControlMessage(nsDone));
     writer.releaseLock();
   }
 
@@ -4462,7 +4464,7 @@ export class MOQTSession {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: message.requestId,
     };
-    const responseBytes = Draft18MessageCodec.encode(requestOk);
+    const responseBytes = this.codec.encodeControlMessage(requestOk);
     const writer = writable.getWriter();
     await writer.write(responseBytes);
     writer.releaseLock();
@@ -4488,7 +4490,7 @@ export class MOQTSession {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: message.requestId,
     };
-    const responseBytes = Draft18MessageCodec.encode(requestOk);
+    const responseBytes = this.codec.encodeControlMessage(requestOk);
     const writer = writable.getWriter();
     await writer.write(responseBytes);
     writer.releaseLock();
@@ -4549,8 +4551,16 @@ export class MOQTSession {
    * Handle incoming GOAWAY
    */
   private handleIncomingGoAwayDraft18(message: GoAwayMessageDraft18): void {
-    log.info('Received GOAWAY (draft-18)', { newSessionUri: message.newSessionUri });
-    this.emit('goaway', { newSessionUri: message.newSessionUri });
+    log.info('Received GOAWAY (draft-18)', {
+      newSessionUri: message.newSessionUri,
+      timeoutMs: message.timeout.toString(),
+      requestId: message.requestId?.toString(),
+    });
+    this.emit('goaway', {
+      newSessionUri: message.newSessionUri,
+      timeoutMs: message.timeout,
+      requestId: message.requestId,
+    });
     this.setState('closing');
   }
 
@@ -4578,7 +4588,7 @@ export class MOQTSession {
       reasonPhrase,
     };
     const writer = writable.getWriter();
-    await writer.write(Draft18MessageCodec.encode(errorMsg));
+    await writer.write(this.codec.encodeControlMessage(errorMsg));
     writer.releaseLock();
   }
 
@@ -4620,7 +4630,7 @@ export class MOQTSession {
         try {
           // Decode from current offset using subarray (no copy)
           const view = this.controlBuffer.subarray(this.controlBufferOffset);
-          const [message, bytesRead] = MessageCodec.decode(view);
+          const [message, bytesRead] = this.codec.decodeControlMessage(view);
 
           this.controlBufferOffset += bytesRead;
           messagesDecoded++;
@@ -4638,7 +4648,7 @@ export class MOQTSession {
           }
 
           // Route message
-          this.routeMessage(message);
+          this.routeMessage(message as ControlMessage);
         } catch (err) {
           if ((err as Error).message?.includes('Incomplete') ||
               (err as Error).message?.includes('buffer') ||
