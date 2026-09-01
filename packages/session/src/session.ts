@@ -3972,7 +3972,12 @@ export class MOQTSession {
   }
 
   /**
-   * Wait for SERVER_SETUP message (draft-18)
+   * Wait for SERVER_SETUP message (draft-18).
+   *
+   * Draft-18 lets either endpoint send SETUP first on the shared setup stream,
+   * so SERVER_SETUP can arrive before this waiter installs its handler. Any
+   * setup messages that arrived before subscription are queued in
+   * `pendingSetupMessages` and drained here.
    */
   private waitForServerSetupDraft18(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -3994,11 +3999,20 @@ export class MOQTSession {
       };
 
       this.onSetupMessage = handler;
+
+      // Drain anything that arrived before we subscribed.
+      if (this.pendingSetupMessages.length > 0) {
+        const queued = this.pendingSetupMessages;
+        this.pendingSetupMessages = [];
+        for (const m of queued) handler(m);
+      }
     });
   }
 
   /** Draft-18 setup message handler */
   private onSetupMessage?: (message: ControlMessageDraft18) => void;
+  /** Setup messages received before `onSetupMessage` was registered. */
+  private pendingSetupMessages: ControlMessageDraft18[] = [];
 
   /** Setup message buffer for draft-18 */
   private setupBuffer = new Uint8Array(0);
@@ -4038,9 +4052,13 @@ export class MOQTSession {
             type: MessageTypeDraft18[message.type],
           });
 
-          // Handle setup callback (used during initial setup)
+          // Handle setup callback (used during initial setup). If the waiter
+          // hasn't subscribed yet (draft-18 allows SERVER_SETUP to arrive
+          // before or in parallel with CLIENT_SETUP), queue for later drain.
           if (this.onSetupMessage) {
             this.onSetupMessage(message);
+          } else if (this._state !== 'ready' && this._state !== 'closing') {
+            this.pendingSetupMessages.push(message);
           }
 
           // Route post-setup messages (GOAWAY, REQUEST_UPDATE on setup stream)

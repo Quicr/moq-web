@@ -1,0 +1,23 @@
+{
+  "relayUrl": "https://moqx-main.ci.openmoq.org:4433/moq-relay",
+  "auth": {
+    "tokenEnv": "MOQ_AUTH_TOKEN",
+    "tokenType": "c4m",
+    "scope": "setup"
+  },
+  "namespacePrefix": ["moq-web-e2e", "chat-datagram"],
+  "tracks": [
+    {
+      "name": "chat",
+      "delivery": "datagram",
+      "priority": 128,
+      "deliveryTimeout": 5000,
+      "payload": {
+        "kind": "chat-text",
+        "messages": 30,
+        "sizeBytes": 64,
+        "objectsPerGroup": 10
+      }
+    }
+  ]
+}
