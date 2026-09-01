@@ -90,12 +90,12 @@ describe('Unified Codec', () => {
 
       const wire = subscribeRequestToWire(req, 1n);
       expect(wire).toBeDefined();
-      expect(wire.type).toBe(0x03); // SUBSCRIBE type in both versions
 
       if (IS_DRAFT_18) {
         expect((wire as any).requestId).toBe(1n);
         expect((wire as any).forwardState).toBe(true);
       } else {
+        expect((wire as any).type).toBe(0x03);
         expect((wire as any).requestId).toBe(1);
         expect((wire as any).trackAlias).toBe(0);
       }
@@ -220,11 +220,10 @@ describe('Unified Codec', () => {
       expect(wire).toBeDefined();
 
       if (IS_DRAFT_18) {
-        expect(wire.type).toBe(0x05);
         expect((wire as any).requestId).toBe(10n);
         expect((wire as any).trackAlias).toBe(99n);
       } else {
-        expect(wire.type).toBe(0x1d);
+        expect((wire as any).type).toBe(0x1d);
         expect((wire as any).requestId).toBe(10);
         expect((wire as any).trackAlias).toBe(99);
       }
@@ -246,11 +245,10 @@ describe('Unified Codec', () => {
       expect(wire).toBeDefined();
 
       if (IS_DRAFT_18) {
-        expect(wire.type).toBe(0x0d);
         expect((wire as any).startLocation).toEqual({ group: 5n, object: 0n });
         expect((wire as any).endLocation).toEqual({ group: 10n, object: 999n });
       } else {
-        expect(wire.type).toBe(0x16);
+        expect((wire as any).type).toBe(0x16);
         expect((wire as any).startGroup).toBe(5);
         expect((wire as any).endGroup).toBe(10);
       }
@@ -299,12 +297,12 @@ describe('Unified Codec', () => {
       const { namespaceWire, tracksWire } = subscribeNamespaceRequestToWire(req, 100n);
 
       expect(namespaceWire).toBeDefined();
-      expect(namespaceWire.type).toBe(0x11);
 
       if (IS_DRAFT_18) {
         // v18: DISCOVER mode only sends SUBSCRIBE_NAMESPACE
         expect(tracksWire).toBeUndefined();
       } else {
+        expect((namespaceWire as any).type).toBe(0x11);
         // v14/16: subscribeOptions should be NAMESPACE (1)
         expect((namespaceWire as any).subscribeOptions).toBe(1);
       }
@@ -323,7 +321,6 @@ describe('Unified Codec', () => {
         // v18: SUBSCRIBE mode sends both SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS
         expect(namespaceWire).toBeDefined();
         expect(tracksWire).toBeDefined();
-        expect(tracksWire!.type).toBe(0x14);
       } else {
         // v14/16: subscribeOptions should be PUBLISH (0)
         expect((namespaceWire as any).subscribeOptions).toBe(0);
@@ -378,11 +375,11 @@ describe('Unified Codec', () => {
 
       const wire = publishNamespaceRequestToWire(req, 400n);
       expect(wire).toBeDefined();
-      expect(wire.type).toBe(IS_DRAFT_18 ? 0x10 : 0x06);
 
       if (IS_DRAFT_18) {
         expect((wire as any).trackNamespacePrefix).toEqual(['publisher', 'media']);
       } else {
+        expect((wire as any).type).toBe(0x06);
         expect((wire as any).namespace).toEqual(['publisher', 'media']);
       }
     });

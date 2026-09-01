@@ -35,7 +35,7 @@
 import { Logger } from '../utils/logger.js';
 import { BufferReader, BufferWriter, VarInt } from './varint.js';
 import { IS_DRAFT_16, IS_DRAFT_18 } from '../version/constants.js';
-import { Draft18StreamCodec, SubgroupFlags } from './draft18-stream-codec.js';
+import { Draft18StreamCodec } from './draft18-stream-codec.js';
 import { MOQTVarInt } from './moqt-varint.js';
 import type { SubgroupHeaderDraft18, ObjectHeaderDraft18, ObjectDatagramDraft18 } from '../messages/types.js';
 import {
@@ -2569,13 +2569,13 @@ export class ObjectCodec {
         trackAlias: datagram.trackAlias,
         groupId: Number(datagram.groupId),
         subgroupId: 0,
-        objectId: Number(datagram.objectId),
-        publisherPriority: datagram.publisherPriority,
+        objectId: Number(datagram.objectId ?? 0n),
+        publisherPriority: datagram.publisherPriority ?? 128,
         objectStatus: ObjectStatus.NORMAL,
       };
       // bytesRead includes the payload (remainder of buffer), we need just the header length
       // Header length = bytesRead - payload.length
-      const headerLength = bytesRead - datagram.payload.length;
+      const headerLength = bytesRead - (datagram.payload?.length ?? 0);
       return [header, headerLength];
     }
 
@@ -2682,65 +2682,37 @@ export class ObjectCodec {
    */
   static encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
     if (IS_DRAFT_18) {
-      let streamType = SubgroupFlags.BASE_TYPE;
-      if (endOfGroup) {
-        streamType |= SubgroupFlags.END_OF_GROUP;
-      }
       const d18Header: SubgroupHeaderDraft18 = {
-        streamType,
         trackAlias: typeof header.trackAlias === 'bigint' ? header.trackAlias : BigInt(header.trackAlias),
         groupId: BigInt(header.groupId),
         subgroupId: BigInt(header.subgroupId),
         publisherPriority: header.publisherPriority,
-        firstObject: 0n,
+        endOfGroup: endOfGroup ? true : undefined,
+        firstObject: true,
       };
       const encoded = Draft18StreamCodec.encodeSubgroupHeader(d18Header);
       return [encoded, false]; // draft-18 uses properties, not extensions flag
     }
 
-    const writer = new BufferWriter();
-    let hasExtensions: boolean;
-
-    if (IS_DRAFT_16) {
-      // Draft-16 format:
-      // Type | Track Alias | Group ID | [Subgroup ID] | [Publisher Priority]
-
-      // Subgroup Header Type: 0b00X1XXXX (bit 4 always set)
-      // Use EXTENSIONS=1 to match relay behavior (0x11 or 0x19)
-      // SUBGROUP_ID_MODE=0b00, DEFAULT_PRIORITY=0 (include priority)
-      let headerType = 0x11; // Base with bit 4 set + EXTENSIONS bit
-      if (endOfGroup) {
-        headerType |= 0x08; // END_OF_GROUP bit (0x19)
-      }
-      // SUBGROUP_ID_MODE = 0b00: no subgroup ID field (implicit 0)
-      // DEFAULT_PRIORITY = 0: include publisher priority field
-      hasExtensions = (headerType & 0x01) !== 0; // true for 0x11/0x19
-
-      writer.writeVarInt(headerType);
-      writer.writeVarInt(header.trackAlias);
-      writer.writeVarInt(header.groupId);
-      // No Subgroup ID when SUBGROUP_ID_MODE = 0b00
-      writer.writeByte(header.publisherPriority);
-    } else {
-      // Draft-14: Use subgroup header with subgroup_id=0 implicit, with extensions
-      // 0x11 = SUBGROUP_ZERO_ID_EXT (no EndOfGroup)
-      // 0x19 = SUBGROUP_ZERO_ID_EXT_END_OF_GROUP (signals EndOfGroup)
-      const headerType = endOfGroup
-        ? DataStreamType.SUBGROUP_ZERO_ID_EXT_END_OF_GROUP
-        : DataStreamType.SUBGROUP_ZERO_ID_EXT;
-      writer.writeVarInt(headerType);
-      writer.writeVarInt(header.trackAlias);
-      writer.writeVarInt(header.groupId);
-      // subgroupId not written for SUBGROUP_ZERO_ID variants (implied 0)
-      writer.writeByte(header.publisherPriority);
-      hasExtensions = true; // Both 0x11 and 0x19 have extensions bit set
+    // Draft-16: Type | Track Alias | Group ID | [Subgroup ID] | [Publisher Priority]
+    // Header type: 0b00X1XXXX (bit 4 always set), EXTENSIONS=1 to match relay behavior.
+    // SUBGROUP_ID_MODE=0b00 (implicit 0), DEFAULT_PRIORITY=0 (include priority).
+    let headerType = 0x11; // bit 4 + EXTENSIONS
+    if (endOfGroup) {
+      headerType |= 0x08; // END_OF_GROUP -> 0x19
     }
+    const hasExtensions = (headerType & 0x01) !== 0;
+
+    const writer = new BufferWriter();
+    writer.writeVarInt(headerType);
+    writer.writeVarInt(header.trackAlias);
+    writer.writeVarInt(header.groupId);
+    writer.writeByte(header.publisherPriority);
     return [writer.toUint8Array(), hasExtensions];
   }
 
   /**
-   * Decode a subgroup header for stream-based delivery
-   * Supports draft-16 format and draft-14 LAPS formats
+   * Decode a subgroup header for stream-based delivery.
    *
    * @param buffer - Buffer containing the encoded header
    * @returns Tuple of [decoded header, bytes consumed, endOfGroup flag, hasExtensions flag]
@@ -2748,104 +2720,49 @@ export class ObjectCodec {
   static decodeSubgroupHeader(buffer: Uint8Array): [SubgroupHeader, number, boolean, boolean] {
     if (IS_DRAFT_18) {
       const [d18Header, bytesRead] = Draft18StreamCodec.decodeSubgroupHeader(buffer);
-      const endOfGroup = (d18Header.streamType & SubgroupFlags.END_OF_GROUP) !== 0;
-      const hasProperties = (d18Header.streamType & SubgroupFlags.PROPERTIES) !== 0;
+      const endOfGroup = d18Header.endOfGroup === true;
+      const hasProperties = d18Header.hasProperties === true;
+      // Priority default (spec §11.4.2 DEFAULT_PRIORITY bit) — surface 128 to legacy callers.
+      const priority = d18Header.publisherPriority ?? 128;
       const header: SubgroupHeader = {
         trackAlias: d18Header.trackAlias,
         groupId: Number(d18Header.groupId),
-        subgroupId: Number(d18Header.subgroupId),
-        publisherPriority: d18Header.publisherPriority,
+        subgroupId: Number(d18Header.subgroupId ?? 0n),
+        publisherPriority: priority,
       };
       return [header, bytesRead, endOfGroup, hasProperties];
     }
 
+    // Draft-16: Type | Track Alias | Group ID | [Subgroup ID] | [Publisher Priority]
+    // Header type bits:
+    //   Bit 4: Always 1 (0x10 base)
+    //   Bit 0: EXTENSIONS
+    //   Bits 1-2: SUBGROUP_ID_MODE (0=implicit 0, 1/2=explicit)
+    //   Bit 3: END_OF_GROUP
+    //   Bit 5: DEFAULT_PRIORITY (use 128 when set)
     const reader = new BufferReader(buffer);
+    const headerType = reader.readVarIntNumber();
+    const trackAlias = reader.readVarInt();
+    const groupId = reader.readVarIntNumber();
 
-    if (IS_DRAFT_16) {
-      // Draft-16 format:
-      // Type | Track Alias | Group ID | [Subgroup ID] | [Publisher Priority]
-      const headerType = reader.readVarIntNumber();
-      const trackAlias = reader.readVarInt();
-      const groupId = reader.readVarIntNumber();
+    const hasExtensions = (headerType & 0x01) !== 0;
+    const subgroupIdMode = (headerType & 0x06) >> 1;
+    const endOfGroup = (headerType & 0x08) !== 0;
+    const defaultPriority = (headerType & 0x20) !== 0;
 
-      // Subgroup Header Type bits:
-      // Bit 4: Always 1 (0x10 base)
-      // Bit 0: EXTENSIONS (0x01) - indicates objects have extensions
-      // Bits 1-2: SUBGROUP_ID_MODE (0x06)
-      // Bit 3: END_OF_GROUP (0x08)
-      // Bit 5: DEFAULT_PRIORITY (0x20)
-      const hasExtensions = (headerType & 0x01) !== 0;
-      const subgroupIdMode = (headerType & 0x06) >> 1;
-      const endOfGroup = (headerType & 0x08) !== 0;
-      const defaultPriority = (headerType & 0x20) !== 0;
-
-      // Read subgroup ID based on mode
-      let subgroupId = 0;
-      if (subgroupIdMode === 1 || subgroupIdMode === 2) {
-        subgroupId = reader.readVarIntNumber();
-      }
-      // mode 0 = implicit 0, mode 3 = reserved
-
-      // Read publisher priority if not using default
-      const publisherPriority = defaultPriority ? 128 : reader.readByte();
-
-      return [{
-        trackAlias,
-        groupId,
-        subgroupId,
-        publisherPriority,
-      }, reader.offset, endOfGroup, hasExtensions];
+    let subgroupId = 0;
+    if (subgroupIdMode === 1 || subgroupIdMode === 2) {
+      subgroupId = reader.readVarIntNumber();
     }
 
-    // Draft-14 format
-    const streamType = reader.readVarIntNumber();
-
-    // Parse header type bits for 0x10-0x1D range:
-    // Bit 0: hasExtensions (odd types: 0x11, 0x13, 0x15, 0x19, 0x1b, 0x1d)
-    // Bit 3: endOfGroup (0x18-0x1D)
-    // Bits 1-2: subgroupIdMode (0=zero, 1=firstObject, 2=explicit)
-    const isSubgroupType = streamType >= 0x10 && streamType <= 0x1d;
-    if (isSubgroupType) {
-      const hasExtensions = (streamType & 0x01) !== 0;
-      const endOfGroup = (streamType & 0x08) !== 0;
-      const subgroupIdMode = (streamType & 0x06) >> 1;
-
-      const trackAlias = reader.readVarInt();
-      const groupId = reader.readVarIntNumber();
-
-      // Read subgroupId based on mode
-      let subgroupId = 0;
-      if (subgroupIdMode === 2) {
-        // Explicit subgroup ID (0x14, 0x15, 0x1c, 0x1d)
-        subgroupId = reader.readVarIntNumber();
-      }
-      // Mode 0 (0x10, 0x11, 0x18, 0x19) = implicit 0
-      // Mode 1 (0x12, 0x13, 0x1a, 0x1b) = from first object (treat as 0 in header)
-
-      const publisherPriority = reader.readByte();
-
-      return [{
-        trackAlias,
-        groupId,
-        subgroupId,
-        publisherPriority,
-      }, reader.offset, endOfGroup, hasExtensions];
-    }
-
-    // Standard MOQT format (0x04)
-    if (streamType !== DataStreamType.SUBGROUP_HEADER) {
-      throw new MessageCodecError(
-        `Expected subgroup header type (0x04 or 0x10-0x1D), got 0x${streamType.toString(16)}`,
-        streamType
-      );
-    }
+    const publisherPriority = defaultPriority ? 128 : reader.readByte();
 
     return [{
-      trackAlias: reader.readVarInt(),
-      groupId: reader.readVarIntNumber(),
-      subgroupId: reader.readVarIntNumber(),
-      publisherPriority: reader.readByte(),
-    }, reader.offset, false, false];
+      trackAlias,
+      groupId,
+      subgroupId,
+      publisherPriority,
+    }, reader.offset, endOfGroup, hasExtensions];
   }
 
   /**
@@ -3030,15 +2947,13 @@ export class ObjectCodec {
    * @param buffer - Buffer containing the encoded object
    * @param offset - Offset to start reading from
    * @param hasExtensions - Whether objects have extensions (from header type EXTENSIONS bit)
-   * @param useRemainingAsPayload - Use remaining buffer as payload (draft-14 LAPS)
-   * @param previousObjectId - Previous object ID for delta decoding (draft-16), -1 for first object
+   * @param previousObjectId - Previous object ID for delta decoding, -1 for first object
    * @returns Tuple of [objectId, payload, status, bytesConsumed]
    */
   static decodeStreamObject(
     buffer: Uint8Array,
     offset = 0,
     hasExtensions = true,
-    useRemainingAsPayload = false,
     previousObjectId = -1
   ): [number, Uint8Array, ObjectStatus, number] {
     if (IS_DRAFT_18) {
@@ -3067,67 +2982,24 @@ export class ObjectCodec {
       return [objectId, payload, ObjectStatus.NORMAL, totalNeeded];
     }
 
+    // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | [Payload]
     const reader = new BufferReader(buffer, offset);
-
     const objectIdDelta = reader.readVarIntNumber();
-    let objectId: number;
+    const isFirstObject = previousObjectId < 0;
+    const objectId = isFirstObject ? objectIdDelta : previousObjectId + objectIdDelta + 1;
 
-    if (IS_DRAFT_16) {
-      // Draft-16: Object ID Delta decoding
-      // First object: objectId = delta
-      // Subsequent: objectId = previousObjectId + delta + 1
-      const isFirstObject = previousObjectId < 0;
-      objectId = isFirstObject ? objectIdDelta : (previousObjectId + objectIdDelta + 1);
-    } else {
-      // Draft-14: Object ID is absolute
-      objectId = objectIdDelta;
-    }
-
-    if (IS_DRAFT_16) {
-      // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | [Payload]
-      // Extension length field is ONLY present when EXTENSIONS bit is set in subgroup header type
-      // Types with Ext suffix (0x11, 0x19, etc.) have extensions; others (0x10, 0x18, etc.) don't
-      if (hasExtensions) {
-        const extensionLength = reader.readVarIntNumber();
-        if (extensionLength > 0) {
-          // Skip extension bytes (TODO: parse KVPs if needed)
-          reader.readBytes(extensionLength);
-        }
-      }
-
-      const payloadLength = reader.readVarIntNumber();
-      let status = ObjectStatus.NORMAL;
-      if (payloadLength === 0 && reader.hasMore) {
-        status = reader.readVarIntNumber() as ObjectStatus;
-      }
-      const payload = reader.readBytes(payloadLength);
-      return [objectId, payload, status, reader.offset - offset];
-    }
-
-    // Draft-14 LAPS format handling
-    // LAPS formats with extensions (0x11, 0x13, 0x15, etc.) have an extension length field
     if (hasExtensions) {
       const extensionLength = reader.readVarIntNumber();
       if (extensionLength > 0) {
-        // Skip extension bytes
         reader.readBytes(extensionLength);
       }
     }
 
-    // For LAPS streams that don't include payload_length, use remaining bytes
-    if (useRemainingAsPayload) {
-      const payload = reader.readBytes(reader.remaining);
-      return [objectId, payload, ObjectStatus.NORMAL, reader.offset - offset];
-    }
-
     const payloadLength = reader.readVarIntNumber();
-
-    // Check if there's a status byte
     let status = ObjectStatus.NORMAL;
     if (payloadLength === 0 && reader.hasMore) {
       status = reader.readVarIntNumber() as ObjectStatus;
     }
-
     const payload = reader.readBytes(payloadLength);
     return [objectId, payload, status, reader.offset - offset];
   }

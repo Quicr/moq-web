@@ -27,10 +27,12 @@ import {
   type PublishNamespaceRequest,
   type NamespacePublication,
   type UnifiedMOQTObject,
-  type RequestError,
   type CodecCapabilities,
   type ISession,
   type SessionState,
+  type SessionErrorHandler,
+  type SessionGoAwayHandler,
+  type SessionCloseHandler,
   ApiVersion as Version,
   ApiGroupOrder as GroupOrder,
   ApiObjectStatus as ObjectStatus,
@@ -44,10 +46,6 @@ import { MOQTSession } from './session.js';
 import type { SubscribeOptions, PublishOptions, ObjectMetadata } from './types.js';
 
 export type { ISession, SessionState };
-
-type SessionErrorHandler = (error: RequestError) => void;
-type SessionGoAwayHandler = (newUri?: string) => void;
-type SessionCloseHandler = () => void;
 
 /**
  * Convert unified GroupOrder to legacy
@@ -422,7 +420,7 @@ export class UnifiedSession implements ISession {
   // Session Lifecycle
   // =========================================================================
 
-  async goAway(_newSessionUri?: string): Promise<void> {
+  async goAway(_newSessionUri?: string, _timeoutMs?: bigint): Promise<void> {
     console.warn('goAway not implemented');
   }
 
