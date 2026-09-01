@@ -22,6 +22,20 @@ is read from the environment and never committed — profiles reference it by na
 - `lib/` — session factory, profile loader, chat payload generator, verifiers.
 - `tests/NN-*.test.ts` — one file per MOQ API. Every applicable test runs against both profiles via `describe.each`, so both delivery paths get coverage.
 
+Current coverage:
+
+- 01-setup — CLIENT_SETUP / SERVER_SETUP round-trip
+- 02-announce — PUBLISH_NAMESPACE ack
+- 03-publish — PUBLISH ack + track alias assignment
+- 04-subscribe-namespace — SUBSCRIBE_NAMESPACE → incoming-publish fan-out
+- 05-subscribe — pub/sub with byte-exact object verification
+- 06-subscribe-update — REQUEST_UPDATE pause + resume
+- 07-unsubscribe — deliveries stop after unsubscribe
+- 08-track-status — TRACK_STATUS query (draft-18)
+- 09-fetch — FETCH range retrieval with byte-verify
+- 10-fetch-cancel — FETCH then FETCH_CANCEL
+- 11-goaway — client-initiated GOAWAY drives 'closing' state (draft-18)
+
 ## Profile schema
 
 See `lib/profile.ts` for the full TypeScript definition.
