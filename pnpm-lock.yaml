@@ -282,6 +282,31 @@ importers:
         specifier: ^4.0.18
         version: 4.0.18(@types/node@20.19.30)(@vitest/browser-playwright@4.0.18)(jiti@1.21.7)
 
+  packages/media-e2e:
+    dependencies:
+      '@moq-web/core':
+        specifier: workspace:*
+        version: link:../core
+      '@moq-web/media':
+        specifier: workspace:*
+        version: link:../media
+      '@moq-web/session':
+        specifier: workspace:*
+        version: link:../session
+    devDependencies:
+      '@vitest/browser':
+        specifier: 4.0.18
+        version: 4.0.18(vite@7.3.1(@types/node@20.19.30)(jiti@1.21.7))(vitest@4.0.18)
+      '@vitest/browser-playwright':
+        specifier: 4.0.18
+        version: 4.0.18(playwright@1.58.0)(vite@7.3.1(@types/node@20.19.30)(jiti@1.21.7))(vitest@4.0.18)
+      playwright:
+        specifier: ^1.40.0
+        version: 1.58.0
+      vitest:
+        specifier: 4.0.18
+        version: 4.0.18(@types/node@20.19.30)(@vitest/browser-playwright@4.0.18)(jiti@1.21.7)
+
   packages/msf:
     dependencies:
       '@moq-web/core':
