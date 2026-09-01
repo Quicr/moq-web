@@ -1565,34 +1565,7 @@ export class MOQTSession {
     };
     this.activeFetches.set(requestId, fetchInfo);
 
-    // Build FETCH message
-    const fetchMessage: FetchMessage = {
-      type: MessageType.FETCH,
-      requestId,
-      fullTrackName: { namespace, trackName },
-      subscriberPriority: options?.priority ?? 128,
-      groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
-      startGroup: range.startGroup,
-      startObject: range.startObject,
-      endGroup: range.endGroup,
-      endObject: range.endObject,
-      parameters: new Map(),
-    };
-
-    const fetchBytes = this.codec.encodeControlMessage(fetchMessage);
-    const hexBytes = Array.from(fetchBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('FETCH bytes', { length: fetchBytes.length, hex: hexBytes });
-
-    await this.doSendControl(fetchBytes);
-    log.info('Sent FETCH message', {
-      requestId,
-      namespace: namespace.join('/'),
-      trackName,
-      range,
-    });
-    this.emitMessageSent('FETCH', fetchBytes.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId, range });
-
-    // Store object callback if provided
+    // Register object callback before wire send so no deliveries race us.
     if (onObject) {
       const handler = (event: FetchObjectEvent) => {
         if (event.requestId === requestId) {
@@ -1602,7 +1575,133 @@ export class MOQTSession {
       this.on('fetch-object', handler);
     }
 
+    if (IS_DRAFT_18) {
+      await this.fetchDraft18(requestId, namespace, trackName, range, options);
+    } else {
+      const fetchMessage: FetchMessage = {
+        type: MessageType.FETCH,
+        requestId,
+        fullTrackName: { namespace, trackName },
+        subscriberPriority: options?.priority ?? 128,
+        groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
+        startGroup: range.startGroup,
+        startObject: range.startObject,
+        endGroup: range.endGroup,
+        endObject: range.endObject,
+        parameters: new Map(),
+      };
+
+      const fetchBytes = this.codec.encodeControlMessage(fetchMessage);
+      const hexBytes = Array.from(fetchBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log.info('FETCH bytes', { length: fetchBytes.length, hex: hexBytes });
+
+      await this.doSendControl(fetchBytes);
+      log.info('Sent FETCH message', {
+        requestId,
+        namespace: namespace.join('/'),
+        trackName,
+        range,
+      });
+      this.emitMessageSent('FETCH', fetchBytes.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId, range });
+    }
+
     return requestId;
+  }
+
+  /**
+   * Draft-18: FETCH on a per-request bidirectional stream (spec §7.4).
+   *
+   * Sends FETCH, then reads the peer's response on the same bidi stream.
+   * FETCH_OK / REQUEST_OK completes the request and lets the relay open a
+   * unidirectional data stream (FETCH_HEADER 0x05) for the objects.
+   * REQUEST_ERROR surfaces failure via the fetch-error event.
+   */
+  private async fetchDraft18(
+    requestId: number,
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+  ): Promise<void> {
+    // Draft-18 endLocation is *exclusive* per spec §7.5 (relays such as moxygen
+    // decrement the object component to derive the inclusive "last" location).
+    // The API's FetchRange.endObject is inclusive, so we bump the wire value
+    // by one before encoding.
+    const fetchMessage: FetchMessageDraft18 = {
+      type: MessageTypeDraft18.FETCH,
+      requestId: BigInt(requestId),
+      joiningFlag: false,
+      trackNamespace: namespace,
+      trackName,
+      subscriberPriority: options?.priority ?? 128,
+      groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
+      startLocation: {
+        group: BigInt(range.startGroup),
+        object: BigInt(range.startObject),
+      },
+      endLocation: {
+        group: BigInt(range.endGroup),
+        object: BigInt(range.endObject + 1),
+      },
+    };
+
+    const encoded = this.codec.encodeControlMessage(fetchMessage);
+    const fetchHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log.info('Sent FETCH (draft-18)', {
+      requestId,
+      namespace: namespace.join('/'),
+      trackName,
+      range,
+      hex: fetchHex,
+      length: encoded.length,
+    });
+    this.emitMessageSent('FETCH', encoded.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId, range });
+
+    const response = await this.sendRequestAndWaitResponse(encoded);
+
+    if (response.type === MessageTypeDraft18.FETCH_OK) {
+      const fetchOk = response as _FetchOkMessageDraft18;
+      log.info('Received FETCH_OK (draft-18)', {
+        requestId,
+        endGroup: fetchOk.endLocation.group.toString(),
+        endObject: fetchOk.endLocation.object.toString(),
+        endOfTrack: fetchOk.endOfTrack,
+      });
+      const info = this.activeFetches.get(requestId);
+      if (info) {
+        info.completed = true;
+        info.largestGroupId = Number(fetchOk.endLocation.group);
+        info.largestObjectId = Number(fetchOk.endLocation.object);
+        info.endOfTrack = fetchOk.endOfTrack;
+      }
+      this.emit('fetch-complete', {
+        requestId,
+        largestGroupId: Number(fetchOk.endLocation.group),
+        largestObjectId: Number(fetchOk.endLocation.object),
+        endOfTrack: fetchOk.endOfTrack,
+      } as FetchCompleteEvent);
+    } else if (response.type === MessageTypeDraft18.REQUEST_OK) {
+      // Some relays send REQUEST_OK to accept the fetch and later stream data.
+      log.info('Received REQUEST_OK for FETCH (draft-18)', { requestId });
+    } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      log.error('Received REQUEST_ERROR for FETCH (draft-18)', {
+        requestId,
+        errorCode: error.errorCode,
+        reasonPhrase: error.reasonPhrase,
+      });
+      this.activeFetches.delete(requestId);
+      this.emit('fetch-error', {
+        requestId,
+        errorCode: error.errorCode,
+        reason: error.reasonPhrase,
+      } as FetchErrorEvent);
+    } else {
+      log.warn('Unexpected response to FETCH (draft-18)', {
+        requestId,
+        responseType: response.type,
+      });
+    }
   }
 
   /**
@@ -1619,18 +1718,30 @@ export class MOQTSession {
 
     log.info('Cancelling fetch', { requestId });
 
-    // Send FETCH_CANCEL message
-    const cancelMessage: FetchCancelMessage = {
-      type: MessageType.FETCH_CANCEL,
-      requestId,
-    };
+    if (IS_DRAFT_18) {
+      // Draft-18 has no FETCH_CANCEL message; the equivalent is REQUEST_UPDATE
+      // with forwardState=false, which pauses/terminates delivery for this
+      // requestId. The relay closes the fetch data stream in response.
+      try {
+        await this.sendRequestUpdate(requestId, false);
+        log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel (draft-18)', { requestId });
+      } catch (err) {
+        log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
+      }
+    } else {
+      // Draft-14/16 send a dedicated FETCH_CANCEL message.
+      const cancelMessage: FetchCancelMessage = {
+        type: MessageType.FETCH_CANCEL,
+        requestId,
+      };
 
-    try {
-      const cancelBytes = this.codec.encodeControlMessage(cancelMessage);
-      await this.doSendControl(cancelBytes);
-      log.info('Sent FETCH_CANCEL message', { requestId });
-    } catch (err) {
-      log.error('Failed to send FETCH_CANCEL message', { error: (err as Error).message });
+      try {
+        const cancelBytes = this.codec.encodeControlMessage(cancelMessage);
+        await this.doSendControl(cancelBytes);
+        log.info('Sent FETCH_CANCEL message', { requestId });
+      } catch (err) {
+        log.error('Failed to send FETCH_CANCEL message', { error: (err as Error).message });
+      }
     }
 
     // Remove from active fetches

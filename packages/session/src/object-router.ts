@@ -8,8 +8,18 @@
  * appropriate subscriptions.
  */
 
-import { Logger, ObjectCodec, ObjectStatus, IS_DRAFT_16, IS_DRAFT_18, DataStreamType, BufferReader } from '@moq-web/core';
-import type { FetchDecoderState } from '@moq-web/core';
+import {
+  Logger,
+  ObjectCodec,
+  ObjectStatus,
+  IS_DRAFT_16,
+  IS_DRAFT_18,
+  DataStreamType,
+  BufferReader,
+  Draft18StreamCodec,
+} from '@moq-web/core';
+import type { FetchDecoderState, FetchObjectDraft18 } from '@moq-web/core';
+import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 
 const log = Logger.create('moqt:session:object-router');
@@ -496,14 +506,17 @@ export class ObjectRouter {
    *
    * FETCH streams use serialization flags format for objects:
    * FETCH_HEADER (0x05) | RequestID | [Object1] | [Object2] | ...
+   *
+   * Draft-16 and draft-18 share the header shape but use different per-object
+   * flag layouts (§11.4.4). The two codepaths are split below.
    */
   private async handleFetchStream(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     initialBuffer: Uint8Array,
     initialDone: boolean
   ): Promise<void> {
-    let buffer = initialBuffer;
-    let done = initialDone;
+    const buffer = initialBuffer;
+    const done = initialDone;
 
     // Parse FETCH_HEADER: stream type (already consumed) + request ID
     const headerReader = new BufferReader(buffer);
@@ -519,7 +532,31 @@ export class ObjectRouter {
       return;
     }
 
-    log.info('Handling FETCH stream', { requestId, initialBufferSize: buffer.length });
+    log.info('Handling FETCH stream', {
+      requestId,
+      initialBufferSize: buffer.length,
+      draft: IS_DRAFT_18 ? 'draft-18' : 'draft-16',
+    });
+
+    if (IS_DRAFT_18) {
+      return this.handleFetchStreamDraft18(reader, buffer, bufferOffset, done, requestId);
+    }
+    return this.handleFetchStreamLegacy(reader, buffer, bufferOffset, done, requestId);
+  }
+
+  /**
+   * Legacy (draft-14 / draft-16) FETCH data-stream decode loop.
+   */
+  private async handleFetchStreamLegacy(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    initialBuffer: Uint8Array,
+    initialOffset: number,
+    initialDone: boolean,
+    requestId: number,
+  ): Promise<void> {
+    let buffer = initialBuffer;
+    let bufferOffset = initialOffset;
+    let done = initialDone;
 
     // Create decoder state for delta decoding
     const decoderState: FetchDecoderState = ObjectCodec.createFetchDecoderState();
@@ -610,6 +647,232 @@ export class ObjectRouter {
           bufferOffset = 0;
         }
       }
+    }
+  }
+
+  /**
+   * Draft-18 FETCH data-stream decode loop (spec §11.4.4).
+   *
+   * Each object is prefixed with a serialization-flags varint. Group/Object
+   * IDs are transmitted as deltas from the previous object's values (or
+   * absolute for the first object on the stream); subgroup ID follows the
+   * subgroupMode enum (ZERO/PRIOR/PRIOR_PLUS_ONE/EXPLICIT). Priority is
+   * inherited when the PRIORITY bit is clear. Payload length is a varint
+   * (spec §11.4.4.1). Special flag values 0x8C / 0x10C encode End-of-Range
+   * markers (§11.4.4.2) and MUST NOT update the prior-object context.
+   */
+  private async handleFetchStreamDraft18(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    initialBuffer: Uint8Array,
+    initialOffset: number,
+    initialDone: boolean,
+    requestId: number,
+  ): Promise<void> {
+    let buffer = initialBuffer;
+    let bufferOffset = initialOffset;
+    let done = initialDone;
+    let totalBytesReceived = buffer.length;
+    let objectCount = 0;
+
+    // Prior-object context threaded across successive objects on this stream
+    // (spec §11.4.4). Undefined until the first object arrives.
+    let prevGroupId: bigint | undefined;
+    let prevSubgroupId: bigint | undefined;
+    let prevObjectId: bigint | undefined;
+    let prevPriority: number | undefined;
+    let lastGroupIdEmitted: bigint | undefined;
+
+    const ensureBytes = async (): Promise<boolean> => {
+      while (!done) {
+        const { value, done: readDone } = await reader.read();
+        done = readDone;
+        if (value && value.length > 0) {
+          totalBytesReceived += value.length;
+          const remaining = buffer.length - bufferOffset;
+          const merged = new Uint8Array(remaining + value.length);
+          if (remaining > 0) merged.set(buffer.subarray(bufferOffset));
+          merged.set(value, remaining);
+          buffer = merged;
+          bufferOffset = 0;
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (bufferOffset >= buffer.length) {
+        if (done) break;
+        await ensureBytes();
+        continue;
+      }
+
+      // Attempt to decode header. If we run out of bytes mid-header, read more
+      // and retry from the same starting offset.
+      const startOffset = bufferOffset;
+      let decoded: FetchObjectDraft18;
+      let headerBytes: number;
+      try {
+        const [obj, bytes] = Draft18StreamCodec.decodeFetchObject(buffer, startOffset);
+        decoded = obj;
+        headerBytes = bytes;
+      } catch (err) {
+        if (done) {
+          log.warn('Failed to decode draft-18 FETCH object header at end of stream', {
+            requestId,
+            error: (err as Error).message,
+            remainingBytes: buffer.length - startOffset,
+          });
+          break;
+        }
+        await ensureBytes();
+        continue;
+      }
+
+      // End-of-Range marker: two varints follow the special flag; MUST NOT
+      // update prior state (spec §11.4.4.2).
+      if (decoded.endOfRange !== undefined) {
+        bufferOffset = startOffset + headerBytes;
+        log.info('Draft-18 FETCH end-of-range marker', {
+          requestId,
+          kind: decoded.endOfRange === FetchObjectEndOfRange.NON_EXISTENT ? 'non-existent' : 'unknown',
+          groupIdDelta: decoded.groupIdDelta?.toString(),
+          objectIdDelta: decoded.objectIdDelta?.toString(),
+        });
+        continue;
+      }
+
+      // Resolve inherited/absolute Group ID.
+      const isFirst = prevGroupId === undefined;
+      let groupId: bigint;
+      if (decoded.groupIdDelta !== undefined) {
+        // Present-on-wire: draft-18 encodes as absolute for the first object,
+        // and moqtail/reference decoders treat later Group ID Delta fields as
+        // absolute values (there is no arithmetic delta — the flag bit merely
+        // signals presence; when absent the value inherits from the prior).
+        groupId = decoded.groupIdDelta;
+      } else {
+        if (isFirst) {
+          throw new Error('Draft-18 FETCH: first object missing Group ID (spec §11.4.4)');
+        }
+        groupId = prevGroupId!;
+      }
+
+      // Resolve Object ID: present-on-wire ⇒ absolute; absent ⇒ prev + 1.
+      let objectId: bigint;
+      if (decoded.objectIdDelta !== undefined) {
+        objectId = decoded.objectIdDelta;
+      } else {
+        if (isFirst) {
+          throw new Error('Draft-18 FETCH: first object missing Object ID (spec §11.4.4)');
+        }
+        objectId = prevObjectId! + 1n;
+      }
+
+      // Resolve subgroup ID via subgroupMode.
+      let subgroupId: bigint;
+      if (decoded.datagramMode === true) {
+        // Datagram-mode fetch objects have no subgroup; synthesise from objectId
+        // to keep parity with reference implementations.
+        subgroupId = objectId;
+      } else {
+        switch (decoded.subgroupMode) {
+          case FetchSubgroupMode.ZERO:
+            subgroupId = 0n;
+            break;
+          case FetchSubgroupMode.PRIOR:
+            if (prevSubgroupId === undefined) {
+              throw new Error('Draft-18 FETCH: PRIOR subgroup mode on first object (spec §11.4.4)');
+            }
+            subgroupId = prevSubgroupId;
+            break;
+          case FetchSubgroupMode.PRIOR_PLUS_ONE:
+            if (prevSubgroupId === undefined) {
+              throw new Error('Draft-18 FETCH: PRIOR_PLUS_ONE subgroup mode on first object (spec §11.4.4)');
+            }
+            subgroupId = prevSubgroupId + 1n;
+            break;
+          case FetchSubgroupMode.EXPLICIT:
+            if (decoded.subgroupId === undefined) {
+              throw new Error('Draft-18 FETCH: EXPLICIT subgroup mode missing subgroupId (spec §11.4.4)');
+            }
+            subgroupId = decoded.subgroupId;
+            break;
+          default:
+            throw new Error(`Draft-18 FETCH: invalid subgroupMode ${decoded.subgroupMode}`);
+        }
+      }
+
+      // Priority: present ⇒ use it, absent ⇒ inherit.
+      let priority: number;
+      if (decoded.publisherPriority !== undefined) {
+        priority = decoded.publisherPriority;
+      } else {
+        if (prevPriority === undefined) {
+          throw new Error('Draft-18 FETCH: first object missing publisherPriority (spec §11.4.4)');
+        }
+        priority = prevPriority;
+      }
+
+      // Payload length is the varint just before the payload. Buffer may need
+      // to grow to cover the full payload; loop until we have enough bytes.
+      const payloadLenN = Number(decoded.payloadLength ?? 0n);
+      if (!Number.isSafeInteger(payloadLenN) || payloadLenN < 0) {
+        throw new Error(`Draft-18 FETCH: invalid payload length ${decoded.payloadLength}`);
+      }
+      const totalObjectBytes = headerBytes + payloadLenN;
+      while (buffer.length - startOffset < totalObjectBytes) {
+        if (done) {
+          log.warn('Draft-18 FETCH stream truncated mid-payload', {
+            requestId,
+            needed: totalObjectBytes,
+            haveRemaining: buffer.length - startOffset,
+          });
+          return;
+        }
+        await ensureBytes();
+      }
+
+      const payloadStart = startOffset + headerBytes;
+      const payload = buffer.slice(payloadStart, payloadStart + payloadLenN);
+      bufferOffset = payloadStart + payloadLenN;
+
+      objectCount++;
+      const groupIdN = Number(groupId);
+      const objectIdN = Number(objectId);
+
+      // Emit end-of-group when the group changes (but not on the very first
+      // object). We track the last-emitted group so we don't re-signal.
+      if (lastGroupIdEmitted !== undefined && groupId !== lastGroupIdEmitted && this.onFetchEndOfGroup) {
+        this.onFetchEndOfGroup(requestId, Number(lastGroupIdEmitted));
+      }
+      lastGroupIdEmitted = groupId;
+
+      log.info('Decoded draft-18 FETCH object', {
+        requestId,
+        groupId: groupIdN,
+        subgroupId: subgroupId.toString(),
+        objectId: objectIdN,
+        priority,
+        payloadSize: payload.length,
+        objectCount,
+      });
+
+      if (this.onFetchObject) {
+        this.onFetchObject(requestId, payload, groupIdN, objectIdN);
+      }
+
+      // Update prior-object context (spec §11.4.4).
+      prevGroupId = groupId;
+      prevSubgroupId = subgroupId;
+      prevObjectId = objectId;
+      prevPriority = priority;
+    }
+
+    log.info('Draft-18 FETCH stream complete', { requestId, objectCount, totalBytesReceived });
+    if (objectCount > 0 && this.onFetchEndOfGroup && lastGroupIdEmitted !== undefined) {
+      this.onFetchEndOfGroup(requestId, Number(lastGroupIdEmitted));
     }
   }
 }
