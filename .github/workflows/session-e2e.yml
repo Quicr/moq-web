@@ -15,11 +15,15 @@ on:
 
 jobs:
   session-e2e:
-    name: session-e2e (draft-18)
+    name: session-e2e (${{ matrix.draft }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        draft: [draft-18, draft-16]
     env:
-      MOQT_VERSION: draft-18
+      MOQT_VERSION: ${{ matrix.draft }}
       # openmoq accepts unauthenticated setup today; the secret is
       # optional and only forwarded when configured.
       MOQ_AUTH_TOKEN: ${{ secrets.MOQ_AUTH_TOKEN }}
@@ -55,8 +59,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build (draft-18)
-        run: pnpm run build:draft-18
+      - name: Build (${{ matrix.draft }})
+        run: pnpm run build:${{ matrix.draft }}
 
       - name: Install Playwright Chromium
         run: pnpm --filter @moq-web/session-e2e exec playwright install --with-deps chromium
@@ -68,7 +72,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: session-e2e-screenshots
+          name: session-e2e-screenshots-${{ matrix.draft }}
           path: packages/session-e2e/tests/__screenshots__
           retention-days: 7
           if-no-files-found: ignore
