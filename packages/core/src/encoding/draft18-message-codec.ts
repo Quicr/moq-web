@@ -932,9 +932,24 @@ export class Draft18MessageCodec {
   // ============================================================================
 
   private static encodeRequestUpdate(writer: Draft18BufferWriter, message: RequestUpdateMessageDraft18): void {
-    // Draft-18: Request ID | Number of Parameters | Parameters
+    // Draft-18 §10.9: Request ID | Number of Parameters | Parameters.
+    // The Request ID identifies the request being updated (there is no separate
+    // Existing Request ID field).
     writer.writeVarInt(message.requestId);
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+
+    // FORWARD parameter (0x10): even type = single byte value (0 = pause, 1 = resume)
+    params.push({
+      type: RequestParameterDraft18.FORWARD,
+      encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
+    });
+
+    if (message.parameters) {
+      for (const [type, value] of message.parameters) {
+        params.push({ type, encode: (w) => w.writeBytes(value) });
+      }
+    }
+
     Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
@@ -942,17 +957,25 @@ export class Draft18MessageCodec {
     const requestId = reader.readVarInt();
     const numParams = reader.readVarIntNumber();
     let previousType = 0;
+    let forwardState = true;
+    const parameters = new Map<number, Uint8Array>();
     for (let i = 0; i < numParams; i++) {
       const delta = reader.readVarIntNumber();
       const type = previousType + delta;
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      const value = Draft18MessageCodec.readParameterValue(reader, type);
+      if (type === RequestParameterDraft18.FORWARD) {
+        forwardState = value.length > 0 ? value[0] === 0x01 : true;
+      } else {
+        parameters.set(type, value);
+      }
     }
 
     return {
       type: MessageTypeDraft18.REQUEST_UPDATE,
       requestId,
-      forwardState: true,
+      forwardState,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 
