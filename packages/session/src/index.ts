@@ -74,6 +74,8 @@ export type {
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
+  NamespaceAnnouncedEvent,
+  NamespaceDoneEvent,
   SubscribeNamespaceOptions,
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
