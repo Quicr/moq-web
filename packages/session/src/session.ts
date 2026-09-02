@@ -70,6 +70,7 @@ import {
   type ControlMessage,
   type ControlMessageDraft18,
   type ObjectHeader,
+  type IProtocolCodec,
   type FetchMessage,
   type FetchOkMessage,
   type FetchErrorMessage,
@@ -104,6 +105,8 @@ import type {
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,
+  NamespaceAnnouncedEvent,
+  NamespaceDoneEvent,
   RequestAuthToken,
   FetchOptions,
   FetchRange,
@@ -119,6 +122,89 @@ import type {
 } from './types.js';
 
 const log = Logger.create('moqt:session');
+
+/**
+ * Long-lived per-request bidi stream (draft-18 §3.3, §10.9).
+ *
+ * Each MOQT request (SUBSCRIBE, PUBLISH, FETCH, TRACK_STATUS, SUBSCRIBE_TRACKS,
+ * PUBLISH_NAMESPACE, SUBSCRIBE_NAMESPACE, ...) travels on its own bidirectional
+ * stream. The initiating peer sends the request as the first message; the
+ * responder replies with REQUEST_OK/REQUEST_ERROR (or the request-specific
+ * response). Follow-up REQUEST_UPDATE messages MUST be sent on the same stream
+ * (§10.9), so the writer stays open for the lifetime of the request.
+ */
+class Draft18RequestStream {
+  private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+  private readonly writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>;
+  private readonly closeFn: () => void | Promise<void>;
+  private readonly codec: IProtocolCodec;
+  private pending: Uint8Array = new Uint8Array(0);
+  private eof = false;
+
+  constructor(
+    codec: IProtocolCodec,
+    readable: ReadableStream<Uint8Array>,
+    writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>,
+    closeFn: () => void | Promise<void>,
+  ) {
+    this.codec = codec;
+    this.reader = readable.getReader();
+    this.writeFn = writeFn;
+    this.closeFn = closeFn;
+  }
+
+  async write(data: Uint8Array): Promise<void> {
+    await this.writeFn(data, false);
+  }
+
+  /**
+   * Read the next complete control message from this stream. Buffers any
+   * bytes that arrive after the message so subsequent reads see them.
+   */
+  async readMessage(): Promise<ControlMessageDraft18> {
+    for (;;) {
+      // Try decoding what we already buffered first.
+      if (this.pending.length > 0) {
+        try {
+          const [message, bytesRead] = this.codec.decodeControlMessage(this.pending);
+          this.pending = this.pending.subarray(bytesRead);
+          return message as ControlMessageDraft18;
+        } catch (err) {
+          const msg = (err as Error).message ?? '';
+          if (!msg.includes('Incomplete') && !msg.includes('buffer')) {
+            throw err;
+          }
+          // fall through and read more
+        }
+      }
+
+      if (this.eof) {
+        throw new Error('Request stream closed before a full control message was received');
+      }
+
+      const { value, done } = await this.reader.read();
+      if (done) {
+        this.eof = true;
+        continue;
+      }
+      if (value && value.length > 0) {
+        if (this.pending.length === 0) {
+          this.pending = value;
+        } else {
+          const merged = new Uint8Array(this.pending.length + value.length);
+          merged.set(this.pending, 0);
+          merged.set(value, this.pending.length);
+          this.pending = merged;
+        }
+      }
+    }
+  }
+
+  async close(): Promise<void> {
+    try { this.reader.releaseLock(); } catch { /* ignore */ }
+    try { await this.closeFn(); } catch { /* ignore */ }
+  }
+}
 
 /**
  * Configuration for MOQTSession when using worker mode
@@ -653,36 +739,101 @@ export class MOQTSession {
   private incomingBidiControllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
 
   /**
-   * Read a response from a worker bidi stream (for client-initiated request streams)
+   * Long-lived per-request bidi stream (draft-18 §3.3, §10.9). Keeps the writer
+   * alive so REQUEST_UPDATE can be sent on the same bidi stream that carried
+   * the original request, and buffers received bytes so successive control
+   * messages can be read from the same stream.
    */
-  private async readWorkerBidiResponse(streamId: number): Promise<ControlMessageDraft18> {
-    const readable = new ReadableStream<Uint8Array>({
-      start: (controller) => {
-        this.incomingBidiControllers.set(streamId, controller);
-      },
-    });
-    const response = await this.readRequestResponse(readable, 0n);
-    this.incomingBidiControllers.delete(streamId);
-    return response;
-  }
+  private activeRequestStreams = new Map<number, Draft18RequestStream>();
 
   /**
-   * Send a request message on a new bidi stream and wait for a response.
-   * Works in both worker and main-thread modes.
+   * Open a new per-request bidi stream, write the initial request bytes, and
+   * return a handle that supports sending more messages (e.g. REQUEST_UPDATE)
+   * and reading successive response messages on the same stream.
    */
-  private async sendRequestAndWaitResponse(encoded: Uint8Array): Promise<ControlMessageDraft18> {
+  private async openRequestStream(
+    requestId: number,
+    initialEncoded: Uint8Array
+  ): Promise<Draft18RequestStream> {
+    const existing = this.activeRequestStreams.get(requestId);
+    if (existing) {
+      throw new Error(`Request stream already open for requestId=${requestId}`);
+    }
+
+    let stream: Draft18RequestStream;
     if (this.useWorker && this.transportWorker) {
       const streamId = await this.transportWorker.createBidiStream();
-      this.transportWorker.writeStream(streamId, encoded);
-      return this.readWorkerBidiResponse(streamId);
+      const readable = new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          this.incomingBidiControllers.set(streamId, controller);
+        },
+      });
+      const worker = this.transportWorker;
+      stream = new Draft18RequestStream(
+        this.codec,
+        readable,
+        (data, closeAfter) => {
+          worker.writeStream(streamId, data, closeAfter);
+        },
+        () => {
+          try { worker.closeStream(streamId); } catch { /* ignore */ }
+          this.incomingBidiControllers.delete(streamId);
+        }
+      );
     } else if (this.transport) {
       const { readable, writable } = await this.transport.createRequestStream();
       const writer = writable.getWriter();
-      await writer.write(encoded);
-      writer.releaseLock();
-      return this.readRequestResponse(readable, 0n);
+      stream = new Draft18RequestStream(
+        this.codec,
+        readable,
+        async (data, closeAfter) => {
+          await writer.write(data);
+          if (closeAfter) {
+            await writer.close();
+          }
+        },
+        async () => {
+          try { await writer.close(); } catch { /* already closed */ }
+          try { writer.releaseLock(); } catch { /* ignore */ }
+        }
+      );
+    } else {
+      throw new Error('No transport available');
     }
-    throw new Error('No transport available');
+
+    this.activeRequestStreams.set(requestId, stream);
+    await stream.write(initialEncoded);
+    return stream;
+  }
+
+  /**
+   * Close and forget a per-request bidi stream.
+   */
+  private async closeRequestStream(requestId: number): Promise<void> {
+    const stream = this.activeRequestStreams.get(requestId);
+    if (!stream) return;
+    this.activeRequestStreams.delete(requestId);
+    await stream.close();
+  }
+
+  /**
+   * Send an initial request on a new bidi stream and wait for its first
+   * response message. The stream is registered under `requestId` and stays
+   * open so REQUEST_UPDATE can be sent on it later; call
+   * `closeRequestStream(requestId)` when the request is terminated.
+   */
+  private async sendRequestAndWaitResponse(
+    encoded: Uint8Array,
+    requestId: number
+  ): Promise<ControlMessageDraft18> {
+    const stream = await this.openRequestStream(requestId, encoded);
+    try {
+      return await stream.readMessage();
+    } catch (err) {
+      // Failed to read the first response — the stream is unusable, drop it.
+      await this.closeRequestStream(requestId);
+      throw err;
+    }
   }
 
   /**
@@ -1034,14 +1185,18 @@ export class MOQTSession {
       trackName,
     });
 
-    const response = await this.sendRequestAndWaitResponse(encoded);
+    try {
+      const response = await this.sendRequestAndWaitResponse(encoded, requestId);
 
-    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
-      const error = response as RequestErrorMessageDraft18;
-      throw new Error(`TRACK_STATUS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+        const error = response as RequestErrorMessageDraft18;
+        throw new Error(`TRACK_STATUS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      }
+
+      log.info('TRACK_STATUS response received (draft-18)', { requestId });
+    } finally {
+      await this.closeRequestStream(requestId);
     }
-
-    log.info('TRACK_STATUS response received (draft-18)', { requestId });
   }
 
   /**
@@ -1077,10 +1232,11 @@ export class MOQTSession {
       prefix: namespacePrefix.join('/'),
     });
 
-    const response = await this.sendRequestAndWaitResponse(encoded);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
 
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
+      await this.closeRequestStream(requestId);
       throw new Error(`SUBSCRIBE_TRACKS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
     }
 
@@ -1103,24 +1259,67 @@ export class MOQTSession {
   /**
    * Send REQUEST_UPDATE to change forward state on a subscription (draft-18)
    *
-   * @param requestId - Original request ID of the subscription
+   * @param existingRequestId - Request ID of the subscription being updated
    * @param forwardState - New forward state (true = send objects, false = pause)
    */
-  async sendRequestUpdate(requestId: number, forwardState: boolean): Promise<void> {
+  /**
+   * Send REQUEST_UPDATE for an existing request (draft-18 §10.9).
+   *
+   * MUST be sent on the same bidi stream as the original request; the Request
+   * ID field is the ID of the request being updated (not a new ID). The
+   * receiver MUST respond with exactly one REQUEST_OK or REQUEST_ERROR.
+   *
+   * When `awaitAck` is false, the update is fire-and-forget. Terminal
+   * operations (unsubscribe, FETCH cancel) use this because §10.9.1 lets the
+   * responder reset the data stream or close the bidi on failure, and in
+   * practice some relays close the stream without sending REQUEST_OK for
+   * cancels — awaiting the ack would hang.
+   */
+  async sendRequestUpdate(
+    subscriptionRequestId: number,
+    forwardState: boolean,
+    options?: { awaitAck?: boolean },
+  ): Promise<void> {
     if (!IS_DRAFT_18) {
       throw new Error('sendRequestUpdate() requires draft-18');
     }
 
+    const stream = this.activeRequestStreams.get(subscriptionRequestId);
+    if (!stream) {
+      throw new Error(
+        `sendRequestUpdate: no active request stream for requestId=${subscriptionRequestId}`,
+      );
+    }
+
     const updateMessage: RequestUpdateMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_UPDATE,
-      requestId: BigInt(requestId),
+      requestId: BigInt(subscriptionRequestId),
       forwardState,
     };
 
-    // REQUEST_UPDATE is sent on the setup/control stream
     const bytes = this.codec.encodeControlMessage(updateMessage);
-    await this.doSendControl(bytes);
-    log.info('Sent REQUEST_UPDATE (draft-18)', { requestId, forwardState });
+    await stream.write(bytes);
+    log.info('Sent REQUEST_UPDATE (draft-18)', { subscriptionRequestId, forwardState });
+
+    if (options?.awaitAck === false) {
+      return;
+    }
+
+    const response = await stream.readMessage();
+    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const err = response as RequestErrorMessageDraft18;
+      throw new Error(
+        `REQUEST_UPDATE failed for requestId=${subscriptionRequestId}: ${err.reasonPhrase} (code ${err.errorCode})`,
+      );
+    }
+    if (response.type !== MessageTypeDraft18.REQUEST_OK) {
+      log.warn('Unexpected response to REQUEST_UPDATE (draft-18)', {
+        subscriptionRequestId,
+        responseType: response.type,
+      });
+    } else {
+      log.info('REQUEST_UPDATE acknowledged (draft-18)', { subscriptionRequestId });
+    }
   }
 
   /**
@@ -1323,7 +1522,7 @@ export class MOQTSession {
     });
     this.emitMessageSent('SUBSCRIBE', encoded.length, `${namespace.join('/')}/${trackName}`, { requestId, trackAlias: trackAlias.toString() });
 
-    const response = await this.sendRequestAndWaitResponse(encoded);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
 
     if (response.type === MessageTypeDraft18.SUBSCRIBE_OK) {
       const subscribeOk = response as SubscribeOkMessageDraft18;
@@ -1353,6 +1552,7 @@ export class MOQTSession {
         errorCode: error.errorCode,
         reasonPhrase: error.reasonPhrase,
       });
+      await this.closeRequestStream(requestId);
       throw new Error(`SUBSCRIBE failed: ${error.reasonPhrase} (code ${error.errorCode})`);
     }
   }
@@ -1388,7 +1588,7 @@ export class MOQTSession {
       length: encoded.length,
     });
 
-    const response = await this.sendRequestAndWaitResponse(encoded);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
 
     if (response.type === MessageTypeDraft18.REQUEST_OK) {
       log.info('Received REQUEST_OK for PUBLISH (draft-18)', { requestId });
@@ -1402,54 +1602,8 @@ export class MOQTSession {
         errorCode: error.errorCode,
         reasonPhrase: error.reasonPhrase,
       });
+      await this.closeRequestStream(requestId);
       throw new Error(`PUBLISH failed: ${error.reasonPhrase} (code ${error.errorCode})`);
-    }
-  }
-
-  /**
-   * Read response from a request bidi stream (draft-18)
-   */
-  private async readRequestResponse(
-    readable: ReadableStream<Uint8Array>,
-    requestId: bigint
-  ): Promise<ControlMessageDraft18> {
-    const reader = readable.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-
-    try {
-      // Read until we have a complete message
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) {
-          throw new Error(`Stream closed before receiving response for request ${requestId}`);
-        }
-
-        chunks.push(value);
-        totalLength += value.length;
-
-        // Concatenate chunks
-        const buffer = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          buffer.set(chunk, offset);
-          offset += chunk.length;
-        }
-
-        // Try to decode
-        try {
-          const [message, _bytesRead] = this.codec.decodeControlMessage(buffer);
-          return message as ControlMessageDraft18;
-        } catch (err) {
-          if ((err as Error).message?.includes('Incomplete') ||
-              (err as Error).message?.includes('buffer')) {
-            continue;
-          }
-          throw err;
-        }
-      }
-    } finally {
-      reader.releaseLock();
     }
   }
 
@@ -1468,12 +1622,16 @@ export class MOQTSession {
     log.info('Unsubscribing', { subscriptionId });
 
     if (IS_DRAFT_18) {
-      // Draft-18: Send REQUEST_UPDATE with forwardState=false to unsubscribe
+      // Draft-18: Send REQUEST_UPDATE with forwardState=false to unsubscribe.
+      // Fire-and-forget: the relay resets the data streams on cancel and
+      // may close the bidi without a REQUEST_OK.
       try {
-        await this.sendRequestUpdate(subscription.requestId, false);
+        await this.sendRequestUpdate(subscription.requestId, false, { awaitAck: false });
       } catch (err) {
         log.error('Failed to send REQUEST_UPDATE for unsubscribe', { error: (err as Error).message });
       }
+      // Terminate the per-request bidi stream now that the subscription is gone.
+      await this.closeRequestStream(subscription.requestId);
     } else {
       // Draft-14/16: Send UNSUBSCRIBE message
       const unsubscribeMessage = {
@@ -1657,7 +1815,7 @@ export class MOQTSession {
     });
     this.emitMessageSent('FETCH', encoded.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId, range });
 
-    const response = await this.sendRequestAndWaitResponse(encoded);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
 
     if (response.type === MessageTypeDraft18.FETCH_OK) {
       const fetchOk = response as _FetchOkMessageDraft18;
@@ -1691,6 +1849,7 @@ export class MOQTSession {
         reasonPhrase: error.reasonPhrase,
       });
       this.activeFetches.delete(requestId);
+      await this.closeRequestStream(requestId);
       this.emit('fetch-error', {
         requestId,
         errorCode: error.errorCode,
@@ -1720,14 +1879,15 @@ export class MOQTSession {
 
     if (IS_DRAFT_18) {
       // Draft-18 has no FETCH_CANCEL message; the equivalent is REQUEST_UPDATE
-      // with forwardState=false, which pauses/terminates delivery for this
-      // requestId. The relay closes the fetch data stream in response.
+      // with forwardState=false, which terminates delivery for this requestId.
+      // The relay resets the fetch data stream in response; fire-and-forget.
       try {
-        await this.sendRequestUpdate(requestId, false);
+        await this.sendRequestUpdate(requestId, false, { awaitAck: false });
         log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel (draft-18)', { requestId });
       } catch (err) {
         log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
       }
+      await this.closeRequestStream(requestId);
     } else {
       // Draft-14/16 send a dedicated FETCH_CANCEL message.
       const cancelMessage: FetchCancelMessage = {
@@ -2167,16 +2327,36 @@ export class MOQTSession {
 
       case MessageTypeDraft18.NAMESPACE: {
         const nsMsg = message as NamespaceMessageDraft18;
-        const nsStr = nsMsg.trackNamespace.join('/');
-        log.info('Received NAMESPACE announcement (draft-18)', { namespace: nsStr, subscriptionId });
+        const subscription = this.namespaceSubscriptions.get(subscriptionId);
+        // Wire carries the suffix relative to the subscribed prefix; the
+        // absolute namespace is prefix ++ suffix.
+        const absolute = subscription
+          ? [...subscription.namespacePrefix, ...nsMsg.trackNamespace]
+          : nsMsg.trackNamespace;
+        log.info('Received NAMESPACE announcement (draft-18)', {
+          namespace: absolute.join('/'),
+          subscriptionId,
+        });
+        this.emit('namespace-announced', {
+          namespaceSubscriptionId: subscriptionId,
+          namespace: absolute,
+        });
         break;
       }
 
       case MessageTypeDraft18.NAMESPACE_DONE: {
         const nsDone = message as NamespaceDoneMessageDraft18;
+        const subscription = this.namespaceSubscriptions.get(subscriptionId);
+        const absolute = subscription
+          ? [...subscription.namespacePrefix, ...nsDone.finalNamespace]
+          : nsDone.finalNamespace;
         log.info('Received NAMESPACE_DONE (draft-18)', {
-          finalNamespace: nsDone.finalNamespace.join('/'),
+          namespace: absolute.join('/'),
           subscriptionId,
+        });
+        this.emit('namespace-done', {
+          namespaceSubscriptionId: subscriptionId,
+          namespace: absolute,
         });
         break;
       }
@@ -2544,29 +2724,10 @@ export class MOQTSession {
 
     const encoded = this.codec.encodeControlMessage(publishNsMessage);
 
-    if (this.useWorker && this.transportWorker) {
-      const streamId = await this.transportWorker.createBidiStream();
-      this.transportWorker.writeStream(streamId, encoded);
-      log.info('Sent PUBLISH_NAMESPACE (draft-18) via worker', { namespace: namespaceStr, requestId, streamId });
-
-      const response = await this.readWorkerBidiResponse(streamId);
-      if (response.type === MessageTypeDraft18.REQUEST_OK) {
-        announceInfo.acknowledged = true;
-        this.emit('namespace-acknowledged', { namespace });
-        log.info('PUBLISH_NAMESPACE accepted (draft-18)', { namespace: namespaceStr });
-      } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
-        const error = response as RequestErrorMessageDraft18;
-        this.announcedNamespaces.delete(namespaceStr);
-        throw new Error(`Namespace announcement failed: ${error.reasonPhrase} (code ${error.errorCode})`);
-      }
-    } else if (this.transport) {
-      const { readable, writable } = await this.transport.createRequestStream();
-      const writer = writable.getWriter();
-      await writer.write(encoded);
-      writer.releaseLock();
+    if ((this.useWorker && this.transportWorker) || this.transport) {
       log.info('Sent PUBLISH_NAMESPACE (draft-18)', { namespace: namespaceStr, requestId });
 
-      const response = await this.readRequestResponse(readable, BigInt(requestId));
+      const response = await this.sendRequestAndWaitResponse(encoded, requestId);
       if (response.type === MessageTypeDraft18.REQUEST_OK) {
         announceInfo.acknowledged = true;
         this.emit('namespace-acknowledged', { namespace });
@@ -2574,6 +2735,7 @@ export class MOQTSession {
       } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
         this.announcedNamespaces.delete(namespaceStr);
+        await this.closeRequestStream(requestId);
         throw new Error(`Namespace announcement failed: ${error.reasonPhrase} (code ${error.errorCode})`);
       }
     } else {
@@ -4029,6 +4191,8 @@ export class MOQTSession {
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
+  on(event: 'namespace-announced', handler: (event: NamespaceAnnouncedEvent) => void): () => void;
+  on(event: 'namespace-done', handler: (event: NamespaceDoneEvent) => void): () => void;
   // FETCH / DVR events
   on(event: 'fetch-object', handler: (event: FetchObjectEvent) => void): () => void;
   on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;

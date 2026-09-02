@@ -28,6 +28,8 @@ export type SessionEventType =
   | 'subscribe-ok'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
+  | 'namespace-announced'
+  | 'namespace-done'
   | 'incoming-publish'
   | 'forward-paused'
   | 'forward-resumed'
@@ -315,6 +317,26 @@ export interface IncomingPublishInfo {
   groupOrder: GroupOrder;
   /** Whether we've sent PUBLISH_OK */
   acknowledged: boolean;
+}
+
+/**
+ * Fired when the peer sends a NAMESPACE message on a SUBSCRIBE_NAMESPACE
+ * response stream (draft-18 §7.4). The peer is announcing that `namespace`
+ * matches the prefix we subscribed to; individual tracks under it still need
+ * to be resolved via SUBSCRIBE (or arrive as PUBLISH bidi streams).
+ */
+export interface NamespaceAnnouncedEvent {
+  namespaceSubscriptionId: number;
+  namespace: string[];
+}
+
+/**
+ * Fired when the peer sends NAMESPACE_DONE, signalling that the previously
+ * announced namespace is no longer available under the subscribed prefix.
+ */
+export interface NamespaceDoneEvent {
+  namespaceSubscriptionId: number;
+  namespace: string[];
 }
 
 /**

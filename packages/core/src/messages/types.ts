@@ -1762,8 +1762,10 @@ export interface PublishDoneMessageDraft18 {
 }
 
 /**
- * Draft-18 REQUEST_UPDATE message
- * Updates an existing subscription's forward state or parameters
+ * Draft-18 REQUEST_UPDATE message (§10.9)
+ * Wire format: Type | Length | Request ID | Number of Parameters | Parameters.
+ * The Request ID is the ID of the request being updated (not a new ID). The
+ * update is sent on the same bidi stream as the original request.
  */
 export interface RequestUpdateMessageDraft18 {
   type: MessageTypeDraft18.REQUEST_UPDATE;

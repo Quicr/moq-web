@@ -32,7 +32,7 @@ describe.each([
     sub = undefined;
   });
 
-  it('subscriber sees incoming-publish when publisher announces under the prefix', async () => {
+  it('subscriber sees namespace-announced when publisher announces under the prefix', async () => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -43,14 +43,14 @@ describe.each([
     pub = await makeSession(profile);
     sub = await makeSession(profile);
 
-    const incoming = new Promise<{ namespace: string[]; trackName: string }>((resolve, reject) => {
+    const announced = new Promise<{ namespace: string[] }>((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error('timed out waiting for incoming-publish')),
+        () => reject(new Error('timed out waiting for namespace-announced')),
         10_000,
       );
-      sub!.session.on('incoming-publish', (evt) => {
+      sub!.session.on('namespace-announced', (evt) => {
         clearTimeout(timer);
-        resolve({ namespace: evt.namespace, trackName: evt.trackName });
+        resolve({ namespace: evt.namespace });
       });
     });
 
@@ -59,14 +59,16 @@ describe.each([
     // subscription in its table.
     await new Promise((r) => setTimeout(r, 200));
 
-    await pub.session.publish(namespace, track.name, {
+    // ANNOUNCE_NAMESPACE triggers the NAMESPACE fan-out on the
+    // SUBSCRIBE_NAMESPACE response stream (draft-18 §7.4). Individual tracks
+    // under the namespace are still resolved via SUBSCRIBE or PUBLISH bidis.
+    await pub.session.announceNamespace(namespace, {
       priority: track.priority,
       deliveryTimeout: track.deliveryTimeout,
       deliveryMode: track.delivery,
     });
 
-    const evt = await incoming;
-    expect(evt.trackName).toBe(track.name);
+    const evt = await announced;
     expect(evt.namespace.join('/')).toBe(namespace.join('/'));
   });
 });
