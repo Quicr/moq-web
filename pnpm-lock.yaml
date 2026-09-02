@@ -66,6 +66,18 @@ importers:
 
   apps/moq-chat:
     dependencies:
+      '@moq-web/cat':
+        specifier: workspace:*
+        version: link:../../packages/cat
+      '@moq-web/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@moq-web/media':
+        specifier: workspace:*
+        version: link:../../packages/media
+      '@moq-web/session':
+        specifier: workspace:*
+        version: link:../../packages/session
       react:
         specifier: ^18.2.0
         version: 18.3.1
