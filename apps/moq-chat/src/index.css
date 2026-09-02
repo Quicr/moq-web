@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-white/70 backdrop-blur-[16px] border border-white/30 shadow-glass;
+  }
+
+  .glass-dark {
+    @apply bg-[rgba(30,30,46,0.80)] backdrop-blur-[16px] border border-white/10 shadow-glass;
+  }
+
+  .glass-card {
+    @apply glass rounded-2xl p-6 transition-all duration-300;
+  }
+
+  .glass-card:hover {
+    @apply shadow-glass-hover translate-y-[-2px];
+  }
+
+  .btn-primary {
+    @apply px-6 py-3 bg-primary-500 text-white font-medium rounded-xl
+           shadow-lg shadow-primary-500/25 hover:shadow-xl hover:shadow-primary-500/30
+           hover:bg-primary-600 transition-all duration-200 active:scale-[0.98];
+  }
+
+  .btn-secondary {
+    @apply px-6 py-3 bg-white/80 text-primary-700 font-medium rounded-xl
+           border border-primary-200 hover:bg-primary-50 hover:border-primary-300
+           transition-all duration-200 active:scale-[0.98];
+  }
+
+  .btn-ghost {
+    @apply px-4 py-2 text-gray-600 font-medium rounded-lg
+           hover:bg-white/50 transition-all duration-200;
+  }
+
+  .input-glass {
+    @apply w-full px-4 py-3 bg-white/50 border border-gray-200/60
+           rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-400/50
+           focus:border-primary-300 transition-all duration-200
+           placeholder:text-gray-400;
+  }
+
+  .material-icon {
+    font-family: 'Material Symbols Rounded';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    font-feature-settings: 'liga';
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-public {
+    @apply badge bg-green-100 text-green-700;
+  }
+
+  .badge-private {
+    @apply badge bg-amber-100 text-amber-700;
+  }
+
+  .badge-live {
+    @apply badge bg-red-100 text-red-700;
+  }
+}

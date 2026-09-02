@@ -1,0 +1,10 @@
+{
+  "tasks": {
+    "start": "deno run --allow-net --allow-env token-service.ts",
+    "dev": "deno run --watch --allow-net --allow-env token-service.ts"
+  },
+  "imports": {
+    "hono": "https://deno.land/x/hono@v4.6.3/mod.ts",
+    "hono/cors": "https://deno.land/x/hono@v4.6.3/middleware/cors/index.ts"
+  }
+}
