@@ -1,0 +1,16 @@
+[Unit]
+Description=MoQ Chat Token Service
+After=network.target
+
+[Service]
+Type=simple
+User=moq
+Group=moq
+WorkingDirectory=/opt/moq-chat/server
+ExecStart=/usr/bin/deno run --allow-net --allow-env token-service.ts
+EnvironmentFile=/opt/moq-chat/server/.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
