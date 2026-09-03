@@ -50,6 +50,7 @@ describe.each([
       deliveryTimeout: track.deliveryTimeout,
       deliveryMode: track.delivery,
       maxCacheDuration: 60_000,
+      skipForwardWait: true,
     });
 
     for (const msg of messages) {

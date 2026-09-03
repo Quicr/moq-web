@@ -42,11 +42,14 @@ describe.each([
     pub = await makeSession(profile);
     sub = await makeSession(profile);
 
-    // Publisher announces the track first.
+    // Publisher announces the track first. Skip the forward wait so draft-16
+    // relays don't block on PUBLISH_OK{forward=0} before the subscriber has
+    // wired up.
     const trackAlias = await pub.session.publish(namespace, track.name, {
       priority: track.priority,
       deliveryTimeout: track.deliveryTimeout,
       deliveryMode: track.delivery,
+      skipForwardWait: true,
     });
 
     const total = track.payload.messages;

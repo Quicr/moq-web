@@ -40,6 +40,9 @@ describe.each([
       priority: track.priority,
       deliveryTimeout: track.deliveryTimeout,
       deliveryMode: track.delivery,
+      // Draft-16 relays return PUBLISH_OK with forward=0 until a subscriber
+      // exists. This test has no subscriber, so skip the forward wait.
+      skipForwardWait: true,
     });
 
     expect(typeof trackAlias).toBe('bigint');
