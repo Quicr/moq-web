@@ -73,6 +73,20 @@ export interface SubscribeOptions {
   startObject?: number;
   /** Per-request authorization token */
   authToken?: RequestAuthToken;
+  /**
+   * Draft-18 §10.2 subscriber-side delivery timeouts (ms).
+   *
+   * - subgroupDeliveryTimeout — max time to fully deliver a subgroup
+   * - objectDeliveryTimeout   — max time to deliver a single object
+   * - fillTimeout             — max time to wait for a missing object
+   * - rendezvousTimeout       — max time to wait before a new-subscriber cutover
+   *
+   * A value of 0 or `undefined` omits the parameter. Draft-16 ignores these.
+   */
+  subgroupDeliveryTimeout?: number;
+  objectDeliveryTimeout?: number;
+  fillTimeout?: number;
+  rendezvousTimeout?: number;
 }
 
 /**
@@ -466,6 +480,14 @@ export interface FetchOptions {
   subscribeRequestId?: bigint;
   /** Draft-18 joining fetch: group offset (relative) or group id (absolute) */
   joiningStart?: bigint;
+  /**
+   * Draft-18 §10.2 subscriber-side delivery timeouts (ms). See
+   * [[SubscribeOptions]] for semantics; ignored for draft-16.
+   */
+  subgroupDeliveryTimeout?: number;
+  objectDeliveryTimeout?: number;
+  fillTimeout?: number;
+  rendezvousTimeout?: number;
 }
 
 /**

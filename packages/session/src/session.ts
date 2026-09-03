@@ -27,9 +27,12 @@ import {
   FilterType,
   ObjectStatus,
   RequestParameter,
+  RequestParameterDraft18,
   RequestErrorCode,
   RequestErrorCodeDraft18,
   PublishDoneErrorCodeDraft18,
+  TrackPropertyDraft18,
+  MOQTVarInt,
   SetupParameter,
   SubscriptionFilterDraft18,
   ObjectExtension,
@@ -129,6 +132,59 @@ import type {
 } from './types.js';
 
 const log = Logger.create('moqt:session');
+
+/**
+ * Draft-18 §10.2 subscriber-side delivery timeouts on SUBSCRIBE/FETCH.
+ * Each is an even-key MOQT varint; a value of 0 or undefined omits it.
+ */
+function addDeliveryTimeoutParams(
+  parameters: Map<number, Uint8Array>,
+  options?: {
+    subgroupDeliveryTimeout?: number;
+    objectDeliveryTimeout?: number;
+    fillTimeout?: number;
+    rendezvousTimeout?: number;
+  },
+): void {
+  if (!options) return;
+  const set = (key: number, ms: number | undefined) => {
+    if (!ms || ms <= 0) return;
+    parameters.set(key, MOQTVarInt.encode(BigInt(ms)));
+  };
+  set(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
+  set(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
+  set(RequestParameterDraft18.FILL_TIMEOUT, options.fillTimeout);
+  set(RequestParameterDraft18.RENDEZVOUS_TIMEOUT, options.rendezvousTimeout);
+}
+
+/**
+ * Draft-18 §12 publisher-side track properties advertised on PUBLISH.
+ * Each key is an even-key MOQT varint; 0/undefined omits it.
+ */
+function buildTrackProperties(options?: {
+  subgroupDeliveryTimeout?: number;
+  objectDeliveryTimeout?: number;
+  maxCacheDuration?: number;
+  priority?: number;
+  groupOrder?: number;
+}): Map<number, Uint8Array> | undefined {
+  if (!options) return undefined;
+  const props = new Map<number, Uint8Array>();
+  const setMs = (key: number, ms: number | undefined) => {
+    if (!ms || ms <= 0) return;
+    props.set(key, MOQTVarInt.encode(BigInt(ms)));
+  };
+  setMs(TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
+  setMs(TrackPropertyDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
+  setMs(TrackPropertyDraft18.MAX_CACHE_DURATION, options.maxCacheDuration);
+  if (options.priority !== undefined) {
+    props.set(TrackPropertyDraft18.DEFAULT_PUBLISHER_PRIORITY, MOQTVarInt.encode(BigInt(options.priority)));
+  }
+  if (options.groupOrder !== undefined) {
+    props.set(TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER, MOQTVarInt.encode(BigInt(options.groupOrder)));
+  }
+  return props.size > 0 ? props : undefined;
+}
 
 /**
  * Long-lived per-request bidi stream (draft-18 §3.3, §10.9).
@@ -1521,8 +1577,11 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
     trackAlias: bigint,
-    _options?: SubscribeOptions
+    options?: SubscribeOptions
   ): Promise<void> {
+    const parameters = new Map<number, Uint8Array>();
+    addDeliveryTimeoutParams(parameters, options);
+
     const subscribeMessage: SubscribeMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE,
       requestId: BigInt(requestId),
@@ -1530,7 +1589,7 @@ export class MOQTSession {
       trackName,
       forwardState: true,
       filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
-      parameters: new Map(),
+      parameters,
     };
 
     const encoded = this.codec.encodeControlMessage(subscribeMessage);
@@ -1602,6 +1661,12 @@ export class MOQTSession {
     trackAlias: bigint,
     options?: PublishOptions
   ): Promise<void> {
+    const trackProperties = buildTrackProperties({
+      subgroupDeliveryTimeout: options?.deliveryTimeout,
+      maxCacheDuration: options?.maxCacheDuration,
+      priority: options?.priority,
+      groupOrder: options?.groupOrder,
+    });
     const publishMessage: PublishMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH,
       requestId: BigInt(requestId),
@@ -1610,6 +1675,7 @@ export class MOQTSession {
       trackName,
       forwardState: true,
       largestLocation: { group: 0n, object: 0n },
+      trackProperties,
     };
 
     const encoded = this.codec.encodeControlMessage(publishMessage);
@@ -1830,6 +1896,8 @@ export class MOQTSession {
     if (isJoining && options?.subscribeRequestId === undefined) {
       throw new Error('Joining FETCH requires options.subscribeRequestId');
     }
+    const parameters = new Map<number, Uint8Array>();
+    addDeliveryTimeoutParams(parameters, options);
     const fetchMessage: FetchMessageDraft18 = {
       type: MessageTypeDraft18.FETCH,
       requestId: BigInt(requestId),
@@ -1849,6 +1917,7 @@ export class MOQTSession {
         group: BigInt(range.endGroup),
         object: BigInt(range.endObject + 1),
       },
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
 
     const encoded = this.codec.encodeControlMessage(fetchMessage);

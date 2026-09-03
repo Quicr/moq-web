@@ -764,6 +764,11 @@ export class Draft18MessageCodec {
         encode: (w) => w.writeByte(message.groupOrder),
       });
     }
+    if (message.parameters) {
+      for (const [type, value] of message.parameters) {
+        params.push({ type, encode: (w) => w.writeBytes(value) });
+      }
+    }
     Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
@@ -807,6 +812,7 @@ export class Draft18MessageCodec {
     const numParams = reader.readVarIntNumber();
     let subscriberPriority = 0;
     let groupOrder = GroupOrder.ASCENDING as GroupOrder;
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const delta = reader.readVarIntNumber();
@@ -817,7 +823,7 @@ export class Draft18MessageCodec {
       } else if (type === RequestParameterDraft18.GROUP_ORDER) {
         groupOrder = reader.readByte() as GroupOrder;
       } else {
-        Draft18MessageCodec.readParameterValue(reader, type);
+        parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
       }
     }
 
@@ -834,6 +840,7 @@ export class Draft18MessageCodec {
       groupOrder,
       startLocation,
       endLocation,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 
