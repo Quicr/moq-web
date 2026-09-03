@@ -23,6 +23,7 @@ import {
   MessageTypeDraft18,
   Version,
   GroupOrder,
+  FetchTypeDraft18,
   FilterType,
   ObjectStatus,
   RequestParameter,
@@ -1815,10 +1816,20 @@ export class MOQTSession {
     // decrement the object component to derive the inclusive "last" location).
     // The API's FetchRange.endObject is inclusive, so we bump the wire value
     // by one before encoding.
+    const fetchType = options?.fetchType ?? FetchTypeDraft18.STANDALONE;
+    const isJoining =
+      fetchType === FetchTypeDraft18.JOINING_RELATIVE ||
+      fetchType === FetchTypeDraft18.JOINING_ABSOLUTE;
+    if (isJoining && options?.subscribeRequestId === undefined) {
+      throw new Error('Joining FETCH requires options.subscribeRequestId');
+    }
     const fetchMessage: FetchMessageDraft18 = {
       type: MessageTypeDraft18.FETCH,
       requestId: BigInt(requestId),
-      joiningFlag: false,
+      fetchType,
+      joiningFlag: isJoining,
+      subscribeRequestId: options?.subscribeRequestId,
+      joiningStart: options?.joiningStart ?? 0n,
       trackNamespace: namespace,
       trackName,
       subscriberPriority: options?.priority ?? 128,

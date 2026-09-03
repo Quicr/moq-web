@@ -1607,15 +1607,44 @@ export interface RequestOkMessageDraft18 {
 }
 
 /**
+ * Draft-18 Fetch Type discriminator (spec §10.12.1 / §10.12.2 IANA table 7).
+ *
+ * - STANDALONE (0x1): full namespace + range specified inline.
+ * - JOINING_RELATIVE (0x2): join a live subscription; Joining Start is a
+ *   negative offset relative to the subscription's Largest Group.
+ * - JOINING_ABSOLUTE (0x3): join a live subscription; Joining Start is
+ *   the absolute group ID to begin fetching from.
+ */
+export enum FetchTypeDraft18 {
+  STANDALONE = 0x1,
+  JOINING_RELATIVE = 0x2,
+  JOINING_ABSOLUTE = 0x3,
+}
+
+/**
  * Draft-18 FETCH message
  */
 export interface FetchMessageDraft18 {
   type: MessageTypeDraft18.FETCH;
   requestId: bigint;
+  /**
+   * §10.12 fetch type discriminator. Prefer this over `joiningFlag`
+   * (kept for source compatibility); when omitted the encoder infers
+   * STANDALONE unless `joiningFlag` is true, in which case it emits
+   * JOINING_RELATIVE.
+   */
+  fetchType?: FetchTypeDraft18;
+  /** @deprecated Use `fetchType`. `true` maps to `JOINING_RELATIVE`. */
   joiningFlag: boolean;
   trackNamespace?: TrackNamespace;
   trackName?: string;
   subscribeRequestId?: bigint;
+  /**
+   * §10.12.2 Joining Start. Interpreted as a group-count offset when
+   * `fetchType === JOINING_RELATIVE`, and as an absolute group ID when
+   * `fetchType === JOINING_ABSOLUTE`. Unused for STANDALONE.
+   */
+  joiningStart?: bigint;
   subscriberPriority: number;
   groupOrder: GroupOrder;
   startLocation: Location;

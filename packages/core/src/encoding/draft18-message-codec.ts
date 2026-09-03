@@ -19,6 +19,7 @@ import {
   SetupOptionDraft18,
   RequestParameterDraft18,
   RequestErrorCodeDraft18,
+  FetchTypeDraft18,
   type ControlMessageDraft18,
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
@@ -722,14 +723,27 @@ export class Draft18MessageCodec {
     // Draft-18: Request ID | Fetch Type | [Standalone/Joining] | Num Params | Params
     writer.writeVarInt(message.requestId);
 
-    if (message.joiningFlag && message.subscribeRequestId !== undefined) {
-      // Joining fetch (type 0x2 = relative)
-      writer.writeVarInt(2n);
+    // Resolve fetch type: explicit fetchType wins; fall back to legacy joiningFlag.
+    let fetchType = message.fetchType;
+    if (fetchType === undefined) {
+      fetchType = message.joiningFlag && message.subscribeRequestId !== undefined
+        ? FetchTypeDraft18.JOINING_RELATIVE
+        : FetchTypeDraft18.STANDALONE;
+    }
+
+    if (
+      fetchType === FetchTypeDraft18.JOINING_RELATIVE ||
+      fetchType === FetchTypeDraft18.JOINING_ABSOLUTE
+    ) {
+      if (message.subscribeRequestId === undefined) {
+        throw new Error('Joining FETCH requires subscribeRequestId');
+      }
+      writer.writeVarInt(BigInt(fetchType));
       writer.writeVarInt(message.subscribeRequestId);
-      writer.writeVarInt(0n); // Joining Start
+      writer.writeVarInt(message.joiningStart ?? 0n);
     } else {
       // Standalone fetch (type 0x1)
-      writer.writeVarInt(1n);
+      writer.writeVarInt(BigInt(FetchTypeDraft18.STANDALONE));
       Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespace!);
       Draft18MessageCodec.encodeString(writer, message.trackName!);
       Draft18MessageCodec.encodeLocation(writer, message.startLocation);
@@ -755,17 +769,30 @@ export class Draft18MessageCodec {
 
   private static decodeFetch(reader: Draft18BufferReader): FetchMessageDraft18 {
     const requestId = reader.readVarInt();
-    const fetchType = reader.readVarIntNumber();
+    const fetchTypeRaw = reader.readVarIntNumber();
 
     let trackNamespace: TrackNamespace | undefined;
     let trackName: string | undefined;
     let subscribeRequestId: bigint | undefined;
+    let joiningStart: bigint | undefined;
     let startLocation: Location = { group: 0n, object: 0n };
     let endLocation: Location = { group: 0n, object: 0n };
-    const joiningFlag = fetchType !== 1;
 
-    if (fetchType === 1) {
-      // Standalone
+    let fetchType: FetchTypeDraft18;
+    switch (fetchTypeRaw) {
+      case FetchTypeDraft18.STANDALONE:
+      case FetchTypeDraft18.JOINING_RELATIVE:
+      case FetchTypeDraft18.JOINING_ABSOLUTE:
+        fetchType = fetchTypeRaw as FetchTypeDraft18;
+        break;
+      default:
+        throw new Draft18CodecError(
+          `Invalid FETCH type 0x${fetchTypeRaw.toString(16)} (PROTOCOL_VIOLATION)`,
+        );
+    }
+    const joiningFlag = fetchType !== FetchTypeDraft18.STANDALONE;
+
+    if (fetchType === FetchTypeDraft18.STANDALONE) {
       trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
       trackName = Draft18MessageCodec.decodeString(reader);
       startLocation = Draft18MessageCodec.decodeLocation(reader);
@@ -773,7 +800,7 @@ export class Draft18MessageCodec {
     } else {
       // Joining (relative=0x2 or absolute=0x3)
       subscribeRequestId = reader.readVarInt();
-      reader.readVarInt(); // Joining Start
+      joiningStart = reader.readVarInt();
     }
 
     // Parameters
@@ -797,10 +824,12 @@ export class Draft18MessageCodec {
     return {
       type: MessageTypeDraft18.FETCH,
       requestId,
+      fetchType,
       joiningFlag,
       trackNamespace,
       trackName,
       subscribeRequestId,
+      joiningStart,
       subscriberPriority,
       groupOrder,
       startLocation,

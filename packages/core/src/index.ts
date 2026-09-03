@@ -183,6 +183,7 @@ export {
   StreamResetErrorCodeDraft18,
   FetchSubgroupMode,
   FetchObjectEndOfRange,
+  FetchTypeDraft18,
 } from './messages/types.js';
 
 // Message interfaces (Draft 14/16)

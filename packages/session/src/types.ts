@@ -9,7 +9,7 @@
  * any media-specific dependencies.
  */
 
-import type { GroupOrder } from '@moq-web/core';
+import type { GroupOrder, FetchTypeDraft18 } from '@moq-web/core';
 
 /**
  * Session state
@@ -450,6 +450,22 @@ export interface FetchOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
+  /**
+   * Draft-18 §10.12: FETCH type discriminator.
+   *
+   * - STANDALONE (0x1): default; fetch a range within a namespace/trackName
+   * - JOINING_RELATIVE (0x2): join an existing subscription; groups relative to current
+   * - JOINING_ABSOLUTE (0x3): join an existing subscription; groups absolute
+   *
+   * For joining fetches, `subscribeRequestId` MUST be provided and identifies
+   * the target subscription. `joiningStart` is the group offset (relative) or
+   * group id (absolute). namespace/trackName/range are ignored on the wire.
+   */
+  fetchType?: FetchTypeDraft18;
+  /** Draft-18 joining fetch: target subscribe request id */
+  subscribeRequestId?: bigint;
+  /** Draft-18 joining fetch: group offset (relative) or group id (absolute) */
+  joiningStart?: bigint;
 }
 
 /**

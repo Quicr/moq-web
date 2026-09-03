@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 import { describe, it, expect } from 'vitest';
-import { Draft18MessageCodec } from './draft18-message-codec';
+import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec';
 import {
   MessageTypeDraft18,
   Version,
   GroupOrder,
+  FetchTypeDraft18,
   SubscriptionFilterDraft18,
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
@@ -285,10 +286,11 @@ describe('Draft18MessageCodec', () => {
   });
 
   describe('FETCH', () => {
-    it('roundtrips FETCH with track name', () => {
+    it('roundtrips STANDALONE fetch (type 0x1) with track name', () => {
       const message: FetchMessageDraft18 = {
         type: MessageTypeDraft18.FETCH,
         requestId: 20n,
+        fetchType: FetchTypeDraft18.STANDALONE,
         joiningFlag: false,
         trackNamespace: ['fetch', 'ns'],
         trackName: 'history',
@@ -303,6 +305,7 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as FetchMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.FETCH);
+      expect(d.fetchType).toBe(FetchTypeDraft18.STANDALONE);
       expect(d.joiningFlag).toBe(false);
       expect(d.trackNamespace).toEqual(['fetch', 'ns']);
       expect(d.trackName).toBe('history');
@@ -310,25 +313,125 @@ describe('Draft18MessageCodec', () => {
       expect(d.endLocation).toEqual({ group: 100n, object: 50n });
     });
 
-    it('roundtrips FETCH with joining flag', () => {
+    it('roundtrips JOINING_RELATIVE fetch (type 0x2)', () => {
       const message: FetchMessageDraft18 = {
         type: MessageTypeDraft18.FETCH,
         requestId: 21n,
+        fetchType: FetchTypeDraft18.JOINING_RELATIVE,
         joiningFlag: true,
         subscribeRequestId: 5n,
+        joiningStart: 3n,
         subscriberPriority: 64,
         groupOrder: GroupOrder.DESCENDING,
-        startLocation: { group: 50n, object: 0n },
-        endLocation: { group: 100n, object: 0n },
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
       };
 
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as FetchMessageDraft18;
+      expect(d.fetchType).toBe(FetchTypeDraft18.JOINING_RELATIVE);
       expect(d.joiningFlag).toBe(true);
       expect(d.subscribeRequestId).toBe(5n);
+      expect(d.joiningStart).toBe(3n);
       expect(d.trackNamespace).toBeUndefined();
+      expect(d.trackName).toBeUndefined();
+    });
+
+    it('roundtrips JOINING_ABSOLUTE fetch (type 0x3)', () => {
+      const message: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 22n,
+        fetchType: FetchTypeDraft18.JOINING_ABSOLUTE,
+        joiningFlag: true,
+        subscribeRequestId: 7n,
+        joiningStart: 42n,
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as FetchMessageDraft18;
+      expect(d.fetchType).toBe(FetchTypeDraft18.JOINING_ABSOLUTE);
+      expect(d.joiningFlag).toBe(true);
+      expect(d.subscribeRequestId).toBe(7n);
+      expect(d.joiningStart).toBe(42n);
+      expect(d.trackNamespace).toBeUndefined();
+      expect(d.trackName).toBeUndefined();
+    });
+
+    it('writes distinct wire bytes for JOINING_RELATIVE (0x2) vs JOINING_ABSOLUTE (0x3)', () => {
+      const base: Omit<FetchMessageDraft18, 'fetchType'> = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 30n,
+        joiningFlag: true,
+        subscribeRequestId: 1n,
+        joiningStart: 0n,
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
+      };
+      const rel = Draft18MessageCodec.encode({ ...base, fetchType: FetchTypeDraft18.JOINING_RELATIVE });
+      const abs = Draft18MessageCodec.encode({ ...base, fetchType: FetchTypeDraft18.JOINING_ABSOLUTE });
+
+      // Same length, differ only in the FetchType byte.
+      expect(rel.length).toBe(abs.length);
+      const diffs: number[] = [];
+      for (let i = 0; i < rel.length; i++) {
+        if (rel[i] !== abs[i]) diffs.push(i);
+      }
+      expect(diffs.length).toBe(1);
+      expect(rel[diffs[0]!]).toBe(0x02);
+      expect(abs[diffs[0]!]).toBe(0x03);
+    });
+
+    it('rejects invalid fetch type (protocol violation)', () => {
+      // Encode two variants of the same JOINING FETCH — one relative, one absolute —
+      // and diff them to locate the fetchType byte. Then patch a fresh copy with an
+      // invalid fetchType (0x7) and expect decode to throw.
+      const base: Omit<FetchMessageDraft18, 'fetchType'> = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 100n,
+        joiningFlag: true,
+        subscribeRequestId: 1n,
+        joiningStart: 0n,
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
+      };
+      const rel = Draft18MessageCodec.encode({ ...base, fetchType: FetchTypeDraft18.JOINING_RELATIVE });
+      const abs = Draft18MessageCodec.encode({ ...base, fetchType: FetchTypeDraft18.JOINING_ABSOLUTE });
+      let fetchTypeIdx = -1;
+      for (let i = 0; i < rel.length; i++) {
+        if (rel[i] !== abs[i]) { fetchTypeIdx = i; break; }
+      }
+      expect(fetchTypeIdx).toBeGreaterThanOrEqual(0);
+      expect(rel[fetchTypeIdx]).toBe(0x02);
+
+      const bad = new Uint8Array(rel);
+      bad[fetchTypeIdx] = 0x07;
+      expect(() => Draft18MessageCodec.decode(bad)).toThrow(Draft18CodecError);
+    });
+
+    it('encodeFetch throws when joining without subscribeRequestId', () => {
+      const msg: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 50n,
+        fetchType: FetchTypeDraft18.JOINING_RELATIVE,
+        joiningFlag: true,
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
+      };
+      expect(() => Draft18MessageCodec.encode(msg)).toThrow(/subscribeRequestId/);
     });
   });
 
