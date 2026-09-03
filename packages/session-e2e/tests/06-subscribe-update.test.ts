@@ -46,6 +46,7 @@ describe.each([
       priority: track.priority,
       deliveryTimeout: track.deliveryTimeout,
       deliveryMode: track.delivery,
+      skipForwardWait: true,
     });
 
     let received = 0;

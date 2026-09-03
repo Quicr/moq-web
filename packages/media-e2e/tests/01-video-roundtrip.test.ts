@@ -91,10 +91,12 @@ describe.each([
     ).toBeGreaterThan(0);
 
     // Sanity-check the first frame is actually decodable and matches the
-    // canvas geometry.
+    // canvas geometry. displayWidth/displayHeight respect the SPS crop
+    // rectangle; codedWidth may be padded up to the H.264 16-pixel
+    // macroblock boundary (854 → 864).
     const first = frames[0]!;
-    expect(first.codedWidth).toBe(track.spec.width);
-    expect(first.codedHeight).toBe(track.spec.height);
+    expect(first.displayWidth).toBe(track.spec.width);
+    expect(first.displayHeight).toBe(track.spec.height);
 
     // Release the VideoFrames — they hold GPU-backed resources.
     for (const f of frames) f.close();
