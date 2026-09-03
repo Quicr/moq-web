@@ -34,6 +34,8 @@ export type SessionEventType =
   | 'incoming-publish'
   | 'forward-paused'
   | 'forward-resumed'
+  | 'namespace-forward-paused'
+  | 'namespace-forward-resumed'
   | 'goaway'
   | 'publish-done'
   | 'publish-blocked'
@@ -675,4 +677,28 @@ export interface ForwardStateChangeEvent {
   trackAlias: bigint;
   /** New forward state (0 = paused/no subscribers, 1 = active/can send) */
   forward: number;
+}
+
+/**
+ * Draft-18 REQUEST_UPDATE variants (§10.9). REQUEST_UPDATE reuses the same
+ * wire format for both subscription-scoped (§10.9.1) and namespace-scoped
+ * (§10.9.2) updates; the variant is determined by looking up the target
+ * requestId's original request kind.
+ */
+export type RequestUpdateVariant =
+  | 'subscribe'
+  | 'subscribe-namespace'
+  | 'publish'
+  | 'publish-namespace'
+  | 'fetch'
+  | 'unknown';
+
+/**
+ * Fired when the peer sends REQUEST_UPDATE targeting a namespace subscription
+ * (§10.9.2). Consumers can pause/resume forwarding for a whole namespace
+ * subscription rather than a single track.
+ */
+export interface NamespaceForwardEvent {
+  /** Request ID of the original SUBSCRIBE_NAMESPACE (§10.9.2) */
+  namespaceRequestId: number;
 }

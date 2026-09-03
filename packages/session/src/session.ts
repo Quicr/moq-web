@@ -129,6 +129,8 @@ import type {
   VODTrackInfo,
   IncomingFetchEvent,
   ForwardStateChangeEvent,
+  NamespaceForwardEvent,
+  RequestUpdateVariant,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -360,6 +362,14 @@ export class MOQTSession {
   private announceRequestIdToNamespace = new Map<number, string>();
   /** Next track alias for incoming subscriptions (announce flow) */
   private nextIncomingTrackAlias = BigInt(1000);
+  /**
+   * Draft-18 §10.9: map from a peer-initiated requestId to the kind of request
+   * we accepted, so we can route a later REQUEST_UPDATE on the same request to
+   * the correct variant (§10.9.1 subscription vs §10.9.2 namespace-scoped).
+   * Populated when we send REQUEST_OK / SUBSCRIBE_OK on the incoming bidi
+   * stream; drained when the request ends (unsubscribe, PUBLISH_DONE, etc.).
+   */
+  private incomingRequestKinds = new Map<number, RequestUpdateVariant>();
   /** Namespace subscriptions (for subscribe namespace flow) */
   private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
   /** Request ID to namespace subscription mapping */
@@ -1427,6 +1437,9 @@ export class MOQTSession {
 
     const bytes = this.codec.encodeControlMessage(publishDone);
     await this.doSendControl(bytes);
+    // PUBLISH_DONE terminates the incoming subscription; drop routing state so
+    // any future REQUEST_UPDATE on this id doesn't route as §10.9.1 by default.
+    this.incomingRequestKinds.delete(requestId);
     log.info('Sent PUBLISH_DONE (draft-18)', { requestId, finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
   }
 
@@ -1460,6 +1473,7 @@ export class MOQTSession {
     // Clear managers
     this.subscriptionManager.clear();
     this.publicationManager.clear();
+    this.incomingRequestKinds.clear();
 
     // Disconnect transport worker if using worker mode
     if (this.useWorker && this.transportWorker) {
@@ -4358,6 +4372,8 @@ export class MOQTSession {
   on(event: 'message-received', handler: (event: MessageLogEvent) => void): () => void;
   // Forward state events
   on(event: 'forward-state-change', handler: (event: ForwardStateChangeEvent) => void): () => void;
+  on(event: 'namespace-forward-paused', handler: (event: NamespaceForwardEvent) => void): () => void;
+  on(event: 'namespace-forward-resumed', handler: (event: NamespaceForwardEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -4522,16 +4538,9 @@ export class MOQTSession {
         this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
         break;
 
-      case MessageTypeDraft18.REQUEST_UPDATE: {
-        const update = message as RequestUpdateMessageDraft18;
-        if (update.forwardState) {
-          this.publicationManager.resolveAllForward();
-          this.emit('forward-resumed', { requestId: Number(update.requestId) });
-        } else {
-          this.emit('forward-paused', { subscriptionRequestId: Number(update.requestId) });
-        }
+      case MessageTypeDraft18.REQUEST_UPDATE:
+        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18);
         break;
-      }
 
       case MessageTypeDraft18.PUBLISH_BLOCKED:
         this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
@@ -4707,6 +4716,9 @@ export class MOQTSession {
     await writer.write(responseBytes);
     writer.releaseLock();
 
+    // Remember the kind so a later REQUEST_UPDATE (§10.9.1) routes correctly
+    this.incomingRequestKinds.set(Number(message.requestId), 'subscribe');
+
     // Create publication entry
     const publication: InternalPublication = {
       trackAlias,
@@ -4798,6 +4810,8 @@ export class MOQTSession {
     const writer = writable.getWriter();
     await writer.write(responseBytes);
     writer.releaseLock();
+
+    this.incomingRequestKinds.set(Number(message.requestId), 'publish');
 
     // Register as subscription for object routing
     const subscriptionId = this.getNextRequestId();
@@ -4897,6 +4911,9 @@ export class MOQTSession {
     const writer = writable.getWriter();
     await writer.write(this.codec.encodeControlMessage(requestOk));
 
+    // Remember the kind so a later REQUEST_UPDATE (§10.9.2) routes correctly
+    this.incomingRequestKinds.set(Number(message.requestId), 'subscribe-namespace');
+
     // Send NAMESPACE messages for matching announced namespaces
     for (const [, announceInfo] of this.announcedNamespaces) {
       const nsStr = announceInfo.namespace.join('/');
@@ -4941,6 +4958,8 @@ export class MOQTSession {
     await writer.write(responseBytes);
     writer.releaseLock();
 
+    this.incomingRequestKinds.set(Number(message.requestId), 'publish-namespace');
+
     log.info('Accepted PUBLISH_NAMESPACE (draft-18)', { prefix });
   }
 
@@ -4967,6 +4986,10 @@ export class MOQTSession {
     await writer.write(responseBytes);
     writer.releaseLock();
 
+    // SUBSCRIBE_TRACKS is a namespace-scoped subscription for track discovery;
+    // future REQUEST_UPDATE on this requestId is §10.9.2 namespace-scoped.
+    this.incomingRequestKinds.set(Number(message.requestId), 'subscribe-namespace');
+
     // Emit incoming-subscribe for each track we publish under this prefix
     for (const [, pub] of this.publicationManager) {
       const pubNs = pub.namespace.join('/');
@@ -4988,16 +5011,41 @@ export class MOQTSession {
     message: RequestUpdateMessageDraft18,
     _writable: WritableStream<Uint8Array>
   ): Promise<void> {
+    this.dispatchRequestUpdateDraft18(message);
+  }
+
+  /**
+   * Route a draft-18 REQUEST_UPDATE (§10.9) to the correct variant handler
+   * based on the request kind we previously accepted for `requestId`:
+   * - §10.9.1 subscription-scoped → forward-paused / forward-resumed
+   * - §10.9.2 namespace-scoped   → namespace-forward-paused / -resumed
+   *
+   * If the target requestId is unknown we log and fall back to the
+   * subscription variant, which matches prior behaviour and keeps backward
+   * compatibility with peers that don't set up state before updating.
+   */
+  private dispatchRequestUpdateDraft18(message: RequestUpdateMessageDraft18): void {
+    const requestId = Number(message.requestId);
+    const kind = this.incomingRequestKinds.get(requestId) ?? 'unknown';
     log.info('Received REQUEST_UPDATE (draft-18)', {
       requestId: message.requestId.toString(),
       forwardState: message.forwardState,
+      variant: kind,
     });
 
+    if (kind === 'subscribe-namespace') {
+      // §10.9.2 — namespace-scoped update; do not touch per-track publications.
+      const event: NamespaceForwardEvent = { namespaceRequestId: requestId };
+      this.emit(message.forwardState ? 'namespace-forward-resumed' : 'namespace-forward-paused', event);
+      return;
+    }
+
+    // §10.9.1 — subscription-scoped update (default when kind is unknown).
     if (message.forwardState) {
       this.publicationManager.resolveAllForward();
-      this.emit('forward-resumed', { requestId: Number(message.requestId) });
+      this.emit('forward-resumed', { requestId });
     } else {
-      this.emit('forward-paused', { subscriptionRequestId: Number(message.requestId) });
+      this.emit('forward-paused', { subscriptionRequestId: requestId });
     }
   }
 
