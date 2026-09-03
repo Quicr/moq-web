@@ -2537,20 +2537,24 @@ export class ObjectCodec {
     }
 
     const writer = new BufferWriter();
-    writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
-    writer.writeVarInt(header.trackAlias);
-    writer.writeVarInt(header.groupId);
-    if (!IS_DRAFT_16) {
-      // Draft-14 includes subgroupId; draft-16 datagrams don't belong to subgroups
-      writer.writeVarInt(header.subgroupId);
-    }
-    writer.writeVarInt(header.objectId);
     if (IS_DRAFT_16) {
-      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
-      writer.writeVarInt(0); // No extensions for now
+      // Draft-16 §10.3.1: Type is a bit-flag byte in 0b00X0XXXX form.
+      //   0x01 EXTENSIONS, 0x02 END_OF_GROUP, 0x04 ZERO_OBJECT_ID,
+      //   0x08 DEFAULT_PRIORITY, 0x20 STATUS.
+      // Sending Object ID + Publisher Priority + Payload → all flags clear.
+      // NOTE: If EXTENSIONS bit is not set, no length field is written.
+      writer.writeVarInt(0x00);
+      writer.writeVarInt(header.trackAlias);
+      writer.writeVarInt(header.groupId);
+      writer.writeVarInt(header.objectId);
+      writer.writeByte(header.publisherPriority);
     } else {
-      // Draft-14 includes publisherPriority and objectStatus in datagram header
-      writer.writeByte(header.publisherPriority); // 1 byte, not varint
+      writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
+      writer.writeVarInt(header.trackAlias);
+      writer.writeVarInt(header.groupId);
+      writer.writeVarInt(header.subgroupId);
+      writer.writeVarInt(header.objectId);
+      writer.writeByte(header.publisherPriority);
       writer.writeVarInt(header.objectStatus);
     }
     return writer.toUint8Array();
@@ -2582,34 +2586,56 @@ export class ObjectCodec {
     const reader = new BufferReader(buffer);
     const streamType = reader.readVarIntNumber();
 
-    if (streamType !== DataStreamType.OBJECT_DATAGRAM) {
-      throw new MessageCodecError(
-        `Expected OBJECT_DATAGRAM (${DataStreamType.OBJECT_DATAGRAM}), got ${streamType}`,
-        streamType
-      );
-    }
-
-    // trackAlias can be a 62-bit hash - keep as bigint to preserve full value
-    const trackAliasBigInt = reader.readVarInt();
-    const groupId = reader.readVarIntNumber();
-    // Draft-16 datagrams don't have subgroupId; draft-14 does
-    const subgroupId = IS_DRAFT_16 ? 0 : reader.readVarIntNumber();
-    const objectId = reader.readVarIntNumber();
-
     let publisherPriority: number;
     let objectStatus: ObjectStatus;
+    let trackAliasBigInt: bigint;
+    let groupId: number;
+    let subgroupId = 0;
+    let objectId: number;
 
     if (IS_DRAFT_16) {
-      // Draft-16: Object ID | ExtLen | [Extensions] | Payload
-      const extensionLength = reader.readVarIntNumber();
-      if (extensionLength > 0) {
-        // Skip extension bytes
+      // Draft-16 §10.3.1 Type byte: 0b00X0XXXX
+      //   0x01 EXTENSIONS, 0x02 END_OF_GROUP, 0x04 ZERO_OBJECT_ID,
+      //   0x08 DEFAULT_PRIORITY, 0x20 STATUS
+      if ((streamType & ~0x2f) !== 0 || (streamType & 0x10) !== 0) {
+        throw new MessageCodecError(
+          `Invalid OBJECT_DATAGRAM Type 0x${streamType.toString(16)}`,
+          streamType,
+        );
+      }
+      const hasExtensions = (streamType & 0x01) !== 0;
+      const zeroObjectId = (streamType & 0x04) !== 0;
+      const defaultPriority = (streamType & 0x08) !== 0;
+      const hasStatus = (streamType & 0x20) !== 0;
+
+      trackAliasBigInt = reader.readVarInt();
+      groupId = reader.readVarIntNumber();
+      objectId = zeroObjectId ? 0 : reader.readVarIntNumber();
+      publisherPriority = defaultPriority ? 128 : reader.readByte();
+      if (hasExtensions) {
+        const extensionLength = reader.readVarIntNumber();
+        if (extensionLength === 0) {
+          throw new MessageCodecError(
+            'OBJECT_DATAGRAM EXTENSIONS bit set with zero-length extensions',
+            streamType,
+          );
+        }
         reader.readBytes(extensionLength);
       }
-      publisherPriority = 128; // default priority
-      objectStatus = ObjectStatus.NORMAL;
+      objectStatus = hasStatus
+        ? (reader.readVarIntNumber() as ObjectStatus)
+        : ObjectStatus.NORMAL;
     } else {
-      // Draft-14 includes publisherPriority (1 byte) and objectStatus (varint)
+      if (streamType !== DataStreamType.OBJECT_DATAGRAM) {
+        throw new MessageCodecError(
+          `Expected OBJECT_DATAGRAM (${DataStreamType.OBJECT_DATAGRAM}), got ${streamType}`,
+          streamType,
+        );
+      }
+      trackAliasBigInt = reader.readVarInt();
+      groupId = reader.readVarIntNumber();
+      subgroupId = reader.readVarIntNumber();
+      objectId = reader.readVarIntNumber();
       publisherPriority = reader.readByte();
       objectStatus = reader.readVarIntNumber() as ObjectStatus;
     }
