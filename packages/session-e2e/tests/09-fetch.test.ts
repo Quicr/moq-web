@@ -52,6 +52,7 @@ describe.each([
       deliveryTimeout: track.deliveryTimeout,
       deliveryMode: track.delivery,
       maxCacheDuration: 60_000,
+      skipForwardWait: true,
     });
 
     // Prime the cache with all messages so FETCH has data to return.
