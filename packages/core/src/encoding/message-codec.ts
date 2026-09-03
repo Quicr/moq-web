@@ -1222,23 +1222,26 @@ export class MessageCodec {
     writer.writeVarInt(message.subscriptionRequestId);
 
     if (IS_DRAFT_16) {
-      // Draft-16: All fields are encoded as parameters
+      // Draft-16 §9.11 REQUEST_UPDATE only carries fields that actually
+      // change: Forward and/or Subscriber Priority. A pause/resume update
+      // must not include SUBSCRIPTION_FILTER — openmoq resets the control
+      // stream on unexpected update parameters. Only emit the filter when
+      // the caller is seeking (non-zero start location or end group).
       const params = new Map<RequestParameter, Uint8Array>();
 
-      // FORWARD (0x10)
       if (message.forward !== undefined) {
         params.set(RequestParameter.FORWARD, VarInt.encode(message.forward));
       }
 
-      // SUBSCRIBER_PRIORITY (0x20)
       if (message.subscriberPriority !== undefined && message.subscriberPriority !== 128) {
         params.set(RequestParameter.SUBSCRIBER_PRIORITY, VarInt.encode(message.subscriberPriority));
       }
 
-      // SUBSCRIPTION_FILTER (0x21) - encode start/end location
-      if (message.startLocation || message.endGroup) {
+      const hasSeek =
+        (message.startLocation && (message.startLocation.groupId !== 0 || message.startLocation.objectId !== 0)) ||
+        (message.endGroup !== undefined && message.endGroup !== 0);
+      if (hasSeek) {
         const filterWriter = new BufferWriter();
-        // LocationType: 0x01 = AbsoluteStart, 0x02 = AbsoluteRange
         const locationType = message.endGroup ? 0x02 : 0x01;
         filterWriter.writeVarInt(locationType);
         filterWriter.writeVarInt(message.startLocation?.groupId ?? 0);
