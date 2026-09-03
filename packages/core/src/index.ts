@@ -160,6 +160,7 @@ export {
   SetupParameter,
   RequestParameter,
   ObjectExtension,
+  TrackPropertyDraft18,
   GroupOrder,
   FilterType,
   SessionErrorCode,

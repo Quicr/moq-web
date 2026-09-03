@@ -178,6 +178,27 @@ export interface SubscribeStatsEvent {
 }
 
 /**
+ * Track properties advertised by a publisher in SUBSCRIBE_OK / PUBLISH /
+ * FETCH_OK (draft-18 §12). Keys omitted from the map were not sent.
+ */
+export interface TrackProperties {
+  /** §12.1 — per-subgroup delivery timeout (ms) */
+  subgroupDeliveryTimeoutMs?: number;
+  /** §12.2 — per-object delivery timeout (ms) */
+  objectDeliveryTimeoutMs?: number;
+  /** §12.3 — how long a relay may cache an object (ms) */
+  maxCacheDurationMs?: number;
+  /** §12.4 — default publisher priority when object omits its own */
+  defaultPublisherPriority?: number;
+  /** §12.5 — default publisher group order */
+  defaultPublisherGroupOrder?: GroupOrder;
+  /** §12.6 — dynamic-groups flag (false = static, true = dynamic) */
+  dynamicGroups?: boolean;
+  /** §12.7 — immutable-properties bitmap (raw varint) */
+  immutablePropertiesBitmap?: bigint;
+}
+
+/**
  * Subscribe OK event data - emitted when SUBSCRIBE_OK is received
  */
 export interface SubscribeOkEvent {
@@ -193,6 +214,8 @@ export interface SubscribeOkEvent {
   largestGroupId?: number;
   /** Largest object ID in largest group (if content exists) */
   largestObjectId?: number;
+  /** Draft-18 track properties (§12) — undefined on draft-16 sessions */
+  trackProperties?: TrackProperties;
 }
 
 /**
