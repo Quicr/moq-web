@@ -96,6 +96,7 @@ import type {
   PublishStatsEvent,
   SubscribeStatsEvent,
   SubscribeOkEvent,
+  RequestOkEvent,
   MessageLogEvent,
   SubscriptionInfo,
   PublicationInfo,
@@ -1194,7 +1195,18 @@ export class MOQTSession {
         throw new Error(`TRACK_STATUS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
       }
 
-      log.info('TRACK_STATUS response received (draft-18)', { requestId });
+      if (response.type === MessageTypeDraft18.REQUEST_OK) {
+        const ok = response as RequestOkMessageDraft18;
+        const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
+        this.emit('request-ok', {
+          requestId,
+          requestKind: 'track-status',
+          expiresMs,
+        } as RequestOkEvent);
+        log.info('TRACK_STATUS response received (draft-18)', { requestId, expiresMs });
+      } else {
+        log.info('TRACK_STATUS response received (draft-18)', { requestId });
+      }
     } finally {
       await this.closeRequestStream(requestId);
     }
@@ -1604,7 +1616,10 @@ export class MOQTSession {
     const response = await this.sendRequestAndWaitResponse(encoded, requestId);
 
     if (response.type === MessageTypeDraft18.REQUEST_OK) {
-      log.info('Received REQUEST_OK for PUBLISH (draft-18)', { requestId });
+      const ok = response as RequestOkMessageDraft18;
+      const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
+      log.info('Received REQUEST_OK for PUBLISH (draft-18)', { requestId, expiresMs });
+      this.emit('request-ok', { requestId, requestKind: 'publish', expiresMs } as RequestOkEvent);
       if (!options?.skipForwardWait) {
         log.info('PUBLISH accepted, starting immediately (draft-18)');
       }
@@ -1853,7 +1868,10 @@ export class MOQTSession {
       } as FetchCompleteEvent);
     } else if (response.type === MessageTypeDraft18.REQUEST_OK) {
       // Some relays send REQUEST_OK to accept the fetch and later stream data.
-      log.info('Received REQUEST_OK for FETCH (draft-18)', { requestId });
+      const ok = response as RequestOkMessageDraft18;
+      const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
+      log.info('Received REQUEST_OK for FETCH (draft-18)', { requestId, expiresMs });
+      this.emit('request-ok', { requestId, requestKind: 'fetch', expiresMs } as RequestOkEvent);
     } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
       log.error('Received REQUEST_ERROR for FETCH (draft-18)', {
@@ -2323,7 +2341,21 @@ export class MOQTSession {
   private routeMessageDraft18(message: ControlMessageDraft18, subscriptionId: number): void {
     switch (message.type) {
       case MessageTypeDraft18.REQUEST_OK: {
-        log.info('Namespace subscription accepted (draft-18)', { subscriptionId });
+        const ok = message as RequestOkMessageDraft18;
+        const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
+        const sub = this.namespaceSubscriptions.get(subscriptionId);
+        log.info('Namespace subscription accepted (draft-18)', {
+          subscriptionId,
+          requestId: sub?.requestId,
+          expiresMs,
+        });
+        if (sub) {
+          this.emit('request-ok', {
+            requestId: sub.requestId,
+            requestKind: 'subscribe-namespace',
+            expiresMs,
+          } as RequestOkEvent);
+        }
         break;
       }
 
@@ -2742,9 +2774,16 @@ export class MOQTSession {
 
       const response = await this.sendRequestAndWaitResponse(encoded, requestId);
       if (response.type === MessageTypeDraft18.REQUEST_OK) {
+        const ok = response as RequestOkMessageDraft18;
+        const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
         announceInfo.acknowledged = true;
         this.emit('namespace-acknowledged', { namespace });
-        log.info('PUBLISH_NAMESPACE accepted (draft-18)', { namespace: namespaceStr });
+        this.emit('request-ok', {
+          requestId,
+          requestKind: 'publish-namespace',
+          expiresMs,
+        } as RequestOkEvent);
+        log.info('PUBLISH_NAMESPACE accepted (draft-18)', { namespace: namespaceStr, expiresMs });
       } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
         this.announcedNamespaces.delete(namespaceStr);
@@ -4201,6 +4240,7 @@ export class MOQTSession {
   on(event: 'publish-stats', handler: (stats: PublishStatsEvent) => void): () => void;
   on(event: 'subscribe-stats', handler: (stats: SubscribeStatsEvent) => void): () => void;
   on(event: 'subscribe-ok', handler: (event: SubscribeOkEvent) => void): () => void;
+  on(event: 'request-ok', handler: (event: RequestOkEvent) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;

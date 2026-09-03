@@ -26,6 +26,7 @@ export type SessionEventType =
   | 'publish-stats'
   | 'subscribe-stats'
   | 'subscribe-ok'
+  | 'request-ok'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
   | 'namespace-announced'
@@ -216,6 +217,28 @@ export interface SubscribeOkEvent {
   largestObjectId?: number;
   /** Draft-18 track properties (§12) — undefined on draft-16 sessions */
   trackProperties?: TrackProperties;
+}
+
+/**
+ * Draft-18 REQUEST_OK event - emitted for every accepted request that
+ * responds with REQUEST_OK (PUBLISH, PUBLISH_NAMESPACE, FETCH,
+ * SUBSCRIBE_NAMESPACE, TRACK_STATUS). `expires` is the optional §10.2.10
+ * lifetime hint in milliseconds; 0 means "no expiration" and undefined
+ * means the responder did not send the parameter.
+ */
+export interface RequestOkEvent {
+  /** Request ID from the request stream */
+  requestId: number;
+  /**
+   * Kind of request that was accepted, so consumers can filter without
+   * having to correlate requestId ↔ request kind themselves.
+   */
+  requestKind: 'publish' | 'publish-namespace' | 'fetch' | 'subscribe-namespace' | 'track-status';
+  /**
+   * §10.2.10 EXPIRES parameter (ms). Undefined when the responder omitted
+   * the parameter, 0 when the responder explicitly signals no expiration.
+   */
+  expiresMs?: number;
 }
 
 /**

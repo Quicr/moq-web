@@ -70,6 +70,7 @@ export type {
   PublishStatsEvent,
   SubscribeStatsEvent,
   SubscribeOkEvent,
+  RequestOkEvent,
   TrackProperties,
   MessageLogEvent,
   AnnouncedNamespaceInfo,
