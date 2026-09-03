@@ -160,6 +160,8 @@ export class H264Decoder {
         codedWidth: config.codedWidth,
         codedHeight: config.codedHeight,
         description: config.description,
+        hardwareAcceleration: config.hardwareAcceleration,
+        optimizeForLatency: config.optimizeForLatency,
       });
       return result.supported ?? false;
     } catch {
@@ -187,17 +189,27 @@ export class H264Decoder {
 
     this.config = {
       ...config,
-      hardwareAcceleration: config.hardwareAcceleration ?? 'prefer-hardware',
+      hardwareAcceleration: config.hardwareAcceleration ?? 'no-preference',
       optimizeForLatency: config.optimizeForLatency ?? true,
     };
 
     log.info('Starting H264 decoder', {
       codec: this.config.codec,
       resolution: `${this.config.codedWidth}x${this.config.codedHeight}`,
+      hardwareAcceleration: this.config.hardwareAcceleration,
     });
 
-    // Check support
-    const supported = await H264Decoder.isSupported(this.config);
+    // Probe support with the same hardwareAcceleration hint we will pass to
+    // configure(), so headless environments without a hw decoder don't pass
+    // the probe and then blow up asynchronously with OperationError.
+    let supported = await H264Decoder.isSupported(this.config);
+    if (!supported && this.config.hardwareAcceleration !== 'no-preference') {
+      log.warn('Requested hardwareAcceleration not supported, falling back to no-preference', {
+        requested: this.config.hardwareAcceleration,
+      });
+      this.config.hardwareAcceleration = 'no-preference';
+      supported = await H264Decoder.isSupported(this.config);
+    }
     if (!supported) {
       throw new Error('H.264 decoding configuration not supported');
     }
