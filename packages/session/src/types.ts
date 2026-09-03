@@ -35,6 +35,7 @@ export type SessionEventType =
   | 'forward-paused'
   | 'forward-resumed'
   | 'goaway'
+  | 'publish-done'
   | 'publish-blocked'
   | 'fetch-object'
   | 'fetch-complete'
@@ -217,6 +218,38 @@ export interface SubscribeOkEvent {
   largestObjectId?: number;
   /** Draft-18 track properties (§12) — undefined on draft-16 sessions */
   trackProperties?: TrackProperties;
+}
+
+/**
+ * Draft-18 PUBLISH_DONE event (§10.11). Fired on the subscriber side
+ * when the publisher signals no more objects will arrive on a subscribed
+ * track. Includes the final location and optional status/reason phrase
+ * from `PublishDoneErrorCodeDraft18`.
+ */
+export interface PublishDoneEvent {
+  /** Request ID the publisher was serving */
+  requestId: number;
+  /** Local subscription ID if we still know it */
+  subscriptionId?: number;
+  /** §10.11 final Location — last group/object the publisher intends to emit */
+  finalGroupId: number;
+  finalObjectId: number;
+  /** Optional `PublishDoneErrorCodeDraft18` status */
+  statusCode?: number;
+  /** Optional human-readable reason */
+  reasonPhrase?: string;
+  /** Number of subgroup/fetch streams the publisher opened for this request */
+  streamCount?: number;
+}
+
+/**
+ * Draft-18 PUBLISH_BLOCKED event (§10.20). Fired when the publisher
+ * cannot continue delivery due to flow control. Consumers can use this
+ * to slow down producers or drop non-critical objects.
+ */
+export interface PublishBlockedEvent {
+  /** Track alias that is blocked */
+  trackAlias: bigint;
 }
 
 /**

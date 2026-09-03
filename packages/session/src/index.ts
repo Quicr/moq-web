@@ -71,6 +71,8 @@ export type {
   SubscribeStatsEvent,
   SubscribeOkEvent,
   RequestOkEvent,
+  PublishDoneEvent,
+  PublishBlockedEvent,
   TrackProperties,
   MessageLogEvent,
   AnnouncedNamespaceInfo,

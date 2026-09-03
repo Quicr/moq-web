@@ -97,6 +97,8 @@ import type {
   SubscribeStatsEvent,
   SubscribeOkEvent,
   RequestOkEvent,
+  PublishDoneEvent,
+  PublishBlockedEvent,
   MessageLogEvent,
   SubscriptionInfo,
   PublicationInfo,
@@ -4241,6 +4243,8 @@ export class MOQTSession {
   on(event: 'subscribe-stats', handler: (stats: SubscribeStatsEvent) => void): () => void;
   on(event: 'subscribe-ok', handler: (event: SubscribeOkEvent) => void): () => void;
   on(event: 'request-ok', handler: (event: RequestOkEvent) => void): () => void;
+  on(event: 'publish-done', handler: (event: PublishDoneEvent) => void): () => void;
+  on(event: 'publish-blocked', handler: (event: PublishBlockedEvent) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
@@ -4879,14 +4883,28 @@ export class MOQTSession {
    * Handle incoming PUBLISH_DONE
    */
   private handleIncomingPublishDoneDraft18(message: PublishDoneMessageDraft18): void {
+    const requestId = Number(message.requestId);
     log.info('Received PUBLISH_DONE (draft-18)', {
       requestId: message.requestId.toString(),
       finalGroup: message.finalLocation.group.toString(),
       finalObject: message.finalLocation.object.toString(),
+      statusCode: message.statusCode?.toString(),
+      reasonPhrase: message.reasonPhrase,
+      streamCount: message.streamCount?.toString(),
     });
 
     // Find and remove the subscription by requestId
-    const sub = this.subscriptionManager.findByRequestId(Number(message.requestId));
+    const sub = this.subscriptionManager.findByRequestId(requestId);
+    this.emit('publish-done', {
+      requestId,
+      subscriptionId: sub?.subscriptionId,
+      finalGroupId: Number(message.finalLocation.group),
+      finalObjectId: Number(message.finalLocation.object),
+      statusCode: message.statusCode !== undefined ? Number(message.statusCode) : undefined,
+      reasonPhrase: message.reasonPhrase,
+      streamCount: message.streamCount !== undefined ? Number(message.streamCount) : undefined,
+    } as PublishDoneEvent);
+
     if (sub) {
       this.subscriptionManager.remove(sub.subscriptionId);
       log.info('Subscription removed after PUBLISH_DONE', { subscriptionId: sub.subscriptionId });
@@ -4915,7 +4933,7 @@ export class MOQTSession {
    */
   private handleIncomingPublishBlockedDraft18(message: PublishBlockedMessageDraft18): void {
     log.info('Received PUBLISH_BLOCKED (draft-18)', { trackAlias: message.trackAlias.toString() });
-    this.emit('publish-blocked', { trackAlias: message.trackAlias });
+    this.emit('publish-blocked', { trackAlias: message.trackAlias } as PublishBlockedEvent);
   }
 
   /**
