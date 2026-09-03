@@ -28,6 +28,8 @@ import {
   ObjectStatus,
   RequestParameter,
   RequestErrorCode,
+  RequestErrorCodeDraft18,
+  PublishDoneErrorCodeDraft18,
   SetupParameter,
   SubscriptionFilterDraft18,
   ObjectExtension,
@@ -1344,12 +1346,16 @@ export class MOQTSession {
    * @param requestId - Request ID of the PUBLISH
    * @param finalGroup - Final group ID
    * @param finalObject - Final object ID
+   * @param reasonPhrase - Optional reason phrase (see §10.11)
+   * @param statusCode - Optional draft-18 §15.10.3 status code
+   *                    (defaults to TRACK_ENDED when the caller supplies no code)
    */
   async sendPublishDone(
     requestId: number,
     finalGroup: number,
     finalObject: number,
-    reasonPhrase?: string
+    reasonPhrase?: string,
+    statusCode?: PublishDoneErrorCodeDraft18
   ): Promise<void> {
     if (!IS_DRAFT_18) {
       throw new Error('sendPublishDone() requires draft-18');
@@ -1359,12 +1365,13 @@ export class MOQTSession {
       type: MessageTypeDraft18.PUBLISH_DONE,
       requestId: BigInt(requestId),
       finalLocation: { group: BigInt(finalGroup), object: BigInt(finalObject) },
+      statusCode: BigInt(statusCode ?? PublishDoneErrorCodeDraft18.TRACK_ENDED),
       reasonPhrase,
     };
 
     const bytes = this.codec.encodeControlMessage(publishDone);
     await this.doSendControl(bytes);
-    log.info('Sent PUBLISH_DONE (draft-18)', { requestId, finalGroup, finalObject });
+    log.info('Sent PUBLISH_DONE (draft-18)', { requestId, finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
   }
 
   /**
@@ -3646,16 +3653,26 @@ export class MOQTSession {
     await this.closeVideoGOPStream(key);
 
     // Send PUBLISH_DONE to notify the relay/subscribers
-    const publishDone: PublishDoneMessage = {
-      type: MessageType.PUBLISH_DONE,
-      requestId: publication.requestId,
-      statusCode: RequestErrorCode.INTERNAL_ERROR,
-      reasonPhrase: '',
-      contentExists: false,
-    };
-    const bytes = this.codec.encodeControlMessage(publishDone);
-    await this.doSendControl(bytes).catch(() => {});
-    log.info('Sent PUBLISH_DONE', { trackAlias: key, requestId: publication.requestId });
+    if (IS_DRAFT_18) {
+      await this.sendPublishDone(
+        publication.requestId,
+        0,
+        0,
+        undefined,
+        PublishDoneErrorCodeDraft18.TRACK_ENDED,
+      ).catch(() => {});
+    } else {
+      const publishDone: PublishDoneMessage = {
+        type: MessageType.PUBLISH_DONE,
+        requestId: publication.requestId,
+        statusCode: RequestErrorCode.INTERNAL_ERROR,
+        reasonPhrase: '',
+        contentExists: false,
+      };
+      const bytes = this.codec.encodeControlMessage(publishDone);
+      await this.doSendControl(bytes).catch(() => {});
+      log.info('Sent PUBLISH_DONE', { trackAlias: key, requestId: publication.requestId });
+    }
 
     // Remove from manager (this also runs cleanup handlers)
     this.publicationManager.remove(key);
@@ -4561,7 +4578,12 @@ export class MOQTSession {
 
         default:
           log.warn('Unhandled message type on incoming bidi stream', { type: message.type });
-          await this.sendRequestErrorOnStream(stream.writable, 0n, 0x01, 'Unsupported message type');
+          await this.sendRequestErrorOnStream(
+            stream.writable,
+            0n,
+            RequestErrorCodeDraft18.NOT_SUPPORTED,
+            'Unsupported message type',
+          );
       }
     } catch (err) {
       log.error('Error reading incoming bidi stream', { error: (err as Error).message });
@@ -4592,7 +4614,12 @@ export class MOQTSession {
 
     if (!announceInfo) {
       log.warn('SUBSCRIBE does not match any announced namespace', { namespace: namespace.join('/') });
-      await this.sendRequestErrorOnStream(writable, message.requestId, 0x01, 'No matching namespace');
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.DOES_NOT_EXIST,
+        'No matching namespace',
+      );
       return;
     }
 
@@ -4684,7 +4711,12 @@ export class MOQTSession {
 
     if (!matchingSubscription) {
       log.warn('PUBLISH does not match any namespace subscription', { publishNamespace: namespaceStr });
-      await this.sendRequestErrorOnStream(writable, message.requestId, 0x01, 'No matching subscription');
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.UNINTERESTED,
+        'No matching subscription',
+      );
       return;
     }
 
@@ -4745,7 +4777,12 @@ export class MOQTSession {
   ): Promise<void> {
     log.info('Received FETCH (draft-18)', { requestId: message.requestId.toString() });
     // For now, respond with REQUEST_ERROR since we don't cache objects
-    await this.sendRequestErrorOnStream(writable, message.requestId, 0x01, 'Fetch not supported');
+    await this.sendRequestErrorOnStream(
+      writable,
+      message.requestId,
+      RequestErrorCodeDraft18.NOT_SUPPORTED,
+      'Fetch not supported',
+    );
   }
 
   /**
@@ -4761,7 +4798,12 @@ export class MOQTSession {
       trackName: message.trackName,
     });
     // Respond with REQUEST_ERROR - we don't track status
-    await this.sendRequestErrorOnStream(writable, message.requestId, 0x01, 'Track status not available');
+    await this.sendRequestErrorOnStream(
+      writable,
+      message.requestId,
+      RequestErrorCodeDraft18.NOT_SUPPORTED,
+      'Track status not available',
+    );
   }
 
   /**

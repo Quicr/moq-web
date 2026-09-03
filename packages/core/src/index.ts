@@ -180,6 +180,8 @@ export {
   SubscriptionFilterDraft18,
   ObjectStatusDraft18,
   SessionErrorCodeDraft18,
+  RequestErrorCodeDraft18,
+  PublishDoneErrorCodeDraft18,
   StreamResetErrorCodeDraft18,
   FetchSubgroupMode,
   FetchObjectEndOfRange,
