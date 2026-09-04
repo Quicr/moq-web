@@ -54,7 +54,7 @@ export type TransportWorkerRequest =
 export type TransportWorkerResponse =
   | { type: 'ready' }
   | { type: 'connected' }
-  | { type: 'disconnected'; reason?: string }
+  | { type: 'disconnected'; reason?: string; closeCode?: number; remote?: boolean }
   | { type: 'state-change'; state: TransportState }
   | { type: 'control-message'; data: Uint8Array }
   | { type: 'setup-message'; data: Uint8Array }

@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 49 · 🟡 17 · ❌ 14 · **61% complete** of 80 features
+**Progress:** ✅ 50 · 🟡 17 · ❌ 13 · **62% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -31,9 +31,9 @@
 | Session establishment via WebTransport | §3.1.3 | `session.ts:1053-1082` | `draft18-message-codec.ts:236-247` | `session.ts:1053` (`setup()`) | `draft18-message-codec.test.ts:34-82` | `01-setup.test.ts` | ✅ | WebTransport-only client. |
 | MOQT URI scheme (`moqt://`) | §3.1.1 | — | — | MISSING | MISSING | MISSING | ❌ | No scheme validation; callers pass `https://` URLs. |
 | Native QUIC transport | §3.1.4 | — | — | MISSING | MISSING | MISSING | ❌ | Browser-only; native QUIC path not applicable. |
-| Session termination | §3.5 | `session.ts:4257+` | via setup reader `session.ts:4297+` | state machine `setState('closing')` | MISSING | `11-goaway.test.ts` (partial) | 🟡 | No distinct session-error path using `SessionErrorCodeDraft18`. |
-| GOAWAY handling | §10.4 | `draft18-message-codec.ts:852-859` | `draft18-message-codec.ts:861-873` | `session.ts:1137`, `session.ts:4846-4858` | `draft18-message-codec.test.ts:354-402, 732-767` | `11-goaway.test.ts` | ✅ | Both control-stream & request-stream variants; no migration handler. |
-| Migration | §3.6 | — | — | MISSING | MISSING | MISSING | ❌ | `newSessionUri` event surfaced but no reconnect logic. |
+| Session termination | §3.5 | `session.ts` `close({code,reason})` + `goAway()` | `transport.ts` `'closed'` event surfaces peer `closeCode`/`reason` | `session.ts` `handleTransportClosed()` emits `session-terminated` when `remote=true` | `session-migration.test.ts` | `13-session-termination.test.ts` | ✅ | Typed event carries `SessionErrorCodeDraft18`; local closes suppressed. |
+| GOAWAY handling | §10.4 | `draft18-message-codec.ts:852-859` | `draft18-message-codec.ts:861-873` | `session.ts:1137`, `session.ts:4846-4858` | `draft18-message-codec.test.ts:354-402, 732-767` | `11-goaway.test.ts` | ✅ | Both control-stream & request-stream variants; migration URI cached on receipt. |
+| Migration | §3.6 | — | — | `session.ts` `migrate(newSessionUri?)` + `autoMigrate` config + cached `pendingMigrationUri` from GOAWAY | `session-migration.test.ts` | `13-session-termination.test.ts` | 🟡 | Client-side wiring complete (worker mode reconnect + SETUP replay); dual-relay over-the-wire smoke test tracked in `docs/draft-18-interop-plan.md`. |
 | Congestion control | §3.7 | — | — | `transport.ts:91-92,153,230` (`congestionControl` option) | MISSING | MISSING | 🟡 | Sets WebTransport `default`/`throughput` hint only; no bufferbloat/app-limited logic. |
 
 ## Extension Negotiation (§3.2, §4)

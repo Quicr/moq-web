@@ -173,7 +173,10 @@ export class TransportWorkerClient {
    */
   on(type: 'state-change', handler: (data: { state: TransportState }) => void): void;
   on(type: 'connected', handler: () => void): void;
-  on(type: 'disconnected', handler: (data: { reason?: string }) => void): void;
+  on(
+    type: 'disconnected',
+    handler: (data: { reason?: string; closeCode?: number; remote?: boolean }) => void,
+  ): void;
   on(type: 'control-message', handler: (data: { data: Uint8Array }) => void): void;
   on(type: 'setup-message', handler: (data: { data: Uint8Array }) => void): void;
   on(type: 'datagram', handler: (data: { data: Uint8Array }) => void): void;

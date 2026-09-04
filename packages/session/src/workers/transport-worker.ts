@@ -24,6 +24,9 @@ let controlReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 let setupWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let currentState: TransportState = 'disconnected';
 let debug = false;
+// True when the local side called disconnect() before `transport.closed` resolved;
+// used to distinguish local vs peer-initiated close in the disconnected event.
+let localDisconnectInitiated = false;
 
 // Stream management
 const outgoingStreams = new Map<number, StreamInfo>();
@@ -68,6 +71,7 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
   }
 
   debug = config.debug ?? false;
+  localDisconnectInitiated = false;
   log('Connecting to', config.url);
   setState('connecting');
 
@@ -149,6 +153,7 @@ async function disconnect(code?: number, reason?: string): Promise<void> {
   }
 
   log('Disconnecting', { code, reason });
+  localDisconnectInitiated = true;
   setState('closing');
 
   try {
@@ -406,11 +411,14 @@ function handleConnectionClosed(): void {
   if (!transport) return;
 
   transport.closed
-    .then(() => {
-      log('Transport closed normally');
+    .then((info: { closeCode?: number; reason?: string } | undefined) => {
+      const closeCode = typeof info?.closeCode === 'number' ? info.closeCode : 0;
+      const reason = typeof info?.reason === 'string' ? info.reason : undefined;
+      const remote = !localDisconnectInitiated;
+      log('Transport closed normally', { closeCode, reason, remote });
       if (currentState !== 'disconnected') {
         setState('closed');
-        respond({ type: 'disconnected' });
+        respond({ type: 'disconnected', reason, closeCode, remote });
         cleanup();
       }
     })
@@ -418,7 +426,12 @@ function handleConnectionClosed(): void {
       log('Transport closed with error', err);
       if (currentState !== 'disconnected') {
         setState('failed');
-        respond({ type: 'disconnected', reason: (err as Error).message });
+        respond({
+          type: 'disconnected',
+          reason: (err as Error).message,
+          closeCode: 0,
+          remote: !localDisconnectInitiated,
+        });
         cleanup();
       }
     });

@@ -37,6 +37,9 @@ export type SessionEventType =
   | 'namespace-forward-paused'
   | 'namespace-forward-resumed'
   | 'goaway'
+  | 'session-terminated'
+  | 'session-migrating'
+  | 'session-migrated'
   | 'publish-done'
   | 'publish-blocked'
   | 'fetch-object'
@@ -47,6 +50,34 @@ export type SessionEventType =
   | 'message-sent'
   | 'message-received'
   | 'forward-state-change';
+
+/**
+ * Fired when the underlying transport closes and carries a draft-18 §15.10.1
+ * Session Termination Code from the peer. `remote` is true when the peer
+ * initiated the close; local closes via `session.close({ code })` will not
+ * re-emit this event.
+ */
+export interface SessionTerminatedEvent {
+  /** Draft-18 SessionErrorCode value the peer supplied (0 = NO_ERROR). */
+  code: number;
+  /** Human-readable reason phrase from the peer (may be empty). */
+  reason: string;
+  /** True when the peer initiated the close. */
+  remote: boolean;
+}
+
+/**
+ * Fired when the session begins/completes a §3.6 migration triggered by
+ * GOAWAY carrying `newSessionUri`. `session-migrating` fires immediately
+ * before the current transport is torn down; `session-migrated` fires after
+ * the new transport has re-run SETUP and reached the `ready` state.
+ */
+export interface SessionMigrationEvent {
+  /** URI the client is migrating to (from GOAWAY.newSessionUri). */
+  newSessionUri: string;
+  /** URI the session was previously connected to (undefined on first connect). */
+  oldSessionUri?: string;
+}
 
 /**
  * Per-request authorization token for SUBSCRIBE/PUBLISH/FETCH.

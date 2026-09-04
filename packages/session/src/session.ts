@@ -133,6 +133,8 @@ import type {
   ForwardStateChangeEvent,
   NamespaceForwardEvent,
   RequestUpdateVariant,
+  SessionTerminatedEvent,
+  SessionMigrationEvent,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -287,6 +289,14 @@ export interface MOQTSessionConfig {
   maxDatagramSize?: number;
   /** Enable debug logging in worker */
   debug?: boolean;
+  /**
+   * When true, and the peer sends GOAWAY with a non-empty `newSessionUri`
+   * (draft-18 §3.6), the session will automatically close the current
+   * transport and reconnect to that URI, replaying CLIENT_SETUP with the
+   * same auth token. Only applicable to worker mode where the session owns
+   * the transport lifecycle. Defaults to false.
+   */
+  autoMigrate?: boolean;
 }
 
 /**
@@ -384,6 +394,20 @@ export class MOQTSession {
   private authToken: string | null = null;
   /** Token type for AUTHORIZATION_TOKEN parameter (default: C4M = 0x63346d) */
   private authTokenType: number = C4M_TOKEN_TYPE;
+  /**
+   * Last URL passed to `connect()` (worker mode) — used as the fallback
+   * `oldSessionUri` on migration, and as the target of `migrate()` when no
+   * explicit `newSessionUri` is provided.
+   */
+  private _lastConnectUrl?: string;
+  /**
+   * Last `newSessionUri` we observed on an incoming GOAWAY. Cached so callers
+   * that don't set `autoMigrate` can still call `session.migrate()` with no
+   * argument after handling the `goaway` event.
+   */
+  private _pendingMigrationUri?: string;
+  /** True while a §3.6 migration is in-flight; suppresses redundant terminate events. */
+  private _migrating = false;
   // @ts-expect-error Reserved for token alias caching support (aliasType 1/2)
   private tokenAliasCache = new Map<number, { tokenType: number; tokenValue: Uint8Array }>();
   // @ts-expect-error Reserved for token alias caching support
@@ -444,6 +468,16 @@ export class MOQTSession {
       // Main thread mode - existing behavior
       this.transport = transportOrConfig;
       this.useWorker = false;
+      // Capture the URL the caller connected the transport to, so migration
+      // (§3.6) can surface it as `oldSessionUri` on migration events.
+      this._lastConnectUrl = transportOrConfig.url;
+      // Register the transport `'closed'` handler up-front (not from within
+      // `setup()`), so a peer-close can surface a typed session-terminated
+      // event even if it arrives after our own teardown started.
+      const closedCleanup = transportOrConfig.on('closed', (info) => {
+        this.handleTransportClosed(info);
+      });
+      this.transportCleanup.push(closedCleanup);
     } else {
       // Worker mode - transport runs in worker
       this.workerConfig = transportOrConfig;
@@ -566,6 +600,10 @@ export class MOQTSession {
       connectionTimeout: this.workerConfig.connectionTimeout,
       debug: this.workerConfig.debug,
     });
+
+    // Remember the URL so §3.6 migration can fall back to the previous URI
+    // and so `migrate()` can find its target when GOAWAY.newSessionUri is empty.
+    this._lastConnectUrl = url;
 
     log.info('Connected via worker');
   }
@@ -699,6 +737,8 @@ export class MOQTSession {
       this.handleError(err);
     });
     this.transportCleanup.push(errorCleanup);
+    // NOTE: the `'closed'` handler is registered in the constructor so that
+    // peer-close events are surfaced even before `setup()` runs.
   }
 
   /**
@@ -758,10 +798,18 @@ export class MOQTSession {
       this.handleError(new Error(message));
     });
 
-    // Disconnection handler
-    this.transportWorker.on('disconnected', ({ reason }) => {
-      log.warn('Worker transport disconnected', { reason });
-      this.handleError(new Error(reason ?? 'Transport disconnected'));
+    // Disconnection handler.
+    // Worker surfaces the WebTransport close info (closeCode, reason, remote)
+    // so we can emit a draft-18 §15.10.1 typed session-terminated event when
+    // the peer initiated the close. We only escalate to `handleError` when the
+    // close was remote AND carried a non-zero SessionErrorCode.
+    this.transportWorker.on('disconnected', ({ reason, closeCode, remote }) => {
+      log.warn('Worker transport disconnected', { reason, closeCode, remote });
+      this.handleTransportClosed({
+        closeCode: closeCode ?? 0,
+        reason: reason ?? '',
+        remote: remote ?? false,
+      });
     });
 
     log.info('Worker event handlers registered');
@@ -4414,6 +4462,9 @@ export class MOQTSession {
   on(event: 'request-ok', handler: (event: RequestOkEvent) => void): () => void;
   on(event: 'publish-done', handler: (event: PublishDoneEvent) => void): () => void;
   on(event: 'publish-blocked', handler: (event: PublishBlockedEvent) => void): () => void;
+  on(event: 'session-terminated', handler: (event: SessionTerminatedEvent) => void): () => void;
+  on(event: 'session-migrating', handler: (event: SessionMigrationEvent) => void): () => void;
+  on(event: 'session-migrated', handler: (event: SessionMigrationEvent) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
@@ -5140,20 +5191,144 @@ export class MOQTSession {
   }
 
   /**
-   * Handle incoming GOAWAY
+   * Handle incoming GOAWAY (draft-18 §3.5 / §3.6).
+   *
+   * The peer is telling us to wind down. If `newSessionUri` is non-empty
+   * (§3.6 migration), we cache it so callers can call `migrate()` later, and
+   * — when `autoMigrate` was set on the session config — kick off migration
+   * automatically after the current tick. The `goaway` event is emitted
+   * regardless so callers can react (drain pending publishes, warn UI, etc.).
    */
   private handleIncomingGoAwayDraft18(message: GoAwayMessageDraft18): void {
+    const uri = message.newSessionUri && message.newSessionUri.length > 0
+      ? message.newSessionUri
+      : undefined;
     log.info('Received GOAWAY (draft-18)', {
-      newSessionUri: message.newSessionUri,
+      newSessionUri: uri,
       timeoutMs: message.timeout.toString(),
       requestId: message.requestId?.toString(),
     });
+
+    if (uri) {
+      this._pendingMigrationUri = uri;
+    }
+
     this.emit('goaway', {
-      newSessionUri: message.newSessionUri,
+      newSessionUri: uri,
       timeoutMs: message.timeout,
       requestId: message.requestId,
     });
     this.setState('closing');
+
+    // §3.6 auto-migration: only meaningful in worker mode, since main-thread
+    // callers own the transport lifecycle themselves.
+    if (uri && this.useWorker && this.workerConfig?.autoMigrate) {
+      // Defer to the next microtask so the caller's `goaway` handler runs
+      // first and can veto by clearing `_pendingMigrationUri` if needed.
+      queueMicrotask(() => {
+        if (this._pendingMigrationUri === uri) {
+          this.migrate(uri).catch((err) => {
+            log.error('Auto-migrate failed', err as Error);
+            this.emit('error', err as Error);
+          });
+        }
+      });
+    }
+  }
+
+  /**
+   * Handle transport close (draft-18 §15.10.1 termination code path).
+   *
+   * When the peer closes the WebTransport with a non-zero closeCode, we
+   * surface it as a typed `session-terminated` event. Local closes and
+   * migrations are silent — we don't re-emit for our own `session.close()`
+   * because those already ran the teardown path.
+   */
+  private handleTransportClosed(info: { closeCode: number; reason: string; remote: boolean }): void {
+    // Migrations run through `close() + connect()`, and we don't want the
+    // local close to trigger a spurious termination event on the way down.
+    if (this._migrating) {
+      log.debug('Ignoring transport close during migration', info);
+      return;
+    }
+
+    if (!info.remote) {
+      // Local-initiated close — we already ran the teardown; nothing else to do.
+      log.debug('Local transport close', info);
+      return;
+    }
+
+    log.info('Peer closed session', info);
+    this.emit('session-terminated', {
+      code: info.closeCode,
+      reason: info.reason,
+      remote: true,
+    } as SessionTerminatedEvent);
+
+    // If the peer aborted with an error code, elevate to the `error` state so
+    // downstream consumers stop issuing new requests.
+    if (info.closeCode !== 0) {
+      this.handleError(new Error(`Peer closed session (code=${info.closeCode}, reason=${info.reason || '<empty>'})`));
+    } else {
+      this.setState('none');
+    }
+  }
+
+  /**
+   * Migrate the session to a new relay URI (draft-18 §3.6).
+   *
+   * Closes the current transport gracefully, then re-connects to
+   * `newSessionUri` (or the URI cached from the most recent GOAWAY when
+   * omitted), and replays CLIENT_SETUP with the same auth token. Only
+   * available in worker mode — main-thread callers own their `MOQTransport`
+   * lifecycle and should reconnect their own instance.
+   *
+   * Note: existing subscriptions and publications are dropped; the caller is
+   * responsible for re-subscribing after migration. `session-migrating` fires
+   * before teardown; `session-migrated` fires once SETUP completes on the
+   * new URI.
+   */
+  async migrate(newSessionUri?: string): Promise<void> {
+    if (!this.useWorker) {
+      throw new Error('migrate() is only available in worker mode');
+    }
+
+    const target = newSessionUri ?? this._pendingMigrationUri;
+    if (!target) {
+      throw new Error('migrate(): no target URI (pass newSessionUri or wait for GOAWAY with newSessionUri)');
+    }
+
+    const oldSessionUri = this._lastConnectUrl;
+    log.info('Migrating session (draft-18 §3.6)', { from: oldSessionUri, to: target });
+
+    this._migrating = true;
+    try {
+      this.emit('session-migrating', { newSessionUri: target, oldSessionUri } as SessionMigrationEvent);
+
+      // Tear down publications / subscriptions / transport with NO_ERROR so
+      // the peer sees a clean close on the outgoing side.
+      await this.close({ code: SessionErrorCodeDraft18.NO_ERROR, reason: 'session migration' });
+
+      // `close()` sets state to 'none'; walk through the normal connect+setup
+      // path against the new URI.
+      await this.connect(target);
+      await this.setup();
+
+      this._pendingMigrationUri = undefined;
+      this.emit('session-migrated', { newSessionUri: target, oldSessionUri } as SessionMigrationEvent);
+      log.info('Migration complete');
+    } finally {
+      this._migrating = false;
+    }
+  }
+
+  /**
+   * URI most recently supplied by an incoming GOAWAY message. Useful for
+   * callers that want to log or confirm migration targets before invoking
+   * `migrate()` themselves. Cleared after a successful migration.
+   */
+  get pendingMigrationUri(): string | undefined {
+    return this._pendingMigrationUri;
   }
 
   /**
