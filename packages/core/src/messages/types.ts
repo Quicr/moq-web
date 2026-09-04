@@ -209,6 +209,15 @@ export enum StreamTypeDraft18 {
 }
 
 /**
+ * Draft-18 Datagram Types (§11.5.2). Object datagrams carry a small varint
+ * type value (see `ObjectCodec.encodeDatagramObject`); padding uses a
+ * distinct reserved varint that receivers MUST discard.
+ */
+export enum DatagramTypeDraft18 {
+  PADDING = 0x132b3e29,
+}
+
+/**
  * Draft-18 Setup Option Types
  */
 export enum SetupOptionDraft18 {

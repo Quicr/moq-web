@@ -174,6 +174,7 @@ export {
   // Draft-18 types
   MessageTypeDraft18,
   StreamTypeDraft18,
+  DatagramTypeDraft18,
   SetupOptionDraft18,
   RoleDraft18,
   RequestParameterDraft18,

@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 64 · 🟡 8 · ❌ 8 · **80% complete** of 80 features
+**Progress:** ✅ 66 · 🟡 8 · ❌ 6 · **82% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -95,8 +95,8 @@
 | Subgroup Header stream | §11.4.2 | `draft18-stream-codec.ts:115-153` | `draft18-stream-codec.ts:155-206` | `message-codec.ts:2709-2764`; `session.ts:3706, 3800, 3858, 3946`; `object-router.ts:212, 265` | `draft18-stream-codec.test.ts:38-132, 443-471` | `05-subscribe.test.ts` (chat-stream) | ✅ | All SUBGROUP_ID_MODE variants + END_OF_GROUP + DEFAULT_PRIORITY + FIRST_OBJECT bits. |
 | Closing Subgroup Streams / FIN | §11.4.3 | `session.ts` GOP `newGroup` closes stream cleanly; `resetPublicationStream(alias, code)` + `resetPublicationStreamTooFarBehind(alias)` abort with §15.10.4 code | `object-router.ts` catches `WebTransportError.streamErrorCode` and emits typed `stream-reset` event | `session.ts` typed `stream-reset` event (`side`, `code`, `reason`, alias, group/subgroup) | `session-stream-reset.test.ts`, `object-router-stream-reset.test.ts` | `21-stream-reset.test.ts` | ✅ | Publisher and subscriber both surface §15.10.4 codes; §8 DELIVERY_TIMEOUT stays on the `delivery-timeout` event so consumers can distinguish deadline-driven from application-driven resets. |
 | Fetch Header stream | §11.4.4 | `draft18-stream-codec.ts:209-217` | `draft18-stream-codec.ts:219-232` | `session.ts:3479`; `object-router.ts:717` | `draft18-stream-codec.test.ts:133-153, 498-522` | `09-fetch.test.ts` | ✅ | Handles all 4 subgroup modes + End-of-Range markers. |
-| Padding streams | §11.5.1 | MISSING | MISSING | MISSING | MISSING | MISSING | ❌ | Enum entry only (`types.ts:208`); no logic. |
-| Padding datagrams | §11.5.2 | MISSING | MISSING | MISSING | MISSING | MISSING | ❌ | |
+| Padding streams | §11.5.1 | `session.ts` `sendPaddingStream(bytes)` — writes PADDING type varint + N zero bytes | `transport.ts` `handleDraft18UnidirectionalStream` intercepts `StreamTypeDraft18.PADDING` and drains via `drainPaddingStream` | `sendPaddingStream()` on `MOQTSession` | `session-padding.test.ts`, `transport-padding.test.ts` | `22-padding.test.ts` | ✅ | Receiver never emits `unidirectional-stream` for padding — bytes are drained silently. |
+| Padding datagrams | §11.5.2 | `session.ts` `sendPaddingDatagram(bytes)` — writes PADDING datagram-type varint + N zero bytes | `datagram-manager.ts` `handleDatagram` peeks first varint and drops on `DatagramTypeDraft18.PADDING` | `sendPaddingDatagram()` on `MOQTSession` | `session-padding.test.ts` | `22-padding.test.ts` | ✅ | Padding never surfaces as an `object` event; stats.received still bumps so it's observable. |
 | Object extension headers | §11.2.1.2 | `draft18-stream-codec.ts:234-256, 595-613` | `:258-296, 614-635` | `session.ts:3715-3718` (only MAX_CACHE_DURATION) | `draft18-stream-codec.test.ts:170-201, 281-311` | Indirect | ✅ | Generic KVP round-trip works; session uses only draft-16-style keys. |
 
 ## Priorities & Scheduling (§7)
@@ -175,7 +175,7 @@
 
 1. ~~**No delivery-timeout enforcement or priority scheduling.**~~ Partially resolved: §8 subgroup + object delivery timeouts now armed on both subscriber (`ObjectRouter`) and publisher (`session.ts`) sides. Subscriber cancels the reader; publisher resets the stream via `StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT` and emits a `delivery-timeout` event. Remaining gap: SUBSCRIBER/publisher priorities are transmitted but `StreamManager` never orders local writes (§7.2); FILL / RENDEZVOUS timeouts (§8.3–4) still unenforced.
 
-2. **Padding streams and padding datagrams (§11.5) are fully missing.** `StreamTypeDraft18.PADDING = 0x132b3e28` is defined in `types.ts:208` but there is no encoder, decoder, or session handler.
+2. ~~**Padding streams and padding datagrams (§11.5) are fully missing.**~~ Resolved: `session.sendPaddingStream(bytes)` opens a unidirectional stream prefixed with `StreamTypeDraft18.PADDING` (0x132B3E28); `session.sendPaddingDatagram(bytes)` sends a datagram prefixed with `DatagramTypeDraft18.PADDING` (0x132B3E29). Receivers silently drain padding streams (transport-level) and drop padding datagrams before object decode (`DatagramManager`), so padding never surfaces as an object event.
 
 3. ~~**Draft-18 error-code enums are defined but unused end-to-end.**~~ Resolved: `SessionErrorCodeDraft18` flows through `session.close({code, reason})` to the WebTransport `closeCode`; `StreamResetErrorCodeDraft18` is surfaced end-to-end via `session.resetPublicationStream(alias, code)` + a typed `stream-reset` event that also fires on the subscriber when a peer RESET_STREAM lands (`WebTransportError.streamErrorCode`). `PublishDoneErrorCodeDraft18` was previously wired via `sendPublishDone`. WebTransport still lacks a per-stream QUIC-level code on the sender side, so the numeric code additionally travels in the abort reason string.
 

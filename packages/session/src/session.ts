@@ -33,6 +33,8 @@ import {
   PublishDoneErrorCodeDraft18,
   SessionErrorCodeDraft18,
   StreamResetErrorCodeDraft18,
+  StreamTypeDraft18,
+  DatagramTypeDraft18,
   TrackPropertyDraft18,
   MOQTVarInt,
   SetupParameter,
@@ -1981,6 +1983,48 @@ export class MOQTSession {
       StreamResetErrorCodeDraft18.TOO_FAR_BEHIND,
       reason,
     );
+  }
+
+  /**
+   * Draft-18 §11.5.1 — send a Padding Stream: a unidirectional stream whose
+   * first varint is the reserved PADDING stream type (0x132B3E28) followed by
+   * `bytes` zero-filled payload bytes. Receivers MUST discard.
+   *
+   * Padding is used to obfuscate traffic patterns (e.g. defeat MP-fingerprinting)
+   * without polluting the object stream. The type prefix is not counted toward
+   * `bytes`; pass 0 to emit just the type varint.
+   */
+  async sendPaddingStream(bytes: number): Promise<void> {
+    if (!IS_DRAFT_18) {
+      throw new Error('sendPaddingStream requires draft-18');
+    }
+    if (!Number.isInteger(bytes) || bytes < 0) {
+      throw new RangeError('bytes must be a non-negative integer');
+    }
+    const typeBytes = MOQTVarInt.encode(BigInt(StreamTypeDraft18.PADDING));
+    const payload = new Uint8Array(typeBytes.length + bytes);
+    payload.set(typeBytes);
+    // Remaining bytes are already zero-initialized by the Uint8Array constructor.
+    const streamInfo = await this.doCreateStream();
+    await this.doWriteStream(streamInfo, payload, /* close */ true);
+  }
+
+  /**
+   * Draft-18 §11.5.2 — send a Padding Datagram: a datagram whose first varint
+   * is the reserved PADDING datagram type (0x132B3E29) followed by `bytes`
+   * zero-filled bytes. Receivers MUST discard.
+   */
+  async sendPaddingDatagram(bytes: number): Promise<void> {
+    if (!IS_DRAFT_18) {
+      throw new Error('sendPaddingDatagram requires draft-18');
+    }
+    if (!Number.isInteger(bytes) || bytes < 0) {
+      throw new RangeError('bytes must be a non-negative integer');
+    }
+    const typeBytes = MOQTVarInt.encode(BigInt(DatagramTypeDraft18.PADDING));
+    const datagram = new Uint8Array(typeBytes.length + bytes);
+    datagram.set(typeBytes);
+    await this.doSendDatagram(datagram);
   }
 
   /**
