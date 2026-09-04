@@ -77,6 +77,7 @@ import {
   type MOQTMessage,
   type ControlMessage,
   type ControlMessageDraft18,
+  type Location,
   type ObjectHeader,
   type IProtocolCodec,
   type FetchMessage,
@@ -164,6 +165,59 @@ function addDeliveryTimeoutParams(
   set(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
   set(RequestParameterDraft18.FILL_TIMEOUT, options.fillTimeout);
   set(RequestParameterDraft18.RENDEZVOUS_TIMEOUT, options.rendezvousTimeout);
+}
+
+/**
+ * Draft-18 §10.2.9 SUBSCRIPTION_FILTER mapping.
+ *
+ * Translates the string-form `SubscribeOptions.filterType` (plus its start/end
+ * hints) into a `SubscriptionFilterDraft18` variant with the ranges the
+ * SUBSCRIBE codec expects. Unknown / omitted values default to
+ * `NEXT_GROUP_START`, matching draft-18's default filter and the pre-change
+ * session behaviour.
+ *
+ * `endGroup` is captured in `SubscribeOptions` as an absolute group ID and
+ * translated to `endGroupDelta` here — the delta is how the wire carries the
+ * range terminator (draft-18 §10.2.9).
+ */
+function mapSubscribeFilter(options: {
+  filterType?: 'latest' | 'absolute' | 'next-group' | 'largest-object' | 'absolute-start' | 'absolute-range';
+  startGroup?: number;
+  startObject?: number;
+  endGroup?: number;
+} | undefined): {
+  filter: SubscriptionFilterDraft18;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
+} {
+  const startGroup = BigInt(options?.startGroup ?? 0);
+  const startObject = BigInt(options?.startObject ?? 0);
+  const kind = options?.filterType;
+
+  switch (kind) {
+    case 'largest-object':
+      return { filter: SubscriptionFilterDraft18.LARGEST_OBJECT };
+    case 'absolute':
+    case 'absolute-start':
+      return {
+        filter: SubscriptionFilterDraft18.ABSOLUTE_START,
+        startLocation: { group: startGroup, object: startObject },
+      };
+    case 'absolute-range': {
+      const endGroup = BigInt(options?.endGroup ?? options?.startGroup ?? 0);
+      const delta = endGroup >= startGroup ? endGroup - startGroup : 0n;
+      return {
+        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
+        startLocation: { group: startGroup, object: startObject },
+        endGroupDelta: delta,
+      };
+    }
+    case 'latest':
+    case 'next-group':
+    case undefined:
+    default:
+      return { filter: SubscriptionFilterDraft18.NEXT_GROUP_START };
+  }
 }
 
 /**
@@ -1856,8 +1910,14 @@ export class MOQTSession {
       // Draft-18: Send SUBSCRIBE on a new bidirectional stream
       await this.subscribeDraft18(requestId, namespace, trackName, trackAlias, options);
     } else {
-      // Determine filter type - use ABSOLUTE_START for VOD, LATEST_GROUP for live
-      const filterType = options?.filterType === 'absolute'
+      // Draft-16 exposes only LATEST_GROUP and ABSOLUTE_START on the wire. Any
+      // draft-18-only filter selection collapses to ABSOLUTE_START when it has
+      // a start location, otherwise LATEST_GROUP.
+      const wantsAbsolute =
+        options?.filterType === 'absolute' ||
+        options?.filterType === 'absolute-start' ||
+        options?.filterType === 'absolute-range';
+      const filterType = wantsAbsolute
         ? FilterType.ABSOLUTE_START
         : FilterType.LATEST_GROUP;
       const startGroup = options?.startGroup ?? 0;
@@ -1921,13 +1981,17 @@ export class MOQTSession {
       );
     }
 
+    const { filter, startLocation, endGroupDelta } = mapSubscribeFilter(options);
+
     const subscribeMessage: SubscribeMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE,
       requestId: BigInt(requestId),
       trackNamespace: namespace,
       trackName,
       forwardState: true,
-      filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+      filter,
+      startLocation,
+      endGroupDelta,
       parameters,
     };
 
