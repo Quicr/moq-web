@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 52 · 🟡 15 · ❌ 13 · **65% complete** of 80 features
+**Progress:** ✅ 55 · 🟡 12 · ❌ 13 · **69% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -64,10 +64,10 @@
 | TRACK_STATUS | §10.14 | `draft18-message-codec.ts` `encodeTrackStatus()` + `encodeRequestOk()` writes LARGEST_OBJECT | `draft18-message-codec.ts` `decodeTrackStatus()` + `decodeRequestOk()` reads LARGEST_OBJECT | `session.ts` `trackStatus()` returns `TrackStatusResult{latestGroup,latestObject,expiresMs}`; `handleIncomingTrackStatusDraft18()` looks up publication and replies REQUEST_OK w/ LARGEST_OBJECT (§10.2.9) or REQUEST_ERROR DOES_NOT_EXIST; `PublicationManager.updateLatest()` tracks the live edge on every `sendObject()` | `draft18-message-codec.test.ts` (REQUEST_OK LARGEST_OBJECT suite) + `session-track-status.test.ts` | `08-track-status.test.ts`, `15-track-status-largest.test.ts` | ✅ | Publisher answers status queries from its own publication table. |
 | PUBLISH_NAMESPACE | §10.15 | `draft18-message-codec.ts:986-991` | `draft18-message-codec.ts:993-1014` | `session.ts:2713-2743`, `session.ts:4745-4767` | `draft18-message-codec.test.ts:568-599` | `02-announce.test.ts` | ✅ | Parameters map always encoded empty; auth-token push ignored. |
 | NAMESPACE | §10.16 | `draft18-message-codec.ts:1046-1051` | `draft18-message-codec.ts:1053-1068` | `session.ts:2328-2345`, `session.ts:4725` | `draft18-message-codec.test.ts:619-650` | `04-subscribe-namespace.test.ts` | ✅ | |
-| NAMESPACE_DONE | §10.17 | `draft18-message-codec.ts:1070-1072` | `draft18-message-codec.ts:1074-1085` | `session.ts:2347-2361`, `session.ts:4734` | `draft18-message-codec.test.ts:652-666` | MISSING | 🟡 | No e2e; codec emits final namespace only. |
+| NAMESPACE_DONE | §10.17 | `draft18-message-codec.ts:1070-1072` | `draft18-message-codec.ts:1074-1085` | `session.ts:2347-2361`, `session.ts:4734` | `draft18-message-codec.test.ts:652-666` | `16-namespace-done.test.ts` | ✅ | E2E asserts SUBSCRIBE_NAMESPACE resolves and codec parses the terminal frame; relays free to keep the stream open. |
 | SUBSCRIBE_NAMESPACE | §10.18 | `draft18-message-codec.ts:1016-1021` | `draft18-message-codec.ts:1023-1044` | `session.ts:2178-2222`, `session.ts:4702-4744` | `draft18-message-codec.test.ts:601-618` | `04-subscribe-namespace.test.ts` | ✅ | Parameters always empty on encode. |
-| SUBSCRIBE_TRACKS | §10.19 | `draft18-message-codec.ts:1087-1092` | `draft18-message-codec.ts:1094-1117` | `session.ts:1212-1256`, `session.ts:4771-4806` (stub) | `draft18-message-codec.test.ts:668-706` | MISSING | 🟡 | Encoder emits only prefix + empty params; no filter/startLocation/pattern. |
-| PUBLISH_BLOCKED | §10.20 | `draft18-message-codec.ts:1119-1121` | `draft18-message-codec.ts:1123-1134` | `session.ts` recv emits `PublishBlockedEvent` | `draft18-message-codec.test.ts:707-729, 778-787` | MISSING | 🟡 | Typed event now surfaced; send helper still missing. |
+| SUBSCRIBE_TRACKS | §10.19 | `draft18-message-codec.ts` `encodeSubscribeTracks` (FORWARD + SUBSCRIPTION_FILTER + pass-through KVPs) | `draft18-message-codec.ts` `decodeSubscribeTracks` (mirrors SUBSCRIBE) | `session.ts` `subscribeTracks(prefix, onObject, { forwardState, filter, startLocation, endGroupDelta, parameters })` | `draft18-message-codec.test.ts` SUBSCRIBE_TRACKS suite + `session-subscribe-tracks.test.ts` | `17-subscribe-tracks.test.ts` | ✅ | Full parameter parity with SUBSCRIBE. |
+| PUBLISH_BLOCKED | §10.20 | `draft18-message-codec.ts:1119-1121` | `draft18-message-codec.ts:1123-1134` | `session.ts` `sendPublishBlocked(trackAlias)`; recv emits `PublishBlockedEvent` | `draft18-message-codec.test.ts:707-729, 778-787` + `session-subscribe-tracks.test.ts` | Indirect | ✅ | Publisher-side send helper landed. |
 
 ## Parameters (§10.2)
 

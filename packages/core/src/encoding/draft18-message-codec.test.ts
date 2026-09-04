@@ -1029,6 +1029,80 @@ describe('Draft18MessageCodec', () => {
       expect(d.requestId).toBe(6n);
       expect(d.trackNamespacePrefix).toEqual(['conference', 'room-1']);
     });
+
+    it('roundtrips SUBSCRIBE_TRACKS with forwardState=false', () => {
+      const message: SubscribeTracksMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+        requestId: 7n,
+        trackNamespacePrefix: ['media'],
+        forwardState: false,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeTracksMessageDraft18;
+      expect(d.forwardState).toBe(false);
+    });
+
+    it('roundtrips SUBSCRIBE_TRACKS with ABSOLUTE_START filter + startLocation', () => {
+      const message: SubscribeTracksMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+        requestId: 8n,
+        trackNamespacePrefix: ['ns', 'a'],
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.ABSOLUTE_START,
+        startLocation: { group: 12n, object: 5n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeTracksMessageDraft18;
+      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_START);
+      expect(d.startLocation).toEqual({ group: 12n, object: 5n });
+    });
+
+    it('roundtrips SUBSCRIBE_TRACKS with ABSOLUTE_RANGE filter + endGroupDelta', () => {
+      const message: SubscribeTracksMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+        requestId: 9n,
+        trackNamespacePrefix: ['ns', 'r'],
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
+        startLocation: { group: 3n, object: 0n },
+        endGroupDelta: 7n,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeTracksMessageDraft18;
+      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_RANGE);
+      expect(d.startLocation).toEqual({ group: 3n, object: 0n });
+      expect(d.endGroupDelta).toBe(7n);
+    });
+
+    it('preserves unknown pass-through parameters', () => {
+      const passThrough = new Map<number, Uint8Array>([
+        [0x40, new Uint8Array([0xde, 0xad, 0xbe, 0xef])],
+      ]);
+      const message: SubscribeTracksMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+        requestId: 10n,
+        trackNamespacePrefix: ['ns'],
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+        parameters: passThrough,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as SubscribeTracksMessageDraft18;
+      expect(d.parameters?.get(0x40)).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+    });
   });
 
   describe('PUBLISH_BLOCKED', () => {
