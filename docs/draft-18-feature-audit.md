@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 48 · 🟡 17 · ❌ 15 · **60% complete** of 80 features
+**Progress:** ✅ 49 · 🟡 17 · ❌ 14 · **61% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -150,10 +150,10 @@
 
 | Feature | §Spec | Wire encode | Wire decode | Session-layer | Unit test | E2E test | Status | Notes |
 |---|---|---|---|---|---|---|---|---|
-| Session Termination Codes | §15.10.1 | `types.ts:277-298` (all 20 codes) | — | MISSING | MISSING | MISSING | 🟡 | Enum defined; session close uses transport-level abort. |
+| Session Termination Codes | §15.10.1 | `types.ts:277-298` (all 20 codes) | — | `session.ts` `close({code, reason})` plumbs `SessionErrorCodeDraft18` into `transport.close(code, reason)` / `worker.disconnect(code, reason)` | `session-close.test.ts` | `12-session-close.test.ts` | ✅ | Numeric code forwarded to WebTransport `closeCode`. |
 | REQUEST_ERROR Codes | §15.10.2 | `types.ts:319-338` (17 codes) | Full enum roundtripped | Session uses `RequestErrorCodeDraft18` (NOT_SUPPORTED / DOES_NOT_EXIST / UNINTERESTED) instead of hardcoded 0x01 | REDIRECT tested | Indirect | ✅ | Enum exported from `@moq-web/core`; incoming-stream error paths use spec-appropriate codes. |
 | PUBLISH_DONE Codes | §15.10.3 | `types.ts:343-354` (10 codes) | Read as `bigint` | `sendPublishDone(..., statusCode)` accepts `PublishDoneErrorCodeDraft18`; `unpublish()` sends TRACK_ENDED | Field roundtrip | MISSING | ✅ | Both send and receive paths surface the typed enum. |
-| Stream Reset Codes | §15.10.4 | `types.ts:303-314` (10 codes) | — | MISSING | MISSING | MISSING | ❌ | Enum defined; no `stream.abort(code)` calls using these values. |
+| Stream Reset Codes | §15.10.4 | `types.ts:303-314` (10 codes) | — | `session.ts` `resetPublicationStream(alias, code, reason?)` — aborts the active subgroup writer with a code-derived reason | `session-close.test.ts` | MISSING | 🟡 | Public API surfaces the enum; WebTransport lacks a per-stream reset code, so codes are surfaced via the abort reason for now. |
 
 ## Security (§13)
 
@@ -177,7 +177,7 @@
 
 2. **Padding streams and padding datagrams (§11.5) are fully missing.** `StreamTypeDraft18.PADDING = 0x132b3e28` is defined in `types.ts:208` but there is no encoder, decoder, or session handler.
 
-3. **Draft-18 error-code enums are defined but unused end-to-end.** `SessionErrorCodeDraft18`, `StreamResetErrorCodeDraft18`, and `PublishDoneErrorCodeDraft18` never appear in session logic. Session close/reset paths don't emit specific codes and stream aborts never surface `DELIVERY_TIMEOUT`, `TOO_FAR_BEHIND`, etc.
+3. ~~**Draft-18 error-code enums are defined but unused end-to-end.**~~ Partially resolved: `SessionErrorCodeDraft18` flows through `session.close({code, reason})` to the WebTransport `closeCode`; `StreamResetErrorCodeDraft18` is exposed via `session.resetPublicationStream(alias, code)`. `PublishDoneErrorCodeDraft18` was previously wired via `sendPublishDone`. Remaining gap: WebTransport lacks a per-stream reset code, so §11.4.3 stream-level `DELIVERY_TIMEOUT` / `TOO_FAR_BEHIND` are conveyed via the abort reason string only.
 
 4. ~~**Track-property key enum for §12 is absent.**~~ Resolved: `TrackPropertyDraft18` in `packages/core/src/messages/types.ts` and `parseTrackProperties` in `packages/session/src/track-properties.ts` now decode the §12 map into `SubscribeOkEvent.trackProperties`. Only Prior Group/Object ID Gap remain enum-only.
 

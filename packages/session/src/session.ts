@@ -31,6 +31,8 @@ import {
   RequestErrorCode,
   RequestErrorCodeDraft18,
   PublishDoneErrorCodeDraft18,
+  SessionErrorCodeDraft18,
+  StreamResetErrorCodeDraft18,
   TrackPropertyDraft18,
   MOQTVarInt,
   SetupParameter,
@@ -1444,10 +1446,16 @@ export class MOQTSession {
   }
 
   /**
-   * Close the session
+   * Close the session, optionally with a draft-18 §15.10.1 termination code.
+   *
+   * @param options.code   Session Termination Code (SessionErrorCodeDraft18). Passed to the
+   *                       underlying WebTransport `close({ closeCode })`. Defaults to NO_ERROR.
+   * @param options.reason Human-readable reason string, forwarded verbatim.
    */
-  async close(): Promise<void> {
-    log.info('Closing session');
+  async close(options?: { code?: SessionErrorCodeDraft18; reason?: string }): Promise<void> {
+    const code = options?.code ?? SessionErrorCodeDraft18.NO_ERROR;
+    const reason = options?.reason ?? 'Normal closure';
+    log.info('Closing session', { code, reason });
 
     // Stop all publications
     for (const [trackAlias] of this.publicationManager) {
@@ -1475,13 +1483,63 @@ export class MOQTSession {
     this.publicationManager.clear();
     this.incomingRequestKinds.clear();
 
-    // Disconnect transport worker if using worker mode
+    // Close underlying transport with the draft-18 session termination code.
     if (this.useWorker && this.transportWorker) {
-      this.transportWorker.disconnect();
+      this.transportWorker.disconnect(code, reason);
+    } else if (this.transport) {
+      try { await this.transport.close(code, reason); } catch { /* already closed */ }
     }
 
     this._state = 'none';
     log.info('Session closed');
+  }
+
+  /**
+   * Reset an outgoing subgroup or fetch stream with a draft-18 §15.10.4 Stream Reset Code.
+   *
+   * This is the low-level primitive publishers use when they want to signal to the
+   * subscriber *why* a data stream ended abnormally (DELIVERY_TIMEOUT, TOO_FAR_BEHIND,
+   * EXCESSIVE_LOAD, etc.). If a stream is not tracked, this is a no-op.
+   *
+   * @param trackAlias The publication whose active GOP/subgroup stream should be reset.
+   * @param code       The Stream Reset Code to convey to the peer (§15.10.4).
+   * @param reason     Optional human-readable reason string forwarded to `writer.abort()`.
+   */
+  async resetPublicationStream(
+    trackAlias: string,
+    code: StreamResetErrorCodeDraft18,
+    reason?: string,
+  ): Promise<void> {
+    const existing = this.activeVideoStreams.get(trackAlias);
+    if (!existing) {
+      log.debug('resetPublicationStream: no active stream', { trackAlias });
+      return;
+    }
+    const abortReason = reason ?? `stream-reset code=${code}`;
+    try {
+      if (existing.writer) {
+        await existing.writer.abort(abortReason);
+      } else if (existing.streamId !== undefined && this.transportWorker) {
+        // The worker's close-stream path swallows the STOP_SENDING/RESET_STREAM
+        // errors from writer.close(); using it here surfaces the same behavior
+        // for aborts. A dedicated abort-stream RPC can follow if we ever need
+        // to propagate the numeric code down to the QUIC layer.
+        this.transportWorker.closeStream(existing.streamId);
+      }
+      log.info('Reset publication stream', {
+        trackAlias,
+        code,
+        reason: abortReason,
+        groupId: existing.groupId,
+        objectCount: existing.objectCount,
+      });
+    } catch (err) {
+      log.warn('Error resetting publication stream', {
+        trackAlias,
+        error: (err as Error).message,
+      });
+    }
+    this.activeVideoStreams.delete(trackAlias);
   }
 
   /**
