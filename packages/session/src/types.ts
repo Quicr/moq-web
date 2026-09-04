@@ -43,6 +43,7 @@ export type SessionEventType =
   | 'publish-done'
   | 'publish-blocked'
   | 'delivery-timeout'
+  | 'stream-reset'
   | 'new-group-request'
   | 'fetch-object'
   | 'fetch-complete'
@@ -370,6 +371,30 @@ export interface NewGroupRequestEvent {
   value: number;
   /** Whether forward=1 accompanied the request (resume + new group is common). */
   forwardState: boolean;
+}
+
+/**
+ * Draft-18 §11.4.3 subgroup-stream reset event. Fired when a subgroup stream
+ * is torn down abnormally — either locally (publisher aborts its writer via
+ * `session.resetPublicationStream`) or remotely (peer's RESET_STREAM surfaces
+ * as a WebTransportError with `streamErrorCode` on the subscriber's reader).
+ * §8 delivery-timeout resets are surfaced through `delivery-timeout` instead
+ * so consumers can distinguish deadline-driven from application-driven drops.
+ */
+export interface StreamResetEvent {
+  /** Which side of the pipeline observed the reset. */
+  side: 'publisher' | 'subscriber';
+  /** §15.10.4 stream-reset code (StreamResetErrorCodeDraft18 numeric value). */
+  code: number;
+  /** Human-readable reason string, when available. */
+  reason?: string;
+  /** Track alias whose stream was affected. */
+  trackAlias?: bigint;
+  /** Subscription that owned the stream (subscriber-side only). */
+  subscriptionId?: number;
+  /** Group / subgroup identifiers, when known at reset time. */
+  groupId?: number;
+  subgroupId?: number;
 }
 
 /**
