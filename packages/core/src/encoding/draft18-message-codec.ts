@@ -43,6 +43,7 @@ import {
   type PublishBlockedMessageDraft18,
   type TrackNamespace,
   type Location,
+  type SetupExtensionValue,
 } from '../messages/types.js';
 
 const log = Logger.create('moqt:core:draft18-codec');
@@ -323,6 +324,41 @@ export class Draft18MessageCodec {
         },
       });
     }
+    // §3.2 application extensions. Reject collisions with known SetupOptions
+    // so callers don't accidentally overwrite a codec-managed field.
+    if (message.extensions) {
+      const reserved = new Set<number>([
+        SetupOptionDraft18.PATH,
+        SetupOptionDraft18.AUTHORIZATION_TOKEN,
+        SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE,
+        SetupOptionDraft18.AUTHORITY,
+        SetupOptionDraft18.MOQT_IMPLEMENTATION,
+      ]);
+      for (const [key, value] of message.extensions) {
+        if (reserved.has(key)) {
+          throw new Error(`SETUP extension key 0x${key.toString(16)} collides with a reserved SetupOption`);
+        }
+        const isVarint = 'varint' in value;
+        const parityIsEven = key % 2 === 0;
+        if (isVarint !== parityIsEven) {
+          throw new Error(
+            `SETUP extension key 0x${key.toString(16)} parity mismatch: ` +
+            `even keys carry varints, odd keys carry length-prefixed bytes`,
+          );
+        }
+        options.push({
+          key,
+          encode: (w) => {
+            if ('varint' in value) {
+              w.writeVarInt(value.varint);
+            } else {
+              w.writeVarInt(BigInt(value.bytes.length));
+              w.writeBytes(value.bytes);
+            }
+          },
+        });
+      }
+    }
 
     // Sort by key and write delta-encoded
     options.sort((a, b) => a.key - b.key);
@@ -344,6 +380,10 @@ export class Draft18MessageCodec {
     let path: string | undefined;
     let authority: string | undefined;
     let maxAuthTokenCacheSize: number | undefined;
+    // §3.2: retain unknown KVPs so callers can inspect peer-advertised
+    // extensions (e.g. custom auth schemes, feature flags). Even keys carry
+    // a varint value; odd keys carry length-prefixed bytes.
+    let extensions: Map<number, SetupExtensionValue> | undefined;
     let previousKey = 0;
 
     while (reader.offset < endOffset) {
@@ -376,14 +416,18 @@ export class Draft18MessageCodec {
           break;
         }
         default:
-          // Skip unknown options per KVP rules
+          // Unknown option: capture it so the caller can inspect §3.2
+          // extensions the peer advertised. Even keys are varints, odd keys
+          // are length-prefixed bytes.
+          if (!extensions) extensions = new Map();
           if (key % 2 === 0) {
-            // Even key: value is a varint
-            reader.readVarInt();
+            extensions.set(key, { varint: reader.readVarInt() });
           } else {
-            // Odd key: length-prefixed bytes
             const length = reader.readVarIntNumber();
-            reader.skip(length);
+            const bytes = reader.readBytes(length);
+            // Copy so callers can hold on to the slice beyond the decode
+            // scratch buffer's lifetime.
+            extensions.set(key, { bytes: new Uint8Array(bytes) });
           }
       }
     }
@@ -394,6 +438,7 @@ export class Draft18MessageCodec {
       path,
       authority,
       maxAuthTokenCacheSize,
+      extensions,
     };
   }
 

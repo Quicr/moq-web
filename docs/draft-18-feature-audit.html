@@ -444,7 +444,7 @@
 <strong>Audit date:</strong> 2026-09-03<br />
 <strong>Branch reviewed:</strong> <code>main</code> (after PR #35)</p>
 <!-- audit-progress:begin -->
-<p><strong>Progress:</strong> ✅ 50 · 🟡 17 · ❌ 13 · <strong>62% complete</strong> of 80 features</p>
+<p><strong>Progress:</strong> ✅ 51 · 🟡 16 · ❌ 13 · <strong>63% complete</strong> of 80 features</p>
 <!-- audit-progress:end -->
 
 <blockquote>
@@ -575,13 +575,13 @@
 <tr>
 <td>Extension advertisement in SETUP</td>
 <td>§3.2</td>
-<td><code>draft18-message-codec.ts:273-333</code></td>
-<td><code>draft18-message-codec.ts:339-397</code></td>
-<td>fixed option set (<code>session.ts:1063-1082</code>)</td>
-<td><code>draft18-message-codec.test.ts:34-82</code></td>
-<td><code>01-setup.test.ts</code></td>
-<td>🟡</td>
-<td>Unknown options skipped on decode, no API to advertise custom extensions.</td>
+<td><code>draft18-message-codec.ts</code> <code>encodeSetup()</code> (reserved-key + parity checks)</td>
+<td><code>draft18-message-codec.ts</code> <code>decodeSetup()</code> (captures unknown KVPs into <code>extensions</code> map)</td>
+<td><code>session.ts</code> <code>setClientExtensions()</code> / <code>peerExtensions</code> getter; passes through <code>ClientSetupMessageDraft18.extensions</code></td>
+<td><code>draft18-message-codec.test.ts</code> (<code>SETUP extensions (§3.2)</code> suite) + <code>session-setup-extensions.test.ts</code></td>
+<td><code>14-setup-extensions.test.ts</code></td>
+<td>✅</td>
+<td>Custom extensions round-trip through SETUP with reserved-key collision + even/odd parity enforcement.</td>
 </tr>
 <tr>
 <td>Reserved namespaces</td>
