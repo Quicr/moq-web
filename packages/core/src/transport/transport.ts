@@ -60,7 +60,20 @@ export type TransportEventType =
   | 'control-message'
   | 'setup-message'
   | 'incoming-bidi-stream'
-  | 'error';
+  | 'error'
+  | 'closed';
+
+/**
+ * Payload for the `'closed'` event. `closeCode` and `reason` mirror the
+ * `WebTransportCloseInfo` supplied to the underlying WebTransport `.closed`
+ * promise; `remote` is true when the peer initiated the close (draft-18
+ * §15.10.1 Session Termination surfaces via this path).
+ */
+export interface TransportClosedInfo {
+  closeCode: number;
+  reason: string;
+  remote: boolean;
+}
 
 /**
  * Transport event payloads
@@ -73,6 +86,7 @@ export interface TransportEvents {
   'setup-message': Uint8Array;
   'incoming-bidi-stream': { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> };
   'error': Error;
+  'closed': TransportClosedInfo;
 }
 
 /**
@@ -141,6 +155,8 @@ export class MOQTransport {
   private _url?: string;
   /** Abort controller for connection timeout */
   private abortController?: AbortController;
+  /** True if the local side called close() first (so `.closed` resolving is expected). */
+  private localCloseInitiated = false;
 
   /**
    * Create a new MOQTransport
@@ -217,6 +233,7 @@ export class MOQTransport {
     }
 
     this._url = url;
+    this.localCloseInitiated = false;
     this.setState('connecting');
     this.abortController = new AbortController();
 
@@ -294,13 +311,29 @@ export class MOQTransport {
       }
 
       // Set up close handler
+      // `WebTransport.closed` resolves with a `WebTransportCloseInfo`
+      // ({ closeCode, reason }) that carries the peer's draft-18 §15.10.1
+      // Session Termination Code when the remote side initiated the close.
       this.transport.closed
-        .then(() => {
-          log.info('Transport closed');
+        .then((info: { closeCode?: number; reason?: string } | undefined) => {
+          const closeCode = typeof info?.closeCode === 'number' ? info.closeCode : 0;
+          const reason = typeof info?.reason === 'string' ? info.reason : '';
+          const remote = !this.localCloseInitiated;
+          log.info('Transport closed', { closeCode, reason, remote });
+          this.emit('closed', { closeCode, reason, remote });
           this.handleClose();
         })
         .catch((err) => {
           log.error('Transport closed with error', err);
+          // Best-effort: some UA implementations reject with a plain Error;
+          // WebTransportError carries `{ streamErrorCode, source }` but not
+          // the session close code — surface what we have.
+          const closeCode = (err as { streamErrorCode?: number } | null)?.streamErrorCode ?? 0;
+          this.emit('closed', {
+            closeCode,
+            reason: (err as Error)?.message ?? 'transport error',
+            remote: !this.localCloseInitiated,
+          });
           this.handleError(err);
         });
 
@@ -707,6 +740,7 @@ export class MOQTransport {
     }
 
     log.info('Closing transport', { code, reason });
+    this.localCloseInitiated = true;
     this.setState('closing');
 
     try {
