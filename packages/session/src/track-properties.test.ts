@@ -23,6 +23,8 @@ describe('parseTrackProperties', () => {
       [TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER, enc(GroupOrder.DESCENDING)],
       [TrackPropertyDraft18.DYNAMIC_GROUPS, enc(1)],
       [TrackPropertyDraft18.IMMUTABLE_PROPERTIES, enc(0b1010n)],
+      [TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, enc(3)],
+      [TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP, enc(7)],
     ]);
 
     const props = parseTrackProperties(raw);
@@ -34,6 +36,8 @@ describe('parseTrackProperties', () => {
     expect(props?.defaultPublisherGroupOrder).toBe(GroupOrder.DESCENDING);
     expect(props?.dynamicGroups).toBe(true);
     expect(props?.immutablePropertiesBitmap).toBe(0b1010n);
+    expect(props?.priorGroupIdGap).toBe(3);
+    expect(props?.priorObjectIdGap).toBe(7);
   });
 
   it('treats a zero DYNAMIC_GROUPS varint as false', () => {
@@ -72,5 +76,15 @@ describe('parseTrackProperties', () => {
     const large = (1n << 40n) | 0xdeadbeefn;
     const raw = new Map([[TrackPropertyDraft18.IMMUTABLE_PROPERTIES, enc(large)]]);
     expect(parseTrackProperties(raw)?.immutablePropertiesBitmap).toBe(large);
+  });
+
+  it('decodes PRIOR_GROUP_ID_GAP (§12.8) alone', () => {
+    const raw = new Map([[TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, enc(0)]]);
+    expect(parseTrackProperties(raw)?.priorGroupIdGap).toBe(0);
+  });
+
+  it('decodes PRIOR_OBJECT_ID_GAP (§12.9) alone', () => {
+    const raw = new Map([[TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP, enc(42)]]);
+    expect(parseTrackProperties(raw)?.priorObjectIdGap).toBe(42);
   });
 });

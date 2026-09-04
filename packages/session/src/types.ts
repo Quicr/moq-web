@@ -162,6 +162,18 @@ export interface PublishOptions {
    * `undefined` omits the parameter.
    */
   expires?: number;
+  /**
+   * Draft-18 §12.8 PRIOR_GROUP_ID_GAP advertised on outbound PUBLISH so
+   * subscribers know the expected group-ID gap between adjacent groups.
+   * Non-negative varint; `undefined` omits the property.
+   */
+  priorGroupIdGap?: number;
+  /**
+   * Draft-18 §12.9 PRIOR_OBJECT_ID_GAP advertised on outbound PUBLISH — the
+   * expected object-ID gap within a group. Non-negative varint; `undefined`
+   * omits the property.
+   */
+  priorObjectIdGap?: number;
 }
 
 /**
@@ -280,6 +292,18 @@ export interface TrackProperties {
   dynamicGroups?: boolean;
   /** §12.7 — immutable-properties bitmap (raw varint) */
   immutablePropertiesBitmap?: bigint;
+  /**
+   * §12.8 — prior group-ID gap. Advertises the gap between the current
+   * group ID and the previous group ID the publisher will emit; a decoder
+   * can use this to distinguish "next expected group" from "publisher
+   * skipped ahead" without waiting for the next object.
+   */
+  priorGroupIdGap?: number;
+  /**
+   * §12.9 — prior object-ID gap within the current group. Same semantics
+   * as `priorGroupIdGap` but scoped to object IDs inside a group.
+   */
+  priorObjectIdGap?: number;
 }
 
 /**
