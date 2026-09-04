@@ -66,6 +66,23 @@ describe('Draft18MessageCodec', () => {
       expect(d.maxAuthTokenCacheSize).toBe(100);
       expect(bytesRead).toBe(encoded.length);
     });
+
+    // §10.2.2: AUTHORIZATION_TOKEN option carries the raw token bytes on the
+    // wire; the caller decodes the alias/type/value via MessageCodec.
+    it('roundtrips SETUP AUTHORIZATION_TOKEN bytes', () => {
+      const tokenBytes = new Uint8Array([0x03, 0x63, 0x34, 0x6d, 0xaa, 0xbb, 0xcc]);
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        authToken: tokenBytes,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as ServerSetupMessageDraft18;
+      expect(d.authToken).toBeDefined();
+      expect(d.authToken).toEqual(tokenBytes);
+    });
   });
 
   describe('SETUP decode', () => {
@@ -221,6 +238,29 @@ describe('Draft18MessageCodec', () => {
       expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_RANGE);
       expect(d.startLocation).toEqual({ group: 10n, object: 5n });
       expect(d.endGroupDelta).toBe(100n);
+    });
+
+    // §10.2.2: AUTHORIZATION_TOKEN is an odd-key request parameter; encoder
+    // must length-prefix so the decoder can read it via the default branch.
+    it('roundtrips SUBSCRIBE with AUTHORIZATION_TOKEN request parameter', () => {
+      const tokenBytes = new Uint8Array([0x03, 0x63, 0x34, 0x6d, 0xde, 0xad, 0xbe, 0xef]);
+      const params = new Map<number, Uint8Array>([
+        [RequestParameterDraft18.AUTHORIZATION_TOKEN, tokenBytes],
+      ]);
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 3n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+        parameters: params,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as SubscribeMessageDraft18;
+      expect(d.parameters!.get(RequestParameterDraft18.AUTHORIZATION_TOKEN)).toEqual(tokenBytes);
     });
 
     it('roundtrips SUBSCRIBE with §10.2 delivery-timeout parameters', () => {
@@ -557,6 +597,32 @@ describe('Draft18MessageCodec', () => {
       expect(d.joiningStart).toBe(42n);
       expect(d.trackNamespace).toBeUndefined();
       expect(d.trackName).toBeUndefined();
+    });
+
+    // §10.2.2: AUTHORIZATION_TOKEN on FETCH must also survive round-trip.
+    it('roundtrips STANDALONE fetch with AUTHORIZATION_TOKEN parameter', () => {
+      const tokenBytes = new Uint8Array([0x03, 0x63, 0x34, 0x6d, 0x11, 0x22, 0x33]);
+      const params = new Map<number, Uint8Array>([
+        [RequestParameterDraft18.AUTHORIZATION_TOKEN, tokenBytes],
+      ]);
+      const message: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 23n,
+        fetchType: FetchTypeDraft18.STANDALONE,
+        joiningFlag: false,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 10n, object: 0n },
+        parameters: params,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as FetchMessageDraft18;
+      expect(d.parameters!.get(RequestParameterDraft18.AUTHORIZATION_TOKEN)).toEqual(tokenBytes);
     });
 
     it('writes distinct wire bytes for JOINING_RELATIVE (0x2) vs JOINING_ABSOLUTE (0x3)', () => {

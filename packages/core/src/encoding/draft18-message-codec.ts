@@ -380,6 +380,7 @@ export class Draft18MessageCodec {
     let path: string | undefined;
     let authority: string | undefined;
     let maxAuthTokenCacheSize: number | undefined;
+    let authToken: Uint8Array | undefined;
     // §3.2: retain unknown KVPs so callers can inspect peer-advertised
     // extensions (e.g. custom auth schemes, feature flags). Even keys carry
     // a varint value; odd keys carry length-prefixed bytes.
@@ -402,7 +403,9 @@ export class Draft18MessageCodec {
           break;
         case SetupOptionDraft18.AUTHORIZATION_TOKEN: {
           const length = reader.readVarIntNumber();
-          reader.skip(length);
+          // Copy so callers can hold onto the token past the decode buffer's
+          // lifetime; downstream code decodes via MessageCodec.decodeAuthorizationToken.
+          authToken = new Uint8Array(reader.readBytes(length));
           break;
         }
         case SetupOptionDraft18.AUTHORITY: {
@@ -438,6 +441,7 @@ export class Draft18MessageCodec {
       path,
       authority,
       maxAuthTokenCacheSize,
+      authToken,
       extensions,
     };
   }
@@ -487,10 +491,23 @@ export class Draft18MessageCodec {
       });
     }
 
-    // Add any additional raw parameters
+    // Add any additional raw parameters. §10.2 wire convention: even keys
+    // carry their value verbatim (single-byte or varint); odd keys are
+    // length-prefixed byte strings. Callers pass raw payload bytes and we
+    // length-prefix them when appropriate to match the decoder.
     if (message.parameters) {
       for (const [type, value] of message.parameters) {
-        params.push({ type, encode: (w) => w.writeBytes(value) });
+        if (type % 2 === 0) {
+          params.push({ type, encode: (w) => w.writeBytes(value) });
+        } else {
+          params.push({
+            type,
+            encode: (w) => {
+              w.writeVarInt(BigInt(value.length));
+              w.writeBytes(value);
+            },
+          });
+        }
       }
     }
 
@@ -826,7 +843,17 @@ export class Draft18MessageCodec {
     }
     if (message.parameters) {
       for (const [type, value] of message.parameters) {
-        params.push({ type, encode: (w) => w.writeBytes(value) });
+        if (type % 2 === 0) {
+          params.push({ type, encode: (w) => w.writeBytes(value) });
+        } else {
+          params.push({
+            type,
+            encode: (w) => {
+              w.writeVarInt(BigInt(value.length));
+              w.writeBytes(value);
+            },
+          });
+        }
       }
     }
     Draft18MessageCodec.encodeMessageParameters(writer, params);
