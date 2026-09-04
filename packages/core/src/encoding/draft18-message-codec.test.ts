@@ -432,6 +432,51 @@ describe('Draft18MessageCodec', () => {
       const d = decoded as RequestOkMessageDraft18;
       expect(d.expires).toBe(3600n);
     });
+
+    it('roundtrips REQUEST_OK with largestLocation (§10.2.9 LARGEST_OBJECT)', () => {
+      const message: RequestOkMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_OK,
+        requestId: 0n,
+        largestLocation: { group: 42n, object: 7n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestOkMessageDraft18;
+      expect(d.type).toBe(MessageTypeDraft18.REQUEST_OK);
+      expect(d.largestLocation).toEqual({ group: 42n, object: 7n });
+    });
+
+    it('roundtrips REQUEST_OK with both expires and largestLocation', () => {
+      const message: RequestOkMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_OK,
+        requestId: 0n,
+        expires: 300n,
+        largestLocation: { group: 100n, object: 3n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestOkMessageDraft18;
+      expect(d.expires).toBe(300n);
+      expect(d.largestLocation).toEqual({ group: 100n, object: 3n });
+    });
+
+    it('leaves largestLocation undefined when omitted on the wire', () => {
+      const message: RequestOkMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_OK,
+        requestId: 0n,
+        expires: 60n,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as RequestOkMessageDraft18;
+      expect(d.largestLocation).toBeUndefined();
+    });
   });
 
   describe('FETCH', () => {

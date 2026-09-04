@@ -67,6 +67,7 @@ export type {
   ReceivedObjectEvent,
   SubscriptionInfo,
   PublicationInfo,
+  TrackStatusResult,
   PublishStatsEvent,
   SubscribeStatsEvent,
   SubscribeOkEvent,
