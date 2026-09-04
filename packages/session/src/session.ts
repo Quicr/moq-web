@@ -110,6 +110,7 @@ import type {
   PublishDoneEvent,
   PublishBlockedEvent,
   DeliveryTimeoutEvent,
+  StreamResetEvent,
   NewGroupRequestEvent,
   MessageLogEvent,
   SubscriptionInfo,
@@ -651,6 +652,30 @@ export class MOQTSession {
         subgroupId: detail.subgroupId,
         objectId: detail.objectId,
       } as DeliveryTimeoutEvent);
+    });
+
+    // Draft-18 §11.4.3: surface peer-initiated subgroup stream resets. We
+    // only fire this for aborts where WebTransport gave us a numeric
+    // streamErrorCode; §8 delivery-timeouts flow through the callback above.
+    this.objectRouter.setStreamResetCallback((sub, code, reason, detail) => {
+      log.warn('Incoming subgroup stream reset by peer', {
+        subscriptionId: sub?.subscriptionId,
+        trackAlias: sub?.trackAlias?.toString() ?? detail.trackAlias?.toString(),
+        code,
+        reason,
+        ...detail,
+      });
+      const evt: StreamResetEvent = {
+        side: 'subscriber',
+        code,
+        reason,
+      };
+      if (sub?.trackAlias !== undefined) evt.trackAlias = sub.trackAlias;
+      else if (detail.trackAlias !== undefined) evt.trackAlias = detail.trackAlias;
+      if (sub?.subscriptionId !== undefined) evt.subscriptionId = sub.subscriptionId;
+      if (detail.groupId !== undefined) evt.groupId = detail.groupId;
+      if (detail.subgroupId !== undefined) evt.subgroupId = detail.subgroupId;
+      this.emit('stream-reset', evt);
     });
 
     // Set up FETCH object callback to emit fetch-object events
@@ -1899,7 +1924,10 @@ export class MOQTSession {
       log.debug('resetPublicationStream: no active stream', { trackAlias });
       return;
     }
-    const abortReason = reason ?? `stream-reset code=${code}`;
+    // Include the symbolic enum name so the peer sees "TOO_FAR_BEHIND" rather
+    // than an opaque number when it inspects the abort reason string.
+    const codeName = StreamResetErrorCodeDraft18[code] ?? 'UNKNOWN';
+    const abortReason = reason ?? `stream-reset code=${code} (${codeName})`;
     try {
       if (existing.writer) {
         await existing.writer.abort(abortReason);
@@ -1923,7 +1951,36 @@ export class MOQTSession {
         error: (err as Error).message,
       });
     }
+    // Draft-18 §11.4.3 stream-reset — surface the code + context so consumers
+    // (UI, metrics) can distinguish TOO_FAR_BEHIND / EXCESSIVE_LOAD from
+    // §8 DELIVERY_TIMEOUT (which uses the `delivery-timeout` event instead).
+    try {
+      this.emit('stream-reset', {
+        side: 'publisher',
+        code,
+        reason: abortReason,
+        trackAlias: BigInt(trackAlias),
+        groupId: existing.groupId,
+      } as StreamResetEvent);
+    } catch { /* alias may not parse as bigint in test fixtures */ }
     this.activeVideoStreams.delete(trackAlias);
+  }
+
+  /**
+   * Draft-18 §11.4.3 helper — reset a publication's subgroup stream with the
+   * §15.10.4 `TOO_FAR_BEHIND` code. Use when a subscriber is lagging past the
+   * publisher's cache window and the publisher wants the subscriber to catch
+   * up out-of-band (usually by resubscribing with a later filter).
+   */
+  async resetPublicationStreamTooFarBehind(
+    trackAlias: string,
+    reason?: string,
+  ): Promise<void> {
+    return this.resetPublicationStream(
+      trackAlias,
+      StreamResetErrorCodeDraft18.TOO_FAR_BEHIND,
+      reason,
+    );
   }
 
   /**
@@ -4871,6 +4928,7 @@ export class MOQTSession {
   on(event: 'namespace-forward-paused', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'namespace-forward-resumed', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'new-group-request', handler: (event: NewGroupRequestEvent) => void): () => void;
+  on(event: 'stream-reset', handler: (event: StreamResetEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {

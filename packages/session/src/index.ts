@@ -101,6 +101,10 @@ export type {
   IncomingFetchEvent,
   // Forward state types
   ForwardStateChangeEvent,
+  // Draft-18 §8 / §11.4.3 / §10.2.13 event payloads
+  DeliveryTimeoutEvent,
+  StreamResetEvent,
+  NewGroupRequestEvent,
 } from './types.js';
 
 // Draft-18 track properties helper
