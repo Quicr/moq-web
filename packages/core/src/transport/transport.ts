@@ -724,13 +724,20 @@ export class MOQTransport {
    * await writer.close();
    * ```
    */
-  async createUnidirectionalStream(): Promise<WritableStream<Uint8Array>> {
+  async createUnidirectionalStream(
+    options?: { sendOrder?: number }
+  ): Promise<WritableStream<Uint8Array>> {
     if (!this.transport) {
       throw new Error('Not connected');
     }
 
     log.trace('Creating unidirectional stream');
-    const stream = await this.transport.createUnidirectionalStream();
+    // WebTransportSendStreamOptions accepts { sendOrder: number }; browsers
+    // that don't support the option ignore unknown fields. Draft-18 §7.2
+    // priority scheduling relies on higher sendOrder = ships first.
+    const stream = options?.sendOrder !== undefined
+      ? await this.transport.createUnidirectionalStream({ sendOrder: options.sendOrder })
+      : await this.transport.createUnidirectionalStream();
     return stream;
   }
 
