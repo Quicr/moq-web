@@ -112,9 +112,9 @@
 
 | Feature | §Spec | Wire encode | Wire decode | Session-layer | Unit test | E2E test | Status | Notes |
 |---|---|---|---|---|---|---|---|---|
-| Subgroup delivery timeout enforcement | §8 | Generic KVP | Generic KVP | MISSING | MISSING | MISSING | ❌ | No timer, no drop logic. |
-| Object delivery timeout enforcement | §8 | Generic KVP | Generic KVP | MISSING | MISSING | MISSING | ❌ | Same. |
-| Delivery-timeout-driven drop | §8 | — | — | MISSING | MISSING | MISSING | ❌ | No stream-reset with `DELIVERY_TIMEOUT` code. |
+| Subgroup delivery timeout enforcement | §8 | Generic KVP | Generic KVP | `object-router.ts` `armSubgroupTimer`/`disarmSubgroupTimers`; publisher side in `session.ts` `armPublisherSubgroupTimer` (`sendObjectViaStream`, `sendObjectWithGOP`) | `object-router-delivery-timeout.test.ts`, `session-delivery-timeout.test.ts`, `delivery-timeout.test.ts` | Covered indirectly via `05-subscribe.test.ts` | ✅ | Subscriber cancels reader; publisher resets stream and emits `delivery-timeout` event. |
+| Object delivery timeout enforcement | §8 | Generic KVP | Generic KVP | `object-router.ts` `armObjectTimer`/`disarmObjectTimer` per-object; speculatively armed after each delivery | `object-router-delivery-timeout.test.ts`, `delivery-timeout.test.ts` | Covered indirectly | ✅ | Fires with `reason='object'` on `DeliveryTimeoutEvent`. |
+| Delivery-timeout-driven drop | §8 | — | — | `resetPublicationStream(alias, StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT)`; subscriber calls `reader.cancel(reason)` | `session-delivery-timeout.test.ts`, `object-router-delivery-timeout.test.ts` | Covered indirectly | 🟡 | Numeric §15.10.4 `DELIVERY_TIMEOUT` (0x2) surfaced via `DeliveryTimeoutEvent.resetCode`; WebTransport lacks a per-stream reset code so wire signal is conveyed via `writer.abort(reason)`. |
 
 ## Track Properties (§12)
 
@@ -173,7 +173,7 @@
 
 ## Top Gaps (Summary)
 
-1. **No delivery-timeout enforcement or priority scheduling.** SUBGROUP/OBJECT/FILL/RENDEZVOUS timeout parameters have enum entries but no timer or drop logic; SUBSCRIBER/publisher priorities are transmitted but `StreamManager` never orders local writes (§7.2, §8).
+1. ~~**No delivery-timeout enforcement or priority scheduling.**~~ Partially resolved: §8 subgroup + object delivery timeouts now armed on both subscriber (`ObjectRouter`) and publisher (`session.ts`) sides. Subscriber cancels the reader; publisher resets the stream via `StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT` and emits a `delivery-timeout` event. Remaining gap: SUBSCRIBER/publisher priorities are transmitted but `StreamManager` never orders local writes (§7.2); FILL / RENDEZVOUS timeouts (§8.3–4) still unenforced.
 
 2. **Padding streams and padding datagrams (§11.5) are fully missing.** `StreamTypeDraft18.PADDING = 0x132b3e28` is defined in `types.ts:208` but there is no encoder, decoder, or session handler.
 
