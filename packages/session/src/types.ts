@@ -43,6 +43,7 @@ export type SessionEventType =
   | 'publish-done'
   | 'publish-blocked'
   | 'delivery-timeout'
+  | 'new-group-request'
   | 'fetch-object'
   | 'fetch-complete'
   | 'fetch-stream-complete'
@@ -154,6 +155,12 @@ export interface PublishOptions {
   skipForwardWait?: boolean;
   /** Per-request authorization token */
   authToken?: RequestAuthToken;
+  /**
+   * Draft-18 §10.2.10 EXPIRES (ms) advertised on the REQUEST_OK reply we
+   * emit when a subscriber lands on this track. `0` means "no expiration",
+   * `undefined` omits the parameter.
+   */
+  expires?: number;
 }
 
 /**
@@ -350,6 +357,22 @@ export interface DeliveryTimeoutEvent {
 }
 
 /**
+ * Draft-18 §10.2.13 NEW_GROUP_REQUEST — fired on the publisher side when the
+ * subscriber's REQUEST_UPDATE carries NEW_GROUP_REQUEST. The app is expected
+ * to decide whether to cut a fresh group (typically by publishing a keyframe
+ * with `metadata.newGroup: true`). `value` is the raw varint payload — non-zero
+ * means "please cut a new group"; some peers use it as a monotonic counter.
+ */
+export interface NewGroupRequestEvent {
+  /** Request ID of the subscription being updated. */
+  requestId: number;
+  /** Raw §10.2.13 parameter value (varint). Non-zero = request active. */
+  value: number;
+  /** Whether forward=1 accompanied the request (resume + new group is common). */
+  forwardState: boolean;
+}
+
+/**
  * Draft-18 REQUEST_OK event - emitted for every accepted request that
  * responds with REQUEST_OK (PUBLISH, PUBLISH_NAMESPACE, FETCH,
  * SUBSCRIBE_NAMESPACE, TRACK_STATUS). `expires` is the optional §10.2.10
@@ -401,6 +424,12 @@ export interface AnnounceOptions {
   deliveryMode?: 'stream' | 'datagram';
   /** Audio delivery mode when main mode is 'stream' (default: 'datagram' for low latency) */
   audioDeliveryMode?: 'datagram' | 'stream';
+  /**
+   * Draft-18 §10.2.10 EXPIRES (ms) — advertised on outbound REQUEST_OK /
+   * SUBSCRIBE_OK when a subscriber lands on a track we announced. `0` means
+   * "no expiration"; `undefined` omits the parameter entirely.
+   */
+  expires?: number;
 }
 
 /**
@@ -459,6 +488,12 @@ export interface SubscribeNamespaceOptions {
   priority?: number;
   /** Callback for received objects from tracks under this namespace */
   onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  /**
+   * Draft-18 §10.2.10 EXPIRES (ms) advertised on the REQUEST_OK we send when
+   * accepting an incoming PUBLISH under this namespace. `0` = no expiration,
+   * `undefined` omits the parameter.
+   */
+  expires?: number;
 }
 
 /**
@@ -475,6 +510,8 @@ export interface NamespaceSubscriptionInfo {
   tracks: Map<string, IncomingPublishInfo>;
   /** Callback for received objects from tracks under this namespace */
   onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  /** §10.2.10 EXPIRES (ms) to advertise on REQUEST_OK for incoming PUBLISH matches. */
+  expires?: number;
 }
 
 /**
