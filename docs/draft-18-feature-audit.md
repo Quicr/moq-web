@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 66 · 🟡 8 · ❌ 6 · **82% complete** of 80 features
+**Progress:** ✅ 69 · 🟡 6 · ❌ 5 · **86% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -78,8 +78,8 @@
 | OBJECT_DELIVERY_TIMEOUT | §10.2.4 | `draft18-message-codec.ts:445-449, 763-767` | `:484-487, 815-830` | `session.ts` `addDeliveryTimeoutParams` → `SubscribeOptions.objectDeliveryTimeout` / `FetchOptions.objectDeliveryTimeout` | `draft18-message-codec.test.ts` SUBSCRIBE + FETCH roundtrip | MISSING | ✅ | Subscriber-side per-object delivery timeout as varint request parameter. |
 | FILL_TIMEOUT | §10.2.5 | `draft18-message-codec.ts:445-449, 763-767` | `:484-487, 815-830` | `session.ts` `addDeliveryTimeoutParams` → `SubscribeOptions.fillTimeout` / `FetchOptions.fillTimeout` | `draft18-message-codec.test.ts` SUBSCRIBE + FETCH roundtrip | MISSING | ✅ | Subscriber-side missing-object wait timeout. |
 | RENDEZVOUS_TIMEOUT | §10.2.6 | `draft18-message-codec.ts:445-449, 763-767` | `:484-487, 815-830` | `session.ts` `addDeliveryTimeoutParams` → `SubscribeOptions.rendezvousTimeout` / `FetchOptions.rendezvousTimeout` | `draft18-message-codec.test.ts` SUBSCRIBE + FETCH roundtrip | MISSING | ✅ | Subscriber-side cutover-wait timeout for new subscribers. |
-| SUBSCRIBER_PRIORITY | §10.2.7 | `draft18-message-codec.ts:743, 449` | `:788, 484-486` | `session.ts:1460, 1794, 2494` | Roundtrip | Indirect | ✅ | Values pass through; not used for local scheduling. |
-| GROUP_ORDER | §10.2.8 | `:749, 445` | `:790-791, 490-492` | `session.ts:1795` etc. | Roundtrip | Indirect | ✅ | |
+| SUBSCRIBER_PRIORITY | §10.2.7 | `draft18-message-codec.ts` (encoded from `SubscribeOptions.priority`) | `:788, 484-486` | `parseSubscriberSchedulingParams` → `InternalPublication.subscriberPriority`; feeds `deriveSendOrder`; refreshed on REQUEST_UPDATE | `priority.test.ts`, `session-priority.test.ts` | `23-priority.test.ts` | ✅ | Drives WebTransport `sendOrder`. |
+| GROUP_ORDER | §10.2.8 | `:749, 445` | `:790-791, 490-492` | `parseSubscriberSchedulingParams` → `InternalPublication.subscriberGroupOrder`; feeds `deriveSendOrder` | `priority.test.ts`, `session-priority.test.ts` | `23-priority.test.ts` | ✅ | ASCENDING inverts groupId low bits; DESCENDING preserves. |
 | SUBSCRIPTION_FILTER | §10.2.9 | Inline in SUBSCRIBE `:423-449` | `:471-497` | `session.ts` `mapSubscribeFilter` → `SubscribeOptions.filterType` ('latest' / 'next-group' / 'largest-object' / 'absolute-start' / 'absolute-range' + `startGroup`/`startObject`/`endGroup`) | `draft18-message-codec.test.ts` roundtrip + `session-subscription-filter.test.ts` | `19-subscription-filters.test.ts` | ✅ | All four §10.2.9 filter variants selectable through `SubscribeOptions`; `endGroup` translated to `endGroupDelta` at send time. |
 | EXPIRES | §10.2.10 | `draft18-message-codec.ts` REQUEST_OK + SUBSCRIBE_OK params | REQUEST_OK + SUBSCRIBE_OK decode | `session.ts` `AnnounceOptions.expires` → SUBSCRIBE_OK; `SubscribeNamespaceOptions.expires` → REQUEST_OK; `PublishOptions.expires` on publisher-side outbound REQUEST_OK | `session-expires-and-ngr.test.ts` + `draft18-message-codec.test.ts` SUBSCRIBE_OK EXPIRES roundtrip | `20-expires-and-ngr.test.ts` | ✅ | Two-way surface: incoming REQUEST_OK exposed via `RequestOkEvent.expiresMs`; outbound SUBSCRIBE_OK / REQUEST_OK carries publisher-configured value. |
 | LARGEST_OBJECT | §10.2.11 | `:510, 1216-1225` | `:538-544` | `session.ts:1530-1544` | SUBSCRIBE_OK roundtrip | Indirect | ✅ | |
@@ -103,10 +103,10 @@
 
 | Feature | §Spec | Wire encode | Wire decode | Session-layer | Unit test | E2E test | Status | Notes |
 |---|---|---|---|---|---|---|---|---|
-| Publisher priority | §7.1 | `draft18-stream-codec.ts:126, 322` | `:181, 376` | `session.ts:3657, 3710, 3804, 3862, 3950` | Header roundtrips | Indirect | 🟡 | Transmitted; not used to order local writes. |
-| Subscriber priority | §7.1 | `draft18-message-codec.ts:743` | `:788` | `session.ts:1794` (`options.priority`) | Roundtrip | Indirect | 🟡 | No local send scheduling. |
-| Group order | §7.1 | Roundtripped everywhere | Roundtripped | `session.ts:1795` etc. | Roundtrip | Indirect | ✅ | Pure pass-through. |
-| Scheduling algorithm | §7.2 | — | — | MISSING | MISSING | MISSING | ❌ | `StreamManager` stores priority but never orders writes. |
+| Publisher priority | §7.1 | `draft18-stream-codec.ts:126, 322` | `:181, 376` | `session.ts` `deriveSendOrder` folds into `sendOrder`; used in `sendObjectViaStream` and `sendObjectWithGOP` | `priority.test.ts` | `23-priority.test.ts` | ✅ | Feeds into WebTransport `sendOrder` alongside subscriber priority + group order. |
+| Subscriber priority | §7.1 | `draft18-message-codec.ts` — encoded on SUBSCRIBE from `SubscribeOptions.priority`; decoded via `parseSubscriberSchedulingParams` | Decoded via `parseSubscriberSchedulingParams` | `priority.ts` `parseSubscriberSchedulingParams`; cached on `InternalPublication.subscriberPriority`; updated on `REQUEST_UPDATE` (§10.9.1) | `priority.test.ts`, `session-priority.test.ts` | `23-priority.test.ts` | ✅ | Round-trips through the wire and drives `sendOrder`. |
+| Group order | §7.1 | Roundtripped everywhere; encoded via SUBSCRIBER-side `SubscribeOptions.groupOrder` | Roundtripped; parsed via `parseSubscriberSchedulingParams` | Cached on `InternalPublication.subscriberGroupOrder`; used in `deriveSendOrder` | `priority.test.ts`, `session-priority.test.ts` | `23-priority.test.ts` | ✅ | ASCENDING inverts groupId in the low bits of `sendOrder`; DESCENDING preserves it. |
+| Scheduling algorithm | §7.2 | — | — | `priority.ts` `computeSendOrder` packs `[invSub(8) \| invPub(8) \| groupBits(36)]` into a safe-integer `sendOrder`; applied via `createUnidirectionalStream({ sendOrder })` in `transport.ts` and `session.ts` `doCreateStream` | `priority.test.ts` | `23-priority.test.ts` | ✅ | Higher `sendOrder` = ships first (WebTransport §7.2 spec). REQUEST_UPDATE re-priorities in flight. |
 
 ## Delivery Timeouts (§8)
 
@@ -173,7 +173,7 @@
 
 ## Top Gaps (Summary)
 
-1. ~~**No delivery-timeout enforcement or priority scheduling.**~~ Partially resolved: §8 subgroup + object delivery timeouts now armed on both subscriber (`ObjectRouter`) and publisher (`session.ts`) sides. Subscriber cancels the reader; publisher resets the stream via `StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT` and emits a `delivery-timeout` event. Remaining gap: SUBSCRIBER/publisher priorities are transmitted but `StreamManager` never orders local writes (§7.2); FILL / RENDEZVOUS timeouts (§8.3–4) still unenforced.
+1. ~~**No delivery-timeout enforcement or priority scheduling.**~~ Resolved: §8 subgroup + object delivery timeouts armed on both subscriber (`ObjectRouter`) and publisher (`session.ts`) sides — subscriber cancels the reader; publisher resets the stream via `StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT` and emits a `delivery-timeout` event. §7 priority scheduling now wires SUBSCRIBER_PRIORITY / GROUP_ORDER from SUBSCRIBE + REQUEST_UPDATE through `parseSubscriberSchedulingParams` into `InternalPublication`, and `computeSendOrder` packs the §7.2 ordering into the WebTransport `sendOrder` on each outgoing subgroup stream. Remaining gap: FILL / RENDEZVOUS timeouts (§8.3–4) still unenforced.
 
 2. ~~**Padding streams and padding datagrams (§11.5) are fully missing.**~~ Resolved: `session.sendPaddingStream(bytes)` opens a unidirectional stream prefixed with `StreamTypeDraft18.PADDING` (0x132B3E28); `session.sendPaddingDatagram(bytes)` sends a datagram prefixed with `DatagramTypeDraft18.PADDING` (0x132B3E29). Receivers silently drain padding streams (transport-level) and drop padding datagrams before object decode (`DatagramManager`), so padding never surfaces as an object event.
 
