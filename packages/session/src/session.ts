@@ -91,6 +91,7 @@ import { base64urlDecode, coseSign1Encode, C4M_TOKEN_TYPE } from '@moq-web/cat';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
 import { ObjectRouter } from './object-router.js';
+import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 import { TransportWorkerClient } from './workers/index.js';
 import { parseTrackProperties } from './track-properties.js';
 import type {
@@ -107,6 +108,7 @@ import type {
   RequestOkEvent,
   PublishDoneEvent,
   PublishBlockedEvent,
+  DeliveryTimeoutEvent,
   MessageLogEvent,
   SubscriptionInfo,
   PublicationInfo,
@@ -343,6 +345,20 @@ export class MOQTSession {
   private publicationManager = new PublicationManager();
   /** Object router */
   private objectRouter: ObjectRouter;
+  /**
+   * §8 publisher-side delivery-timeout tracker. Arms per-subgroup deadlines
+   * when a stream opens (via `sendObjectViaStream` / `sendObjectWithGOP`);
+   * on expiry the stream is aborted with §15.10.4 DELIVERY_TIMEOUT and the
+   * session emits a `delivery-timeout` event.
+   */
+  private publisherDeliveryTimeouts = new DeliveryTimeoutTracker((key, reason, resetCode) => {
+    this.handlePublisherTimeoutExpiry(key, reason, resetCode);
+  });
+  /**
+   * Per-alias delivery-timeout config captured at publish() time so
+   * `sendObjectViaStream` / `sendObjectWithGOP` know when to arm timers.
+   */
+  private publisherTimeoutConfig = new Map<string, { subgroupDeliveryTimeoutMs?: number }>();
   /** Transport event cleanup handlers */
   private transportCleanup: Array<() => void> = [];
   /** Message buffer for incomplete control messages */
@@ -516,6 +532,27 @@ export class MOQTSession {
         objectId,
         bytes: data.byteLength,
       } as SubscribeStatsEvent);
+    });
+
+    // §8: surface subscriber-side delivery deadline expiries to consumers.
+    this.objectRouter.setDeliveryTimeoutCallback((sub, reason, resetCode, detail) => {
+      log.warn('Delivery timeout expired (subscriber)', {
+        subscriptionId: sub.subscriptionId,
+        trackAlias: sub.trackAlias?.toString(),
+        reason,
+        resetCode,
+        ...detail,
+      });
+      this.emit('delivery-timeout', {
+        side: 'subscriber',
+        reason,
+        resetCode,
+        trackAlias: sub.trackAlias,
+        subscriptionId: sub.subscriptionId,
+        groupId: detail.groupId,
+        subgroupId: detail.subgroupId,
+        objectId: detail.objectId,
+      } as DeliveryTimeoutEvent);
     });
 
     // Set up FETCH object callback to emit fetch-object events
@@ -1632,6 +1669,10 @@ export class MOQTSession {
     this.subscriptionManager.clear();
     this.publicationManager.clear();
     this.incomingRequestKinds.clear();
+    // §8: cancel every pending delivery-timeout so stale timers can't fire
+    // after the session is gone.
+    this.objectRouter.clearDeliveryTimeouts();
+    this.publisherDeliveryTimeouts.clear();
 
     // Close underlying transport with the draft-18 session termination code.
     if (this.useWorker && this.transportWorker) {
@@ -1655,6 +1696,74 @@ export class MOQTSession {
    * @param code       The Stream Reset Code to convey to the peer (§15.10.4).
    * @param reason     Optional human-readable reason string forwarded to `writer.abort()`.
    */
+  // ─── §8 publisher-side delivery-timeout helpers ─────────────────────────
+
+  /**
+   * Arm a subgroup-delivery deadline for an outgoing publisher stream.
+   *
+   * Returns the timer key if a timer was armed (so the caller can disarm it
+   * on successful completion) or `undefined` if the publication does not
+   * have a `deliveryTimeout` configured.
+   */
+  private armPublisherSubgroupTimer(
+    trackAlias: bigint,
+    groupId: number,
+    subgroupId: number,
+  ): string | undefined {
+    const aliasKey = trackAlias.toString();
+    const config = this.publisherTimeoutConfig.get(aliasKey);
+    const ms = config?.subgroupDeliveryTimeoutMs;
+    if (!ms || ms <= 0) return undefined;
+    const key = `pub-sg:${aliasKey}:${groupId}:${subgroupId}`;
+    this.publisherDeliveryTimeouts.arm(key, 'subgroup', ms);
+    return key;
+  }
+
+  /**
+   * Called by the tracker when a publisher-side deadline elapses. Extracts
+   * the alias/group/subgroup from the key, aborts the stream (if still
+   * open), and emits a `delivery-timeout` event so consumers can react.
+   */
+  private handlePublisherTimeoutExpiry(
+    key: string,
+    reason: DeliveryTimeoutReason,
+    resetCode: StreamResetErrorCodeDraft18,
+  ): void {
+    // Keys are `pub-sg:${alias}:${groupId}:${subgroupId}`.
+    const parts = key.split(':');
+    if (parts[0] !== 'pub-sg' || parts.length < 4) return;
+    const aliasKey = parts[1];
+    const groupId = Number(parts[2]);
+    const subgroupId = Number(parts[3]);
+
+    log.warn('Delivery timeout expired (publisher)', {
+      trackAlias: aliasKey,
+      groupId,
+      subgroupId,
+      reason,
+      resetCode,
+    });
+
+    // Best-effort abort — if a GOP stream is still open for this alias, tear
+    // it down with the §15.10.4 DELIVERY_TIMEOUT reset code. If no stream is
+    // open, resetPublicationStream is a no-op.
+    void this.resetPublicationStream(aliasKey, resetCode, 'delivery-timeout').catch((err) => {
+      log.debug('resetPublicationStream on timeout failed', {
+        aliasKey,
+        error: (err as Error).message,
+      });
+    });
+
+    this.emit('delivery-timeout', {
+      side: 'publisher',
+      reason,
+      resetCode,
+      trackAlias: BigInt(aliasKey),
+      groupId,
+      subgroupId,
+    } as DeliveryTimeoutEvent);
+  }
+
   async resetPublicationStream(
     trackAlias: string,
     code: StreamResetErrorCodeDraft18,
@@ -1738,6 +1847,8 @@ export class MOQTSession {
       paused: false,
       onObject,
       onEndOfGroup,
+      subgroupDeliveryTimeoutMs: options?.subgroupDeliveryTimeout,
+      objectDeliveryTimeoutMs: options?.objectDeliveryTimeout,
     };
     this.subscriptionManager.add(subscription);
 
@@ -2904,6 +3015,14 @@ export class MOQTSession {
       forward: 0, // Will be updated after PUBLISH_OK
     };
     this.publicationManager.add(publication);
+
+    // §8: remember the publisher-side subgroup delivery deadline so
+    // sendObjectViaStream / sendObjectWithGOP can arm timers per stream.
+    if (deliveryTimeout > 0) {
+      this.publisherTimeoutConfig.set(trackAlias.toString(), {
+        subgroupDeliveryTimeoutMs: deliveryTimeout,
+      });
+    }
 
     if (IS_DRAFT_18) {
       await this.publishDraft18(requestId, namespace, trackName, trackAlias, options);
@@ -4087,6 +4206,11 @@ export class MOQTSession {
     metadata: ObjectMetadata,
     priority?: number
   ): Promise<void> {
+    // §8: arm the subgroup-delivery deadline before touching the wire so a
+    // stalled create/write path is caught by the same timer that guards
+    // long-running GOP streams. Since sendObjectViaStream sends one whole
+    // object per stream, we key on (alias, groupId, subgroupId=0).
+    const timeoutKey = this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
     try {
       const streamInfo = await this.doCreateStream();
 
@@ -4145,6 +4269,9 @@ export class MOQTSession {
         error: (err as Error).message,
         stack: (err as Error).stack,
       });
+    } finally {
+      // Delivery finished (or errored) — disarm the deadline either way.
+      if (timeoutKey) this.publisherDeliveryTimeouts.disarm(timeoutKey);
     }
   }
 
@@ -4166,6 +4293,8 @@ export class MOQTSession {
 
         const existing = this.activeVideoStreams.get(aliasKey);
         if (existing) {
+          // Previous GOP just ended cleanly — disarm its §8 deadline.
+          this.publisherDeliveryTimeouts.disarm(`pub-sg:${aliasKey}:${existing.groupId}:0`);
           try {
             await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
             log.info('Closed previous GOP stream', {
@@ -4180,6 +4309,9 @@ export class MOQTSession {
             });
           }
         }
+
+        // §8: arm a fresh subgroup-delivery deadline for the incoming GOP.
+        this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
 
         // Create new stream for this GOP
         const streamInfo = await this.doCreateStream();
@@ -4383,6 +4515,8 @@ export class MOQTSession {
   private async closeVideoGOPStream(trackAlias: string): Promise<void> {
     const existing = this.activeVideoStreams.get(trackAlias);
     if (existing) {
+      // §8: stream is closing cleanly — cancel the pending deadline.
+      this.publisherDeliveryTimeouts.disarm(`pub-sg:${trackAlias}:${existing.groupId}:0`);
       try {
         await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
         log.info('Closed video GOP stream', {

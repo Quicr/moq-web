@@ -24,6 +24,13 @@ export interface InternalSubscription extends SubscriptionInfo {
   onEndOfGroup?: (groupId: number) => void;
   /** Buffer for objects that arrive before onObject is set */
   pendingObjects?: Array<{ data: Uint8Array; groupId: number; objectId: number; timestamp: number }>;
+  /**
+   * Draft-18 §8 subscriber-side deadlines (ms) captured from SubscribeOptions
+   * so the ObjectRouter can arm per-subgroup/per-object timers on incoming
+   * streams. 0/undefined disables the corresponding timer.
+   */
+  subgroupDeliveryTimeoutMs?: number;
+  objectDeliveryTimeoutMs?: number;
 }
 
 /**
