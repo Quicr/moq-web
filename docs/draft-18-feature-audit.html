@@ -444,7 +444,7 @@
 <strong>Audit date:</strong> 2026-09-03<br />
 <strong>Branch reviewed:</strong> <code>main</code> (after PR #35)</p>
 <!-- audit-progress:begin -->
-<p><strong>Progress:</strong> ✅ 49 · 🟡 17 · ❌ 14 · <strong>61% complete</strong> of 80 features</p>
+<p><strong>Progress:</strong> ✅ 50 · 🟡 17 · ❌ 13 · <strong>62% complete</strong> of 80 features</p>
 <!-- audit-progress:end -->
 
 <blockquote>
@@ -513,13 +513,13 @@
 <tr>
 <td>Session termination</td>
 <td>§3.5</td>
-<td><code>session.ts:4257+</code></td>
-<td>via setup reader <code>session.ts:4297+</code></td>
-<td>state machine <code>setState('closing')</code></td>
-<td>MISSING</td>
-<td><code>11-goaway.test.ts</code> (partial)</td>
-<td>🟡</td>
-<td>No distinct session-error path using <code>SessionErrorCodeDraft18</code>.</td>
+<td><code>session.ts</code> <code>close({code,reason})</code> + <code>goAway()</code></td>
+<td><code>transport.ts</code> <code>'closed'</code> event surfaces peer <code>closeCode</code>/<code>reason</code></td>
+<td><code>session.ts</code> <code>handleTransportClosed()</code> emits <code>session-terminated</code> when <code>remote=true</code></td>
+<td><code>session-migration.test.ts</code></td>
+<td><code>13-session-termination.test.ts</code></td>
+<td>✅</td>
+<td>Typed event carries <code>SessionErrorCodeDraft18</code>; local closes suppressed.</td>
 </tr>
 <tr>
 <td>GOAWAY handling</td>
@@ -530,18 +530,18 @@
 <td><code>draft18-message-codec.test.ts:354-402, 732-767</code></td>
 <td><code>11-goaway.test.ts</code></td>
 <td>✅</td>
-<td>Both control-stream &amp; request-stream variants; no migration handler.</td>
+<td>Both control-stream &amp; request-stream variants; migration URI cached on receipt.</td>
 </tr>
 <tr>
 <td>Migration</td>
 <td>§3.6</td>
 <td>—</td>
 <td>—</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td><code>newSessionUri</code> event surfaced but no reconnect logic.</td>
+<td><code>session.ts</code> <code>migrate(newSessionUri?)</code> + <code>autoMigrate</code> config + cached <code>pendingMigrationUri</code> from GOAWAY</td>
+<td><code>session-migration.test.ts</code></td>
+<td><code>13-session-termination.test.ts</code></td>
+<td>🟡</td>
+<td>Client-side wiring complete (worker mode reconnect + SETUP replay); dual-relay over-the-wire smoke test tracked in <code>docs/draft-18-interop-plan.md</code>.</td>
 </tr>
 <tr>
 <td>Congestion control</td>
