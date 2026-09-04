@@ -414,6 +414,11 @@ export class MOQTransport {
         // Consume the SETUP stream type varint; hand the rest to the setup listener.
         const remaining = firstChunk.subarray(bytesRead);
         this.startSetupListener(remaining);
+      } else if (streamTypeNum === StreamTypeDraft18.PADDING) {
+        // Draft-18 §11.5.1 — padding stream, drain and discard silently.
+        this.drainPaddingStream(streamReader).catch((err) => {
+          log.warn('Padding stream drain error', err as Error);
+        });
       } else {
         // Data stream - downstream decoder re-parses the stream type as the first
         // field of the subgroup/fetch header, so forward the full first chunk.
@@ -423,6 +428,29 @@ export class MOQTransport {
     } catch (err) {
       log.error('Error handling draft-18 unidirectional stream', err as Error);
       streamReader.releaseLock();
+    }
+  }
+
+  /**
+   * Drain and discard a draft-18 §11.5.1 padding stream. The stream type
+   * varint has already been consumed by the caller; every remaining chunk
+   * is read and thrown away so the padding never surfaces as an object.
+   */
+  private async drainPaddingStream(
+    reader: ReadableStreamDefaultReader<Uint8Array>
+  ): Promise<void> {
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { done } = await reader.read();
+        if (done) return;
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Reader may already be closed; ignore.
+      }
     }
   }
 
