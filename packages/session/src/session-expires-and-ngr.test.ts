@@ -288,9 +288,8 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX on SUBS
     expect(paramBytes).toBeDefined();
 
     // Inline decode of the tuple: count | (len | utf-8)*
-    let offset = 0;
     const [count, off0] = MOQTVarInt.decode(paramBytes!);
-    offset = off0;
+    let offset = off0;
     const tuple: string[] = [];
     for (let i = 0; i < Number(count); i++) {
       const [len, next] = MOQTVarInt.decode(paramBytes!.subarray(offset));

@@ -5580,7 +5580,7 @@ export class MOQTSession {
     // together (typical: resume forwarding *and* rebase on a keyframe).
     const ngrBytes = message.parameters?.get(RequestParameterDraft18.NEW_GROUP_REQUEST);
     if (ngrBytes && ngrBytes.length > 0) {
-      let value = 0;
+      let value: number;
       try {
         value = Number(MOQTVarInt.decode(ngrBytes)[0]);
       } catch {
