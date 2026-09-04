@@ -536,6 +536,8 @@ export interface FetchOptions {
   objectDeliveryTimeout?: number;
   fillTimeout?: number;
   rendezvousTimeout?: number;
+  /** Per-request authorization token (draft-18 §10.2.2). */
+  authToken?: RequestAuthToken;
 }
 
 /**

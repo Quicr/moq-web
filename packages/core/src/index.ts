@@ -335,6 +335,13 @@ export type { IProtocolCodec, ProtocolCodecCapabilities } from './encoding/proto
 // Draft-18 message codec
 export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
 
+// Draft-18 §13.3.1 authorization-token replay protection
+export { AuthTokenReplayCache } from './security/auth-token-replay.js';
+export type {
+  ReplayCheckResult,
+  AuthTokenReplayCacheOptions,
+} from './security/auth-token-replay.js';
+
 // Draft-18 stream codec
 export {
   Draft18StreamCodec,
