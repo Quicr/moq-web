@@ -438,20 +438,20 @@
 </head>
 <body>
     <div class="container">
-        <h1 id="moq-transport-draft-18-feature-audit">MOQ Transport Draft-18 Feature Audit</h1>
-<p><strong>Repository:</strong> <code>Quicr/moq-web</code><br />
-<strong>Spec:</strong> <code>draft-ietf-moq-transport-18</code> (January 2026)<br />
-<strong>Audit date:</strong> 2026-09-03<br />
+        <h1>MOQ Transport Draft-18 Feature Audit</h1>
+<p><strong>Repository:</strong> <code>Quicr/moq-web</code>
+<strong>Spec:</strong> <code>draft-ietf-moq-transport-18</code> (January 2026)
+<strong>Audit date:</strong> 2026-09-03
 <strong>Branch reviewed:</strong> <code>main</code> (after PR #35)</p>
 <!-- audit-progress:begin -->
-<p><strong>Progress:</strong> ✅ 52 · 🟡 15 · ❌ 13 · <strong>65% complete</strong> of 80 features</p>
+<p><strong>Progress:</strong> ✅ 71 · 🟡 4 · ❌ 5 · <strong>88% complete</strong> of 80 features</p>
 <!-- audit-progress:end -->
 
 <blockquote>
 <p>This is a <strong>living document</strong>. Regenerate the progress line with <code>scripts/audit-progress.sh -w</code>. Each row's Status column is the source of truth — update it as features land.</p>
 </blockquote>
 <hr />
-<h2 id="legend">Legend</h2>
+<h2>Legend</h2>
 <ul>
 <li><strong>Status</strong></li>
 <li>✅ <strong>Complete</strong> — implemented end-to-end with tests.</li>
@@ -461,7 +461,7 @@
 <li><strong>Locations</strong> use <code>file:line</code> format, resolved from repo root.</li>
 </ul>
 <hr />
-<h2 id="session-framing-3">Session / Framing (§3)</h2>
+<h2>Session / Framing (§3)</h2>
 <table>
 <thead>
 <tr>
@@ -556,7 +556,7 @@
 </tr>
 </tbody>
 </table>
-<h2 id="extension-negotiation-32-4">Extension Negotiation (§3.2, §4)</h2>
+<h2>Extension Negotiation (§3.2, §4)</h2>
 <table>
 <thead>
 <tr>
@@ -596,7 +596,7 @@
 </tr>
 </tbody>
 </table>
-<h2 id="control-messages-1031020">Control Messages (§10.3–10.20)</h2>
+<h2>Control Messages (§10.3–10.20)</h2>
 <table>
 <thead>
 <tr>
@@ -806,9 +806,9 @@
 <td><code>draft18-message-codec.ts:1074-1085</code></td>
 <td><code>session.ts:2347-2361</code>, <code>session.ts:4734</code></td>
 <td><code>draft18-message-codec.test.ts:652-666</code></td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>No e2e; codec emits final namespace only.</td>
+<td><code>16-namespace-done.test.ts</code></td>
+<td>✅</td>
+<td>E2E asserts SUBSCRIBE_NAMESPACE resolves and codec parses the terminal frame; relays free to keep the stream open.</td>
 </tr>
 <tr>
 <td>SUBSCRIBE_NAMESPACE</td>
@@ -824,28 +824,28 @@
 <tr>
 <td>SUBSCRIBE_TRACKS</td>
 <td>§10.19</td>
-<td><code>draft18-message-codec.ts:1087-1092</code></td>
-<td><code>draft18-message-codec.ts:1094-1117</code></td>
-<td><code>session.ts:1212-1256</code>, <code>session.ts:4771-4806</code> (stub)</td>
-<td><code>draft18-message-codec.test.ts:668-706</code></td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Encoder emits only prefix + empty params; no filter/startLocation/pattern.</td>
+<td><code>draft18-message-codec.ts</code> <code>encodeSubscribeTracks</code> (FORWARD + SUBSCRIPTION_FILTER + pass-through KVPs)</td>
+<td><code>draft18-message-codec.ts</code> <code>decodeSubscribeTracks</code> (mirrors SUBSCRIBE)</td>
+<td><code>session.ts</code> <code>subscribeTracks(prefix, onObject, { forwardState, filter, startLocation, endGroupDelta, namespacePrefixParam, parameters })</code></td>
+<td><code>draft18-message-codec.test.ts</code> SUBSCRIBE_TRACKS suite + <code>session-subscribe-tracks.test.ts</code> + <code>session-expires-and-ngr.test.ts</code></td>
+<td><code>17-subscribe-tracks.test.ts</code> + <code>20-expires-and-ngr.test.ts</code></td>
+<td>✅</td>
+<td>Full parameter parity with SUBSCRIBE plus first-class §10.2.14 TRACK_NAMESPACE_PREFIX opt-in.</td>
 </tr>
 <tr>
 <td>PUBLISH_BLOCKED</td>
 <td>§10.20</td>
 <td><code>draft18-message-codec.ts:1119-1121</code></td>
 <td><code>draft18-message-codec.ts:1123-1134</code></td>
-<td><code>session.ts</code> recv emits <code>PublishBlockedEvent</code></td>
-<td><code>draft18-message-codec.test.ts:707-729, 778-787</code></td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Typed event now surfaced; send helper still missing.</td>
+<td><code>session.ts</code> <code>sendPublishBlocked(trackAlias)</code>; recv emits <code>PublishBlockedEvent</code></td>
+<td><code>draft18-message-codec.test.ts:707-729, 778-787</code> + <code>session-subscribe-tracks.test.ts</code></td>
+<td>Indirect</td>
+<td>✅</td>
+<td>Publisher-side send helper landed.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="parameters-102">Parameters (§10.2)</h2>
+<h2>Parameters (§10.2)</h2>
 <table>
 <thead>
 <tr>
@@ -864,13 +864,13 @@
 <tr>
 <td>AUTHORIZATION_TOKEN</td>
 <td>§10.2.2</td>
-<td>Setup: <code>draft18-message-codec.ts:288-296</code>; request: via <code>MessageCodec.encodeAuthorizationToken</code> <code>message-codec.ts:602-641</code></td>
-<td><code>draft18-message-codec.ts:362-366</code> (SETUP); request skips value <code>:1226-1232</code></td>
-<td><code>session.ts:309-315, 436-475, 1091-1098</code></td>
-<td>Setup path in <code>draft18-message-codec.test.ts:46-82</code></td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Token aliasing in shared codec; not wired into draft-18 decoder path.</td>
+<td>Setup: <code>draft18-message-codec.ts:288-296</code>; request: parity-aware length-prefixed encode inside SUBSCRIBE/FETCH parameter loops</td>
+<td><code>draft18-message-codec.ts</code> SETUP <code>authToken</code> bytes captured; SUBSCRIBE/FETCH decode preserves param bytes for lazy <code>MessageCodec.decodeAuthorizationToken()</code></td>
+<td><code>session.ts</code> <code>subscribeDraft18</code> + <code>fetchDraft18</code> inject <code>RequestParameterDraft18.AUTHORIZATION_TOKEN</code>; SETUP-scope path emits <code>ClientSetupMessageDraft18.authToken</code></td>
+<td><code>draft18-message-codec.test.ts</code> (SETUP roundtrip + SUBSCRIBE/FETCH param roundtrip); <code>session-auth-token.test.ts</code> (per-request wiring)</td>
+<td><code>18-auth-token.test.ts</code></td>
+<td>✅</td>
+<td>Setup-level and per-request tokens both wired for draft-18; consumers decode on demand.</td>
 </tr>
 <tr>
 <td>SUBGROUP_DELIVERY_TIMEOUT</td>
@@ -919,46 +919,46 @@
 <tr>
 <td>SUBSCRIBER_PRIORITY</td>
 <td>§10.2.7</td>
-<td><code>draft18-message-codec.ts:743, 449</code></td>
+<td><code>draft18-message-codec.ts</code> (encoded from <code>SubscribeOptions.priority</code>)</td>
 <td><code>:788, 484-486</code></td>
-<td><code>session.ts:1460, 1794, 2494</code></td>
-<td>Roundtrip</td>
-<td>Indirect</td>
+<td><code>parseSubscriberSchedulingParams</code> → <code>InternalPublication.subscriberPriority</code>; feeds <code>deriveSendOrder</code>; refreshed on REQUEST_UPDATE</td>
+<td><code>priority.test.ts</code>, <code>session-priority.test.ts</code></td>
+<td><code>23-priority.test.ts</code></td>
 <td>✅</td>
-<td>Values pass through; not used for local scheduling.</td>
+<td>Drives WebTransport <code>sendOrder</code>.</td>
 </tr>
 <tr>
 <td>GROUP_ORDER</td>
 <td>§10.2.8</td>
 <td><code>:749, 445</code></td>
 <td><code>:790-791, 490-492</code></td>
-<td><code>session.ts:1795</code> etc.</td>
-<td>Roundtrip</td>
-<td>Indirect</td>
+<td><code>parseSubscriberSchedulingParams</code> → <code>InternalPublication.subscriberGroupOrder</code>; feeds <code>deriveSendOrder</code></td>
+<td><code>priority.test.ts</code>, <code>session-priority.test.ts</code></td>
+<td><code>23-priority.test.ts</code></td>
 <td>✅</td>
-<td></td>
+<td>ASCENDING inverts groupId low bits; DESCENDING preserves.</td>
 </tr>
 <tr>
 <td>SUBSCRIPTION_FILTER</td>
 <td>§10.2.9</td>
 <td>Inline in SUBSCRIBE <code>:423-449</code></td>
 <td><code>:471-497</code></td>
-<td><code>session.ts:1509</code> (hardcoded NEXT_GROUP_START)</td>
-<td><code>test.ts:107-127</code></td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Other filters codec-only.</td>
+<td><code>session.ts</code> <code>mapSubscribeFilter</code> → <code>SubscribeOptions.filterType</code> ('latest' / 'next-group' / 'largest-object' / 'absolute-start' / 'absolute-range' + <code>startGroup</code>/<code>startObject</code>/<code>endGroup</code>)</td>
+<td><code>draft18-message-codec.test.ts</code> roundtrip + <code>session-subscription-filter.test.ts</code></td>
+<td><code>19-subscription-filters.test.ts</code></td>
+<td>✅</td>
+<td>All four §10.2.9 filter variants selectable through <code>SubscribeOptions</code>; <code>endGroup</code> translated to <code>endGroupDelta</code> at send time.</td>
 </tr>
 <tr>
 <td>EXPIRES</td>
 <td>§10.2.10</td>
-<td><code>:685</code> (REQUEST_OK), <code>:1209</code></td>
-<td><code>:703-705</code></td>
-<td><code>session.ts</code> REQUEST_OK sites emit <code>request-ok</code> with <code>expiresMs</code> (PUBLISH, PUBLISH_NAMESPACE, FETCH, SUBSCRIBE_NAMESPACE, TRACK_STATUS)</td>
-<td><code>test.ts:272-286</code></td>
-<td>MISSING</td>
+<td><code>draft18-message-codec.ts</code> REQUEST_OK + SUBSCRIBE_OK params</td>
+<td>REQUEST_OK + SUBSCRIBE_OK decode</td>
+<td><code>session.ts</code> <code>AnnounceOptions.expires</code> → SUBSCRIBE_OK; <code>SubscribeNamespaceOptions.expires</code> → REQUEST_OK; <code>PublishOptions.expires</code> on publisher-side outbound REQUEST_OK</td>
+<td><code>session-expires-and-ngr.test.ts</code> + <code>draft18-message-codec.test.ts</code> SUBSCRIBE_OK EXPIRES roundtrip</td>
+<td><code>20-expires-and-ngr.test.ts</code></td>
 <td>✅</td>
-<td>Surface via <code>RequestOkEvent</code>; undefined = parameter omitted, 0 = no expiration.</td>
+<td>Two-way surface: incoming REQUEST_OK exposed via <code>RequestOkEvent.expiresMs</code>; outbound SUBSCRIBE_OK / REQUEST_OK carries publisher-configured value.</td>
 </tr>
 <tr>
 <td>LARGEST_OBJECT</td>
@@ -985,28 +985,28 @@
 <tr>
 <td>NEW_GROUP_REQUEST</td>
 <td>§10.2.13</td>
-<td>Generic KVP</td>
-<td>Generic KVP</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Enum only.</td>
+<td><code>session.ts</code> <code>sendRequestUpdate({ newGroupRequest })</code> adds varint param to REQUEST_UPDATE</td>
+<td><code>session.ts</code> <code>dispatchRequestUpdateDraft18</code> extracts + emits <code>new-group-request</code> event</td>
+<td><code>SessionEventType</code> <code>'new-group-request'</code>; <code>NewGroupRequestEvent</code> payload</td>
+<td><code>session-expires-and-ngr.test.ts</code></td>
+<td><code>20-expires-and-ngr.test.ts</code></td>
+<td>✅</td>
+<td>Subscriber sends by option; publisher receives typed event with raw varint value and coincident <code>forwardState</code>.</td>
 </tr>
 <tr>
 <td>TRACK_NAMESPACE_PREFIX</td>
 <td>§10.2.14</td>
-<td>Generic KVP</td>
-<td>Generic KVP</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td>Not applied — SUBSCRIBE_TRACKS always emits empty params.</td>
+<td><code>session.ts</code> <code>subscribeTracks({ namespacePrefixParam })</code> encodes tuple bytes into <code>SUBSCRIBE_TRACKS</code> param map</td>
+<td><code>handleIncomingSubscribeDraft18</code> decodes tuple + narrows publication match</td>
+<td><code>session.ts</code> new option; <code>encodeTrackNamespaceBytes</code> / <code>decodeTrackNamespaceBytes</code> helpers</td>
+<td><code>session-expires-and-ngr.test.ts</code></td>
+<td><code>20-expires-and-ngr.test.ts</code></td>
+<td>✅</td>
+<td>First-class subscriber option; publisher applies the narrower prefix as an extra filter when emitting <code>incoming-subscribe</code>.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="data-plane-11">Data Plane (§11)</h2>
+<h2>Data Plane (§11)</h2>
 <table>
 <thead>
 <tr>
@@ -1047,13 +1047,13 @@
 <tr>
 <td>Closing Subgroup Streams / FIN</td>
 <td>§11.4.3</td>
-<td><code>session.ts:3711, 3805</code> (END_OF_GROUP)</td>
-<td>—</td>
-<td><code>session.ts:574, 779</code> (<code>closeStream</code>)</td>
-<td>MISSING</td>
-<td>Indirect</td>
-<td>🟡</td>
-<td>No RESET_STREAM with specific error codes; TOO_FAR_BEHIND missing.</td>
+<td><code>session.ts</code> GOP <code>newGroup</code> closes stream cleanly; <code>resetPublicationStream(alias, code)</code> + <code>resetPublicationStreamTooFarBehind(alias)</code> abort with §15.10.4 code</td>
+<td><code>object-router.ts</code> catches <code>WebTransportError.streamErrorCode</code> and emits typed <code>stream-reset</code> event</td>
+<td><code>session.ts</code> typed <code>stream-reset</code> event (<code>side</code>, <code>code</code>, <code>reason</code>, alias, group/subgroup)</td>
+<td><code>session-stream-reset.test.ts</code>, <code>object-router-stream-reset.test.ts</code></td>
+<td><code>21-stream-reset.test.ts</code></td>
+<td>✅</td>
+<td>Publisher and subscriber both surface §15.10.4 codes; §8 DELIVERY_TIMEOUT stays on the <code>delivery-timeout</code> event so consumers can distinguish deadline-driven from application-driven resets.</td>
 </tr>
 <tr>
 <td>Fetch Header stream</td>
@@ -1069,24 +1069,24 @@
 <tr>
 <td>Padding streams</td>
 <td>§11.5.1</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td>Enum entry only (<code>types.ts:208</code>); no logic.</td>
+<td><code>session.ts</code> <code>sendPaddingStream(bytes)</code> — writes PADDING type varint + N zero bytes</td>
+<td><code>transport.ts</code> <code>handleDraft18UnidirectionalStream</code> intercepts <code>StreamTypeDraft18.PADDING</code> and drains via <code>drainPaddingStream</code></td>
+<td><code>sendPaddingStream()</code> on <code>MOQTSession</code></td>
+<td><code>session-padding.test.ts</code>, <code>transport-padding.test.ts</code></td>
+<td><code>22-padding.test.ts</code></td>
+<td>✅</td>
+<td>Receiver never emits <code>unidirectional-stream</code> for padding — bytes are drained silently.</td>
 </tr>
 <tr>
 <td>Padding datagrams</td>
 <td>§11.5.2</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td></td>
+<td><code>session.ts</code> <code>sendPaddingDatagram(bytes)</code> — writes PADDING datagram-type varint + N zero bytes</td>
+<td><code>datagram-manager.ts</code> <code>handleDatagram</code> peeks first varint and drops on <code>DatagramTypeDraft18.PADDING</code></td>
+<td><code>sendPaddingDatagram()</code> on <code>MOQTSession</code></td>
+<td><code>session-padding.test.ts</code></td>
+<td><code>22-padding.test.ts</code></td>
+<td>✅</td>
+<td>Padding never surfaces as an <code>object</code> event; stats.received still bumps so it's observable.</td>
 </tr>
 <tr>
 <td>Object extension headers</td>
@@ -1101,7 +1101,7 @@
 </tr>
 </tbody>
 </table>
-<h2 id="priorities-scheduling-7">Priorities &amp; Scheduling (§7)</h2>
+<h2>Priorities &amp; Scheduling (§7)</h2>
 <table>
 <thead>
 <tr>
@@ -1122,48 +1122,48 @@
 <td>§7.1</td>
 <td><code>draft18-stream-codec.ts:126, 322</code></td>
 <td><code>:181, 376</code></td>
-<td><code>session.ts:3657, 3710, 3804, 3862, 3950</code></td>
-<td>Header roundtrips</td>
-<td>Indirect</td>
-<td>🟡</td>
-<td>Transmitted; not used to order local writes.</td>
+<td><code>session.ts</code> <code>deriveSendOrder</code> folds into <code>sendOrder</code>; used in <code>sendObjectViaStream</code> and <code>sendObjectWithGOP</code></td>
+<td><code>priority.test.ts</code></td>
+<td><code>23-priority.test.ts</code></td>
+<td>✅</td>
+<td>Feeds into WebTransport <code>sendOrder</code> alongside subscriber priority + group order.</td>
 </tr>
 <tr>
 <td>Subscriber priority</td>
 <td>§7.1</td>
-<td><code>draft18-message-codec.ts:743</code></td>
-<td><code>:788</code></td>
-<td><code>session.ts:1794</code> (<code>options.priority</code>)</td>
-<td>Roundtrip</td>
-<td>Indirect</td>
-<td>🟡</td>
-<td>No local send scheduling.</td>
+<td><code>draft18-message-codec.ts</code> — encoded on SUBSCRIBE from <code>SubscribeOptions.priority</code>; decoded via <code>parseSubscriberSchedulingParams</code></td>
+<td>Decoded via <code>parseSubscriberSchedulingParams</code></td>
+<td><code>priority.ts</code> <code>parseSubscriberSchedulingParams</code>; cached on <code>InternalPublication.subscriberPriority</code>; updated on <code>REQUEST_UPDATE</code> (§10.9.1)</td>
+<td><code>priority.test.ts</code>, <code>session-priority.test.ts</code></td>
+<td><code>23-priority.test.ts</code></td>
+<td>✅</td>
+<td>Round-trips through the wire and drives <code>sendOrder</code>.</td>
 </tr>
 <tr>
 <td>Group order</td>
 <td>§7.1</td>
-<td>Roundtripped everywhere</td>
-<td>Roundtripped</td>
-<td><code>session.ts:1795</code> etc.</td>
-<td>Roundtrip</td>
-<td>Indirect</td>
+<td>Roundtripped everywhere; encoded via SUBSCRIBER-side <code>SubscribeOptions.groupOrder</code></td>
+<td>Roundtripped; parsed via <code>parseSubscriberSchedulingParams</code></td>
+<td>Cached on <code>InternalPublication.subscriberGroupOrder</code>; used in <code>deriveSendOrder</code></td>
+<td><code>priority.test.ts</code>, <code>session-priority.test.ts</code></td>
+<td><code>23-priority.test.ts</code></td>
 <td>✅</td>
-<td>Pure pass-through.</td>
+<td>ASCENDING inverts groupId in the low bits of <code>sendOrder</code>; DESCENDING preserves it.</td>
 </tr>
 <tr>
 <td>Scheduling algorithm</td>
 <td>§7.2</td>
 <td>—</td>
 <td>—</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td><code>StreamManager</code> stores priority but never orders writes.</td>
+<td><code>priority.ts</code> <code>computeSendOrder</code> packs <code>[invSub(8) \| invPub(8) \| groupBits(36)]</code> into a safe-integer <code>sendOrder</code>; applied via <code>createUnidirectionalStream({ sendOrder })</code> in <code>transport.ts</code> and <code>session.ts</code> <code>doCreateStream</code></td>
+<td><code>priority.test.ts</code></td>
+<td><code>23-priority.test.ts</code></td>
+<td>✅</td>
+<td>Higher <code>sendOrder</code> = ships first (WebTransport §7.2 spec). REQUEST_UPDATE re-priorities in flight.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="delivery-timeouts-8">Delivery Timeouts (§8)</h2>
+<h2>Delivery Timeouts (§8)</h2>
 <table>
 <thead>
 <tr>
@@ -1184,37 +1184,37 @@
 <td>§8</td>
 <td>Generic KVP</td>
 <td>Generic KVP</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td>No timer, no drop logic.</td>
+<td><code>object-router.ts</code> <code>armSubgroupTimer</code>/<code>disarmSubgroupTimers</code>; publisher side in <code>session.ts</code> <code>armPublisherSubgroupTimer</code> (<code>sendObjectViaStream</code>, <code>sendObjectWithGOP</code>)</td>
+<td><code>object-router-delivery-timeout.test.ts</code>, <code>session-delivery-timeout.test.ts</code>, <code>delivery-timeout.test.ts</code></td>
+<td>Covered indirectly via <code>05-subscribe.test.ts</code></td>
+<td>✅</td>
+<td>Subscriber cancels reader; publisher resets stream and emits <code>delivery-timeout</code> event.</td>
 </tr>
 <tr>
 <td>Object delivery timeout enforcement</td>
 <td>§8</td>
 <td>Generic KVP</td>
 <td>Generic KVP</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td>Same.</td>
+<td><code>object-router.ts</code> <code>armObjectTimer</code>/<code>disarmObjectTimer</code> per-object; speculatively armed after each delivery</td>
+<td><code>object-router-delivery-timeout.test.ts</code>, <code>delivery-timeout.test.ts</code></td>
+<td>Covered indirectly</td>
+<td>✅</td>
+<td>Fires with <code>reason='object'</code> on <code>DeliveryTimeoutEvent</code>.</td>
 </tr>
 <tr>
 <td>Delivery-timeout-driven drop</td>
 <td>§8</td>
 <td>—</td>
 <td>—</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td>No stream-reset with <code>DELIVERY_TIMEOUT</code> code.</td>
+<td><code>resetPublicationStream(alias, StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT)</code>; subscriber calls <code>reader.cancel(reason)</code></td>
+<td><code>session-delivery-timeout.test.ts</code>, <code>object-router-delivery-timeout.test.ts</code></td>
+<td>Covered indirectly</td>
+<td>🟡</td>
+<td>Numeric §15.10.4 <code>DELIVERY_TIMEOUT</code> (0x2) surfaced via <code>DeliveryTimeoutEvent.resetCode</code>; WebTransport lacks a per-stream reset code so wire signal is conveyed via <code>writer.abort(reason)</code>.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="track-properties-12">Track Properties (§12)</h2>
+<h2>Track Properties (§12)</h2>
 <table>
 <thead>
 <tr>
@@ -1310,28 +1310,28 @@
 <tr>
 <td>Prior Group ID Gap</td>
 <td>§12.8</td>
-<td>Generic KVP</td>
-<td>Generic KVP</td>
-<td>Enum key only (<code>TrackPropertyDraft18.PRIOR_GROUP_ID_GAP</code>)</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Not yet plumbed into an event surface.</td>
+<td><code>session.ts</code> <code>buildTrackProperties</code> (from <code>PublishOptions.priorGroupIdGap</code>)</td>
+<td><code>track-properties.ts</code> → <code>SubscribeOkEvent.trackProperties.priorGroupIdGap</code></td>
+<td><code>PublishOptions.priorGroupIdGap</code> on PUBLISH; decoded on incoming SUBSCRIBE_OK/PUBLISH</td>
+<td><code>track-properties.test.ts</code></td>
+<td><code>24-track-properties-gaps.test.ts</code></td>
+<td>✅</td>
+<td>Publisher-configurable varint; surfaced on <code>TrackProperties</code>.</td>
 </tr>
 <tr>
 <td>Prior Object ID Gap</td>
 <td>§12.9</td>
-<td>Generic KVP</td>
-<td>Generic KVP</td>
-<td>Enum key only (<code>TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP</code>)</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Not yet plumbed into an event surface.</td>
+<td><code>session.ts</code> <code>buildTrackProperties</code> (from <code>PublishOptions.priorObjectIdGap</code>)</td>
+<td><code>track-properties.ts</code> → <code>SubscribeOkEvent.trackProperties.priorObjectIdGap</code></td>
+<td><code>PublishOptions.priorObjectIdGap</code> on PUBLISH; decoded on incoming SUBSCRIBE_OK/PUBLISH</td>
+<td><code>track-properties.test.ts</code></td>
+<td><code>24-track-properties-gaps.test.ts</code></td>
+<td>✅</td>
+<td>Publisher-configurable varint; surfaced on <code>TrackProperties</code>.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="namespace-discovery-6">Namespace Discovery (§6)</h2>
+<h2>Namespace Discovery (§6)</h2>
 <table>
 <thead>
 <tr>
@@ -1371,7 +1371,7 @@
 </tr>
 </tbody>
 </table>
-<h2 id="fetch-behavior-52-1012">Fetch Behavior (§5.2, §10.12)</h2>
+<h2>Fetch Behavior (§5.2, §10.12)</h2>
 <table>
 <thead>
 <tr>
@@ -1433,7 +1433,7 @@
 </tr>
 </tbody>
 </table>
-<h2 id="error-codes-1510">Error Codes (§15.10)</h2>
+<h2>Error Codes (§15.10)</h2>
 <table>
 <thead>
 <tr>
@@ -1486,16 +1486,16 @@
 <td>Stream Reset Codes</td>
 <td>§15.10.4</td>
 <td><code>types.ts:303-314</code> (10 codes)</td>
-<td>—</td>
-<td><code>session.ts</code> <code>resetPublicationStream(alias, code, reason?)</code> — aborts the active subgroup writer with a code-derived reason</td>
-<td><code>session-close.test.ts</code></td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Public API surfaces the enum; WebTransport lacks a per-stream reset code, so codes are surfaced via the abort reason for now.</td>
+<td><code>object-router.ts</code> extracts <code>WebTransportError.streamErrorCode</code> and forwards it</td>
+<td><code>session.ts</code> <code>resetPublicationStream(alias, code, reason?)</code> + <code>resetPublicationStreamTooFarBehind(alias)</code>; typed <code>stream-reset</code> event carries the numeric code on both publisher and subscriber sides</td>
+<td><code>session-close.test.ts</code>, <code>session-stream-reset.test.ts</code>, <code>object-router-stream-reset.test.ts</code></td>
+<td><code>21-stream-reset.test.ts</code></td>
+<td>✅</td>
+<td>Publisher aborts the writer with a <code>code=N (NAME)</code> reason and emits <code>stream-reset</code>; subscriber decodes the peer's <code>streamErrorCode</code> and emits the same event with <code>side: 'subscriber'</code>.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="security-13">Security (§13)</h2>
+<h2>Security (§13)</h2>
 <table>
 <thead>
 <tr>
@@ -1514,13 +1514,13 @@
 <tr>
 <td>Authorization token replay protection</td>
 <td>§13.3.1</td>
+<td><code>security/auth-token-replay.ts</code> (bounded LRU by <code>tokenType</code> + <code>tokenValue</code>, TTL default 5 min, max 1024 entries)</td>
+<td>consumer-side check via <code>AuthTokenReplayCache.check(token)</code> returning <code>fresh</code> / <code>duplicate</code> / <code>expired</code></td>
+<td>Exported from <code>@moq-web/core</code>; not attached to session by default (server-side concern — consumers instantiate one per session or per relay).</td>
+<td><code>security/auth-token-replay.test.ts</code></td>
 <td>—</td>
-<td>—</td>
-<td>MISSING (cache at <code>session.ts:313</code>, no nonce/expiry)</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td>Tokens stored/forwarded verbatim.</td>
+<td>✅</td>
+<td>Helper available for peers to reject replayed tokens; aliasType=2 (USE_ALIAS) is not fingerprinted.</td>
 </tr>
 <tr>
 <td>Idle connection handling</td>
@@ -1546,7 +1546,7 @@
 </tr>
 </tbody>
 </table>
-<h2 id="grease-14">Grease (§14)</h2>
+<h2>Grease (§14)</h2>
 <table>
 <thead>
 <tr>
@@ -1576,19 +1576,19 @@
 </tbody>
 </table>
 <hr />
-<h2 id="top-gaps-summary">Top Gaps (Summary)</h2>
+<h2>Top Gaps (Summary)</h2>
 <ol>
 <li>
-<p><strong>No delivery-timeout enforcement or priority scheduling.</strong> SUBGROUP/OBJECT/FILL/RENDEZVOUS timeout parameters have enum entries but no timer or drop logic; SUBSCRIBER/publisher priorities are transmitted but <code>StreamManager</code> never orders local writes (§7.2, §8).</p>
+<p>~~<strong>No delivery-timeout enforcement or priority scheduling.</strong>~~ Resolved: §8 subgroup + object delivery timeouts armed on both subscriber (<code>ObjectRouter</code>) and publisher (<code>session.ts</code>) sides — subscriber cancels the reader; publisher resets the stream via <code>StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT</code> and emits a <code>delivery-timeout</code> event. §7 priority scheduling now wires SUBSCRIBER_PRIORITY / GROUP_ORDER from SUBSCRIBE + REQUEST_UPDATE through <code>parseSubscriberSchedulingParams</code> into <code>InternalPublication</code>, and <code>computeSendOrder</code> packs the §7.2 ordering into the WebTransport <code>sendOrder</code> on each outgoing subgroup stream. Remaining gap: FILL / RENDEZVOUS timeouts (§8.3–4) still unenforced.</p>
 </li>
 <li>
-<p><strong>Padding streams and padding datagrams (§11.5) are fully missing.</strong> <code>StreamTypeDraft18.PADDING = 0x132b3e28</code> is defined in <code>types.ts:208</code> but there is no encoder, decoder, or session handler.</p>
+<p>~~<strong>Padding streams and padding datagrams (§11.5) are fully missing.</strong>~~ Resolved: <code>session.sendPaddingStream(bytes)</code> opens a unidirectional stream prefixed with <code>StreamTypeDraft18.PADDING</code> (0x132B3E28); <code>session.sendPaddingDatagram(bytes)</code> sends a datagram prefixed with <code>DatagramTypeDraft18.PADDING</code> (0x132B3E29). Receivers silently drain padding streams (transport-level) and drop padding datagrams before object decode (<code>DatagramManager</code>), so padding never surfaces as an object event.</p>
 </li>
 <li>
-<p>~~<strong>Draft-18 error-code enums are defined but unused end-to-end.</strong>~~ Partially resolved: <code>SessionErrorCodeDraft18</code> flows through <code>session.close({code, reason})</code> to the WebTransport <code>closeCode</code>; <code>StreamResetErrorCodeDraft18</code> is exposed via <code>session.resetPublicationStream(alias, code)</code>. <code>PublishDoneErrorCodeDraft18</code> was previously wired via <code>sendPublishDone</code>. Remaining gap: WebTransport lacks a per-stream reset code, so §11.4.3 stream-level <code>DELIVERY_TIMEOUT</code> / <code>TOO_FAR_BEHIND</code> are conveyed via the abort reason string only.</p>
+<p>~~<strong>Draft-18 error-code enums are defined but unused end-to-end.</strong>~~ Resolved: <code>SessionErrorCodeDraft18</code> flows through <code>session.close({code, reason})</code> to the WebTransport <code>closeCode</code>; <code>StreamResetErrorCodeDraft18</code> is surfaced end-to-end via <code>session.resetPublicationStream(alias, code)</code> + a typed <code>stream-reset</code> event that also fires on the subscriber when a peer RESET_STREAM lands (<code>WebTransportError.streamErrorCode</code>). <code>PublishDoneErrorCodeDraft18</code> was previously wired via <code>sendPublishDone</code>. WebTransport still lacks a per-stream QUIC-level code on the sender side, so the numeric code additionally travels in the abort reason string.</p>
 </li>
 <li>
-<p>~~<strong>Track-property key enum for §12 is absent.</strong>~~ Resolved: <code>TrackPropertyDraft18</code> in <code>packages/core/src/messages/types.ts</code> and <code>parseTrackProperties</code> in <code>packages/session/src/track-properties.ts</code> now decode the §12 map into <code>SubscribeOkEvent.trackProperties</code>. Only Prior Group/Object ID Gap remain enum-only.</p>
+<p>~~<strong>Track-property key enum for §12 is absent.</strong>~~ Resolved: <code>TrackPropertyDraft18</code> in <code>packages/core/src/messages/types.ts</code> and <code>parseTrackProperties</code> in <code>packages/session/src/track-properties.ts</code> now decode the full §12 map into <code>SubscribeOkEvent.trackProperties</code>. Prior Group/Object ID Gap (§12.8/§12.9) are also plumbed through <code>PublishOptions.priorGroupIdGap</code> / <code>priorObjectIdGap</code> on the encode side.</p>
 </li>
 <li>
 <p><strong>Several control-message paths are stubs on the receive/response side.</strong> Incoming REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_TRACKS, and PUBLISH_DONE handlers only log; SUBSCRIBE_TRACKS on the send side always emits an empty parameter list; joining fetch type 0x3 is conflated with 0x2 in the decoder and unreachable from any session API. MOQT URI scheme validation, connection migration via <code>newSessionUri</code>, reserved-namespace enforcement, and grease are entirely absent.</p>
@@ -1596,7 +1596,6 @@
 </ol>
 <hr />
 <p><em>Generated 2026-09-03 by cross-referencing <code>/tmp/moqt-18.txt</code> against <code>packages/core</code>, <code>packages/session</code>, and <code>packages/session-e2e</code>.</em></p>
-
         <div class="footer">
             <em>MOQ Transport Draft-18 Feature Audit</em>
         </div>
