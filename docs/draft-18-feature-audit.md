@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 50 · 🟡 17 · ❌ 13 · **62% complete** of 80 features
+**Progress:** ✅ 51 · 🟡 16 · ❌ 13 · **63% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -40,7 +40,7 @@
 
 | Feature | §Spec | Wire encode | Wire decode | Session-layer | Unit test | E2E test | Status | Notes |
 |---|---|---|---|---|---|---|---|---|
-| Extension advertisement in SETUP | §3.2 | `draft18-message-codec.ts:273-333` | `draft18-message-codec.ts:339-397` | fixed option set (`session.ts:1063-1082`) | `draft18-message-codec.test.ts:34-82` | `01-setup.test.ts` | 🟡 | Unknown options skipped on decode, no API to advertise custom extensions. |
+| Extension advertisement in SETUP | §3.2 | `draft18-message-codec.ts` `encodeSetup()` (reserved-key + parity checks) | `draft18-message-codec.ts` `decodeSetup()` (captures unknown KVPs into `extensions` map) | `session.ts` `setClientExtensions()` / `peerExtensions` getter; passes through `ClientSetupMessageDraft18.extensions` | `draft18-message-codec.test.ts` (`SETUP extensions (§3.2)` suite) + `session-setup-extensions.test.ts` | `14-setup-extensions.test.ts` | ✅ | Custom extensions round-trip through SETUP with reserved-key collision + even/odd parity enforcement. |
 | Reserved namespaces | §3.2.1 | — | — | MISSING | MISSING | MISSING | ❌ | No enforcement of `moq-ext` reserved namespace. |
 
 ## Control Messages (§10.3–10.20)

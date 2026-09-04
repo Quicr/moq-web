@@ -85,6 +85,100 @@ describe('Draft18MessageCodec', () => {
     });
   });
 
+  // §3.2 SETUP extension advertisement — even keys carry varints; odd keys
+  // carry length-prefixed bytes. Unknown keys must round-trip losslessly.
+  describe('SETUP extensions (§3.2)', () => {
+    it('roundtrips a varint extension on an even key', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        extensions: new Map([[0x40, { varint: 12345n }]]),
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as ServerSetupMessageDraft18;
+      expect(d.extensions).toBeDefined();
+      const value = d.extensions!.get(0x40);
+      expect(value).toEqual({ varint: 12345n });
+    });
+
+    it('roundtrips a bytes extension on an odd key', () => {
+      const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        extensions: new Map([[0x41, { bytes: payload }]]),
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as ServerSetupMessageDraft18;
+      const value = d.extensions!.get(0x41);
+      expect(value).toBeDefined();
+      expect((value as { bytes: Uint8Array }).bytes).toEqual(payload);
+    });
+
+    it('roundtrips SETUP with known options AND extensions together', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        path: '/moq',
+        moqtImplementation: 'moq-web-test',
+        extensions: new Map<number, { varint: bigint } | { bytes: Uint8Array }>([
+          [0x40, { varint: 42n }],
+          [0x41, { bytes: new Uint8Array([1, 2, 3]) }],
+        ]),
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as ServerSetupMessageDraft18;
+      expect(d.path).toBe('/moq');
+      // moqtImplementation is skipped on the response side (it's a client hint),
+      // but the extensions map must contain both custom keys.
+      expect(d.extensions?.get(0x40)).toEqual({ varint: 42n });
+      expect((d.extensions?.get(0x41) as { bytes: Uint8Array }).bytes).toEqual(
+        new Uint8Array([1, 2, 3]),
+      );
+    });
+
+    it('rejects extension keys that collide with reserved SetupOptions', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        // 0x01 is PATH — must not be usable as a custom extension.
+        extensions: new Map([[0x01, { bytes: new Uint8Array([0]) }]]),
+      };
+      expect(() => Draft18MessageCodec.encode(message)).toThrow(/reserved/);
+    });
+
+    it('rejects parity mismatch (varint on odd key)', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        extensions: new Map([[0x41, { varint: 1n }]]),
+      };
+      expect(() => Draft18MessageCodec.encode(message)).toThrow(/parity/);
+    });
+
+    it('rejects parity mismatch (bytes on even key)', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        extensions: new Map([[0x40, { bytes: new Uint8Array([0]) }]]),
+      };
+      expect(() => Draft18MessageCodec.encode(message)).toThrow(/parity/);
+    });
+
+    it('decoder returns undefined extensions when peer sent none', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        path: '/only-known',
+      };
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      expect((decoded as ServerSetupMessageDraft18).extensions).toBeUndefined();
+    });
+  });
+
   describe('SUBSCRIBE', () => {
     it('roundtrips basic SUBSCRIBE', () => {
       const message: SubscribeMessageDraft18 = {
