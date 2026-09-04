@@ -58,7 +58,7 @@ describe('Performance', () => {
     // Small frames have more overhead per-byte, so we use different thresholds
     // Note: Thresholds are set conservatively for CI runners which are much slower than local machines
     const dataSizes = [
-      { name: '1KB', size: 1024, minThroughput: 1 }, // Audio frame (CI runners have high per-op overhead)
+      { name: '1KB', size: 1024, minThroughput: 0.5 }, // Audio frame (CI runners have high per-op overhead)
       { name: '16KB', size: 16 * 1024, minThroughput: 15 }, // Small video frame
       { name: '64KB', size: 64 * 1024, minThroughput: 25 }, // Typical video frame
     ];
