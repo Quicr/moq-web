@@ -444,7 +444,7 @@
 <strong>Audit date:</strong> 2026-09-03<br />
 <strong>Branch reviewed:</strong> <code>main</code> (after PR #35)</p>
 <!-- audit-progress:begin -->
-<p><strong>Progress:</strong> ✅ 48 · 🟡 17 · ❌ 15 · <strong>60% complete</strong> of 80 features</p>
+<p><strong>Progress:</strong> ✅ 49 · 🟡 17 · ❌ 14 · <strong>61% complete</strong> of 80 features</p>
 <!-- audit-progress:end -->
 
 <blockquote>
@@ -1454,11 +1454,11 @@
 <td>§15.10.1</td>
 <td><code>types.ts:277-298</code> (all 20 codes)</td>
 <td>—</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>🟡</td>
-<td>Enum defined; session close uses transport-level abort.</td>
+<td><code>session.ts</code> <code>close({code, reason})</code> plumbs <code>SessionErrorCodeDraft18</code> into <code>transport.close(code, reason)</code> / <code>worker.disconnect(code, reason)</code></td>
+<td><code>session-close.test.ts</code></td>
+<td><code>12-session-close.test.ts</code></td>
+<td>✅</td>
+<td>Numeric code forwarded to WebTransport <code>closeCode</code>.</td>
 </tr>
 <tr>
 <td>REQUEST_ERROR Codes</td>
@@ -1487,11 +1487,11 @@
 <td>§15.10.4</td>
 <td><code>types.ts:303-314</code> (10 codes)</td>
 <td>—</td>
+<td><code>session.ts</code> <code>resetPublicationStream(alias, code, reason?)</code> — aborts the active subgroup writer with a code-derived reason</td>
+<td><code>session-close.test.ts</code></td>
 <td>MISSING</td>
-<td>MISSING</td>
-<td>MISSING</td>
-<td>❌</td>
-<td>Enum defined; no <code>stream.abort(code)</code> calls using these values.</td>
+<td>🟡</td>
+<td>Public API surfaces the enum; WebTransport lacks a per-stream reset code, so codes are surfaced via the abort reason for now.</td>
 </tr>
 </tbody>
 </table>
@@ -1585,7 +1585,7 @@
 <p><strong>Padding streams and padding datagrams (§11.5) are fully missing.</strong> <code>StreamTypeDraft18.PADDING = 0x132b3e28</code> is defined in <code>types.ts:208</code> but there is no encoder, decoder, or session handler.</p>
 </li>
 <li>
-<p><strong>Draft-18 error-code enums are defined but unused end-to-end.</strong> <code>SessionErrorCodeDraft18</code>, <code>StreamResetErrorCodeDraft18</code>, and <code>PublishDoneErrorCodeDraft18</code> never appear in session logic. Session close/reset paths don't emit specific codes and stream aborts never surface <code>DELIVERY_TIMEOUT</code>, <code>TOO_FAR_BEHIND</code>, etc.</p>
+<p>~~<strong>Draft-18 error-code enums are defined but unused end-to-end.</strong>~~ Partially resolved: <code>SessionErrorCodeDraft18</code> flows through <code>session.close({code, reason})</code> to the WebTransport <code>closeCode</code>; <code>StreamResetErrorCodeDraft18</code> is exposed via <code>session.resetPublicationStream(alias, code)</code>. <code>PublishDoneErrorCodeDraft18</code> was previously wired via <code>sendPublishDone</code>. Remaining gap: WebTransport lacks a per-stream reset code, so §11.4.3 stream-level <code>DELIVERY_TIMEOUT</code> / <code>TOO_FAR_BEHIND</code> are conveyed via the abort reason string only.</p>
 </li>
 <li>
 <p>~~<strong>Track-property key enum for §12 is absent.</strong>~~ Resolved: <code>TrackPropertyDraft18</code> in <code>packages/core/src/messages/types.ts</code> and <code>parseTrackProperties</code> in <code>packages/session/src/track-properties.ts</code> now decode the §12 map into <code>SubscribeOkEvent.trackProperties</code>. Only Prior Group/Object ID Gap remain enum-only.</p>
