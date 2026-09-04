@@ -1548,6 +1548,12 @@ export interface ServerSetupMessageDraft18 {
   authority?: string;
   maxAuthTokenCacheSize?: number;
   /**
+   * Raw AUTHORIZATION_TOKEN option bytes from the peer's SETUP (§10.2.2).
+   * Decode via `MessageCodec.decodeAuthorizationToken()` to inspect
+   * `aliasType` / `tokenType` / `tokenValue`.
+   */
+  authToken?: Uint8Array;
+  /**
    * §3.2 extensions echoed by / originating from the peer. Populated on
    * decode with any KVP not matching a well-known SetupOption.
    */

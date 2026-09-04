@@ -1228,10 +1228,20 @@ export class MOQTSession {
       // Draft-18: Single SETUP message with no version/role (negotiated via ALPN)
       // On the setup stream, message type is implicit (stream type = 0x2F00)
       // Wire format: Length (16-bit) | Setup Options
+      let setupAuthToken: Uint8Array | undefined;
+      if (this.authToken) {
+        const tokenBytes = this.encodeTokenBytes(this.authToken, this.authTokenType);
+        setupAuthToken = MessageCodec.encodeAuthorizationToken({
+          aliasType: 3, // USE_VALUE — inline, no caching
+          tokenType: this.authTokenType,
+          tokenValue: tokenBytes,
+        });
+      }
       const clientSetup: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
         moqtImplementation: 'moq-web 0.1.0',
         extensions: this._clientExtensions,
+        authToken: setupAuthToken,
       };
 
       const setupBytes = this.codec.encodeSetupStream(clientSetup);
@@ -1793,6 +1803,12 @@ export class MOQTSession {
   ): Promise<void> {
     const parameters = new Map<number, Uint8Array>();
     addDeliveryTimeoutParams(parameters, options);
+    if (options?.authToken) {
+      parameters.set(
+        RequestParameterDraft18.AUTHORIZATION_TOKEN,
+        this.encodeRequestAuthToken(options.authToken),
+      );
+    }
 
     const subscribeMessage: SubscribeMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE,
@@ -2110,6 +2126,12 @@ export class MOQTSession {
     }
     const parameters = new Map<number, Uint8Array>();
     addDeliveryTimeoutParams(parameters, options);
+    if (options?.authToken) {
+      parameters.set(
+        RequestParameterDraft18.AUTHORIZATION_TOKEN,
+        this.encodeRequestAuthToken(options.authToken),
+      );
+    }
     const fetchMessage: FetchMessageDraft18 = {
       type: MessageTypeDraft18.FETCH,
       requestId: BigInt(requestId),
