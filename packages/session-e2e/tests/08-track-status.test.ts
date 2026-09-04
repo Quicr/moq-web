@@ -58,13 +58,26 @@ describe.skipIf(!isDraft18).each([
     // successful wire exchange (the relay parsed our request and replied).
     // We only fail if it hangs past the vitest timeout.
     let settled: 'ok' | 'error' | undefined;
+    let result: Awaited<ReturnType<typeof requester.session.trackStatus>> | undefined;
     try {
-      await requester.session.trackStatus(namespace, track.name);
+      result = await requester.session.trackStatus(namespace, track.name);
       settled = 'ok';
     } catch (err) {
       if (/TRACK_STATUS failed/.test((err as Error).message)) settled = 'error';
       else throw err;
     }
     expect(settled).toBeDefined();
+
+    // If the relay accepted the request, the result must at minimum carry a
+    // numeric requestId; `latestGroup`/`latestObject` may or may not be
+    // present depending on relay behavior — we only check the shape.
+    if (settled === 'ok') {
+      expect(result).toBeDefined();
+      expect(typeof result!.requestId).toBe('number');
+      if (result!.latestGroup !== undefined) {
+        expect(typeof result!.latestGroup).toBe('bigint');
+        expect(typeof result!.latestObject).toBe('bigint');
+      }
+    }
   });
 });

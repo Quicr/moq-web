@@ -193,6 +193,21 @@ export interface SubscriptionInfo {
 }
 
 /**
+ * Result of a draft-18 §10.14 TRACK_STATUS query.
+ *
+ * `latestGroup` / `latestObject` come from the peer's LARGEST_OBJECT parameter
+ * (§10.2.9). Both are `undefined` when the peer has not produced any objects
+ * yet (or has chosen to omit the parameter). `expiresMs` is the optional
+ * EXPIRES parameter (§10.2.10).
+ */
+export interface TrackStatusResult {
+  requestId: number;
+  expiresMs?: number;
+  latestGroup?: bigint;
+  latestObject?: bigint;
+}
+
+/**
  * Active publication info
  */
 export interface PublicationInfo {
