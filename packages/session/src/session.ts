@@ -110,6 +110,7 @@ import type {
   PublishDoneEvent,
   PublishBlockedEvent,
   DeliveryTimeoutEvent,
+  NewGroupRequestEvent,
   MessageLogEvent,
   SubscriptionInfo,
   PublicationInfo,
@@ -217,6 +218,49 @@ function mapSubscribeFilter(options: {
     case undefined:
     default:
       return { filter: SubscriptionFilterDraft18.NEXT_GROUP_START };
+  }
+}
+
+/**
+ * Draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX serializer.
+ *
+ * Encodes a namespace tuple `["a","b"]` the same way the wire codec does —
+ * varint tuple-length, then each element as a length-prefixed UTF-8 string —
+ * so a peer that decodes the parameter value can reconstruct the tuple.
+ */
+function encodeTrackNamespaceBytes(namespace: string[]): Uint8Array {
+  const writer = new BufferWriter();
+  writer.writeVarInt(BigInt(namespace.length));
+  const encoder = new TextEncoder();
+  for (const field of namespace) {
+    const bytes = encoder.encode(field);
+    writer.writeVarInt(BigInt(bytes.length));
+    writer.writeBytes(bytes);
+  }
+  return writer.toUint8Array();
+}
+
+/**
+ * Draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX parser — inverse of
+ * `encodeTrackNamespaceBytes()`. Returns the decoded tuple or `undefined`
+ * if the bytes cannot be parsed (malformed parameter is best-effort ignored).
+ */
+function decodeTrackNamespaceBytes(bytes: Uint8Array): string[] | undefined {
+  try {
+    const [count, offset0] = MOQTVarInt.decode(bytes);
+    let offset = offset0;
+    const out: string[] = [];
+    const decoder = new TextDecoder();
+    for (let i = 0; i < Number(count); i++) {
+      const [len, next] = MOQTVarInt.decode(bytes.subarray(offset));
+      offset += next;
+      const l = Number(len);
+      out.push(decoder.decode(bytes.subarray(offset, offset + l)));
+      offset += l;
+    }
+    return out;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1495,11 +1539,14 @@ export class MOQTSession {
    *
    * @param namespacePrefix - Namespace prefix to match
    * @param onObject        - Callback for objects on matching tracks
-   * @param options.forwardState  Whether the peer should forward objects (default `true`).
-   * @param options.filter        SUBSCRIPTION_FILTER variant (default `NEXT_GROUP_START`).
-   * @param options.startLocation Absolute start (required for `ABSOLUTE_START` / `ABSOLUTE_RANGE`).
-   * @param options.endGroupDelta End-group delta (required for `ABSOLUTE_RANGE`).
-   * @param options.parameters    Additional raw KVP request parameters (§10.2).
+   * @param options.forwardState        Whether the peer should forward objects (default `true`).
+   * @param options.filter              SUBSCRIPTION_FILTER variant (default `NEXT_GROUP_START`).
+   * @param options.startLocation       Absolute start (required for `ABSOLUTE_START` / `ABSOLUTE_RANGE`).
+   * @param options.endGroupDelta       End-group delta (required for `ABSOLUTE_RANGE`).
+   * @param options.namespacePrefixParam §10.2.14 TRACK_NAMESPACE_PREFIX request parameter —
+   *                                    optional narrower prefix carried inside the params map;
+   *                                    supplements the top-level `namespacePrefix`.
+   * @param options.parameters          Additional raw KVP request parameters (§10.2).
    */
   async subscribeTracks(
     namespacePrefix: string[],
@@ -1509,6 +1556,7 @@ export class MOQTSession {
       filter?: SubscriptionFilterDraft18;
       startLocation?: { group: bigint; object: bigint };
       endGroupDelta?: bigint;
+      namespacePrefixParam?: string[];
       parameters?: Map<number, Uint8Array>;
     }
   ): Promise<number> {
@@ -1521,6 +1569,16 @@ export class MOQTSession {
 
     const requestId = this.getNextRequestId();
 
+    // §10.2.14 TRACK_NAMESPACE_PREFIX — encoded as a namespace tuple (count |
+    // per-element length-prefixed UTF-8), then packed as the parameter value.
+    // Combine with any caller-supplied `parameters` map so both survive.
+    let mergedParameters = options?.parameters;
+    if (options?.namespacePrefixParam) {
+      const encoded = encodeTrackNamespaceBytes(options.namespacePrefixParam);
+      mergedParameters = new Map(mergedParameters ?? []);
+      mergedParameters.set(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX, encoded);
+    }
+
     const subscribeTracksMessage: SubscribeTracksMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
       requestId: BigInt(requestId),
@@ -1529,7 +1587,7 @@ export class MOQTSession {
       filter: options?.filter ?? SubscriptionFilterDraft18.NEXT_GROUP_START,
       startLocation: options?.startLocation,
       endGroupDelta: options?.endGroupDelta,
-      parameters: options?.parameters,
+      parameters: mergedParameters,
     };
 
     const encoded = this.codec.encodeControlMessage(subscribeTracksMessage);
@@ -1584,7 +1642,7 @@ export class MOQTSession {
   async sendRequestUpdate(
     subscriptionRequestId: number,
     forwardState: boolean,
-    options?: { awaitAck?: boolean },
+    options?: { awaitAck?: boolean; newGroupRequest?: boolean | number },
   ): Promise<void> {
     if (!IS_DRAFT_18) {
       throw new Error('sendRequestUpdate() requires draft-18');
@@ -1597,15 +1655,28 @@ export class MOQTSession {
       );
     }
 
+    // §10.2.13 NEW_GROUP_REQUEST — subscriber asks the publisher to cut a new
+    // group. The wire value is a varint; `true` sends 1 (any nonzero triggers).
+    const extraParams = new Map<number, Uint8Array>();
+    if (options?.newGroupRequest !== undefined && options.newGroupRequest !== false) {
+      const val = typeof options.newGroupRequest === 'number' ? options.newGroupRequest : 1;
+      extraParams.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(BigInt(val)));
+    }
+
     const updateMessage: RequestUpdateMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_UPDATE,
       requestId: BigInt(subscriptionRequestId),
       forwardState,
+      parameters: extraParams.size > 0 ? extraParams : undefined,
     };
 
     const bytes = this.codec.encodeControlMessage(updateMessage);
     await stream.write(bytes);
-    log.info('Sent REQUEST_UPDATE (draft-18)', { subscriptionRequestId, forwardState });
+    log.info('Sent REQUEST_UPDATE (draft-18)', {
+      subscriptionRequestId,
+      forwardState,
+      newGroupRequest: options?.newGroupRequest ?? false,
+    });
 
     if (options?.awaitAck === false) {
       return;
@@ -2562,6 +2633,7 @@ export class MOQTSession {
       namespacePrefix,
       tracks: new Map(),
       onObject: _options?.onObject,
+      expires: _options?.expires,
     };
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
@@ -4798,6 +4870,7 @@ export class MOQTSession {
   on(event: 'forward-state-change', handler: (event: ForwardStateChangeEvent) => void): () => void;
   on(event: 'namespace-forward-paused', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'namespace-forward-resumed', handler: (event: NamespaceForwardEvent) => void): () => void;
+  on(event: 'new-group-request', handler: (event: NewGroupRequestEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -5130,12 +5203,16 @@ export class MOQTSession {
     // Assign track alias
     const trackAlias = BigInt(this.nextIncomingTrackAlias++);
 
-    // Send SUBSCRIBE_OK with the track alias we'll use on data streams
+    // Send SUBSCRIBE_OK with the track alias we'll use on data streams.
+    // Advertise §10.2.10 EXPIRES when the announcer configured it — 0 means
+    // "no expiration" per spec, undefined omits the parameter.
+    const expires = announceInfo.options.expires;
     const subscribeOk: SubscribeOkMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_OK,
       requestId: message.requestId,
       trackAlias,
       largestLocation: { group: 0n, object: 0n },
+      expires: expires !== undefined ? BigInt(expires) : undefined,
     };
     const responseBytes = this.codec.encodeControlMessage(subscribeOk);
     const writer = writable.getWriter();
@@ -5227,10 +5304,13 @@ export class MOQTSession {
       return;
     }
 
-    // Send REQUEST_OK to accept
+    // Send REQUEST_OK to accept. §10.2.10 EXPIRES carries the namespace
+    // subscription's expiry hint when set.
+    const expires = matchingSubscription.expires;
     const requestOk: RequestOkMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: message.requestId,
+      expires: expires !== undefined ? BigInt(expires) : undefined,
     };
     const responseBytes = this.codec.encodeControlMessage(requestOk);
     const writer = writable.getWriter();
@@ -5420,9 +5500,19 @@ export class MOQTSession {
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     const prefix = message.trackNamespacePrefix.join('/');
+
+    // §10.2.14 TRACK_NAMESPACE_PREFIX narrows the top-level prefix. When the
+    // parameter is present and parseable we require publications to match the
+    // narrower tuple; malformed parameters are ignored so we don't drop matches
+    // due to a decoder bug on the peer.
+    const paramPrefixBytes = message.parameters?.get(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX);
+    const paramPrefix = paramPrefixBytes ? decodeTrackNamespaceBytes(paramPrefixBytes) : undefined;
+    const paramPrefixStr = paramPrefix?.join('/');
+
     log.info('Received SUBSCRIBE_TRACKS (draft-18)', {
       requestId: message.requestId.toString(),
       prefix,
+      paramPrefix: paramPrefixStr,
       forwardState: message.forwardState,
       filter: message.filter,
     });
@@ -5441,17 +5531,18 @@ export class MOQTSession {
     // future REQUEST_UPDATE on this requestId is §10.9.2 namespace-scoped.
     this.incomingRequestKinds.set(Number(message.requestId), 'subscribe-namespace');
 
-    // Emit incoming-subscribe for each track we publish under this prefix
+    // Emit incoming-subscribe for each track we publish under this prefix,
+    // applying the §10.2.14 narrower prefix filter when supplied.
     for (const [, pub] of this.publicationManager) {
       const pubNs = pub.namespace.join('/');
-      if (pubNs.startsWith(prefix)) {
-        this.emit('incoming-subscribe', {
-          requestId: Number(message.requestId),
-          namespace: pub.namespace,
-          trackName: pub.trackName,
-          trackAlias: pub.trackAlias,
-        } as IncomingSubscribeEvent);
-      }
+      if (!pubNs.startsWith(prefix)) continue;
+      if (paramPrefixStr && !pubNs.startsWith(paramPrefixStr)) continue;
+      this.emit('incoming-subscribe', {
+        requestId: Number(message.requestId),
+        namespace: pub.namespace,
+        trackName: pub.trackName,
+        trackAlias: pub.trackAlias,
+      } as IncomingSubscribeEvent);
     }
   }
 
@@ -5483,6 +5574,26 @@ export class MOQTSession {
       forwardState: message.forwardState,
       variant: kind,
     });
+
+    // §10.2.13 NEW_GROUP_REQUEST — the subscriber wants us to cut a new group.
+    // Surfaced independently of pause/resume because the two flags can arrive
+    // together (typical: resume forwarding *and* rebase on a keyframe).
+    const ngrBytes = message.parameters?.get(RequestParameterDraft18.NEW_GROUP_REQUEST);
+    if (ngrBytes && ngrBytes.length > 0) {
+      let value = 0;
+      try {
+        value = Number(MOQTVarInt.decode(ngrBytes)[0]);
+      } catch {
+        value = ngrBytes[0] ?? 0;
+      }
+      if (value !== 0) {
+        this.emit('new-group-request', {
+          requestId,
+          value,
+          forwardState: message.forwardState,
+        });
+      }
+    }
 
     if (kind === 'subscribe-namespace') {
       // §10.9.2 — namespace-scoped update; do not touch per-track publications.

@@ -1583,6 +1583,8 @@ export interface SubscribeOkMessageDraft18 {
   requestId: bigint;
   trackAlias?: bigint;
   largestLocation: Location;
+  /** §10.2.10 EXPIRES parameter (ms). `undefined` omits, `0n` means no expiration. */
+  expires?: bigint;
   trackProperties?: Map<number, Uint8Array>;
 }
 

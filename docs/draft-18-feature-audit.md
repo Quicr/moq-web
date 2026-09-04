@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 55 · 🟡 12 · ❌ 13 · **69% complete** of 80 features
+**Progress:** ✅ 62 · 🟡 10 · ❌ 8 · **77% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -66,7 +66,7 @@
 | NAMESPACE | §10.16 | `draft18-message-codec.ts:1046-1051` | `draft18-message-codec.ts:1053-1068` | `session.ts:2328-2345`, `session.ts:4725` | `draft18-message-codec.test.ts:619-650` | `04-subscribe-namespace.test.ts` | ✅ | |
 | NAMESPACE_DONE | §10.17 | `draft18-message-codec.ts:1070-1072` | `draft18-message-codec.ts:1074-1085` | `session.ts:2347-2361`, `session.ts:4734` | `draft18-message-codec.test.ts:652-666` | `16-namespace-done.test.ts` | ✅ | E2E asserts SUBSCRIBE_NAMESPACE resolves and codec parses the terminal frame; relays free to keep the stream open. |
 | SUBSCRIBE_NAMESPACE | §10.18 | `draft18-message-codec.ts:1016-1021` | `draft18-message-codec.ts:1023-1044` | `session.ts:2178-2222`, `session.ts:4702-4744` | `draft18-message-codec.test.ts:601-618` | `04-subscribe-namespace.test.ts` | ✅ | Parameters always empty on encode. |
-| SUBSCRIBE_TRACKS | §10.19 | `draft18-message-codec.ts` `encodeSubscribeTracks` (FORWARD + SUBSCRIPTION_FILTER + pass-through KVPs) | `draft18-message-codec.ts` `decodeSubscribeTracks` (mirrors SUBSCRIBE) | `session.ts` `subscribeTracks(prefix, onObject, { forwardState, filter, startLocation, endGroupDelta, parameters })` | `draft18-message-codec.test.ts` SUBSCRIBE_TRACKS suite + `session-subscribe-tracks.test.ts` | `17-subscribe-tracks.test.ts` | ✅ | Full parameter parity with SUBSCRIBE. |
+| SUBSCRIBE_TRACKS | §10.19 | `draft18-message-codec.ts` `encodeSubscribeTracks` (FORWARD + SUBSCRIPTION_FILTER + pass-through KVPs) | `draft18-message-codec.ts` `decodeSubscribeTracks` (mirrors SUBSCRIBE) | `session.ts` `subscribeTracks(prefix, onObject, { forwardState, filter, startLocation, endGroupDelta, namespacePrefixParam, parameters })` | `draft18-message-codec.test.ts` SUBSCRIBE_TRACKS suite + `session-subscribe-tracks.test.ts` + `session-expires-and-ngr.test.ts` | `17-subscribe-tracks.test.ts` + `20-expires-and-ngr.test.ts` | ✅ | Full parameter parity with SUBSCRIBE plus first-class §10.2.14 TRACK_NAMESPACE_PREFIX opt-in. |
 | PUBLISH_BLOCKED | §10.20 | `draft18-message-codec.ts:1119-1121` | `draft18-message-codec.ts:1123-1134` | `session.ts` `sendPublishBlocked(trackAlias)`; recv emits `PublishBlockedEvent` | `draft18-message-codec.test.ts:707-729, 778-787` + `session-subscribe-tracks.test.ts` | Indirect | ✅ | Publisher-side send helper landed. |
 
 ## Parameters (§10.2)
@@ -81,11 +81,11 @@
 | SUBSCRIBER_PRIORITY | §10.2.7 | `draft18-message-codec.ts:743, 449` | `:788, 484-486` | `session.ts:1460, 1794, 2494` | Roundtrip | Indirect | ✅ | Values pass through; not used for local scheduling. |
 | GROUP_ORDER | §10.2.8 | `:749, 445` | `:790-791, 490-492` | `session.ts:1795` etc. | Roundtrip | Indirect | ✅ | |
 | SUBSCRIPTION_FILTER | §10.2.9 | Inline in SUBSCRIBE `:423-449` | `:471-497` | `session.ts` `mapSubscribeFilter` → `SubscribeOptions.filterType` ('latest' / 'next-group' / 'largest-object' / 'absolute-start' / 'absolute-range' + `startGroup`/`startObject`/`endGroup`) | `draft18-message-codec.test.ts` roundtrip + `session-subscription-filter.test.ts` | `19-subscription-filters.test.ts` | ✅ | All four §10.2.9 filter variants selectable through `SubscribeOptions`; `endGroup` translated to `endGroupDelta` at send time. |
-| EXPIRES | §10.2.10 | `:685` (REQUEST_OK), `:1209` | `:703-705` | `session.ts` REQUEST_OK sites emit `request-ok` with `expiresMs` (PUBLISH, PUBLISH_NAMESPACE, FETCH, SUBSCRIBE_NAMESPACE, TRACK_STATUS) | `test.ts:272-286` | MISSING | ✅ | Surface via `RequestOkEvent`; undefined = parameter omitted, 0 = no expiration. |
+| EXPIRES | §10.2.10 | `draft18-message-codec.ts` REQUEST_OK + SUBSCRIBE_OK params | REQUEST_OK + SUBSCRIBE_OK decode | `session.ts` `AnnounceOptions.expires` → SUBSCRIBE_OK; `SubscribeNamespaceOptions.expires` → REQUEST_OK; `PublishOptions.expires` on publisher-side outbound REQUEST_OK | `session-expires-and-ngr.test.ts` + `draft18-message-codec.test.ts` SUBSCRIBE_OK EXPIRES roundtrip | `20-expires-and-ngr.test.ts` | ✅ | Two-way surface: incoming REQUEST_OK exposed via `RequestOkEvent.expiresMs`; outbound SUBSCRIBE_OK / REQUEST_OK carries publisher-configured value. |
 | LARGEST_OBJECT | §10.2.11 | `:510, 1216-1225` | `:538-544` | `session.ts:1530-1544` | SUBSCRIBE_OK roundtrip | Indirect | ✅ | |
 | FORWARD | §10.2.12 | `:416-421, 573-579, 943-948` | `:967-970` | `session.ts:1294` (`forwardState`) | REQUEST_UPDATE roundtrips | `06-subscribe-update.test.ts` | ✅ | |
-| NEW_GROUP_REQUEST | §10.2.13 | Generic KVP | Generic KVP | MISSING | MISSING | MISSING | 🟡 | Enum only. |
-| TRACK_NAMESPACE_PREFIX | §10.2.14 | Generic KVP | Generic KVP | MISSING | MISSING | MISSING | ❌ | Not applied — SUBSCRIBE_TRACKS always emits empty params. |
+| NEW_GROUP_REQUEST | §10.2.13 | `session.ts` `sendRequestUpdate({ newGroupRequest })` adds varint param to REQUEST_UPDATE | `session.ts` `dispatchRequestUpdateDraft18` extracts + emits `new-group-request` event | `SessionEventType` `'new-group-request'`; `NewGroupRequestEvent` payload | `session-expires-and-ngr.test.ts` | `20-expires-and-ngr.test.ts` | ✅ | Subscriber sends by option; publisher receives typed event with raw varint value and coincident `forwardState`. |
+| TRACK_NAMESPACE_PREFIX | §10.2.14 | `session.ts` `subscribeTracks({ namespacePrefixParam })` encodes tuple bytes into `SUBSCRIBE_TRACKS` param map | `handleIncomingSubscribeDraft18` decodes tuple + narrows publication match | `session.ts` new option; `encodeTrackNamespaceBytes` / `decodeTrackNamespaceBytes` helpers | `session-expires-and-ngr.test.ts` | `20-expires-and-ngr.test.ts` | ✅ | First-class subscriber option; publisher applies the narrower prefix as an extra filter when emitting `incoming-subscribe`. |
 
 ## Data Plane (§11)
 

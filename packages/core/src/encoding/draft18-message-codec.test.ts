@@ -307,6 +307,36 @@ describe('Draft18MessageCodec', () => {
       expect(d.type).toBe(MessageTypeDraft18.SUBSCRIBE_OK);
       expect(d.trackAlias).toBe(1n);
       expect(d.largestLocation).toEqual({ group: 100n, object: 50n });
+      expect(d.expires).toBeUndefined();
+    });
+
+    it('roundtrips SUBSCRIBE_OK with §10.2.10 EXPIRES', () => {
+      const message: SubscribeOkMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_OK,
+        requestId: 1n,
+        trackAlias: 2n,
+        largestLocation: { group: 3n, object: 4n },
+        expires: 12345n,
+      };
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as SubscribeOkMessageDraft18;
+      expect(d.expires).toBe(12345n);
+      expect(d.largestLocation).toEqual({ group: 3n, object: 4n });
+    });
+
+    it('SUBSCRIBE_OK EXPIRES=0 round-trips ("no expiration" is distinct from omitted)', () => {
+      const message: SubscribeOkMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE_OK,
+        requestId: 1n,
+        trackAlias: 3n,
+        largestLocation: { group: 0n, object: 0n },
+        expires: 0n,
+      };
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as SubscribeOkMessageDraft18;
+      expect(d.expires).toBe(0n);
     });
   });
 

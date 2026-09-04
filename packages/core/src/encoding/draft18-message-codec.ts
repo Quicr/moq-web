@@ -566,8 +566,15 @@ export class Draft18MessageCodec {
     // Draft-18 SUBSCRIBE_OK: Track Alias | Number of Parameters | Parameters | Track Properties (..)
     writer.writeVarInt(message.trackAlias ?? 0n);
 
-    // Parameters (count-prefixed)
+    // Parameters (count-prefixed). §10.2 wants deltas encoded in ascending key
+    // order — pushing EXPIRES (0x08) before LARGEST_OBJECT (0x09) preserves that.
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+    if (message.expires !== undefined) {
+      params.push({
+        type: RequestParameterDraft18.EXPIRES,
+        encode: (w) => w.writeVarInt(message.expires!),
+      });
+    }
     if (message.largestLocation && (message.largestLocation.group > 0n || message.largestLocation.object > 0n)) {
       params.push({
         type: RequestParameterDraft18.LARGEST_OBJECT,
@@ -591,6 +598,7 @@ export class Draft18MessageCodec {
 
     const numParams = reader.readVarIntNumber();
     let largestLocation: Location = { group: 0n, object: 0n };
+    let expires: bigint | undefined;
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
@@ -600,6 +608,8 @@ export class Draft18MessageCodec {
 
       if (type === RequestParameterDraft18.LARGEST_OBJECT) {
         largestLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
+      } else if (type === RequestParameterDraft18.EXPIRES) {
+        expires = reader.readVarInt();
       } else {
         Draft18MessageCodec.readParameterValue(reader, type);
       }
@@ -615,6 +625,7 @@ export class Draft18MessageCodec {
       requestId: trackAlias,
       trackAlias,
       largestLocation,
+      expires,
       trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
   }
