@@ -9,7 +9,7 @@
  * any media-specific dependencies.
  */
 
-import type { GroupOrder } from '@moq-web/core';
+import type { GroupOrder, FetchTypeDraft18 } from '@moq-web/core';
 
 /**
  * Session state
@@ -26,6 +26,7 @@ export type SessionEventType =
   | 'publish-stats'
   | 'subscribe-stats'
   | 'subscribe-ok'
+  | 'request-ok'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
   | 'namespace-announced'
@@ -33,7 +34,10 @@ export type SessionEventType =
   | 'incoming-publish'
   | 'forward-paused'
   | 'forward-resumed'
+  | 'namespace-forward-paused'
+  | 'namespace-forward-resumed'
   | 'goaway'
+  | 'publish-done'
   | 'publish-blocked'
   | 'fetch-object'
   | 'fetch-complete'
@@ -71,6 +75,20 @@ export interface SubscribeOptions {
   startObject?: number;
   /** Per-request authorization token */
   authToken?: RequestAuthToken;
+  /**
+   * Draft-18 §10.2 subscriber-side delivery timeouts (ms).
+   *
+   * - subgroupDeliveryTimeout — max time to fully deliver a subgroup
+   * - objectDeliveryTimeout   — max time to deliver a single object
+   * - fillTimeout             — max time to wait for a missing object
+   * - rendezvousTimeout       — max time to wait before a new-subscriber cutover
+   *
+   * A value of 0 or `undefined` omits the parameter. Draft-16 ignores these.
+   */
+  subgroupDeliveryTimeout?: number;
+  objectDeliveryTimeout?: number;
+  fillTimeout?: number;
+  rendezvousTimeout?: number;
 }
 
 /**
@@ -178,6 +196,27 @@ export interface SubscribeStatsEvent {
 }
 
 /**
+ * Track properties advertised by a publisher in SUBSCRIBE_OK / PUBLISH /
+ * FETCH_OK (draft-18 §12). Keys omitted from the map were not sent.
+ */
+export interface TrackProperties {
+  /** §12.1 — per-subgroup delivery timeout (ms) */
+  subgroupDeliveryTimeoutMs?: number;
+  /** §12.2 — per-object delivery timeout (ms) */
+  objectDeliveryTimeoutMs?: number;
+  /** §12.3 — how long a relay may cache an object (ms) */
+  maxCacheDurationMs?: number;
+  /** §12.4 — default publisher priority when object omits its own */
+  defaultPublisherPriority?: number;
+  /** §12.5 — default publisher group order */
+  defaultPublisherGroupOrder?: GroupOrder;
+  /** §12.6 — dynamic-groups flag (false = static, true = dynamic) */
+  dynamicGroups?: boolean;
+  /** §12.7 — immutable-properties bitmap (raw varint) */
+  immutablePropertiesBitmap?: bigint;
+}
+
+/**
  * Subscribe OK event data - emitted when SUBSCRIBE_OK is received
  */
 export interface SubscribeOkEvent {
@@ -193,6 +232,62 @@ export interface SubscribeOkEvent {
   largestGroupId?: number;
   /** Largest object ID in largest group (if content exists) */
   largestObjectId?: number;
+  /** Draft-18 track properties (§12) — undefined on draft-16 sessions */
+  trackProperties?: TrackProperties;
+}
+
+/**
+ * Draft-18 PUBLISH_DONE event (§10.11). Fired on the subscriber side
+ * when the publisher signals no more objects will arrive on a subscribed
+ * track. Includes the final location and optional status/reason phrase
+ * from `PublishDoneErrorCodeDraft18`.
+ */
+export interface PublishDoneEvent {
+  /** Request ID the publisher was serving */
+  requestId: number;
+  /** Local subscription ID if we still know it */
+  subscriptionId?: number;
+  /** §10.11 final Location — last group/object the publisher intends to emit */
+  finalGroupId: number;
+  finalObjectId: number;
+  /** Optional `PublishDoneErrorCodeDraft18` status */
+  statusCode?: number;
+  /** Optional human-readable reason */
+  reasonPhrase?: string;
+  /** Number of subgroup/fetch streams the publisher opened for this request */
+  streamCount?: number;
+}
+
+/**
+ * Draft-18 PUBLISH_BLOCKED event (§10.20). Fired when the publisher
+ * cannot continue delivery due to flow control. Consumers can use this
+ * to slow down producers or drop non-critical objects.
+ */
+export interface PublishBlockedEvent {
+  /** Track alias that is blocked */
+  trackAlias: bigint;
+}
+
+/**
+ * Draft-18 REQUEST_OK event - emitted for every accepted request that
+ * responds with REQUEST_OK (PUBLISH, PUBLISH_NAMESPACE, FETCH,
+ * SUBSCRIBE_NAMESPACE, TRACK_STATUS). `expires` is the optional §10.2.10
+ * lifetime hint in milliseconds; 0 means "no expiration" and undefined
+ * means the responder did not send the parameter.
+ */
+export interface RequestOkEvent {
+  /** Request ID from the request stream */
+  requestId: number;
+  /**
+   * Kind of request that was accepted, so consumers can filter without
+   * having to correlate requestId ↔ request kind themselves.
+   */
+  requestKind: 'publish' | 'publish-namespace' | 'fetch' | 'subscribe-namespace' | 'track-status';
+  /**
+   * §10.2.10 EXPIRES parameter (ms). Undefined when the responder omitted
+   * the parameter, 0 when the responder explicitly signals no expiration.
+   */
+  expiresMs?: number;
 }
 
 /**
@@ -371,6 +466,30 @@ export interface FetchOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
+  /**
+   * Draft-18 §10.12: FETCH type discriminator.
+   *
+   * - STANDALONE (0x1): default; fetch a range within a namespace/trackName
+   * - JOINING_RELATIVE (0x2): join an existing subscription; groups relative to current
+   * - JOINING_ABSOLUTE (0x3): join an existing subscription; groups absolute
+   *
+   * For joining fetches, `subscribeRequestId` MUST be provided and identifies
+   * the target subscription. `joiningStart` is the group offset (relative) or
+   * group id (absolute). namespace/trackName/range are ignored on the wire.
+   */
+  fetchType?: FetchTypeDraft18;
+  /** Draft-18 joining fetch: target subscribe request id */
+  subscribeRequestId?: bigint;
+  /** Draft-18 joining fetch: group offset (relative) or group id (absolute) */
+  joiningStart?: bigint;
+  /**
+   * Draft-18 §10.2 subscriber-side delivery timeouts (ms). See
+   * [[SubscribeOptions]] for semantics; ignored for draft-16.
+   */
+  subgroupDeliveryTimeout?: number;
+  objectDeliveryTimeout?: number;
+  fillTimeout?: number;
+  rendezvousTimeout?: number;
 }
 
 /**
@@ -558,4 +677,28 @@ export interface ForwardStateChangeEvent {
   trackAlias: bigint;
   /** New forward state (0 = paused/no subscribers, 1 = active/can send) */
   forward: number;
+}
+
+/**
+ * Draft-18 REQUEST_UPDATE variants (§10.9). REQUEST_UPDATE reuses the same
+ * wire format for both subscription-scoped (§10.9.1) and namespace-scoped
+ * (§10.9.2) updates; the variant is determined by looking up the target
+ * requestId's original request kind.
+ */
+export type RequestUpdateVariant =
+  | 'subscribe'
+  | 'subscribe-namespace'
+  | 'publish'
+  | 'publish-namespace'
+  | 'fetch'
+  | 'unknown';
+
+/**
+ * Fired when the peer sends REQUEST_UPDATE targeting a namespace subscription
+ * (§10.9.2). Consumers can pause/resume forwarding for a whole namespace
+ * subscription rather than a single track.
+ */
+export interface NamespaceForwardEvent {
+  /** Request ID of the original SUBSCRIBE_NAMESPACE (§10.9.2) */
+  namespaceRequestId: number;
 }
