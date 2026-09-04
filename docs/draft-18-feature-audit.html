@@ -1,0 +1,1669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOQ Transport Draft-18 Feature Audit</title>
+
+    <!-- Google Fonts - Product Sans style with Roboto -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <style>
+        /* Google Color Palette */
+        :root {
+            /* Google Colors */
+            --google-blue: #4285F4;
+            --google-red: #EA4335;
+            --google-yellow: #FBBC05;
+            --google-green: #34A853;
+            --google-blue-dark: #1a73e8;
+            --google-blue-light: #8ab4f8;
+
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-tertiary: #0f3460;
+            --bg-card: #1a1a2e;
+            --bg-code: #0d1117;
+            --bg-code-inline: #21262d;
+
+            --text-primary: #ffffff;
+            --text-secondary: #c9d1d9;
+            --text-muted: #8b949e;
+            --text-code: #e6edf3;
+
+            /* Vibrant accents using Google colors */
+            --accent-primary: var(--google-blue);
+            --accent-secondary: var(--google-red);
+            --accent-tertiary: var(--google-green);
+            --accent-warm: var(--google-yellow);
+            --accent-pink: #e94560;
+
+            --border-color: #30363d;
+            --border-accent: var(--google-blue);
+            --shadow-lg: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            --shadow-glow: 0 0 40px rgba(66, 133, 244, 0.2);
+
+            --content-width: 960px;
+
+            /* Gradient colors */
+            --gradient-google: linear-gradient(135deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+        }
+
+        /* Light theme - Google style */
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #ffffff;
+                --bg-secondary: #f8f9fa;
+                --bg-tertiary: #e8eaed;
+                --bg-card: #ffffff;
+                --bg-code: #f8f9fa;
+                --bg-code-inline: #e8eaed;
+                --text-primary: #202124;
+                --text-secondary: #5f6368;
+                --text-muted: #80868b;
+                --text-code: #202124;
+                --border-color: #dadce0;
+                --shadow-glow: 0 0 40px rgba(66, 133, 244, 0.1);
+                --accent-warm: #ea8600;
+            }
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            font-size: 16px;
+        }
+
+        body {
+            font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.75;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            max-width: var(--content-width);
+            margin: 0 auto;
+            padding: 3rem 2rem 6rem;
+        }
+
+        /* Typography - Google Style */
+        h1 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+            background-size: 300% 300%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: gradient-shift 8s ease infinite;
+        }
+
+        @keyframes gradient-shift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        h2 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.875rem;
+            font-weight: 500;
+            margin-top: 4rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 3px solid transparent;
+            border-image: linear-gradient(90deg, var(--google-blue), var(--google-green)) 1;
+            letter-spacing: -0.01em;
+            color: var(--text-primary);
+        }
+
+        h2::before {
+            content: '';
+            display: inline-block;
+            width: 6px;
+            height: 1.5rem;
+            background: linear-gradient(180deg, var(--google-blue), var(--google-red));
+            margin-right: 0.75rem;
+            border-radius: 3px;
+            vertical-align: middle;
+        }
+
+        h3 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.375rem;
+            font-weight: 500;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--google-blue);
+        }
+
+        h4 {
+            font-family: 'Google Sans', 'Roboto', sans-serif;
+            font-size: 1.125rem;
+            font-weight: 500;
+            color: var(--google-green);
+            margin-top: 2rem;
+            margin-bottom: 0.75rem;
+        }
+
+        p {
+            margin-bottom: 1.25rem;
+            color: var(--text-secondary);
+        }
+
+        strong {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        em {
+            font-style: italic;
+            color: var(--accent-tertiary);
+        }
+
+        a {
+            color: var(--google-blue);
+            text-decoration: none;
+            transition: all 0.2s ease;
+            border-bottom: 1px solid transparent;
+            font-weight: 500;
+        }
+
+        a:hover {
+            color: var(--google-blue-light);
+            border-bottom-color: var(--google-blue-light);
+        }
+
+        /* Lists */
+        ul, ol {
+            margin-bottom: 1.5rem;
+            padding-left: 1.5rem;
+            color: var(--text-secondary);
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+            padding-left: 0.5rem;
+        }
+
+        ul li::marker {
+            color: var(--google-blue);
+        }
+
+        ol li::marker {
+            color: var(--google-red);
+            font-weight: 600;
+        }
+
+        /* Code */
+        pre {
+            background: var(--bg-code);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--google-blue);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        pre code {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            color: var(--text-code);
+            background: none;
+            padding: 0;
+            border-radius: 0;
+        }
+
+        code {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            font-size: 0.875em;
+            background: var(--bg-code-inline);
+            color: var(--google-yellow);
+            padding: 0.2em 0.5em;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+
+        /* Tables - Google style */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            background: var(--bg-card);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--border-color);
+        }
+
+        th {
+            background: linear-gradient(135deg, var(--google-blue), var(--google-blue-dark));
+            color: white;
+            font-weight: 500;
+            text-align: left;
+            padding: 1rem 1.25rem;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+
+        tr:hover td {
+            background: var(--bg-secondary);
+        }
+
+        /* Alternate row coloring */
+        tbody tr:nth-child(even) td {
+            background: var(--bg-secondary);
+        }
+
+        tbody tr:nth-child(even):hover td {
+            background: var(--bg-tertiary);
+        }
+
+        /* Blockquotes */
+        blockquote {
+            border-left: 4px solid var(--google-green);
+            background: var(--bg-secondary);
+            padding: 1rem 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 0 12px 12px 0;
+            color: var(--text-secondary);
+        }
+
+        hr {
+            border: none;
+            height: 3px;
+            background: linear-gradient(90deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green));
+            margin: 3rem 0;
+            border-radius: 2px;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 2rem 1rem 4rem;
+            }
+
+            h1 {
+                font-size: 2rem;
+            }
+
+            h2 {
+                font-size: 1.5rem;
+            }
+
+            pre {
+                padding: 1rem;
+                font-size: 0.8rem;
+            }
+        }
+
+        /* Print */
+        @media print {
+            body {
+                background: white;
+                color: black;
+            }
+
+            pre {
+                background: #f5f5f5;
+            }
+
+            h1 {
+                background: none;
+                -webkit-text-fill-color: inherit;
+                color: black;
+            }
+        }
+
+        h2:hover, h3:hover {
+            color: var(--google-blue);
+        }
+
+        :target {
+            scroll-margin-top: 2rem;
+        }
+
+        /* TOC styling */
+        .toc-list {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem 2rem;
+            border-left: 4px solid var(--google-blue);
+        }
+
+        .toc-list a {
+            display: inline-block;
+            padding: 0.25rem 0;
+            transition: transform 0.2s ease, color 0.2s ease;
+        }
+
+        .toc-list a:hover {
+            transform: translateX(4px);
+            color: var(--google-red);
+        }
+
+        .footer {
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 3px solid transparent;
+            border-image: linear-gradient(90deg, var(--google-blue), var(--google-red), var(--google-yellow), var(--google-green)) 1;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .footer em {
+            color: var(--text-secondary);
+        }
+
+        /* Copy button for code blocks */
+        .copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            font-family: 'Roboto', sans-serif;
+            background: var(--google-blue);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            opacity: 0;
+            transition: all 0.2s;
+        }
+
+        pre:hover .copy-btn {
+            opacity: 1;
+        }
+
+        .copy-btn:hover {
+            background: var(--google-blue-dark);
+            transform: scale(1.05);
+        }
+
+        /* Google-style badges/pills for inline code */
+        h2 code, h3 code, h4 code {
+            background: var(--google-blue);
+            color: white;
+            font-size: 0.75em;
+            padding: 0.2em 0.6em;
+            border-radius: 12px;
+            border: none;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="moq-transport-draft-18-feature-audit">MOQ Transport Draft-18 Feature Audit</h1>
+<p><strong>Repository:</strong> <code>Quicr/moq-web</code><br />
+<strong>Spec:</strong> <code>draft-ietf-moq-transport-18</code> (January 2026)<br />
+<strong>Audit date:</strong> 2026-09-03<br />
+<strong>Branch reviewed:</strong> <code>main</code> (after PR #35)</p>
+<!-- audit-progress:begin -->
+<p><strong>Progress:</strong> ✅ 48 · 🟡 17 · ❌ 15 · <strong>60% complete</strong> of 80 features</p>
+<!-- audit-progress:end -->
+
+<blockquote>
+<p>This is a <strong>living document</strong>. Regenerate the progress line with <code>scripts/audit-progress.sh -w</code>. Each row's Status column is the source of truth — update it as features land.</p>
+</blockquote>
+<hr />
+<h2 id="legend">Legend</h2>
+<ul>
+<li><strong>Status</strong></li>
+<li>✅ <strong>Complete</strong> — implemented end-to-end with tests.</li>
+<li>🟡 <strong>Partial</strong> — some layer (wire, session, or test) present, others missing or stubbed.</li>
+<li>❌ <strong>Missing</strong> — not implemented.</li>
+<li><strong>N/A</strong> — does not apply to this client.</li>
+<li><strong>Locations</strong> use <code>file:line</code> format, resolved from repo root.</li>
+</ul>
+<hr />
+<h2 id="session-framing-3">Session / Framing (§3)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session establishment via WebTransport</td>
+<td>§3.1.3</td>
+<td><code>session.ts:1053-1082</code></td>
+<td><code>draft18-message-codec.ts:236-247</code></td>
+<td><code>session.ts:1053</code> (<code>setup()</code>)</td>
+<td><code>draft18-message-codec.test.ts:34-82</code></td>
+<td><code>01-setup.test.ts</code></td>
+<td>✅</td>
+<td>WebTransport-only client.</td>
+</tr>
+<tr>
+<td>MOQT URI scheme (<code>moqt://</code>)</td>
+<td>§3.1.1</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>No scheme validation; callers pass <code>https://</code> URLs.</td>
+</tr>
+<tr>
+<td>Native QUIC transport</td>
+<td>§3.1.4</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>Browser-only; native QUIC path not applicable.</td>
+</tr>
+<tr>
+<td>Session termination</td>
+<td>§3.5</td>
+<td><code>session.ts:4257+</code></td>
+<td>via setup reader <code>session.ts:4297+</code></td>
+<td>state machine <code>setState('closing')</code></td>
+<td>MISSING</td>
+<td><code>11-goaway.test.ts</code> (partial)</td>
+<td>🟡</td>
+<td>No distinct session-error path using <code>SessionErrorCodeDraft18</code>.</td>
+</tr>
+<tr>
+<td>GOAWAY handling</td>
+<td>§10.4</td>
+<td><code>draft18-message-codec.ts:852-859</code></td>
+<td><code>draft18-message-codec.ts:861-873</code></td>
+<td><code>session.ts:1137</code>, <code>session.ts:4846-4858</code></td>
+<td><code>draft18-message-codec.test.ts:354-402, 732-767</code></td>
+<td><code>11-goaway.test.ts</code></td>
+<td>✅</td>
+<td>Both control-stream &amp; request-stream variants; no migration handler.</td>
+</tr>
+<tr>
+<td>Migration</td>
+<td>§3.6</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td><code>newSessionUri</code> event surfaced but no reconnect logic.</td>
+</tr>
+<tr>
+<td>Congestion control</td>
+<td>§3.7</td>
+<td>—</td>
+<td>—</td>
+<td><code>transport.ts:91-92,153,230</code> (<code>congestionControl</code> option)</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Sets WebTransport <code>default</code>/<code>throughput</code> hint only; no bufferbloat/app-limited logic.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="extension-negotiation-32-4">Extension Negotiation (§3.2, §4)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Extension advertisement in SETUP</td>
+<td>§3.2</td>
+<td><code>draft18-message-codec.ts:273-333</code></td>
+<td><code>draft18-message-codec.ts:339-397</code></td>
+<td>fixed option set (<code>session.ts:1063-1082</code>)</td>
+<td><code>draft18-message-codec.test.ts:34-82</code></td>
+<td><code>01-setup.test.ts</code></td>
+<td>🟡</td>
+<td>Unknown options skipped on decode, no API to advertise custom extensions.</td>
+</tr>
+<tr>
+<td>Reserved namespaces</td>
+<td>§3.2.1</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>No enforcement of <code>moq-ext</code> reserved namespace.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="control-messages-1031020">Control Messages (§10.3–10.20)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SETUP (CLIENT_SETUP + SERVER_SETUP)</td>
+<td>§10.3</td>
+<td><code>draft18-message-codec.ts:273-334</code></td>
+<td><code>draft18-message-codec.ts:339-397</code></td>
+<td><code>session.ts:1063-1090</code>, <code>session.ts:4257-4360</code></td>
+<td><code>draft18-message-codec.test.ts:34-82</code></td>
+<td><code>01-setup.test.ts</code></td>
+<td>✅</td>
+<td>Unified message.</td>
+</tr>
+<tr>
+<td>GOAWAY</td>
+<td>§10.4</td>
+<td><code>draft18-message-codec.ts:852-859</code></td>
+<td><code>draft18-message-codec.ts:861-873</code></td>
+<td><code>session.ts:1137</code>, <code>session.ts:4846</code></td>
+<td><code>draft18-message-codec.test.ts:354-402</code></td>
+<td><code>11-goaway.test.ts</code></td>
+<td>✅</td>
+<td>Golden-byte tests present.</td>
+</tr>
+<tr>
+<td>REQUEST_OK</td>
+<td>§10.5</td>
+<td><code>draft18-message-codec.ts:680-690</code></td>
+<td><code>draft18-message-codec.ts:692-716</code></td>
+<td><code>session.ts:4624-4671</code></td>
+<td><code>draft18-message-codec.test.ts:258-286, 768-777</code></td>
+<td>Indirect (03/05/09)</td>
+<td>✅</td>
+<td>Includes optional <code>expires</code> parameter.</td>
+</tr>
+<tr>
+<td>REQUEST_ERROR (+ Redirect §10.6.1)</td>
+<td>§10.6</td>
+<td><code>draft18-message-codec.ts:627-671</code></td>
+<td><code>draft18-message-codec.ts:645-678</code></td>
+<td><code>session.ts:4871-4899</code></td>
+<td><code>draft18-message-codec.test.ts:173-257</code></td>
+<td>Implicit (<code>08-track-status</code>)</td>
+<td>✅</td>
+<td>Redirect struct roundtrips; <code>retry_interval</code> decoded but ignored.</td>
+</tr>
+<tr>
+<td>SUBSCRIBE</td>
+<td>§10.7</td>
+<td><code>draft18-message-codec.ts:403-452</code></td>
+<td><code>draft18-message-codec.ts:454-500</code></td>
+<td><code>session.ts:1443-1561</code>, <code>session.ts:4508-4583</code></td>
+<td><code>draft18-message-codec.test.ts:84-146</code></td>
+<td><code>05-subscribe.test.ts</code></td>
+<td>✅</td>
+<td>Public API only uses <code>NEXT_GROUP_START</code>; <code>ABSOLUTE_RANGE</code> codec-only.</td>
+</tr>
+<tr>
+<td>SUBSCRIBE_OK</td>
+<td>§10.8</td>
+<td><code>draft18-message-codec.ts:502-523</code></td>
+<td><code>draft18-message-codec.ts:525-561</code></td>
+<td><code>session.ts:1527-1548</code></td>
+<td><code>draft18-message-codec.test.ts:129-147</code></td>
+<td><code>05-subscribe.test.ts</code></td>
+<td>✅</td>
+<td>Track properties encoded as generic KVP; no key-specific validation.</td>
+</tr>
+<tr>
+<td>REQUEST_UPDATE (§10.9.1 + §10.9.2)</td>
+<td>§10.9</td>
+<td><code>draft18-message-codec.ts:934-954</code></td>
+<td><code>draft18-message-codec.ts:956-984</code></td>
+<td><code>session.ts:1283-1323</code> (send); <code>session.ts</code> <code>dispatchRequestUpdateDraft18</code> routes to <code>forward-paused</code>/<code>-resumed</code> (§10.9.1) or <code>namespace-forward-paused</code>/<code>-resumed</code> (§10.9.2) via <code>incomingRequestKinds</code> lookup</td>
+<td><code>draft18-message-codec.test.ts:519-566</code></td>
+<td><code>06-subscribe-update.test.ts</code></td>
+<td>✅</td>
+<td>Inbound REQUEST_UPDATE is dispatched to typed events per variant; namespace-scoped updates emit <code>NamespaceForwardEvent</code>.</td>
+</tr>
+<tr>
+<td>PUBLISH</td>
+<td>§10.10</td>
+<td><code>draft18-message-codec.ts:563-587</code></td>
+<td><code>draft18-message-codec.ts:590-624</code></td>
+<td><code>session.ts:1563-1612</code>, <code>session.ts:4585-4671</code></td>
+<td><code>draft18-message-codec.test.ts:148-172</code></td>
+<td><code>03-publish.test.ts</code></td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>PUBLISH_DONE</td>
+<td>§10.11</td>
+<td><code>draft18-message-codec.ts:908-913</code></td>
+<td><code>draft18-message-codec.ts:915-932</code></td>
+<td><code>session.ts</code> send (<code>sendPublishDone</code>), recv emits <code>publish-done</code> (finalGroup/Object, statusCode, reason, streamCount)</td>
+<td><code>draft18-message-codec.test.ts:479-517</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Typed <code>PublishDoneEvent</code> includes optional <code>PublishDoneErrorCodeDraft18</code> status.</td>
+</tr>
+<tr>
+<td>FETCH (standalone §10.12.1)</td>
+<td>§10.12</td>
+<td><code>draft18-message-codec.ts:721-754</code></td>
+<td><code>draft18-message-codec.ts:756-809</code></td>
+<td><code>session.ts:1777-1867</code></td>
+<td><code>draft18-message-codec.test.ts:287-333</code></td>
+<td><code>09-fetch.test.ts</code></td>
+<td>✅</td>
+<td><code>endLocation = endObject + 1</code> (exclusive).</td>
+</tr>
+<tr>
+<td>FETCH — Joining relative (type 0x2)</td>
+<td>§10.12.2</td>
+<td><code>draft18-message-codec.ts:722-751</code></td>
+<td><code>draft18-message-codec.ts:770-838</code></td>
+<td><code>session.ts:1807-1897</code> (via <code>FetchOptions.fetchType</code>)</td>
+<td><code>draft18-message-codec.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td><code>FetchTypeDraft18</code> enum distinguishes 0x1/0x2/0x3; session API accepts <code>fetchType</code>, <code>subscribeRequestId</code>, <code>joiningStart</code>.</td>
+</tr>
+<tr>
+<td>FETCH — Joining absolute (type 0x3)</td>
+<td>§10.12.2</td>
+<td><code>draft18-message-codec.ts:722-751</code></td>
+<td><code>draft18-message-codec.ts:770-838</code></td>
+<td><code>session.ts:1807-1897</code> (via <code>FetchOptions.fetchType</code>)</td>
+<td><code>draft18-message-codec.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Codec validates fetchType and throws <code>Draft18CodecError</code> on invalid; session API supports both variants.</td>
+</tr>
+<tr>
+<td>Fetch cancellation</td>
+<td>§10.12 / §3.3.2</td>
+<td><code>session.ts:1885</code> (via REQUEST_UPDATE with <code>forwardState=false</code>)</td>
+<td>—</td>
+<td><code>session.ts:1871-1911</code> (<code>cancelFetch</code>)</td>
+<td>MISSING</td>
+<td><code>10-fetch-cancel.test.ts</code></td>
+<td>✅</td>
+<td>Draft-18 removed FETCH_CANCEL; uses REQUEST_UPDATE.</td>
+</tr>
+<tr>
+<td>FETCH_OK</td>
+<td>§10.13</td>
+<td><code>draft18-message-codec.ts:811-819</code></td>
+<td><code>draft18-message-codec.ts:821-849</code></td>
+<td><code>session.ts:1820-1840</code></td>
+<td><code>draft18-message-codec.test.ts:335-353</code></td>
+<td><code>09-fetch.test.ts</code></td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>TRACK_STATUS</td>
+<td>§10.14</td>
+<td><code>draft18-message-codec.ts:875-881</code></td>
+<td><code>draft18-message-codec.ts:883-906</code></td>
+<td><code>session.ts:1165-1201</code>, <code>session.ts:4686-4700</code> (log-only)</td>
+<td><code>draft18-message-codec.test.ts:404-422</code></td>
+<td><code>08-track-status.test.ts</code></td>
+<td>🟡</td>
+<td>Response via REQUEST_OK/REQUEST_ERROR; incoming request stub only.</td>
+</tr>
+<tr>
+<td>PUBLISH_NAMESPACE</td>
+<td>§10.15</td>
+<td><code>draft18-message-codec.ts:986-991</code></td>
+<td><code>draft18-message-codec.ts:993-1014</code></td>
+<td><code>session.ts:2713-2743</code>, <code>session.ts:4745-4767</code></td>
+<td><code>draft18-message-codec.test.ts:568-599</code></td>
+<td><code>02-announce.test.ts</code></td>
+<td>✅</td>
+<td>Parameters map always encoded empty; auth-token push ignored.</td>
+</tr>
+<tr>
+<td>NAMESPACE</td>
+<td>§10.16</td>
+<td><code>draft18-message-codec.ts:1046-1051</code></td>
+<td><code>draft18-message-codec.ts:1053-1068</code></td>
+<td><code>session.ts:2328-2345</code>, <code>session.ts:4725</code></td>
+<td><code>draft18-message-codec.test.ts:619-650</code></td>
+<td><code>04-subscribe-namespace.test.ts</code></td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>NAMESPACE_DONE</td>
+<td>§10.17</td>
+<td><code>draft18-message-codec.ts:1070-1072</code></td>
+<td><code>draft18-message-codec.ts:1074-1085</code></td>
+<td><code>session.ts:2347-2361</code>, <code>session.ts:4734</code></td>
+<td><code>draft18-message-codec.test.ts:652-666</code></td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>No e2e; codec emits final namespace only.</td>
+</tr>
+<tr>
+<td>SUBSCRIBE_NAMESPACE</td>
+<td>§10.18</td>
+<td><code>draft18-message-codec.ts:1016-1021</code></td>
+<td><code>draft18-message-codec.ts:1023-1044</code></td>
+<td><code>session.ts:2178-2222</code>, <code>session.ts:4702-4744</code></td>
+<td><code>draft18-message-codec.test.ts:601-618</code></td>
+<td><code>04-subscribe-namespace.test.ts</code></td>
+<td>✅</td>
+<td>Parameters always empty on encode.</td>
+</tr>
+<tr>
+<td>SUBSCRIBE_TRACKS</td>
+<td>§10.19</td>
+<td><code>draft18-message-codec.ts:1087-1092</code></td>
+<td><code>draft18-message-codec.ts:1094-1117</code></td>
+<td><code>session.ts:1212-1256</code>, <code>session.ts:4771-4806</code> (stub)</td>
+<td><code>draft18-message-codec.test.ts:668-706</code></td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Encoder emits only prefix + empty params; no filter/startLocation/pattern.</td>
+</tr>
+<tr>
+<td>PUBLISH_BLOCKED</td>
+<td>§10.20</td>
+<td><code>draft18-message-codec.ts:1119-1121</code></td>
+<td><code>draft18-message-codec.ts:1123-1134</code></td>
+<td><code>session.ts</code> recv emits <code>PublishBlockedEvent</code></td>
+<td><code>draft18-message-codec.test.ts:707-729, 778-787</code></td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Typed event now surfaced; send helper still missing.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="parameters-102">Parameters (§10.2)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AUTHORIZATION_TOKEN</td>
+<td>§10.2.2</td>
+<td>Setup: <code>draft18-message-codec.ts:288-296</code>; request: via <code>MessageCodec.encodeAuthorizationToken</code> <code>message-codec.ts:602-641</code></td>
+<td><code>draft18-message-codec.ts:362-366</code> (SETUP); request skips value <code>:1226-1232</code></td>
+<td><code>session.ts:309-315, 436-475, 1091-1098</code></td>
+<td>Setup path in <code>draft18-message-codec.test.ts:46-82</code></td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Token aliasing in shared codec; not wired into draft-18 decoder path.</td>
+</tr>
+<tr>
+<td>SUBGROUP_DELIVERY_TIMEOUT</td>
+<td>§10.2.3</td>
+<td><code>draft18-message-codec.ts:445-449, 763-767</code> (SUBSCRIBE + FETCH raw params)</td>
+<td><code>:484-487, 815-830</code> (delta-decoded into <code>parameters</code> map)</td>
+<td><code>session.ts</code> <code>addDeliveryTimeoutParams</code> → <code>SubscribeOptions.subgroupDeliveryTimeout</code> / <code>FetchOptions.subgroupDeliveryTimeout</code></td>
+<td><code>draft18-message-codec.test.ts</code> SUBSCRIBE + FETCH roundtrip</td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Subscriber-side timeout wired end-to-end via §10.2 request parameters.</td>
+</tr>
+<tr>
+<td>OBJECT_DELIVERY_TIMEOUT</td>
+<td>§10.2.4</td>
+<td><code>draft18-message-codec.ts:445-449, 763-767</code></td>
+<td><code>:484-487, 815-830</code></td>
+<td><code>session.ts</code> <code>addDeliveryTimeoutParams</code> → <code>SubscribeOptions.objectDeliveryTimeout</code> / <code>FetchOptions.objectDeliveryTimeout</code></td>
+<td><code>draft18-message-codec.test.ts</code> SUBSCRIBE + FETCH roundtrip</td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Subscriber-side per-object delivery timeout as varint request parameter.</td>
+</tr>
+<tr>
+<td>FILL_TIMEOUT</td>
+<td>§10.2.5</td>
+<td><code>draft18-message-codec.ts:445-449, 763-767</code></td>
+<td><code>:484-487, 815-830</code></td>
+<td><code>session.ts</code> <code>addDeliveryTimeoutParams</code> → <code>SubscribeOptions.fillTimeout</code> / <code>FetchOptions.fillTimeout</code></td>
+<td><code>draft18-message-codec.test.ts</code> SUBSCRIBE + FETCH roundtrip</td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Subscriber-side missing-object wait timeout.</td>
+</tr>
+<tr>
+<td>RENDEZVOUS_TIMEOUT</td>
+<td>§10.2.6</td>
+<td><code>draft18-message-codec.ts:445-449, 763-767</code></td>
+<td><code>:484-487, 815-830</code></td>
+<td><code>session.ts</code> <code>addDeliveryTimeoutParams</code> → <code>SubscribeOptions.rendezvousTimeout</code> / <code>FetchOptions.rendezvousTimeout</code></td>
+<td><code>draft18-message-codec.test.ts</code> SUBSCRIBE + FETCH roundtrip</td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Subscriber-side cutover-wait timeout for new subscribers.</td>
+</tr>
+<tr>
+<td>SUBSCRIBER_PRIORITY</td>
+<td>§10.2.7</td>
+<td><code>draft18-message-codec.ts:743, 449</code></td>
+<td><code>:788, 484-486</code></td>
+<td><code>session.ts:1460, 1794, 2494</code></td>
+<td>Roundtrip</td>
+<td>Indirect</td>
+<td>✅</td>
+<td>Values pass through; not used for local scheduling.</td>
+</tr>
+<tr>
+<td>GROUP_ORDER</td>
+<td>§10.2.8</td>
+<td><code>:749, 445</code></td>
+<td><code>:790-791, 490-492</code></td>
+<td><code>session.ts:1795</code> etc.</td>
+<td>Roundtrip</td>
+<td>Indirect</td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>SUBSCRIPTION_FILTER</td>
+<td>§10.2.9</td>
+<td>Inline in SUBSCRIBE <code>:423-449</code></td>
+<td><code>:471-497</code></td>
+<td><code>session.ts:1509</code> (hardcoded NEXT_GROUP_START)</td>
+<td><code>test.ts:107-127</code></td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Other filters codec-only.</td>
+</tr>
+<tr>
+<td>EXPIRES</td>
+<td>§10.2.10</td>
+<td><code>:685</code> (REQUEST_OK), <code>:1209</code></td>
+<td><code>:703-705</code></td>
+<td><code>session.ts</code> REQUEST_OK sites emit <code>request-ok</code> with <code>expiresMs</code> (PUBLISH, PUBLISH_NAMESPACE, FETCH, SUBSCRIBE_NAMESPACE, TRACK_STATUS)</td>
+<td><code>test.ts:272-286</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Surface via <code>RequestOkEvent</code>; undefined = parameter omitted, 0 = no expiration.</td>
+</tr>
+<tr>
+<td>LARGEST_OBJECT</td>
+<td>§10.2.11</td>
+<td><code>:510, 1216-1225</code></td>
+<td><code>:538-544</code></td>
+<td><code>session.ts:1530-1544</code></td>
+<td>SUBSCRIBE_OK roundtrip</td>
+<td>Indirect</td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>FORWARD</td>
+<td>§10.2.12</td>
+<td><code>:416-421, 573-579, 943-948</code></td>
+<td><code>:967-970</code></td>
+<td><code>session.ts:1294</code> (<code>forwardState</code>)</td>
+<td>REQUEST_UPDATE roundtrips</td>
+<td><code>06-subscribe-update.test.ts</code></td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>NEW_GROUP_REQUEST</td>
+<td>§10.2.13</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Enum only.</td>
+</tr>
+<tr>
+<td>TRACK_NAMESPACE_PREFIX</td>
+<td>§10.2.14</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>Not applied — SUBSCRIBE_TRACKS always emits empty params.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="data-plane-11">Data Plane (§11)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Object Datagram</td>
+<td>§11.3.1</td>
+<td><code>draft18-stream-codec.ts:310-367</code></td>
+<td><code>draft18-stream-codec.ts:369-435</code></td>
+<td><code>message-codec.ts:2534, 2571</code>; <code>datagram-manager.ts:201, 253</code>; <code>session.ts:3661</code></td>
+<td><code>draft18-stream-codec.test.ts:202-312, 472-497</code></td>
+<td><code>05-subscribe.test.ts</code> (chat-datagram), <code>09-fetch.test.ts</code></td>
+<td>✅</td>
+<td>Golden bytes verified; all flag combinations covered.</td>
+</tr>
+<tr>
+<td>Subgroup Header stream</td>
+<td>§11.4.2</td>
+<td><code>draft18-stream-codec.ts:115-153</code></td>
+<td><code>draft18-stream-codec.ts:155-206</code></td>
+<td><code>message-codec.ts:2709-2764</code>; <code>session.ts:3706, 3800, 3858, 3946</code>; <code>object-router.ts:212, 265</code></td>
+<td><code>draft18-stream-codec.test.ts:38-132, 443-471</code></td>
+<td><code>05-subscribe.test.ts</code> (chat-stream)</td>
+<td>✅</td>
+<td>All SUBGROUP_ID_MODE variants + END_OF_GROUP + DEFAULT_PRIORITY + FIRST_OBJECT bits.</td>
+</tr>
+<tr>
+<td>Closing Subgroup Streams / FIN</td>
+<td>§11.4.3</td>
+<td><code>session.ts:3711, 3805</code> (END_OF_GROUP)</td>
+<td>—</td>
+<td><code>session.ts:574, 779</code> (<code>closeStream</code>)</td>
+<td>MISSING</td>
+<td>Indirect</td>
+<td>🟡</td>
+<td>No RESET_STREAM with specific error codes; TOO_FAR_BEHIND missing.</td>
+</tr>
+<tr>
+<td>Fetch Header stream</td>
+<td>§11.4.4</td>
+<td><code>draft18-stream-codec.ts:209-217</code></td>
+<td><code>draft18-stream-codec.ts:219-232</code></td>
+<td><code>session.ts:3479</code>; <code>object-router.ts:717</code></td>
+<td><code>draft18-stream-codec.test.ts:133-153, 498-522</code></td>
+<td><code>09-fetch.test.ts</code></td>
+<td>✅</td>
+<td>Handles all 4 subgroup modes + End-of-Range markers.</td>
+</tr>
+<tr>
+<td>Padding streams</td>
+<td>§11.5.1</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>Enum entry only (<code>types.ts:208</code>); no logic.</td>
+</tr>
+<tr>
+<td>Padding datagrams</td>
+<td>§11.5.2</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td></td>
+</tr>
+<tr>
+<td>Object extension headers</td>
+<td>§11.2.1.2</td>
+<td><code>draft18-stream-codec.ts:234-256, 595-613</code></td>
+<td><code>:258-296, 614-635</code></td>
+<td><code>session.ts:3715-3718</code> (only MAX_CACHE_DURATION)</td>
+<td><code>draft18-stream-codec.test.ts:170-201, 281-311</code></td>
+<td>Indirect</td>
+<td>✅</td>
+<td>Generic KVP round-trip works; session uses only draft-16-style keys.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="priorities-scheduling-7">Priorities &amp; Scheduling (§7)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Publisher priority</td>
+<td>§7.1</td>
+<td><code>draft18-stream-codec.ts:126, 322</code></td>
+<td><code>:181, 376</code></td>
+<td><code>session.ts:3657, 3710, 3804, 3862, 3950</code></td>
+<td>Header roundtrips</td>
+<td>Indirect</td>
+<td>🟡</td>
+<td>Transmitted; not used to order local writes.</td>
+</tr>
+<tr>
+<td>Subscriber priority</td>
+<td>§7.1</td>
+<td><code>draft18-message-codec.ts:743</code></td>
+<td><code>:788</code></td>
+<td><code>session.ts:1794</code> (<code>options.priority</code>)</td>
+<td>Roundtrip</td>
+<td>Indirect</td>
+<td>🟡</td>
+<td>No local send scheduling.</td>
+</tr>
+<tr>
+<td>Group order</td>
+<td>§7.1</td>
+<td>Roundtripped everywhere</td>
+<td>Roundtripped</td>
+<td><code>session.ts:1795</code> etc.</td>
+<td>Roundtrip</td>
+<td>Indirect</td>
+<td>✅</td>
+<td>Pure pass-through.</td>
+</tr>
+<tr>
+<td>Scheduling algorithm</td>
+<td>§7.2</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td><code>StreamManager</code> stores priority but never orders writes.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="delivery-timeouts-8">Delivery Timeouts (§8)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Subgroup delivery timeout enforcement</td>
+<td>§8</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>No timer, no drop logic.</td>
+</tr>
+<tr>
+<td>Object delivery timeout enforcement</td>
+<td>§8</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>Same.</td>
+</tr>
+<tr>
+<td>Delivery-timeout-driven drop</td>
+<td>§8</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>No stream-reset with <code>DELIVERY_TIMEOUT</code> code.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="track-properties-12">Track Properties (§12)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SUBGROUP_DELIVERY_TIMEOUT</td>
+<td>§12.1</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td><code>track-properties.ts</code> → <code>SubscribeOkEvent.trackProperties.subgroupDeliveryTimeoutMs</code></td>
+<td><code>track-properties.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Typed key + parsed value on SUBSCRIBE_OK.</td>
+</tr>
+<tr>
+<td>OBJECT_DELIVERY_TIMEOUT</td>
+<td>§12.2</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td><code>track-properties.ts</code> → <code>SubscribeOkEvent.trackProperties.objectDeliveryTimeoutMs</code></td>
+<td><code>track-properties.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Typed key + parsed value on SUBSCRIBE_OK.</td>
+</tr>
+<tr>
+<td>MAX_CACHE_DURATION</td>
+<td>§12.3</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td><code>track-properties.ts</code> + object-level (<code>session.ts:3717</code>)</td>
+<td><code>track-properties.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Track- and object-level both surfaced.</td>
+</tr>
+<tr>
+<td>DEFAULT_PUBLISHER_PRIORITY</td>
+<td>§12.4</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td><code>track-properties.ts</code> → <code>SubscribeOkEvent.trackProperties.defaultPublisherPriority</code></td>
+<td><code>track-properties.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>DEFAULT_PUBLISHER_GROUP_ORDER</td>
+<td>§12.5</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td><code>track-properties.ts</code> → <code>SubscribeOkEvent.trackProperties.defaultPublisherGroupOrder</code></td>
+<td><code>track-properties.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Out-of-range values dropped silently.</td>
+</tr>
+<tr>
+<td>DYNAMIC_GROUPS</td>
+<td>§12.6</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td><code>track-properties.ts</code> → <code>SubscribeOkEvent.trackProperties.dynamicGroups</code></td>
+<td><code>track-properties.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Bool derived from varint.</td>
+</tr>
+<tr>
+<td>IMMUTABLE_PROPERTIES</td>
+<td>§12.7</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td><code>track-properties.ts</code> → <code>SubscribeOkEvent.trackProperties.immutablePropertiesBitmap</code></td>
+<td><code>track-properties.test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Raw bitmap surfaced as bigint.</td>
+</tr>
+<tr>
+<td>Prior Group ID Gap</td>
+<td>§12.8</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td>Enum key only (<code>TrackPropertyDraft18.PRIOR_GROUP_ID_GAP</code>)</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Not yet plumbed into an event surface.</td>
+</tr>
+<tr>
+<td>Prior Object ID Gap</td>
+<td>§12.9</td>
+<td>Generic KVP</td>
+<td>Generic KVP</td>
+<td>Enum key only (<code>TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP</code>)</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Not yet plumbed into an event surface.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="namespace-discovery-6">Namespace Discovery (§6)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Subscribing to namespaces</td>
+<td>§6.1</td>
+<td><code>draft18-message-codec.ts:1016</code></td>
+<td><code>:1023</code></td>
+<td><code>session.ts:2178-2306</code> (<code>readNamespaceSubscriptionStreamDraft18</code>)</td>
+<td><code>test.ts:601-618</code></td>
+<td><code>04-subscribe-namespace.test.ts</code></td>
+<td>✅</td>
+<td>Handles NAMESPACE/NAMESPACE_DONE/PUBLISH.</td>
+</tr>
+<tr>
+<td>Publishing namespaces</td>
+<td>§6.2</td>
+<td><code>draft18-message-codec.ts:986</code></td>
+<td><code>:993</code></td>
+<td><code>session.ts:2713-2743</code>, <code>session.ts:4745-4767</code></td>
+<td><code>test.ts:568-599</code></td>
+<td><code>02-announce.test.ts</code></td>
+<td>✅</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="fetch-behavior-52-1012">Fetch Behavior (§5.2, §10.12)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Standalone fetch</td>
+<td>§10.12.1</td>
+<td><code>draft18-message-codec.ts:731-737</code></td>
+<td><code>:767-772</code></td>
+<td><code>session.ts:1777-1867</code></td>
+<td><code>test.ts:288-312</code></td>
+<td><code>09-fetch.test.ts</code></td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>Joining fetch (absolute, 0x3)</td>
+<td>§10.12.2</td>
+<td><code>:722-751</code></td>
+<td><code>:770-838</code></td>
+<td><code>session.ts:1807-1897</code></td>
+<td><code>test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td><code>FetchTypeDraft18.JOINING_ABSOLUTE</code>.</td>
+</tr>
+<tr>
+<td>Joining fetch (relative, 0x2)</td>
+<td>§10.12.2</td>
+<td><code>:722-751</code></td>
+<td><code>:770-838</code></td>
+<td><code>session.ts:1807-1897</code></td>
+<td><code>test.ts</code></td>
+<td>MISSING</td>
+<td>✅</td>
+<td><code>FetchTypeDraft18.JOINING_RELATIVE</code>.</td>
+</tr>
+<tr>
+<td>Fetch cancellation</td>
+<td>§10.12</td>
+<td>REQUEST_UPDATE (<code>session.ts:1885</code>)</td>
+<td>—</td>
+<td><code>session.ts:1871-1911</code></td>
+<td>MISSING</td>
+<td><code>10-fetch-cancel.test.ts</code></td>
+<td>✅</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="error-codes-1510">Error Codes (§15.10)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session Termination Codes</td>
+<td>§15.10.1</td>
+<td><code>types.ts:277-298</code> (all 20 codes)</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Enum defined; session close uses transport-level abort.</td>
+</tr>
+<tr>
+<td>REQUEST_ERROR Codes</td>
+<td>§15.10.2</td>
+<td><code>types.ts:319-338</code> (17 codes)</td>
+<td>Full enum roundtripped</td>
+<td>Session uses <code>RequestErrorCodeDraft18</code> (NOT_SUPPORTED / DOES_NOT_EXIST / UNINTERESTED) instead of hardcoded 0x01</td>
+<td>REDIRECT tested</td>
+<td>Indirect</td>
+<td>✅</td>
+<td>Enum exported from <code>@moq-web/core</code>; incoming-stream error paths use spec-appropriate codes.</td>
+</tr>
+<tr>
+<td>PUBLISH_DONE Codes</td>
+<td>§15.10.3</td>
+<td><code>types.ts:343-354</code> (10 codes)</td>
+<td>Read as <code>bigint</code></td>
+<td><code>sendPublishDone(..., statusCode)</code> accepts <code>PublishDoneErrorCodeDraft18</code>; <code>unpublish()</code> sends TRACK_ENDED</td>
+<td>Field roundtrip</td>
+<td>MISSING</td>
+<td>✅</td>
+<td>Both send and receive paths surface the typed enum.</td>
+</tr>
+<tr>
+<td>Stream Reset Codes</td>
+<td>§15.10.4</td>
+<td><code>types.ts:303-314</code> (10 codes)</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>Enum defined; no <code>stream.abort(code)</code> calls using these values.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security-13">Security (§13)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Authorization token replay protection</td>
+<td>§13.3.1</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING (cache at <code>session.ts:313</code>, no nonce/expiry)</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>Tokens stored/forwarded verbatim.</td>
+</tr>
+<tr>
+<td>Idle connection handling</td>
+<td>§13.6.1</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING (no explicit idle timer)</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>Relies on WebTransport defaults.</td>
+</tr>
+<tr>
+<td>Fingerprinting mitigation</td>
+<td>§13.8</td>
+<td><code>MOQT_IMPLEMENTATION</code> opt (<code>draft18-message-codec.ts:315-323</code>)</td>
+<td><code>:372-376</code></td>
+<td><code>session.ts:1069</code> (fixed <code>"moq-web 0.1.0"</code>)</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>🟡</td>
+<td>Sent unconditionally; spec cautions against always advertising.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="grease-14">Grease (§14)</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>§Spec</th>
+<th>Wire encode</th>
+<th>Wire decode</th>
+<th>Session-layer</th>
+<th>Unit test</th>
+<th>E2E test</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Grease (random reserved codes)</td>
+<td>§14</td>
+<td>—</td>
+<td>—</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>MISSING</td>
+<td>❌</td>
+<td>No greasing anywhere in codec/session.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="top-gaps-summary">Top Gaps (Summary)</h2>
+<ol>
+<li>
+<p><strong>No delivery-timeout enforcement or priority scheduling.</strong> SUBGROUP/OBJECT/FILL/RENDEZVOUS timeout parameters have enum entries but no timer or drop logic; SUBSCRIBER/publisher priorities are transmitted but <code>StreamManager</code> never orders local writes (§7.2, §8).</p>
+</li>
+<li>
+<p><strong>Padding streams and padding datagrams (§11.5) are fully missing.</strong> <code>StreamTypeDraft18.PADDING = 0x132b3e28</code> is defined in <code>types.ts:208</code> but there is no encoder, decoder, or session handler.</p>
+</li>
+<li>
+<p><strong>Draft-18 error-code enums are defined but unused end-to-end.</strong> <code>SessionErrorCodeDraft18</code>, <code>StreamResetErrorCodeDraft18</code>, and <code>PublishDoneErrorCodeDraft18</code> never appear in session logic. Session close/reset paths don't emit specific codes and stream aborts never surface <code>DELIVERY_TIMEOUT</code>, <code>TOO_FAR_BEHIND</code>, etc.</p>
+</li>
+<li>
+<p>~~<strong>Track-property key enum for §12 is absent.</strong>~~ Resolved: <code>TrackPropertyDraft18</code> in <code>packages/core/src/messages/types.ts</code> and <code>parseTrackProperties</code> in <code>packages/session/src/track-properties.ts</code> now decode the §12 map into <code>SubscribeOkEvent.trackProperties</code>. Only Prior Group/Object ID Gap remain enum-only.</p>
+</li>
+<li>
+<p><strong>Several control-message paths are stubs on the receive/response side.</strong> Incoming REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_TRACKS, and PUBLISH_DONE handlers only log; SUBSCRIBE_TRACKS on the send side always emits an empty parameter list; joining fetch type 0x3 is conflated with 0x2 in the decoder and unreachable from any session API. MOQT URI scheme validation, connection migration via <code>newSessionUri</code>, reserved-namespace enforcement, and grease are entirely absent.</p>
+</li>
+</ol>
+<hr />
+<p><em>Generated 2026-09-03 by cross-referencing <code>/tmp/moqt-18.txt</code> against <code>packages/core</code>, <code>packages/session</code>, and <code>packages/session-e2e</code>.</em></p>
+
+        <div class="footer">
+            <em>MOQ Transport Draft-18 Feature Audit</em>
+        </div>
+    </div>
+
+    <script>
+        // Generate IDs for h2/h3 headers based on their text content
+        document.querySelectorAll('h2, h3').forEach(header => {
+            if (!header.id) {
+                const text = header.textContent.trim();
+                // Generate ID: lowercase, replace spaces with dashes, remove special chars
+                const id = text
+                    .toLowerCase()
+                    .replace(/[^a-z0-9\s-]/g, '')
+                    .replace(/\s+/g, '-')
+                    .replace(/-+/g, '-')
+                    .replace(/^-|-$/g, '');
+                header.id = id;
+            }
+        });
+
+        // Add copy button to code blocks
+        document.querySelectorAll('pre').forEach(block => {
+            const button = document.createElement('button');
+            button.className = 'copy-btn';
+            button.textContent = 'Copy';
+            block.appendChild(button);
+
+            button.addEventListener('click', async () => {
+                const code = block.querySelector('code');
+                await navigator.clipboard.writeText(code.textContent);
+                button.textContent = 'Copied!';
+                setTimeout(() => button.textContent = 'Copy', 2000);
+            });
+        });
+
+        // Smooth scrolling for anchor links with fuzzy matching
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                const href = this.getAttribute('href');
+                const targetId = href.substring(1);
+
+                // Try exact match first
+                let target = document.getElementById(targetId);
+
+                // If not found, try fuzzy match (handle different ID formats)
+                if (!target) {
+                    const searchText = targetId.replace(/-/g, ' ').toLowerCase();
+                    document.querySelectorAll('h2, h3').forEach(header => {
+                        const headerText = header.textContent.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+                        if (headerText.includes(searchText) || searchText.includes(headerText.substring(0, 20))) {
+                            target = header;
+                        }
+                    });
+                }
+
+                if (target) {
+                    e.preventDefault();
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                    // Update URL hash
+                    history.pushState(null, null, href);
+                }
+            });
+        });
+    </script>
+</body>
+</html>
