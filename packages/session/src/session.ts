@@ -97,6 +97,7 @@ import { ObjectRouter } from './object-router.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 import { TransportWorkerClient } from './workers/index.js';
 import { parseTrackProperties } from './track-properties.js';
+import { parseSubscriberSchedulingParams, computeSendOrder } from './priority.js';
 import type {
   SessionState,
   SessionEventType,
@@ -824,12 +825,36 @@ export class MOQTSession {
    * Create unidirectional stream (works in both modes)
    * @returns Writer for main thread mode, streamId for worker mode
    */
-  private async doCreateStream(): Promise<{ writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }> {
+  /**
+   * Draft-18 §7 — derive a WebTransport `sendOrder` for outgoing subgroup
+   * streams by combining the publisher priority with the subscriber-side
+   * hints cached on the publication (from SUBSCRIBE §10.2 or REQUEST_UPDATE
+   * §10.9.1). Returns `undefined` when the session is not running draft-18
+   * so callers can skip the option entirely on older sessions.
+   */
+  private deriveSendOrder(
+    trackAlias: bigint,
+    publisherPriority: number | undefined,
+    groupId: number,
+  ): number | undefined {
+    if (!IS_DRAFT_18) return undefined;
+    const pub = this.publicationManager.get(trackAlias);
+    const subP = pub?.subscriberPriority ?? 128;
+    const go = pub?.subscriberGroupOrder ?? GroupOrder.ASCENDING;
+    const pubP = publisherPriority ?? pub?.priority ?? 128;
+    return computeSendOrder(subP, pubP, go, groupId);
+  }
+
+  private async doCreateStream(
+    opts?: { sendOrder?: number }
+  ): Promise<{ writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }> {
     if (this.useWorker) {
+      // The worker path does not yet plumb sendOrder — main-thread streams get
+      // §7 priority scheduling today; worker streams inherit the browser default.
       const streamId = await this.transportWorker!.createStream();
       return { streamId };
     } else {
-      const stream = await this.transport!.createUnidirectionalStream();
+      const stream = await this.transport!.createUnidirectionalStream(opts);
       const writer = stream.getWriter();
       return { writer };
     }
@@ -2150,6 +2175,20 @@ export class MOQTSession {
       parameters.set(
         RequestParameterDraft18.AUTHORIZATION_TOKEN,
         this.encodeRequestAuthToken(options.authToken),
+      );
+    }
+    // §7 / §10.2 — advertise subscriber-side scheduling hints when the caller
+    // provided them. Publisher schedulers use these to derive `sendOrder`.
+    if (options?.priority !== undefined) {
+      parameters.set(
+        RequestParameterDraft18.SUBSCRIBER_PRIORITY,
+        new Uint8Array([Math.max(0, Math.min(0xff, Math.floor(options.priority)))]),
+      );
+    }
+    if (options?.groupOrder !== undefined) {
+      parameters.set(
+        RequestParameterDraft18.GROUP_ORDER,
+        new Uint8Array([options.groupOrder === GroupOrder.DESCENDING ? 2 : 1]),
       );
     }
 
@@ -4449,7 +4488,8 @@ export class MOQTSession {
     // object per stream, we key on (alias, groupId, subgroupId=0).
     const timeoutKey = this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
     try {
-      const streamInfo = await this.doCreateStream();
+      const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+      const streamInfo = await this.doCreateStream(sendOrder !== undefined ? { sendOrder } : undefined);
 
       // Set END_OF_GROUP=true since this stream contains one complete object/group
       const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
@@ -4550,8 +4590,10 @@ export class MOQTSession {
         // §8: arm a fresh subgroup-delivery deadline for the incoming GOP.
         this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
 
-        // Create new stream for this GOP
-        const streamInfo = await this.doCreateStream();
+        // Create new stream for this GOP — §7.2 sendOrder pulls priority
+        // from the subscribing peer's SUBSCRIBER_PRIORITY / GROUP_ORDER.
+        const gopSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+        const streamInfo = await this.doCreateStream(gopSendOrder !== undefined ? { sendOrder: gopSendOrder } : undefined);
 
         // Set END_OF_GROUP=true since each stream contains exactly one complete group (one GOP)
         const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
@@ -4611,7 +4653,8 @@ export class MOQTSession {
             objectId: metadata.objectId,
           });
 
-          const streamInfo = await this.doCreateStream();
+          const pfSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+          const streamInfo = await this.doCreateStream(pfSendOrder !== undefined ? { sendOrder: pfSendOrder } : undefined);
           const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
             trackAlias,
             groupId: metadata.groupId,
@@ -4699,7 +4742,8 @@ export class MOQTSession {
             this.activeVideoStreams.delete(aliasKey);
 
             // Reopen stream and retry as if this is a new keyframe for the same group
-            const streamInfo = await this.doCreateStream();
+            const reopenSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+            const streamInfo = await this.doCreateStream(reopenSendOrder !== undefined ? { sendOrder: reopenSendOrder } : undefined);
             const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
               trackAlias,
               groupId: metadata.groupId,
@@ -5324,6 +5368,13 @@ export class MOQTSession {
     // Remember the kind so a later REQUEST_UPDATE (§10.9.1) routes correctly
     this.incomingRequestKinds.set(Number(message.requestId), 'subscribe');
 
+    // §7 — pull subscriber-side scheduling hints from the SUBSCRIBE parameters
+    // (§10.2 SUBSCRIBER_PRIORITY, GROUP_ORDER). Missing values fall back to
+    // the neutral defaults (priority=128, ASCENDING).
+    const sched = parseSubscriberSchedulingParams(message.parameters);
+    const subscriberPriority = sched.subscriberPriority ?? 128;
+    const subscriberGroupOrder = sched.groupOrder ?? GroupOrder.ASCENDING;
+
     // Create publication entry
     const publication: InternalPublication = {
       trackAlias,
@@ -5335,6 +5386,8 @@ export class MOQTSession {
       requestId: Number(message.requestId),
       cleanupHandlers: [],
       forward: 1,
+      subscriberPriority,
+      subscriberGroupOrder,
     };
     this.publicationManager.add(publication);
 
@@ -5343,8 +5396,8 @@ export class MOQTSession {
       requestId: Number(message.requestId),
       fullTrackName: { namespace, trackName },
       trackAlias,
-      subscriberPriority: 128,
-      groupOrder: GroupOrder.ASCENDING,
+      subscriberPriority,
+      groupOrder: subscriberGroupOrder,
       active: true,
     };
     announceInfo.subscribers.set(Number(message.requestId), subscriber);
@@ -5702,6 +5755,28 @@ export class MOQTSession {
       const event: NamespaceForwardEvent = { namespaceRequestId: requestId };
       this.emit(message.forwardState ? 'namespace-forward-resumed' : 'namespace-forward-paused', event);
       return;
+    }
+
+    // §7 / §10.9.1 — if the update carries new SUBSCRIBER_PRIORITY or
+    // GROUP_ORDER, mirror them onto the matching publication and the
+    // announced-subscriber entry. The spec says a best effort SHOULD be made
+    // to apply the change to objects not yet scheduled; we update state so
+    // future streams pick up the new values via `computeSendOrder`.
+    const sched = parseSubscriberSchedulingParams(message.parameters);
+    if (sched.subscriberPriority !== undefined || sched.groupOrder !== undefined) {
+      const pub = this.publicationManager.getByRequestId(requestId);
+      if (pub) {
+        if (sched.subscriberPriority !== undefined) pub.subscriberPriority = sched.subscriberPriority;
+        if (sched.groupOrder !== undefined) pub.subscriberGroupOrder = sched.groupOrder;
+      }
+      for (const info of this.announcedNamespaces.values()) {
+        const sub = info.subscribers.get(requestId);
+        if (sub) {
+          if (sched.subscriberPriority !== undefined) sub.subscriberPriority = sched.subscriberPriority;
+          if (sched.groupOrder !== undefined) sub.groupOrder = sched.groupOrder;
+          break;
+        }
+      }
     }
 
     // §10.9.1 — subscription-scoped update (default when kind is unknown).

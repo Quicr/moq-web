@@ -7,7 +7,7 @@
  * Manages publications and their associated state for MOQT sessions.
  */
 
-import { Logger } from '@moq-web/core';
+import { Logger, GroupOrder } from '@moq-web/core';
 import type { PublicationInfo } from './types.js';
 
 const log = Logger.create('moqt:session:publication-manager');
@@ -29,6 +29,14 @@ export interface InternalPublication extends PublicationInfo {
    */
   latestGroup?: bigint;
   latestObject?: bigint;
+  /**
+   * Draft-18 §7 / §10.2 subscriber-side scheduling hints, cached from the
+   * SUBSCRIBE parameters (SUBSCRIBER_PRIORITY, GROUP_ORDER) and updated by
+   * REQUEST_UPDATE (§10.9.1). Used to derive WebTransport `sendOrder` for
+   * outgoing subgroup streams. Missing values fall back to (128, ASCENDING).
+   */
+  subscriberPriority?: number;
+  subscriberGroupOrder?: GroupOrder;
 }
 
 /**
