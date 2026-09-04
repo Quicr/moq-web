@@ -26,8 +26,10 @@
 
 import { Logger } from '../utils/logger.js';
 import { ObjectCodec } from '../encoding/message-codec.js';
-import { MOQTObject, ObjectHeader } from '../messages/types.js';
+import { MOQTObject, ObjectHeader, DatagramTypeDraft18 } from '../messages/types.js';
 import { MOQTransport } from '../transport/transport.js';
+import { MOQTVarInt } from '../encoding/moqt-varint.js';
+import { IS_DRAFT_18 } from '../version/constants.js';
 
 const log = Logger.create('moqt:transport:datagram');
 
@@ -248,6 +250,19 @@ export class DatagramManager {
   private handleDatagram(data: Uint8Array): void {
     this.stats.received++;
     this.stats.bytesReceived += data.byteLength;
+
+    // Draft-18 §11.5.2 — discard padding datagrams before object decode.
+    if (IS_DRAFT_18 && data.byteLength > 0) {
+      try {
+        const [typeVal] = MOQTVarInt.decode(data);
+        if (Number(typeVal) === DatagramTypeDraft18.PADDING) {
+          log.trace('Received padding datagram', { size: data.byteLength });
+          return;
+        }
+      } catch {
+        // Fall through to object decode; will fail there if truly malformed.
+      }
+    }
 
     try {
       const object = ObjectCodec.decodeDatagramObject(data);
