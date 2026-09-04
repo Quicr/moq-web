@@ -99,12 +99,23 @@ export interface SubscribeOptions {
   priority?: number;
   /** Group ordering preference */
   groupOrder?: GroupOrder;
-  /** Filter type: 'latest' for live (default), 'absolute' for VOD to start from beginning */
-  filterType?: 'latest' | 'absolute';
-  /** Start group ID when filterType is 'absolute' (default: 0) */
+  /**
+   * SUBSCRIPTION_FILTER variant (§10.2.9 on draft-18, per-message field on draft-16).
+   *
+   * - `'latest'`         — live edge; maps to `NEXT_GROUP_START` on draft-18, `LATEST_GROUP` on draft-16 (default).
+   * - `'absolute'`       — legacy alias for `'absolute-start'`.
+   * - `'next-group'`     — draft-18 `NEXT_GROUP_START` (0x01), explicit.
+   * - `'largest-object'` — draft-18 `LARGEST_OBJECT` (0x02); resume from the largest object seen.
+   * - `'absolute-start'` — `ABSOLUTE_START` (0x03); requires `startGroup`+`startObject`.
+   * - `'absolute-range'` — draft-18 `ABSOLUTE_RANGE` (0x04); requires `startGroup`+`startObject` and `endGroup` (delta from start).
+   */
+  filterType?: 'latest' | 'absolute' | 'next-group' | 'largest-object' | 'absolute-start' | 'absolute-range';
+  /** Start group ID for absolute-start / absolute-range (default: 0). */
   startGroup?: number;
-  /** Start object ID when filterType is 'absolute' (default: 0) */
+  /** Start object ID for absolute-start / absolute-range (default: 0). */
   startObject?: number;
+  /** End group ID for absolute-range. Delta from startGroup: `endGroup - startGroup`. */
+  endGroup?: number;
   /** Per-request authorization token */
   authToken?: RequestAuthToken;
   /**
