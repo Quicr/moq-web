@@ -1390,14 +1390,26 @@ export class MOQTSession {
   }
 
   /**
-   * Subscribe to tracks matching a namespace prefix (draft-18)
+   * Subscribe to tracks matching a namespace prefix (draft-18 §10.19).
    *
    * @param namespacePrefix - Namespace prefix to match
-   * @param onObject - Callback for objects on matching tracks
+   * @param onObject        - Callback for objects on matching tracks
+   * @param options.forwardState  Whether the peer should forward objects (default `true`).
+   * @param options.filter        SUBSCRIPTION_FILTER variant (default `NEXT_GROUP_START`).
+   * @param options.startLocation Absolute start (required for `ABSOLUTE_START` / `ABSOLUTE_RANGE`).
+   * @param options.endGroupDelta End-group delta (required for `ABSOLUTE_RANGE`).
+   * @param options.parameters    Additional raw KVP request parameters (§10.2).
    */
   async subscribeTracks(
     namespacePrefix: string[],
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void
+    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
+    options?: {
+      forwardState?: boolean;
+      filter?: SubscriptionFilterDraft18;
+      startLocation?: { group: bigint; object: bigint };
+      endGroupDelta?: bigint;
+      parameters?: Map<number, Uint8Array>;
+    }
   ): Promise<number> {
     if (!IS_DRAFT_18) {
       throw new Error('subscribeTracks() requires draft-18');
@@ -1412,8 +1424,11 @@ export class MOQTSession {
       type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
       requestId: BigInt(requestId),
       trackNamespacePrefix: namespacePrefix,
-      forwardState: true,
-      filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+      forwardState: options?.forwardState ?? true,
+      filter: options?.filter ?? SubscriptionFilterDraft18.NEXT_GROUP_START,
+      startLocation: options?.startLocation,
+      endGroupDelta: options?.endGroupDelta,
+      parameters: options?.parameters,
     };
 
     const encoded = this.codec.encodeControlMessage(subscribeTracksMessage);
@@ -1547,6 +1562,27 @@ export class MOQTSession {
     // any future REQUEST_UPDATE on this id doesn't route as §10.9.1 by default.
     this.incomingRequestKinds.delete(requestId);
     log.info('Sent PUBLISH_DONE (draft-18)', { requestId, finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
+  }
+
+  /**
+   * Send PUBLISH_BLOCKED (draft-18 §10.20).
+   *
+   * The publisher tells the peer that it cannot open new subgroup streams for
+   * `trackAlias` right now because of transport-level flow control. The peer
+   * is expected to raise its stream limit; there is no reply.
+   */
+  async sendPublishBlocked(trackAlias: bigint | number | string): Promise<void> {
+    if (!IS_DRAFT_18) {
+      throw new Error('sendPublishBlocked() requires draft-18');
+    }
+    const alias = typeof trackAlias === 'bigint' ? trackAlias : BigInt(trackAlias);
+    const message: PublishBlockedMessageDraft18 = {
+      type: MessageTypeDraft18.PUBLISH_BLOCKED,
+      trackAlias: alias,
+    };
+    const bytes = this.codec.encodeControlMessage(message);
+    await this.doSendControl(bytes);
+    log.info('Sent PUBLISH_BLOCKED (draft-18)', { trackAlias: alias.toString() });
   }
 
   /**
@@ -5167,6 +5203,8 @@ export class MOQTSession {
     log.info('Received SUBSCRIBE_TRACKS (draft-18)', {
       requestId: message.requestId.toString(),
       prefix,
+      forwardState: message.forwardState,
+      filter: message.filter,
     });
 
     // Accept with REQUEST_OK

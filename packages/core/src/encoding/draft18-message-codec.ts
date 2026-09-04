@@ -1181,30 +1181,107 @@ export class Draft18MessageCodec {
   // ============================================================================
 
   private static encodeSubscribeTracks(writer: Draft18BufferWriter, message: SubscribeTracksMessageDraft18): void {
-    // Draft-18: Request ID | Track Namespace Prefix | Number of Parameters | Parameters
+    // Draft-18 §10.19: Request ID | Track Namespace Prefix | Number of Parameters | Parameters
+    // Parameters carry FORWARD (§10.2.12), SUBSCRIPTION_FILTER (§10.2.9), and
+    // pass-through KVPs. Semantics mirror SUBSCRIBE (§10.7).
     writer.writeVarInt(message.requestId);
     Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespacePrefix);
-    Draft18MessageCodec.encodeMessageParameters(writer, []);
+
+    const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+
+    // Always emit FORWARD so `forwardState=false` is representable on the wire
+    // (§10.2.12 single-byte value: 0x00 pause / 0x01 forward).
+    params.push({
+      type: RequestParameterDraft18.FORWARD,
+      encode: (w) => { w.writeByte(message.forwardState === false ? 0x00 : 0x01); },
+    });
+
+    if (message.filter !== undefined) {
+      params.push({
+        type: RequestParameterDraft18.SUBSCRIPTION_FILTER,
+        encode: (w) => {
+          const filterWriter = new Draft18BufferWriter();
+          filterWriter.writeVarInt(BigInt(message.filter));
+          if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
+              message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+            const loc = message.startLocation ?? { group: 0n, object: 0n };
+            filterWriter.writeVarInt(loc.group);
+            filterWriter.writeVarInt(loc.object);
+          }
+          if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+            filterWriter.writeVarInt(message.endGroupDelta ?? 0n);
+          }
+          const filterBytes = filterWriter.toUint8Array();
+          w.writeVarInt(BigInt(filterBytes.length));
+          w.writeBytes(filterBytes);
+        },
+      });
+    }
+
+    if (message.parameters) {
+      for (const [type, value] of message.parameters) {
+        // Values are treated as length-prefixed byte strings on the wire so
+        // an unknown key survives round-trip through `readParameterValue`.
+        params.push({
+          type,
+          encode: (w) => {
+            w.writeVarInt(BigInt(value.length));
+            w.writeBytes(value);
+          },
+        });
+      }
+    }
+
+    Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
   private static decodeSubscribeTracks(reader: Draft18BufferReader): SubscribeTracksMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader);
+
     const numParams = reader.readVarIntNumber();
+    let forwardState = true;
+    let filter = SubscriptionFilterDraft18.NEXT_GROUP_START;
+    let startLocation: Location | undefined;
+    let endGroupDelta: bigint | undefined;
+    const parameters = new Map<number, Uint8Array>();
+
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const delta = reader.readVarIntNumber();
       const type = previousType + delta;
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+
+      if (type === RequestParameterDraft18.FORWARD) {
+        // §10.2.12: single-byte value, no length prefix.
+        forwardState = reader.readByte() === 0x01;
+      } else if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
+        const length = reader.readVarIntNumber();
+        const filterBytes = reader.readBytes(length);
+        const filterReader = new Draft18BufferReader(filterBytes, 0);
+        filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
+        if (filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
+            filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+          startLocation = { group: filterReader.readVarInt(), object: filterReader.readVarInt() };
+        }
+        if (filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+          endGroupDelta = filterReader.readVarInt();
+        }
+      } else {
+        const value = Draft18MessageCodec.readParameterValue(reader, type);
+        parameters.set(type, value);
+      }
     }
 
     return {
       type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
       requestId,
       trackNamespacePrefix,
-      forwardState: true,
-      filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+      forwardState,
+      filter,
+      startLocation,
+      endGroupDelta,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 
