@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 69 · 🟡 6 · ❌ 5 · **86% complete** of 80 features
+**Progress:** ✅ 71 · 🟡 4 · ❌ 5 · **88% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -127,8 +127,8 @@
 | DEFAULT_PUBLISHER_GROUP_ORDER | §12.5 | Generic KVP | Generic KVP | `track-properties.ts` → `SubscribeOkEvent.trackProperties.defaultPublisherGroupOrder` | `track-properties.test.ts` | MISSING | ✅ | Out-of-range values dropped silently. |
 | DYNAMIC_GROUPS | §12.6 | Generic KVP | Generic KVP | `track-properties.ts` → `SubscribeOkEvent.trackProperties.dynamicGroups` | `track-properties.test.ts` | MISSING | ✅ | Bool derived from varint. |
 | IMMUTABLE_PROPERTIES | §12.7 | Generic KVP | Generic KVP | `track-properties.ts` → `SubscribeOkEvent.trackProperties.immutablePropertiesBitmap` | `track-properties.test.ts` | MISSING | ✅ | Raw bitmap surfaced as bigint. |
-| Prior Group ID Gap | §12.8 | Generic KVP | Generic KVP | Enum key only (`TrackPropertyDraft18.PRIOR_GROUP_ID_GAP`) | MISSING | MISSING | 🟡 | Not yet plumbed into an event surface. |
-| Prior Object ID Gap | §12.9 | Generic KVP | Generic KVP | Enum key only (`TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP`) | MISSING | MISSING | 🟡 | Not yet plumbed into an event surface. |
+| Prior Group ID Gap | §12.8 | `session.ts` `buildTrackProperties` (from `PublishOptions.priorGroupIdGap`) | `track-properties.ts` → `SubscribeOkEvent.trackProperties.priorGroupIdGap` | `PublishOptions.priorGroupIdGap` on PUBLISH; decoded on incoming SUBSCRIBE_OK/PUBLISH | `track-properties.test.ts` | `24-track-properties-gaps.test.ts` | ✅ | Publisher-configurable varint; surfaced on `TrackProperties`. |
+| Prior Object ID Gap | §12.9 | `session.ts` `buildTrackProperties` (from `PublishOptions.priorObjectIdGap`) | `track-properties.ts` → `SubscribeOkEvent.trackProperties.priorObjectIdGap` | `PublishOptions.priorObjectIdGap` on PUBLISH; decoded on incoming SUBSCRIBE_OK/PUBLISH | `track-properties.test.ts` | `24-track-properties-gaps.test.ts` | ✅ | Publisher-configurable varint; surfaced on `TrackProperties`. |
 
 ## Namespace Discovery (§6)
 
@@ -179,7 +179,7 @@
 
 3. ~~**Draft-18 error-code enums are defined but unused end-to-end.**~~ Resolved: `SessionErrorCodeDraft18` flows through `session.close({code, reason})` to the WebTransport `closeCode`; `StreamResetErrorCodeDraft18` is surfaced end-to-end via `session.resetPublicationStream(alias, code)` + a typed `stream-reset` event that also fires on the subscriber when a peer RESET_STREAM lands (`WebTransportError.streamErrorCode`). `PublishDoneErrorCodeDraft18` was previously wired via `sendPublishDone`. WebTransport still lacks a per-stream QUIC-level code on the sender side, so the numeric code additionally travels in the abort reason string.
 
-4. ~~**Track-property key enum for §12 is absent.**~~ Resolved: `TrackPropertyDraft18` in `packages/core/src/messages/types.ts` and `parseTrackProperties` in `packages/session/src/track-properties.ts` now decode the §12 map into `SubscribeOkEvent.trackProperties`. Only Prior Group/Object ID Gap remain enum-only.
+4. ~~**Track-property key enum for §12 is absent.**~~ Resolved: `TrackPropertyDraft18` in `packages/core/src/messages/types.ts` and `parseTrackProperties` in `packages/session/src/track-properties.ts` now decode the full §12 map into `SubscribeOkEvent.trackProperties`. Prior Group/Object ID Gap (§12.8/§12.9) are also plumbed through `PublishOptions.priorGroupIdGap` / `priorObjectIdGap` on the encode side.
 
 5. **Several control-message paths are stubs on the receive/response side.** Incoming REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_TRACKS, and PUBLISH_DONE handlers only log; SUBSCRIBE_TRACKS on the send side always emits an empty parameter list; joining fetch type 0x3 is conflated with 0x2 in the decoder and unreachable from any session API. MOQT URI scheme validation, connection migration via `newSessionUri`, reserved-namespace enforcement, and grease are entirely absent.
 
