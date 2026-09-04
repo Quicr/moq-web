@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 import { describe, it, expect } from 'vitest';
-import { Draft18MessageCodec } from './draft18-message-codec';
+import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec';
+import { MOQTVarInt } from './moqt-varint';
 import {
   MessageTypeDraft18,
   Version,
   GroupOrder,
+  FetchTypeDraft18,
+  RequestParameterDraft18,
+  TrackPropertyDraft18,
   SubscriptionFilterDraft18,
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
@@ -124,6 +128,33 @@ describe('Draft18MessageCodec', () => {
       expect(d.startLocation).toEqual({ group: 10n, object: 5n });
       expect(d.endGroupDelta).toBe(100n);
     });
+
+    it('roundtrips SUBSCRIBE with §10.2 delivery-timeout parameters', () => {
+      const params = new Map<number, Uint8Array>([
+        [RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, MOQTVarInt.encode(2000n)],
+        [RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, MOQTVarInt.encode(200n)],
+        [RequestParameterDraft18.FILL_TIMEOUT, MOQTVarInt.encode(750n)],
+        [RequestParameterDraft18.RENDEZVOUS_TIMEOUT, MOQTVarInt.encode(1500n)],
+      ]);
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 7n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+        parameters: params,
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as SubscribeMessageDraft18;
+      const p = d.parameters!;
+      expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT)!)[0])).toBe(2000);
+      expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT)!)[0])).toBe(200);
+      expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.FILL_TIMEOUT)!)[0])).toBe(750);
+      expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.RENDEZVOUS_TIMEOUT)!)[0])).toBe(1500);
+    });
   });
 
   describe('SUBSCRIBE_OK', () => {
@@ -167,6 +198,31 @@ describe('Draft18MessageCodec', () => {
       expect(d.trackNamespace).toEqual(['pub', 'ns']);
       expect(d.trackName).toBe('audio');
       expect(d.forwardState).toBe(true);
+    });
+
+    it('roundtrips PUBLISH with §12 track properties', () => {
+      const props = new Map<number, Uint8Array>([
+        [TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT, MOQTVarInt.encode(2000n)],
+        [TrackPropertyDraft18.MAX_CACHE_DURATION, MOQTVarInt.encode(60000n)],
+        [TrackPropertyDraft18.DEFAULT_PUBLISHER_PRIORITY, MOQTVarInt.encode(96n)],
+      ]);
+      const message: PublishMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH,
+        requestId: 6n,
+        trackAlias: 99n,
+        trackNamespace: ['pub'],
+        trackName: 'v',
+        forwardState: true,
+        largestLocation: { group: 0n, object: 0n },
+        trackProperties: props,
+      };
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as PublishMessageDraft18;
+      const p = d.trackProperties!;
+      expect(Number(MOQTVarInt.decode(p.get(TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT)!)[0])).toBe(2000);
+      expect(Number(MOQTVarInt.decode(p.get(TrackPropertyDraft18.MAX_CACHE_DURATION)!)[0])).toBe(60000);
+      expect(Number(MOQTVarInt.decode(p.get(TrackPropertyDraft18.DEFAULT_PUBLISHER_PRIORITY)!)[0])).toBe(96);
     });
   });
 
@@ -285,10 +341,11 @@ describe('Draft18MessageCodec', () => {
   });
 
   describe('FETCH', () => {
-    it('roundtrips FETCH with track name', () => {
+    it('roundtrips STANDALONE fetch (type 0x1) with track name', () => {
       const message: FetchMessageDraft18 = {
         type: MessageTypeDraft18.FETCH,
         requestId: 20n,
+        fetchType: FetchTypeDraft18.STANDALONE,
         joiningFlag: false,
         trackNamespace: ['fetch', 'ns'],
         trackName: 'history',
@@ -303,6 +360,7 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as FetchMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.FETCH);
+      expect(d.fetchType).toBe(FetchTypeDraft18.STANDALONE);
       expect(d.joiningFlag).toBe(false);
       expect(d.trackNamespace).toEqual(['fetch', 'ns']);
       expect(d.trackName).toBe('history');
@@ -310,25 +368,155 @@ describe('Draft18MessageCodec', () => {
       expect(d.endLocation).toEqual({ group: 100n, object: 50n });
     });
 
-    it('roundtrips FETCH with joining flag', () => {
+    it('roundtrips JOINING_RELATIVE fetch (type 0x2)', () => {
       const message: FetchMessageDraft18 = {
         type: MessageTypeDraft18.FETCH,
         requestId: 21n,
+        fetchType: FetchTypeDraft18.JOINING_RELATIVE,
         joiningFlag: true,
         subscribeRequestId: 5n,
+        joiningStart: 3n,
         subscriberPriority: 64,
         groupOrder: GroupOrder.DESCENDING,
-        startLocation: { group: 50n, object: 0n },
-        endLocation: { group: 100n, object: 0n },
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
       };
 
       const encoded = Draft18MessageCodec.encode(message);
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as FetchMessageDraft18;
+      expect(d.fetchType).toBe(FetchTypeDraft18.JOINING_RELATIVE);
       expect(d.joiningFlag).toBe(true);
       expect(d.subscribeRequestId).toBe(5n);
+      expect(d.joiningStart).toBe(3n);
       expect(d.trackNamespace).toBeUndefined();
+      expect(d.trackName).toBeUndefined();
+    });
+
+    it('roundtrips JOINING_ABSOLUTE fetch (type 0x3)', () => {
+      const message: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 22n,
+        fetchType: FetchTypeDraft18.JOINING_ABSOLUTE,
+        joiningFlag: true,
+        subscribeRequestId: 7n,
+        joiningStart: 42n,
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
+      };
+
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+
+      const d = decoded as FetchMessageDraft18;
+      expect(d.fetchType).toBe(FetchTypeDraft18.JOINING_ABSOLUTE);
+      expect(d.joiningFlag).toBe(true);
+      expect(d.subscribeRequestId).toBe(7n);
+      expect(d.joiningStart).toBe(42n);
+      expect(d.trackNamespace).toBeUndefined();
+      expect(d.trackName).toBeUndefined();
+    });
+
+    it('writes distinct wire bytes for JOINING_RELATIVE (0x2) vs JOINING_ABSOLUTE (0x3)', () => {
+      const base: Omit<FetchMessageDraft18, 'fetchType'> = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 30n,
+        joiningFlag: true,
+        subscribeRequestId: 1n,
+        joiningStart: 0n,
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
+      };
+      const rel = Draft18MessageCodec.encode({ ...base, fetchType: FetchTypeDraft18.JOINING_RELATIVE });
+      const abs = Draft18MessageCodec.encode({ ...base, fetchType: FetchTypeDraft18.JOINING_ABSOLUTE });
+
+      // Same length, differ only in the FetchType byte.
+      expect(rel.length).toBe(abs.length);
+      const diffs: number[] = [];
+      for (let i = 0; i < rel.length; i++) {
+        if (rel[i] !== abs[i]) diffs.push(i);
+      }
+      expect(diffs.length).toBe(1);
+      expect(rel[diffs[0]!]).toBe(0x02);
+      expect(abs[diffs[0]!]).toBe(0x03);
+    });
+
+    it('rejects invalid fetch type (protocol violation)', () => {
+      // Encode two variants of the same JOINING FETCH — one relative, one absolute —
+      // and diff them to locate the fetchType byte. Then patch a fresh copy with an
+      // invalid fetchType (0x7) and expect decode to throw.
+      const base: Omit<FetchMessageDraft18, 'fetchType'> = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 100n,
+        joiningFlag: true,
+        subscribeRequestId: 1n,
+        joiningStart: 0n,
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
+      };
+      const rel = Draft18MessageCodec.encode({ ...base, fetchType: FetchTypeDraft18.JOINING_RELATIVE });
+      const abs = Draft18MessageCodec.encode({ ...base, fetchType: FetchTypeDraft18.JOINING_ABSOLUTE });
+      let fetchTypeIdx = -1;
+      for (let i = 0; i < rel.length; i++) {
+        if (rel[i] !== abs[i]) { fetchTypeIdx = i; break; }
+      }
+      expect(fetchTypeIdx).toBeGreaterThanOrEqual(0);
+      expect(rel[fetchTypeIdx]).toBe(0x02);
+
+      const bad = new Uint8Array(rel);
+      bad[fetchTypeIdx] = 0x07;
+      expect(() => Draft18MessageCodec.decode(bad)).toThrow(Draft18CodecError);
+    });
+
+    it('roundtrips FETCH with subscriber delivery-timeout parameters', () => {
+      const params = new Map<number, Uint8Array>([
+        [RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, MOQTVarInt.encode(500n)],
+        [RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, MOQTVarInt.encode(50n)],
+        [RequestParameterDraft18.FILL_TIMEOUT, MOQTVarInt.encode(250n)],
+        [RequestParameterDraft18.RENDEZVOUS_TIMEOUT, MOQTVarInt.encode(1000n)],
+      ]);
+      const message: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 60n,
+        fetchType: FetchTypeDraft18.STANDALONE,
+        joiningFlag: false,
+        trackNamespace: ['ns'],
+        trackName: 't',
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 10n, object: 5n },
+        parameters: params,
+      };
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as FetchMessageDraft18;
+      const decodedParams = d.parameters!;
+      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT)!)[0])).toBe(500);
+      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT)!)[0])).toBe(50);
+      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.FILL_TIMEOUT)!)[0])).toBe(250);
+      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.RENDEZVOUS_TIMEOUT)!)[0])).toBe(1000);
+    });
+
+    it('encodeFetch throws when joining without subscribeRequestId', () => {
+      const msg: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 50n,
+        fetchType: FetchTypeDraft18.JOINING_RELATIVE,
+        joiningFlag: true,
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 0n, object: 0n },
+      };
+      expect(() => Draft18MessageCodec.encode(msg)).toThrow(/subscribeRequestId/);
     });
   });
 

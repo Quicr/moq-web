@@ -70,6 +70,10 @@ export type {
   PublishStatsEvent,
   SubscribeStatsEvent,
   SubscribeOkEvent,
+  RequestOkEvent,
+  PublishDoneEvent,
+  PublishBlockedEvent,
+  TrackProperties,
   MessageLogEvent,
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
@@ -97,6 +101,9 @@ export type {
   // Forward state types
   ForwardStateChangeEvent,
 } from './types.js';
+
+// Draft-18 track properties helper
+export { parseTrackProperties } from './track-properties.js';
 
 // Worker API
 export { TransportWorkerClient } from './workers/index.js';
