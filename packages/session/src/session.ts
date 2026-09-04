@@ -278,12 +278,18 @@ function buildTrackProperties(options?: {
   maxCacheDuration?: number;
   priority?: number;
   groupOrder?: number;
+  priorGroupIdGap?: number;
+  priorObjectIdGap?: number;
 }): Map<number, Uint8Array> | undefined {
   if (!options) return undefined;
   const props = new Map<number, Uint8Array>();
   const setMs = (key: number, ms: number | undefined) => {
     if (!ms || ms <= 0) return;
     props.set(key, MOQTVarInt.encode(BigInt(ms)));
+  };
+  const setNonNegative = (key: number, n: number | undefined) => {
+    if (n === undefined || n < 0) return;
+    props.set(key, MOQTVarInt.encode(BigInt(Math.floor(n))));
   };
   setMs(TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
   setMs(TrackPropertyDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
@@ -294,6 +300,8 @@ function buildTrackProperties(options?: {
   if (options.groupOrder !== undefined) {
     props.set(TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER, MOQTVarInt.encode(BigInt(options.groupOrder)));
   }
+  setNonNegative(TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, options.priorGroupIdGap);
+  setNonNegative(TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP, options.priorObjectIdGap);
   return props.size > 0 ? props : undefined;
 }
 
@@ -2280,6 +2288,8 @@ export class MOQTSession {
       maxCacheDuration: options?.maxCacheDuration,
       priority: options?.priority,
       groupOrder: options?.groupOrder,
+      priorGroupIdGap: options?.priorGroupIdGap,
+      priorObjectIdGap: options?.priorObjectIdGap,
     });
     const publishMessage: PublishMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH,

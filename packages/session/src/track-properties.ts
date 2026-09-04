@@ -54,6 +54,12 @@ export function parseTrackProperties(
       case TrackPropertyDraft18.IMMUTABLE_PROPERTIES:
         props.immutablePropertiesBitmap = readVarIntBig(value);
         break;
+      case TrackPropertyDraft18.PRIOR_GROUP_ID_GAP:
+        props.priorGroupIdGap = readVarIntNum(value);
+        break;
+      case TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP:
+        props.priorObjectIdGap = readVarIntNum(value);
+        break;
       default:
         // Unknown key — ignore per §15.8.
         break;
