@@ -21,6 +21,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   Draft18MessageCodec,
+  IS_DRAFT_18,
   MOQTransport,
   MessageTypeDraft18,
   RequestErrorCodeDraft18,
@@ -71,7 +72,7 @@ function decodeResponse(bytes: Uint8Array): ControlMessageDraft18 {
   return msg as ControlMessageDraft18;
 }
 
-describe('draft-18 §10.14 handleIncomingTrackStatusDraft18', () => {
+describe.skipIf(!IS_DRAFT_18)('draft-18 §10.14 handleIncomingTrackStatusDraft18', () => {
   it('replies REQUEST_OK with LARGEST_OBJECT when the track has published objects', async () => {
     const session = makeSession();
     const pm = (session as unknown as { publicationManager: PublicationManager }).publicationManager;
