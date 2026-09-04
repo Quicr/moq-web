@@ -408,6 +408,19 @@ export class MOQTSession {
   private _pendingMigrationUri?: string;
   /** True while a §3.6 migration is in-flight; suppresses redundant terminate events. */
   private _migrating = false;
+  /**
+   * Draft-18 §3.2 extensions to advertise on outgoing CLIENT_SETUP. Callers
+   * populate this via `setClientExtensions()` before `setup()`; the map is
+   * passed through to the codec verbatim, which enforces key-parity and
+   * rejects collisions with reserved SetupOption values.
+   */
+  private _clientExtensions?: Map<number, import('@moq-web/core').SetupExtensionValue>;
+  /**
+   * Draft-18 §3.2 extensions the peer advertised in SERVER_SETUP. Populated
+   * once by `handleSetupMessage()` after the peer's SETUP is decoded; callers
+   * inspect via the `peerExtensions` getter.
+   */
+  private _peerExtensions?: Map<number, import('@moq-web/core').SetupExtensionValue>;
   // @ts-expect-error Reserved for token alias caching support (aliasType 1/2)
   private tokenAliasCache = new Map<number, { tokenType: number; tokenValue: Uint8Array }>();
   // @ts-expect-error Reserved for token alias caching support
@@ -1164,6 +1177,33 @@ export class MOQTSession {
   }
 
   /**
+   * Draft-18 §3.2: register extension KVPs to advertise in CLIENT_SETUP.
+   *
+   * Must be called before `setup()`. Keys must not collide with the reserved
+   * SetupOption values (PATH, AUTHORIZATION_TOKEN, MAX_AUTH_TOKEN_CACHE_SIZE,
+   * AUTHORITY, MOQT_IMPLEMENTATION) — the codec rejects those. Even keys carry
+   * `{ varint }`; odd keys carry `{ bytes }`. Pass `undefined` to clear.
+   */
+  setClientExtensions(
+    extensions: Map<number, import('@moq-web/core').SetupExtensionValue> | undefined,
+  ): void {
+    if (this._state !== 'none') {
+      throw new Error(`Cannot set client extensions after setup() (state=${this._state})`);
+    }
+    this._clientExtensions = extensions;
+  }
+
+  /**
+   * Draft-18 §3.2: extensions the peer advertised in SERVER_SETUP.
+   *
+   * `undefined` until SERVER_SETUP has been received; empty map is normalized
+   * to `undefined` by the codec when no unknown KVPs were present.
+   */
+  get peerExtensions(): ReadonlyMap<number, import('@moq-web/core').SetupExtensionValue> | undefined {
+    return this._peerExtensions;
+  }
+
+  /**
    * Set up the MOQT session
    *
    * Sends CLIENT_SETUP and waits for SERVER_SETUP
@@ -1190,6 +1230,7 @@ export class MOQTSession {
       const clientSetup: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
         moqtImplementation: 'moq-web 0.1.0',
+        extensions: this._clientExtensions,
       };
 
       const setupBytes = this.codec.encodeSetupStream(clientSetup);
@@ -4543,9 +4584,11 @@ export class MOQTSession {
         if (message.type === MessageTypeDraft18.SERVER_SETUP) {
           clearTimeout(timeout);
           const serverSetup = message as ServerSetupMessageDraft18;
+          this._peerExtensions = serverSetup.extensions;
           log.debug('Received SERVER_SETUP (draft-18)', {
             version: serverSetup.selectedVersion,
             role: serverSetup.role,
+            extensionCount: serverSetup.extensions?.size ?? 0,
           });
           this.setState('ready');
           resolve();

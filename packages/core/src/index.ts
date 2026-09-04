@@ -266,6 +266,7 @@ export type {
   ObjectHeaderDraft18,
   ObjectDatagramDraft18,
   FetchObjectDraft18,
+  SetupExtensionValue,
 } from './messages/types.js';
 
 // Type guards

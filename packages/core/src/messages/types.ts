@@ -1510,6 +1510,14 @@ export function isSetupMessage(
 // ============================================================================
 
 /**
+ * A single application-defined setup extension carried in the SETUP options
+ * KVP list (draft-18 §3.2). Even keys use a varint value; odd keys use a
+ * length-prefixed byte string. Callers pass one or the other by convention;
+ * the codec validates parity on encode.
+ */
+export type SetupExtensionValue = { varint: bigint } | { bytes: Uint8Array };
+
+/**
  * Draft-18 CLIENT_SETUP message
  */
 export interface ClientSetupMessageDraft18 {
@@ -1521,6 +1529,12 @@ export interface ClientSetupMessageDraft18 {
   maxAuthTokenCacheSize?: number;
   authToken?: Uint8Array;
   moqtImplementation?: string;
+  /**
+   * Draft-18 §3.2 application-specific extensions. Keys must not collide with
+   * the reserved `SetupOptionDraft18` values (0x01, 0x03, 0x04, 0x05, 0x07).
+   * Even keys carry a varint; odd keys carry length-prefixed bytes.
+   */
+  extensions?: Map<number, SetupExtensionValue>;
 }
 
 /**
@@ -1533,6 +1547,11 @@ export interface ServerSetupMessageDraft18 {
   path?: string;
   authority?: string;
   maxAuthTokenCacheSize?: number;
+  /**
+   * §3.2 extensions echoed by / originating from the peer. Populated on
+   * decode with any KVP not matching a well-known SetupOption.
+   */
+  extensions?: Map<number, SetupExtensionValue>;
 }
 
 /**
