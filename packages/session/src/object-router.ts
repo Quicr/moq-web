@@ -80,12 +80,27 @@ export type DeliveryTimeoutCallback = (
 ) => void;
 
 /**
+ * Callback fired when a subgroup stream is reset by the peer (draft-18
+ * §11.4.3). WebTransport surfaces the QUIC RESET_STREAM as a
+ * `WebTransportError` with `streamErrorCode`; we forward that raw code so the
+ * session layer can emit a typed `stream-reset` event distinct from
+ * §8 delivery-timeouts.
+ */
+export type StreamResetCallback = (
+  subscription: InternalSubscription | undefined,
+  code: number,
+  reason: string,
+  detail: { groupId?: number; subgroupId?: number; trackAlias?: bigint },
+) => void;
+
+/**
  * Routes objects to subscriptions
  */
 export class ObjectRouter {
   private onFetchObject?: FetchObjectCallback;
   private onFetchEndOfGroup?: FetchEndOfGroupCallback;
   private onDeliveryTimeout?: DeliveryTimeoutCallback;
+  private onStreamReset?: StreamResetCallback;
 
   /**
    * §8 delivery-timeout tracker. Keys look like
@@ -139,6 +154,16 @@ export class ObjectRouter {
   /** Register the callback fired when a §8 delivery deadline elapses. */
   setDeliveryTimeoutCallback(cb: DeliveryTimeoutCallback): void {
     this.onDeliveryTimeout = cb;
+  }
+
+  /**
+   * Register the callback fired when a peer resets an incoming subgroup
+   * stream (draft-18 §11.4.3 / §15.10.4). §8 deadline-driven resets are
+   * routed through {@link setDeliveryTimeoutCallback} instead, so this hook
+   * only fires for peer-initiated aborts.
+   */
+  setStreamResetCallback(cb: StreamResetCallback): void {
+    this.onStreamReset = cb;
   }
 
   /** Test-only accessor for the internal tracker. */
@@ -216,13 +241,15 @@ export class ObjectRouter {
    */
   async handleIncomingStream(stream: ReadableStream<Uint8Array>): Promise<void> {
     log.info('Received incoming stream');
+    // Hoisted so a peer RESET_STREAM caught below can still report which
+    // subgroup was in flight.
+    let subgroupHeader: { trackAlias: number | bigint; groupId: number; subgroupId: number } | null = null;
     try {
       const reader = stream.getReader();
 
       let buffer = new Uint8Array(0);
       let bufferOffset = 0;
       let headerParsed = false;
-      let subgroupHeader: { trackAlias: number | bigint; groupId: number; subgroupId: number } | null = null;
       let headerBytes = 0;
       let hasExtensions = false;
       let endOfGroup = false;
@@ -510,10 +537,28 @@ export class ObjectRouter {
       }
     } catch (err) {
       const errorMessage = (err as Error).message || '';
+      // Draft-18 §11.4.3: a peer RESET_STREAM surfaces as a WebTransportError
+      // with a numeric `streamErrorCode`. Surface it as a typed callback so
+      // consumers can distinguish TOO_FAR_BEHIND / GOING_AWAY / application
+      // resets from an ordinary disconnect (which has no code).
+      const streamErrorCode = (err as { streamErrorCode?: number } | null)?.streamErrorCode;
+      if (typeof streamErrorCode === 'number' && this.onStreamReset) {
+        const subscription = subgroupHeader
+          ? this.subscriptionManager.getByAlias(subgroupHeader.trackAlias)
+          : undefined;
+        const detail: { groupId?: number; subgroupId?: number; trackAlias?: bigint } = {};
+        if (subgroupHeader) {
+          detail.groupId = subgroupHeader.groupId;
+          detail.subgroupId = subgroupHeader.subgroupId;
+          detail.trackAlias = BigInt(subgroupHeader.trackAlias);
+        }
+        this.onStreamReset(subscription, streamErrorCode, errorMessage, detail);
+      }
       if (errorMessage.includes('session is closed') ||
           errorMessage.includes('stream is closed') ||
-          errorMessage.includes('aborted')) {
-        log.debug('Stream closed during read (disconnect)', { error: errorMessage });
+          errorMessage.includes('aborted') ||
+          errorMessage.includes('RESET_STREAM')) {
+        log.debug('Stream closed during read (disconnect/reset)', { error: errorMessage, streamErrorCode });
       } else {
         log.error('Error handling incoming stream', err as Error);
       }

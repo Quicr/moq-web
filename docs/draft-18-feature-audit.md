@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 62 · 🟡 10 · ❌ 8 · **77% complete** of 80 features
+**Progress:** ✅ 64 · 🟡 8 · ❌ 8 · **80% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -93,7 +93,7 @@
 |---|---|---|---|---|---|---|---|---|
 | Object Datagram | §11.3.1 | `draft18-stream-codec.ts:310-367` | `draft18-stream-codec.ts:369-435` | `message-codec.ts:2534, 2571`; `datagram-manager.ts:201, 253`; `session.ts:3661` | `draft18-stream-codec.test.ts:202-312, 472-497` | `05-subscribe.test.ts` (chat-datagram), `09-fetch.test.ts` | ✅ | Golden bytes verified; all flag combinations covered. |
 | Subgroup Header stream | §11.4.2 | `draft18-stream-codec.ts:115-153` | `draft18-stream-codec.ts:155-206` | `message-codec.ts:2709-2764`; `session.ts:3706, 3800, 3858, 3946`; `object-router.ts:212, 265` | `draft18-stream-codec.test.ts:38-132, 443-471` | `05-subscribe.test.ts` (chat-stream) | ✅ | All SUBGROUP_ID_MODE variants + END_OF_GROUP + DEFAULT_PRIORITY + FIRST_OBJECT bits. |
-| Closing Subgroup Streams / FIN | §11.4.3 | `session.ts:3711, 3805` (END_OF_GROUP) | — | `session.ts:574, 779` (`closeStream`) | MISSING | Indirect | 🟡 | No RESET_STREAM with specific error codes; TOO_FAR_BEHIND missing. |
+| Closing Subgroup Streams / FIN | §11.4.3 | `session.ts` GOP `newGroup` closes stream cleanly; `resetPublicationStream(alias, code)` + `resetPublicationStreamTooFarBehind(alias)` abort with §15.10.4 code | `object-router.ts` catches `WebTransportError.streamErrorCode` and emits typed `stream-reset` event | `session.ts` typed `stream-reset` event (`side`, `code`, `reason`, alias, group/subgroup) | `session-stream-reset.test.ts`, `object-router-stream-reset.test.ts` | `21-stream-reset.test.ts` | ✅ | Publisher and subscriber both surface §15.10.4 codes; §8 DELIVERY_TIMEOUT stays on the `delivery-timeout` event so consumers can distinguish deadline-driven from application-driven resets. |
 | Fetch Header stream | §11.4.4 | `draft18-stream-codec.ts:209-217` | `draft18-stream-codec.ts:219-232` | `session.ts:3479`; `object-router.ts:717` | `draft18-stream-codec.test.ts:133-153, 498-522` | `09-fetch.test.ts` | ✅ | Handles all 4 subgroup modes + End-of-Range markers. |
 | Padding streams | §11.5.1 | MISSING | MISSING | MISSING | MISSING | MISSING | ❌ | Enum entry only (`types.ts:208`); no logic. |
 | Padding datagrams | §11.5.2 | MISSING | MISSING | MISSING | MISSING | MISSING | ❌ | |
@@ -153,7 +153,7 @@
 | Session Termination Codes | §15.10.1 | `types.ts:277-298` (all 20 codes) | — | `session.ts` `close({code, reason})` plumbs `SessionErrorCodeDraft18` into `transport.close(code, reason)` / `worker.disconnect(code, reason)` | `session-close.test.ts` | `12-session-close.test.ts` | ✅ | Numeric code forwarded to WebTransport `closeCode`. |
 | REQUEST_ERROR Codes | §15.10.2 | `types.ts:319-338` (17 codes) | Full enum roundtripped | Session uses `RequestErrorCodeDraft18` (NOT_SUPPORTED / DOES_NOT_EXIST / UNINTERESTED) instead of hardcoded 0x01 | REDIRECT tested | Indirect | ✅ | Enum exported from `@moq-web/core`; incoming-stream error paths use spec-appropriate codes. |
 | PUBLISH_DONE Codes | §15.10.3 | `types.ts:343-354` (10 codes) | Read as `bigint` | `sendPublishDone(..., statusCode)` accepts `PublishDoneErrorCodeDraft18`; `unpublish()` sends TRACK_ENDED | Field roundtrip | MISSING | ✅ | Both send and receive paths surface the typed enum. |
-| Stream Reset Codes | §15.10.4 | `types.ts:303-314` (10 codes) | — | `session.ts` `resetPublicationStream(alias, code, reason?)` — aborts the active subgroup writer with a code-derived reason | `session-close.test.ts` | MISSING | 🟡 | Public API surfaces the enum; WebTransport lacks a per-stream reset code, so codes are surfaced via the abort reason for now. |
+| Stream Reset Codes | §15.10.4 | `types.ts:303-314` (10 codes) | `object-router.ts` extracts `WebTransportError.streamErrorCode` and forwards it | `session.ts` `resetPublicationStream(alias, code, reason?)` + `resetPublicationStreamTooFarBehind(alias)`; typed `stream-reset` event carries the numeric code on both publisher and subscriber sides | `session-close.test.ts`, `session-stream-reset.test.ts`, `object-router-stream-reset.test.ts` | `21-stream-reset.test.ts` | ✅ | Publisher aborts the writer with a `code=N (NAME)` reason and emits `stream-reset`; subscriber decodes the peer's `streamErrorCode` and emits the same event with `side: 'subscriber'`. |
 
 ## Security (§13)
 
@@ -177,7 +177,7 @@
 
 2. **Padding streams and padding datagrams (§11.5) are fully missing.** `StreamTypeDraft18.PADDING = 0x132b3e28` is defined in `types.ts:208` but there is no encoder, decoder, or session handler.
 
-3. ~~**Draft-18 error-code enums are defined but unused end-to-end.**~~ Partially resolved: `SessionErrorCodeDraft18` flows through `session.close({code, reason})` to the WebTransport `closeCode`; `StreamResetErrorCodeDraft18` is exposed via `session.resetPublicationStream(alias, code)`. `PublishDoneErrorCodeDraft18` was previously wired via `sendPublishDone`. Remaining gap: WebTransport lacks a per-stream reset code, so §11.4.3 stream-level `DELIVERY_TIMEOUT` / `TOO_FAR_BEHIND` are conveyed via the abort reason string only.
+3. ~~**Draft-18 error-code enums are defined but unused end-to-end.**~~ Resolved: `SessionErrorCodeDraft18` flows through `session.close({code, reason})` to the WebTransport `closeCode`; `StreamResetErrorCodeDraft18` is surfaced end-to-end via `session.resetPublicationStream(alias, code)` + a typed `stream-reset` event that also fires on the subscriber when a peer RESET_STREAM lands (`WebTransportError.streamErrorCode`). `PublishDoneErrorCodeDraft18` was previously wired via `sendPublishDone`. WebTransport still lacks a per-stream QUIC-level code on the sender side, so the numeric code additionally travels in the abort reason string.
 
 4. ~~**Track-property key enum for §12 is absent.**~~ Resolved: `TrackPropertyDraft18` in `packages/core/src/messages/types.ts` and `parseTrackProperties` in `packages/session/src/track-properties.ts` now decode the §12 map into `SubscribeOkEvent.trackProperties`. Only Prior Group/Object ID Gap remain enum-only.
 
