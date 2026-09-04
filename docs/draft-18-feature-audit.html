@@ -444,7 +444,7 @@
 <strong>Audit date:</strong> 2026-09-03<br />
 <strong>Branch reviewed:</strong> <code>main</code> (after PR #35)</p>
 <!-- audit-progress:begin -->
-<p><strong>Progress:</strong> ✅ 51 · 🟡 16 · ❌ 13 · <strong>63% complete</strong> of 80 features</p>
+<p><strong>Progress:</strong> ✅ 52 · 🟡 15 · ❌ 13 · <strong>65% complete</strong> of 80 features</p>
 <!-- audit-progress:end -->
 
 <blockquote>
@@ -769,13 +769,13 @@
 <tr>
 <td>TRACK_STATUS</td>
 <td>§10.14</td>
-<td><code>draft18-message-codec.ts:875-881</code></td>
-<td><code>draft18-message-codec.ts:883-906</code></td>
-<td><code>session.ts:1165-1201</code>, <code>session.ts:4686-4700</code> (log-only)</td>
-<td><code>draft18-message-codec.test.ts:404-422</code></td>
-<td><code>08-track-status.test.ts</code></td>
-<td>🟡</td>
-<td>Response via REQUEST_OK/REQUEST_ERROR; incoming request stub only.</td>
+<td><code>draft18-message-codec.ts</code> <code>encodeTrackStatus()</code> + <code>encodeRequestOk()</code> writes LARGEST_OBJECT</td>
+<td><code>draft18-message-codec.ts</code> <code>decodeTrackStatus()</code> + <code>decodeRequestOk()</code> reads LARGEST_OBJECT</td>
+<td><code>session.ts</code> <code>trackStatus()</code> returns <code>TrackStatusResult{latestGroup,latestObject,expiresMs}</code>; <code>handleIncomingTrackStatusDraft18()</code> looks up publication and replies REQUEST_OK w/ LARGEST_OBJECT (§10.2.9) or REQUEST_ERROR DOES_NOT_EXIST; <code>PublicationManager.updateLatest()</code> tracks the live edge on every <code>sendObject()</code></td>
+<td><code>draft18-message-codec.test.ts</code> (REQUEST_OK LARGEST_OBJECT suite) + <code>session-track-status.test.ts</code></td>
+<td><code>08-track-status.test.ts</code>, <code>15-track-status-largest.test.ts</code></td>
+<td>✅</td>
+<td>Publisher answers status queries from its own publication table.</td>
 </tr>
 <tr>
 <td>PUBLISH_NAMESPACE</td>

@@ -1623,6 +1623,12 @@ export interface RequestOkMessageDraft18 {
   type: MessageTypeDraft18.REQUEST_OK;
   requestId: bigint;
   expires?: bigint;
+  /**
+   * §10.2.9 LARGEST_OBJECT (parameter 0x09). Present on TRACK_STATUS REQUEST_OK
+   * to indicate the largest (group, object) tuple the publisher has produced.
+   * When absent, subscribers infer "no objects yet" for the track.
+   */
+  largestLocation?: Location;
 }
 
 /**

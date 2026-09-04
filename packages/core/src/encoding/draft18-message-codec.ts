@@ -732,6 +732,15 @@ export class Draft18MessageCodec {
         encode: (w) => w.writeVarInt(message.expires!),
       });
     }
+    if (message.largestLocation) {
+      params.push({
+        type: RequestParameterDraft18.LARGEST_OBJECT,
+        encode: (w) => {
+          w.writeVarInt(message.largestLocation!.group);
+          w.writeVarInt(message.largestLocation!.object);
+        },
+      });
+    }
     Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
@@ -739,6 +748,7 @@ export class Draft18MessageCodec {
     // Draft-18 REQUEST_OK: Number of Parameters | Parameters | Track Properties (..)
     const numParams = reader.readVarIntNumber();
     let expires: bigint | undefined;
+    let largestLocation: Location | undefined;
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
@@ -748,6 +758,10 @@ export class Draft18MessageCodec {
 
       if (type === RequestParameterDraft18.EXPIRES) {
         expires = reader.readVarInt();
+      } else if (type === RequestParameterDraft18.LARGEST_OBJECT) {
+        const group = reader.readVarInt();
+        const object = reader.readVarInt();
+        largestLocation = { group, object };
       } else {
         Draft18MessageCodec.readParameterValue(reader, type);
       }
@@ -757,6 +771,7 @@ export class Draft18MessageCodec {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: 0n,
       expires,
+      largestLocation,
     };
   }
 

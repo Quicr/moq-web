@@ -22,6 +22,13 @@ export interface InternalPublication extends PublicationInfo {
   cleanupHandlers: Array<() => void>;
   /** Current forward state (0 = paused/no subscribers, 1 = active/can send) */
   forward: number;
+  /**
+   * Draft-18 §10.14 largest (group, object) tuple this publisher has produced
+   * on this track. Updated on every `sendObject()`. `undefined` until the
+   * first object is sent.
+   */
+  latestGroup?: bigint;
+  latestObject?: bigint;
 }
 
 /**
@@ -117,6 +124,36 @@ export class PublicationManager {
    */
   getAll(): InternalPublication[] {
     return Array.from(this.publications.values());
+  }
+
+  /**
+   * Look up a publication by (namespace, trackName). Used by the draft-18
+   * §10.14 TRACK_STATUS handler to answer status queries against tracks this
+   * session publishes.
+   */
+  getByTrackName(namespace: string[], trackName: string): InternalPublication | undefined {
+    const nsKey = namespace.join('/');
+    for (const pub of this.publications.values()) {
+      if (pub.trackName === trackName && pub.namespace.join('/') === nsKey) {
+        return pub;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Record the latest (group, object) tuple sent for a publication. The
+   * TRACK_STATUS handler uses this to fill LARGEST_OBJECT (§10.2.9).
+   */
+  updateLatest(trackAlias: bigint | string, group: bigint, object: bigint): void {
+    const pub = this.publications.get(trackAlias.toString());
+    if (!pub) return;
+    if (pub.latestGroup === undefined ||
+        group > pub.latestGroup ||
+        (group === pub.latestGroup && (pub.latestObject === undefined || object > pub.latestObject))) {
+      pub.latestGroup = group;
+      pub.latestObject = object;
+    }
   }
 
   /**

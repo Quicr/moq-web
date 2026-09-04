@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 51 · 🟡 16 · ❌ 13 · **63% complete** of 80 features
+**Progress:** ✅ 52 · 🟡 15 · ❌ 13 · **65% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -61,7 +61,7 @@
 | FETCH — Joining absolute (type 0x3) | §10.12.2 | `draft18-message-codec.ts:722-751` | `draft18-message-codec.ts:770-838` | `session.ts:1807-1897` (via `FetchOptions.fetchType`) | `draft18-message-codec.test.ts` | MISSING | ✅ | Codec validates fetchType and throws `Draft18CodecError` on invalid; session API supports both variants. |
 | Fetch cancellation | §10.12 / §3.3.2 | `session.ts:1885` (via REQUEST_UPDATE with `forwardState=false`) | — | `session.ts:1871-1911` (`cancelFetch`) | MISSING | `10-fetch-cancel.test.ts` | ✅ | Draft-18 removed FETCH_CANCEL; uses REQUEST_UPDATE. |
 | FETCH_OK | §10.13 | `draft18-message-codec.ts:811-819` | `draft18-message-codec.ts:821-849` | `session.ts:1820-1840` | `draft18-message-codec.test.ts:335-353` | `09-fetch.test.ts` | ✅ | |
-| TRACK_STATUS | §10.14 | `draft18-message-codec.ts:875-881` | `draft18-message-codec.ts:883-906` | `session.ts:1165-1201`, `session.ts:4686-4700` (log-only) | `draft18-message-codec.test.ts:404-422` | `08-track-status.test.ts` | 🟡 | Response via REQUEST_OK/REQUEST_ERROR; incoming request stub only. |
+| TRACK_STATUS | §10.14 | `draft18-message-codec.ts` `encodeTrackStatus()` + `encodeRequestOk()` writes LARGEST_OBJECT | `draft18-message-codec.ts` `decodeTrackStatus()` + `decodeRequestOk()` reads LARGEST_OBJECT | `session.ts` `trackStatus()` returns `TrackStatusResult{latestGroup,latestObject,expiresMs}`; `handleIncomingTrackStatusDraft18()` looks up publication and replies REQUEST_OK w/ LARGEST_OBJECT (§10.2.9) or REQUEST_ERROR DOES_NOT_EXIST; `PublicationManager.updateLatest()` tracks the live edge on every `sendObject()` | `draft18-message-codec.test.ts` (REQUEST_OK LARGEST_OBJECT suite) + `session-track-status.test.ts` | `08-track-status.test.ts`, `15-track-status-largest.test.ts` | ✅ | Publisher answers status queries from its own publication table. |
 | PUBLISH_NAMESPACE | §10.15 | `draft18-message-codec.ts:986-991` | `draft18-message-codec.ts:993-1014` | `session.ts:2713-2743`, `session.ts:4745-4767` | `draft18-message-codec.test.ts:568-599` | `02-announce.test.ts` | ✅ | Parameters map always encoded empty; auth-token push ignored. |
 | NAMESPACE | §10.16 | `draft18-message-codec.ts:1046-1051` | `draft18-message-codec.ts:1053-1068` | `session.ts:2328-2345`, `session.ts:4725` | `draft18-message-codec.test.ts:619-650` | `04-subscribe-namespace.test.ts` | ✅ | |
 | NAMESPACE_DONE | §10.17 | `draft18-message-codec.ts:1070-1072` | `draft18-message-codec.ts:1074-1085` | `session.ts:2347-2361`, `session.ts:4734` | `draft18-message-codec.test.ts:652-666` | MISSING | 🟡 | No e2e; codec emits final namespace only. |

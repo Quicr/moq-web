@@ -135,6 +135,7 @@ import type {
   RequestUpdateVariant,
   SessionTerminatedEvent,
   SessionMigrationEvent,
+  TrackStatusResult,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -1317,15 +1318,21 @@ export class MOQTSession {
   }
 
   /**
-   * Query track status (draft-18)
+   * Query track status (draft-18 §10.14).
+   *
+   * Returns the peer's REQUEST_OK response, surfacing the largest (group,
+   * object) tuple the publisher has produced when the LARGEST_OBJECT
+   * parameter (§10.2.9) is present. `latestGroup` / `latestObject` are
+   * `undefined` when the publisher has not sent any objects yet (or omitted
+   * the parameter). Throws on REQUEST_ERROR.
    *
    * @param namespace - Track namespace
    * @param trackName - Track name
    */
   async trackStatus(
     namespace: string[],
-    trackName: string
-  ): Promise<void> {
+    trackName: string,
+  ): Promise<TrackStatusResult> {
     if (!IS_DRAFT_18) {
       throw new Error('trackStatus() requires draft-18');
     }
@@ -1357,18 +1364,26 @@ export class MOQTSession {
         throw new Error(`TRACK_STATUS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
       }
 
-      if (response.type === MessageTypeDraft18.REQUEST_OK) {
-        const ok = response as RequestOkMessageDraft18;
-        const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
-        this.emit('request-ok', {
-          requestId,
-          requestKind: 'track-status',
-          expiresMs,
-        } as RequestOkEvent);
-        log.info('TRACK_STATUS response received (draft-18)', { requestId, expiresMs });
-      } else {
-        log.info('TRACK_STATUS response received (draft-18)', { requestId });
-      }
+      const ok = response as RequestOkMessageDraft18;
+      const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
+      this.emit('request-ok', {
+        requestId,
+        requestKind: 'track-status',
+        expiresMs,
+      } as RequestOkEvent);
+      const result: TrackStatusResult = {
+        requestId,
+        expiresMs,
+        latestGroup: ok.largestLocation?.group,
+        latestObject: ok.largestLocation?.object,
+      };
+      log.info('TRACK_STATUS response received (draft-18)', {
+        requestId,
+        expiresMs,
+        latestGroup: result.latestGroup?.toString(),
+        latestObject: result.latestObject?.toString(),
+      });
+      return result;
     } finally {
       await this.closeRequestStream(requestId);
     }
@@ -3942,6 +3957,9 @@ export class MOQTSession {
       }
     }
 
+    // Track largest (group, object) tuple for §10.14 TRACK_STATUS replies.
+    this.publicationManager.updateLatest(trackAlias, BigInt(metadata.groupId), BigInt(metadata.objectId));
+
     // Emit stats
     this.emit('publish-stats', {
       trackAlias: trackAlias.toString(),
@@ -5021,7 +5039,12 @@ export class MOQTSession {
   }
 
   /**
-   * Handle incoming TRACK_STATUS on bidi stream
+   * Handle incoming TRACK_STATUS on bidi stream (draft-18 §10.14).
+   *
+   * If we're publishing the queried track, reply with REQUEST_OK carrying
+   * LARGEST_OBJECT (0x09) so the requester knows the live edge; otherwise
+   * reply with REQUEST_ERROR DOES_NOT_EXIST (§15.10.2). LARGEST_OBJECT is
+   * omitted when the publication has not yet sent any objects.
    */
   private async handleIncomingTrackStatusDraft18(
     message: TrackStatusMessageDraft18,
@@ -5032,13 +5055,31 @@ export class MOQTSession {
       namespace: message.trackNamespace.join('/'),
       trackName: message.trackName,
     });
-    // Respond with REQUEST_ERROR - we don't track status
-    await this.sendRequestErrorOnStream(
-      writable,
-      message.requestId,
-      RequestErrorCodeDraft18.NOT_SUPPORTED,
-      'Track status not available',
-    );
+
+    const pub = this.publicationManager.getByTrackName(message.trackNamespace, message.trackName);
+    if (!pub) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.DOES_NOT_EXIST,
+        'Track not published by this session',
+      );
+      return;
+    }
+
+    const requestOk: RequestOkMessageDraft18 = {
+      type: MessageTypeDraft18.REQUEST_OK,
+      requestId: message.requestId,
+    };
+    if (pub.latestGroup !== undefined && pub.latestObject !== undefined) {
+      requestOk.largestLocation = { group: pub.latestGroup, object: pub.latestObject };
+    }
+    const writer = writable.getWriter();
+    try {
+      await writer.write(this.codec.encodeControlMessage(requestOk));
+    } finally {
+      writer.releaseLock();
+    }
   }
 
   /**
