@@ -82,13 +82,38 @@ export const BuffersSchema = z.object({
 });
 
 /**
+ * Reserved authorization scheme identifiers (MSF §17 Table 7).
+ */
+export const RESERVED_AUTH_SCHEMES = ['privacy-pass', 'cat'] as const;
+
+/**
+ * `authInfo.scheme` identifier (MSF §17 Table 7).
+ *
+ * The spec reserves `privacy-pass` and `cat`; any other identifier MUST use
+ * reverse Domain Name Notation (e.g. `com.example.custom-auth`). Bare
+ * shortnames outside the reserved set are rejected.
+ */
+export const AuthSchemeSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (v) =>
+      (RESERVED_AUTH_SCHEMES as readonly string[]).includes(v) ||
+      /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*){2,}$/.test(v),
+    {
+      message:
+        "authInfo.scheme must be 'privacy-pass', 'cat', or a reverse-DNS identifier (MSF §17 Table 7)",
+    }
+  );
+
+/**
  * Authorization info blob attached to a track (§6, `authInfo`; §17 Table 7).
  * `scheme` uses reserved values (`privacy-pass`, `cat`) or reverse-DNS custom
  * identifiers; extra scheme-specific fields ride along via passthrough.
  */
 export const AuthInfoSchema = z
   .object({
-    scheme: z.string().min(1),
+    scheme: AuthSchemeSchema,
   })
   .passthrough();
 

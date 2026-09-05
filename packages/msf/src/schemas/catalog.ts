@@ -51,8 +51,12 @@ export const CatalogMetadataSchema = z.object({
   deltaUpdate: z.boolean().optional(),
   /** Generation timestamp (epoch milliseconds) */
   generatedAt: z.number().optional(),
-  /** Whether the catalog is complete (all tracks known) */
-  isComplete: z.boolean().optional(),
+  /**
+   * Whether the catalog is complete (all tracks known).
+   * §5.6: MUST NOT be included if it is FALSE — only `true` or omission are
+   * legal. This schema rejects an explicit `false`.
+   */
+  isComplete: z.literal(true).optional(),
   /**
    * Compression applied to catalog OBJECTS in this track (§9).
    * The catalog root document itself is always JSON, but subsequent objects
@@ -88,6 +92,49 @@ export const FullCatalogSchema = CatalogMetadataSchema.extend({
       });
     }
   });
+
+  // §2: Tracks sharing an altGroup MUST be time-aligned. The strongest
+  // structural check we can perform without media inspection is that they
+  // agree on `timescale` and (for VOD) `trackDuration` — otherwise the
+  // subscriber cannot switch between them at Group boundaries.
+  const byAltGroup = new Map<number, { index: number; track: (typeof cat.tracks)[number] }[]>();
+  cat.tracks.forEach((t, i) => {
+    if (t.altGroup === undefined) return;
+    const bucket = byAltGroup.get(t.altGroup) ?? [];
+    bucket.push({ index: i, track: t });
+    byAltGroup.set(t.altGroup, bucket);
+  });
+  for (const bucket of byAltGroup.values()) {
+    if (bucket.length < 2) continue;
+    const first = bucket[0]!.track;
+    for (let k = 1; k < bucket.length; k++) {
+      const { index, track } = bucket[k]!;
+      if (
+        first.timescale !== undefined &&
+        track.timescale !== undefined &&
+        first.timescale !== track.timescale
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `altGroup=${first.altGroup} tracks MUST share \`timescale\` for time-aligned switching (MSF §2)`,
+          path: ['tracks', index, 'timescale'],
+        });
+      }
+      if (
+        first.isLive === false &&
+        track.isLive === false &&
+        first.trackDuration !== undefined &&
+        track.trackDuration !== undefined &&
+        first.trackDuration !== track.trackDuration
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `altGroup=${first.altGroup} VOD tracks MUST share \`trackDuration\` for time-aligned switching (MSF §2)`,
+          path: ['tracks', index, 'trackDuration'],
+        });
+      }
+    }
+  }
 
   // §13.5 / §14.5: role must match packaging for moqlog / moqmetrics.
   cat.publishTracks?.forEach((t, i) => {
@@ -134,7 +181,9 @@ export const UpdateTrackSchema = z
  * Delta catalog update (dependent object in group)
  *
  * §7: `generatedAt` is REQUIRED on delta updates so subscribers can order
- * concurrent patches.
+ * concurrent patches. Delta roots MUST NOT carry any fields other than the
+ * spec-listed keys (§7), so this schema is `.strict()` — unknown keys are
+ * rejected up-front.
  */
 export const DeltaCatalogSchema = CatalogMetadataSchema.extend({
   /** Must be true for delta updates */
@@ -149,7 +198,7 @@ export const DeltaCatalogSchema = CatalogMetadataSchema.extend({
   cloneTracks: z.array(CloneTrackSchema).optional(),
   /** Track patches to apply in place (MSF §7 `update`). */
   updateTracks: z.array(UpdateTrackSchema).optional(),
-});
+}).strict();
 
 /**
  * Union schema for any catalog (full or delta)

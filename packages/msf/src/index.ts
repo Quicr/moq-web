@@ -77,6 +77,8 @@ export {
   CloneTrackSchema,
   BuffersSchema,
   AuthInfoSchema,
+  AuthSchemeSchema,
+  RESERVED_AUTH_SCHEMES,
   // Video/Audio schemas
   VideoFieldsSchema,
   AudioFieldsSchema,
@@ -102,6 +104,9 @@ export {
   Scte35Schema,
   AccessibilityFieldsSchema,
   AccessibilityTypeEnum,
+  // Immutability guards (§5.6, §6)
+  CatalogImmutabilityError,
+  assertCatalogImmutability,
 } from './schemas/index.js';
 
 // ============================================================================

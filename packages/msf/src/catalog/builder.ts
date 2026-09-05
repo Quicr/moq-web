@@ -40,7 +40,7 @@ export class CatalogBuilder {
   private _publishTracks: Track[] = [];
   private _initDataList: InitDataEntry[] = [];
   private _generatedAt?: number;
-  private _isComplete?: boolean;
+  private _isComplete?: true;
 
   /**
    * Set the generation timestamp to now
@@ -51,10 +51,14 @@ export class CatalogBuilder {
   }
 
   /**
-   * Mark the catalog as complete (all tracks known)
+   * Mark the catalog as complete (all tracks known).
+   *
+   * MSF §5.6: `isComplete` MUST NOT be included if it is false — this is a
+   * one-way latch that promises no further tracks or objects will be added.
+   * The builder therefore only accepts the `true` value.
    */
-  isComplete(complete = true): this {
-    this._isComplete = complete;
+  isComplete(): this {
+    this._isComplete = true;
     return this;
   }
 

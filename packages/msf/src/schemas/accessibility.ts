@@ -62,16 +62,11 @@ export const AccessibilitySchema = z.object({
 });
 
 /**
- * @deprecated Kept for compatibility with the previous shortname enum
- * (`cea608`/`cea708`/…). Prefer the URN in {@link AccessibilityScheme}.
+ * @deprecated Legacy shortname enum kept only for the two MSF §16 Table
+ * accessibility schemes. Non-spec shortnames (`ttml`, `webvtt`, `dvb-subtitles`)
+ * were removed; use the URN forms in {@link AccessibilityScheme} instead.
  */
-export const AccessibilityTypeEnum = z.enum([
-  'cea608',
-  'cea708',
-  'dvb-subtitles',
-  'ttml',
-  'webvtt',
-]);
+export const AccessibilityTypeEnum = z.enum(['cea608', 'cea708']);
 
 /**
  * SCTE-35 marker configuration

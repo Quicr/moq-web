@@ -17,7 +17,11 @@ import {
   MediaTimelineTemplateArraySchema,
   EventTimelineEntrySchema,
   LocationRefSchema,
+  AuthSchemeSchema,
+  assertCatalogImmutability,
+  CatalogImmutabilityError,
 } from './index.js';
+import type { FullCatalog } from './index.js';
 import { MSF_VERSION } from '../version.js';
 
 describe('TrackSchema', () => {
@@ -397,16 +401,16 @@ describe('AccessibilitySchema (§16)', () => {
 });
 
 describe('AccessibilityTypeEnum (legacy shortnames)', () => {
-  it('should accept all legacy accessibility types', () => {
-    const validTypes = ['cea608', 'cea708', 'dvb-subtitles', 'ttml', 'webvtt'];
-
-    for (const type of validTypes) {
+  it('should accept the two spec-listed shortnames', () => {
+    for (const type of ['cea608', 'cea708']) {
       expect(AccessibilityTypeEnum.safeParse(type).success).toBe(true);
     }
   });
 
-  it('should reject invalid type', () => {
-    expect(AccessibilityTypeEnum.safeParse('srt').success).toBe(false);
+  it('should reject non-spec legacy names (removed after URN migration)', () => {
+    for (const removed of ['ttml', 'webvtt', 'dvb-subtitles', 'srt']) {
+      expect(AccessibilityTypeEnum.safeParse(removed).success).toBe(false);
+    }
   });
 });
 
@@ -785,5 +789,168 @@ describe('TimelineSchemas', () => {
         expect(result.data.startObjectId).toBe(0);
       }
     });
+  });
+});
+
+describe('AuthSchemeSchema (§17 Table 7)', () => {
+  it('should accept reserved schemes privacy-pass and cat', () => {
+    expect(AuthSchemeSchema.safeParse('privacy-pass').success).toBe(true);
+    expect(AuthSchemeSchema.safeParse('cat').success).toBe(true);
+  });
+
+  it('should accept reverse-DNS custom identifiers', () => {
+    expect(AuthSchemeSchema.safeParse('com.example.auth').success).toBe(true);
+    expect(AuthSchemeSchema.safeParse('org.moq.experimental.foo').success).toBe(true);
+  });
+
+  it('should reject bare shortnames outside the reserved set', () => {
+    for (const bad of ['oauth', 'bearer', 'jwt', 'basic']) {
+      expect(AuthSchemeSchema.safeParse(bad).success).toBe(false);
+    }
+  });
+});
+
+describe('DeltaCatalogSchema strictness (§7)', () => {
+  it('should reject unknown fields on delta root', () => {
+    const result = DeltaCatalogSchema.safeParse({
+      version: MSF_VERSION,
+      deltaUpdate: true,
+      generatedAt: Date.now(),
+      addTracks: [],
+      // §7 forbids anything other than the listed keys on a delta root:
+      someUnknownField: 'nope',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('FullCatalogSchema altGroup alignment (§2)', () => {
+  it('should reject altGroup peers with mismatched timescale', () => {
+    const result = FullCatalogSchema.safeParse({
+      version: MSF_VERSION,
+      tracks: [
+        {
+          name: 'v-720',
+          packaging: 'loc',
+          isLive: true,
+          altGroup: 1,
+          timescale: 90000,
+        },
+        {
+          name: 'v-480',
+          packaging: 'loc',
+          isLive: true,
+          altGroup: 1,
+          timescale: 48000,
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject VOD altGroup peers with mismatched trackDuration', () => {
+    const result = FullCatalogSchema.safeParse({
+      version: MSF_VERSION,
+      tracks: [
+        {
+          name: 'v-720',
+          packaging: 'loc',
+          isLive: false,
+          altGroup: 2,
+          trackDuration: 60_000,
+        },
+        {
+          name: 'v-480',
+          packaging: 'loc',
+          isLive: false,
+          altGroup: 2,
+          trackDuration: 61_000,
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept altGroup peers that agree on timescale', () => {
+    const result = FullCatalogSchema.safeParse({
+      version: MSF_VERSION,
+      tracks: [
+        {
+          name: 'v-720',
+          packaging: 'loc',
+          isLive: true,
+          altGroup: 3,
+          timescale: 90000,
+        },
+        {
+          name: 'v-480',
+          packaging: 'loc',
+          isLive: true,
+          altGroup: 3,
+          timescale: 90000,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('assertCatalogImmutability (§5.6, §6)', () => {
+  const base: FullCatalog = {
+    version: MSF_VERSION,
+    tracks: [{ name: 'video-main', packaging: 'loc', isLive: true }],
+  };
+
+  it('accepts a no-op republish', () => {
+    expect(() => assertCatalogImmutability(base, base)).not.toThrow();
+  });
+
+  it('rejects removing `isComplete: true`', () => {
+    const prev: FullCatalog = { ...base, isComplete: true };
+    expect(() => assertCatalogImmutability(prev, base)).toThrow(
+      CatalogImmutabilityError
+    );
+  });
+
+  it('accepts adding `isComplete: true`', () => {
+    const next: FullCatalog = { ...base, isComplete: true };
+    expect(() => assertCatalogImmutability(base, next)).not.toThrow();
+  });
+
+  it('rejects flipping isLive from false → true', () => {
+    const prev: FullCatalog = {
+      ...base,
+      tracks: [{ name: 'video-main', packaging: 'loc', isLive: false }],
+    };
+    const next: FullCatalog = {
+      ...base,
+      tracks: [{ name: 'video-main', packaging: 'loc', isLive: true }],
+    };
+    expect(() => assertCatalogImmutability(prev, next)).toThrow(
+      CatalogImmutabilityError
+    );
+  });
+
+  it('accepts flipping isLive from true → false (live→VOD is allowed)', () => {
+    const prev: FullCatalog = {
+      ...base,
+      tracks: [{ name: 'video-main', packaging: 'loc', isLive: true }],
+    };
+    const next: FullCatalog = {
+      ...base,
+      tracks: [{ name: 'video-main', packaging: 'loc', isLive: false }],
+    };
+    expect(() => assertCatalogImmutability(prev, next)).not.toThrow();
+  });
+
+  it('ignores tracks that only appear in `next`', () => {
+    const next: FullCatalog = {
+      ...base,
+      tracks: [
+        { name: 'video-main', packaging: 'loc', isLive: true },
+        { name: 'audio-main', packaging: 'loc', isLive: true },
+      ],
+    };
+    expect(() => assertCatalogImmutability(base, next)).not.toThrow();
   });
 });

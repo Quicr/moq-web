@@ -41,6 +41,8 @@ export {
   CloneTrackSchema,
   BuffersSchema,
   AuthInfoSchema,
+  AuthSchemeSchema,
+  RESERVED_AUTH_SCHEMES,
 } from './track.js';
 
 export type {
@@ -106,3 +108,9 @@ export type {
   Scte35,
   AccessibilityFields,
 } from './accessibility.js';
+
+// Immutability guards (MSF §5.6, §6)
+export {
+  CatalogImmutabilityError,
+  assertCatalogImmutability,
+} from './immutability.js';
