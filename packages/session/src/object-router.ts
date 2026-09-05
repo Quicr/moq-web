@@ -18,6 +18,7 @@ import {
   BufferReader,
   Draft18StreamCodec,
   StreamResetErrorCodeDraft18,
+  normalizeStreamResetErrorCode,
 } from '@moq-web/core';
 import type { FetchDecoderState, FetchObjectDraft18 } from '@moq-web/core';
 import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
@@ -552,7 +553,13 @@ export class ObjectRouter {
           detail.subgroupId = subgroupHeader.subgroupId;
           detail.trackAlias = BigInt(subgroupHeader.trackAlias);
         }
-        this.onStreamReset(subscription, streamErrorCode, errorMessage, detail);
+        // §14 grease: unknown Stream Reset codes MUST be treated as
+        // INTERNAL_ERROR for this registry. Draft-16 doesn't define grease so
+        // we only normalize on draft-18.
+        const normalizedCode = IS_DRAFT_18
+          ? normalizeStreamResetErrorCode(streamErrorCode)
+          : streamErrorCode;
+        this.onStreamReset(subscription, normalizedCode, errorMessage, detail);
       }
       if (errorMessage.includes('session is closed') ||
           errorMessage.includes('stream is closed') ||

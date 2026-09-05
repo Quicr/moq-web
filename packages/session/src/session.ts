@@ -33,6 +33,7 @@ import {
   PublishDoneErrorCodeDraft18,
   SessionErrorCodeDraft18,
   StreamResetErrorCodeDraft18,
+  normalizeSessionErrorCode,
   StreamTypeDraft18,
   DatagramTypeDraft18,
   TrackPropertyDraft18,
@@ -6117,9 +6118,15 @@ export class MOQTSession {
       return;
     }
 
-    log.info('Peer closed session', info);
+    // §14 grease: normalize unknown Session Termination codes to
+    // INTERNAL_ERROR before emitting. Preserve the raw code on the event so
+    // callers with newer registry knowledge can still inspect it if needed.
+    const normalizedCode = IS_DRAFT_18
+      ? normalizeSessionErrorCode(info.closeCode)
+      : info.closeCode;
+    log.info('Peer closed session', { ...info, normalizedCode });
     this.emit('session-terminated', {
-      code: info.closeCode,
+      code: normalizedCode,
       reason: info.reason,
       remote: true,
     } as SessionTerminatedEvent);
