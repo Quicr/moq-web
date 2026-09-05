@@ -87,12 +87,15 @@ export {
 
 export type { EncryptionScheme, CipherSuite, EncryptionFields } from './encryption.js';
 
-// Accessibility schemas (PR #133)
+// Accessibility schemas (MSF §16)
 export {
-  AccessibilityTypeEnum,
+  AccessibilityScheme,
+  AccessibilitySchemeSchema,
+  AccessibilityValueSchema,
   AccessibilitySchema,
   Scte35Schema,
   AccessibilityFieldsSchema,
+  AccessibilityTypeEnum,
 } from './accessibility.js';
 
 export type {

@@ -93,11 +93,14 @@ export {
   TrackBaseKeySchema,
   EncryptionFieldsSchema,
   RECOMMENDED_ENCRYPTION_SCHEME,
-  // Accessibility schemas (PR #133)
-  AccessibilityTypeEnum,
+  // Accessibility schemas (MSF §16)
+  AccessibilityScheme,
+  AccessibilitySchemeSchema,
+  AccessibilityValueSchema,
   AccessibilitySchema,
   Scte35Schema,
   AccessibilityFieldsSchema,
+  AccessibilityTypeEnum,
 } from './schemas/index.js';
 
 // ============================================================================

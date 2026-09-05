@@ -10,6 +10,7 @@ import {
   EncryptionSchemeEnum,
   CipherSuiteEnum,
   AccessibilityTypeEnum,
+  AccessibilitySchema,
   FullCatalogSchema,
   DeltaCatalogSchema,
   MediaTimelineTemplateSchema,
@@ -123,7 +124,7 @@ describe('TrackSchema', () => {
         isLive: true,
         role: 'caption',
         accessibility: [
-          { type: 'cea708', lang: 'en', channel: 1 },
+          { scheme: 'urn:scte:dash:cc:cea-708:2015', value: 'CC1=eng' },
         ],
       });
       expect(result.success).toBe(true);
@@ -359,8 +360,44 @@ describe('CipherSuiteEnum', () => {
   });
 });
 
-describe('AccessibilityTypeEnum', () => {
-  it('should accept all accessibility types', () => {
+describe('AccessibilitySchema (§16)', () => {
+  it('should accept CEA-608/708 URNs with SCTE 214-1 values', () => {
+    for (const scheme of [
+      'urn:scte:dash:cc:cea-608:2015',
+      'urn:scte:dash:cc:cea-708:2015',
+    ]) {
+      const result = AccessibilitySchema.safeParse({
+        scheme,
+        value: 'CC1=eng;CC3=spa',
+        label: 'English + Spanish',
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it('should accept custom URN schemes', () => {
+    const result = AccessibilitySchema.safeParse({
+      scheme: 'urn:example:custom-cc',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject shortname scheme values', () => {
+    const result = AccessibilitySchema.safeParse({ scheme: 'cea708' });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject malformed SCTE 214-1 value', () => {
+    const result = AccessibilitySchema.safeParse({
+      scheme: 'urn:scte:dash:cc:cea-608:2015',
+      value: 'CC1 eng; CC3=spa', // no `=` on first pair
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('AccessibilityTypeEnum (legacy shortnames)', () => {
+  it('should accept all legacy accessibility types', () => {
     const validTypes = ['cea608', 'cea708', 'dvb-subtitles', 'ttml', 'webvtt'];
 
     for (const type of validTypes) {
