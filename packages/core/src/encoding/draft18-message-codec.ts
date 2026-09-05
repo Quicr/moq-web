@@ -12,6 +12,10 @@ import { Logger } from '../utils/logger.js';
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
 import {
+  normalizePublishDoneErrorCode,
+  normalizeRequestErrorCode,
+} from './grease.js';
+import {
   MessageTypeDraft18,
   Version,
   GroupOrder,
@@ -720,7 +724,10 @@ export class Draft18MessageCodec {
 
   private static decodeRequestError(reader: Draft18BufferReader): RequestErrorMessageDraft18 {
     // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
-    const errorCode = reader.readVarIntNumber();
+    // §14 grease: an unknown error code MUST be treated as INTERNAL_ERROR for
+    // this registry. Normalize immediately so callers see stable enum values.
+    const rawErrorCode = reader.readVarIntNumber();
+    const errorCode = normalizeRequestErrorCode(rawErrorCode);
     const retryInterval = reader.readVarInt();
     const reasonPhrase = Draft18MessageCodec.decodeString(reader);
 
@@ -732,6 +739,9 @@ export class Draft18MessageCodec {
       reasonPhrase,
     };
 
+    // Redirect is only defined on the concrete REDIRECT code — after §14
+    // normalization, a grease code would have already been mapped to
+    // INTERNAL_ERROR, so we correctly skip redirect parsing for it.
     if (errorCode === RequestErrorCodeDraft18.REDIRECT) {
       message.redirect = Draft18MessageCodec.decodeRedirect(reader);
     }
@@ -1049,7 +1059,15 @@ export class Draft18MessageCodec {
   }
 
   private static decodePublishDone(reader: Draft18BufferReader): PublishDoneMessageDraft18 {
-    const statusCode = reader.readVarInt();
+    const rawStatusCode = reader.readVarInt();
+    // §14 grease: unknown PUBLISH_DONE codes MUST be treated as INTERNAL_ERROR
+    // (0x0). Registry codes are small; anything outside Number.MAX_SAFE_INTEGER
+    // is by definition unknown so we don't even need to inspect it — it can't
+    // match a defined enum value.
+    const normalizedStatusCode: bigint =
+      rawStatusCode > BigInt(Number.MAX_SAFE_INTEGER)
+        ? 0n
+        : BigInt(normalizePublishDoneErrorCode(Number(rawStatusCode)));
     const streamCount = reader.readVarInt();
     const reasonPhrase = Draft18MessageCodec.decodeString(reader);
 
@@ -1057,7 +1075,7 @@ export class Draft18MessageCodec {
       type: MessageTypeDraft18.PUBLISH_DONE,
       requestId: 0n,
       finalLocation: { group: 0n, object: 0n },
-      statusCode,
+      statusCode: normalizedStatusCode,
       streamCount,
       reasonPhrase: reasonPhrase || undefined,
     };
