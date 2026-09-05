@@ -187,12 +187,18 @@ export const CommonTrackFieldsSchema = z.object({
  *
  * Prefer {@link TrackSchema} for parse/validate; use this base when you need
  * `.partial()`, `.omit()`, or `.extend()` (e.g. for the clone-overrides shape).
+ *
+ * `.passthrough()` is used so §4 name-collision checks in the catalog
+ * superRefine can inspect unknown keys before the parser strips them.
+ * Callers that want a normalized shape without extras should re-emit through
+ * their own serializer.
  */
 export const TrackObjectSchema = BaseTrackFieldsSchema.merge(CommonTrackFieldsSchema)
   .merge(VideoFieldsSchema)
   .merge(AudioFieldsSchema)
   .merge(EncryptionFieldsSchema)
-  .merge(AccessibilityFieldsSchema);
+  .merge(AccessibilityFieldsSchema)
+  .passthrough();
 
 /**
  * Roles that produce audio/video media samples (§6, Table 4).

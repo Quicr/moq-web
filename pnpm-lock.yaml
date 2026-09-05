@@ -321,6 +321,9 @@ importers:
 
   packages/msf:
     dependencies:
+      '@moq-web/cat':
+        specifier: workspace:*
+        version: link:../cat
       '@moq-web/core':
         specifier: workspace:*
         version: link:../core

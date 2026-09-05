@@ -40,4 +40,5 @@ export {
   type MSFSessionConfig,
   type TrackInfo,
   type PublishedTrackInfo,
+  type ReversePublishOptions,
 } from './msf-session.js';

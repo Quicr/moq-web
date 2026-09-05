@@ -12,6 +12,104 @@ import { MSF_VERSION } from '../version.js';
 import { TrackSchema, TrackObjectSchema, CloneTrackSchema } from './track.js';
 
 /**
+ * Reserved field names on the catalog root (MSF §5).
+ *
+ * §4 forbids custom fields from colliding with reserved names. We keep the
+ * list flat here (not derived from `.shape`) because the superRefine runs on
+ * the already-parsed object and derivation would require dropping
+ * `.passthrough()` on the track schemas.
+ */
+export const RESERVED_CATALOG_ROOT_FIELDS = new Set<string>([
+  'version',
+  'generatedAt',
+  'isComplete',
+  'deltaUpdate',
+  'tracks',
+  'publishTracks',
+  'initDataList',
+  'addTracks',
+  'removeTracks',
+  'cloneTracks',
+  'updateTracks',
+  'MSF_COMPRESSION',
+]);
+
+/**
+ * Reserved track-object field names (MSF §6).
+ *
+ * Same rationale as {@link RESERVED_CATALOG_ROOT_FIELDS}: kept as a flat set so
+ * name-collision checks stay decoupled from Zod's shape internals. Update this
+ * list when adding a new spec-defined field to a track schema.
+ */
+export const RESERVED_TRACK_FIELDS = new Set<string>([
+  'name',
+  'packaging',
+  'isLive',
+  'namespace',
+  'codec',
+  'role',
+  'renderGroup',
+  'altGroup',
+  'targetLatency',
+  'buffers',
+  'label',
+  'depends',
+  'initData',
+  'initRef',
+  'mimeType',
+  'lang',
+  'temporalId',
+  'spatialId',
+  'timescale',
+  'trackDuration',
+  'totalGroups',
+  'gopDuration',
+  'avgBitrate',
+  'maxGopDuration',
+  'maxGroupDuration',
+  'timelineTemplate',
+  'eventType',
+  'authInfo',
+  'connectionUri',
+  'token',
+  'MSF_COMPRESSION',
+  // Video
+  'width',
+  'height',
+  'displayWidth',
+  'displayHeight',
+  'framerate',
+  'bitrate',
+  // Audio
+  'samplerate',
+  'channelConfig',
+  'audioSpecificConfig',
+  // Encryption
+  'encryptionScheme',
+  'cipherSuite',
+  'keyId',
+  'trackBaseKey',
+  // Accessibility
+  'accessibility',
+  'scte35',
+  // Delta targeting
+  'parentName',
+  'parentNamespace',
+  'sourceName',
+  'overrides',
+]);
+
+/**
+ * Custom field names MUST use reverse-DNS notation to avoid collision with
+ * future reserved names (MSF §4). Recognised: `com.example.custom` etc.
+ */
+const REVERSE_DNS_RE = /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*){2,}$/;
+
+function isReverseDns(key: string): boolean {
+  return REVERSE_DNS_RE.test(key);
+}
+
+/**
  * Initialization data list entry (MSF §5, `initDataList`).
  *
  * A single reference to init data that tracks can point at via `initRef`.
@@ -43,27 +141,32 @@ export const CompressionAlgorithmEnum = z.enum([
 
 /**
  * Catalog metadata fields
+ *
+ * `.passthrough()` keeps unknown top-level fields so the §4 name-collision
+ * refine can inspect them. Delta catalogs override this with `.strict()`.
  */
-export const CatalogMetadataSchema = z.object({
-  /** MSF version number */
-  version: z.literal(MSF_VERSION),
-  /** Whether this is a delta update */
-  deltaUpdate: z.boolean().optional(),
-  /** Generation timestamp (epoch milliseconds) */
-  generatedAt: z.number().optional(),
-  /**
-   * Whether the catalog is complete (all tracks known).
-   * §5.6: MUST NOT be included if it is FALSE — only `true` or omission are
-   * legal. This schema rejects an explicit `false`.
-   */
-  isComplete: z.literal(true).optional(),
-  /**
-   * Compression applied to catalog OBJECTS in this track (§9).
-   * The catalog root document itself is always JSON, but subsequent objects
-   * MAY be compressed with this algorithm.
-   */
-  MSF_COMPRESSION: CompressionAlgorithmEnum.optional(),
-});
+export const CatalogMetadataSchema = z
+  .object({
+    /** MSF version number */
+    version: z.literal(MSF_VERSION),
+    /** Whether this is a delta update */
+    deltaUpdate: z.boolean().optional(),
+    /** Generation timestamp (epoch milliseconds) */
+    generatedAt: z.number().optional(),
+    /**
+     * Whether the catalog is complete (all tracks known).
+     * §5.6: MUST NOT be included if it is FALSE — only `true` or omission are
+     * legal. This schema rejects an explicit `false`.
+     */
+    isComplete: z.literal(true).optional(),
+    /**
+     * Compression applied to catalog OBJECTS in this track (§9).
+     * The catalog root document itself is always JSON, but subsequent objects
+     * MAY be compressed with this algorithm.
+     */
+    MSF_COMPRESSION: CompressionAlgorithmEnum.optional(),
+  })
+  .passthrough();
 
 /**
  * Full catalog (independent object in group)
@@ -158,6 +261,77 @@ export const FullCatalogSchema = CatalogMetadataSchema.extend({
         path: ['publishTracks', i, 'role'],
       });
     }
+  });
+
+  // §4: Custom (extra) fields MUST use reverse-DNS notation and MUST NOT
+  // collide with reserved spec names. Check both the root catalog object and
+  // every track object we can see.
+  for (const key of Object.keys(cat)) {
+    if (RESERVED_CATALOG_ROOT_FIELDS.has(key)) continue;
+    if (!isReverseDns(key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `custom catalog field '${key}' MUST use reverse-DNS notation (MSF §4)`,
+        path: [key],
+      });
+    }
+  }
+  const checkTrackExtras = (
+    tracks: readonly Record<string, unknown>[] | undefined,
+    parentPath: 'tracks' | 'publishTracks'
+  ): void => {
+    tracks?.forEach((t, i) => {
+      for (const key of Object.keys(t)) {
+        if (RESERVED_TRACK_FIELDS.has(key)) continue;
+        if (!isReverseDns(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `custom track field '${key}' MUST use reverse-DNS notation (MSF §4)`,
+            path: [parentPath, i, key],
+          });
+        }
+      }
+    });
+  };
+  checkTrackExtras(
+    cat.tracks as unknown as Record<string, unknown>[],
+    'tracks'
+  );
+  checkTrackExtras(
+    cat.publishTracks as unknown as Record<string, unknown>[] | undefined,
+    'publishTracks'
+  );
+
+  // §12: eventtimeline tracks that reference a media timeline MUST list the
+  // referenced timeline in `depends`. We can't see individual record `l:`
+  // targets from the catalog, but we can enforce that `depends` (when
+  // present on an eventtimeline track) actually resolves to catalog tracks.
+  const knownTrackNames = new Set(cat.tracks.map((t) => t.name));
+  cat.tracks.forEach((t, i) => {
+    if (t.packaging !== 'eventtimeline') return;
+    t.depends?.forEach((depName, k) => {
+      if (!knownTrackNames.has(depName)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `eventtimeline track '${t.name}' depends on '${depName}' which is not declared in \`tracks\` (MSF §12)`,
+          path: ['tracks', i, 'depends', k],
+        });
+      }
+    });
+  });
+  // §11 already enforces that mediatimeline tracks declare non-empty
+  // `depends`; here we additionally verify the referenced tracks exist.
+  cat.tracks.forEach((t, i) => {
+    if (t.packaging !== 'mediatimeline') return;
+    t.depends?.forEach((depName, k) => {
+      if (!knownTrackNames.has(depName)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `mediatimeline track '${t.name}' depends on '${depName}' which is not declared in \`tracks\` (MSF §11)`,
+          path: ['tracks', i, 'depends', k],
+        });
+      }
+    });
   });
 });
 

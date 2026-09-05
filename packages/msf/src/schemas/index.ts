@@ -16,6 +16,8 @@ export {
   InitDataEntrySchema,
   UpdateTrackSchema,
   CompressionAlgorithmEnum,
+  RESERVED_CATALOG_ROOT_FIELDS,
+  RESERVED_TRACK_FIELDS,
   isDeltaCatalog,
   isFullCatalog,
 } from './catalog.js';

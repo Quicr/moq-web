@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./auth-cat": {
+      "types": "./dist/auth-cat/index.d.ts",
+      "import": "./dist/auth-cat/index.js"
     }
   },
   "files": [
@@ -23,6 +27,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@moq-web/cat": "workspace:*",
     "@moq-web/core": "workspace:*",
     "@moq-web/secure-objects": "workspace:*",
     "@moq-web/session": "workspace:*",

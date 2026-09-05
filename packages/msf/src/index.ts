@@ -358,4 +358,19 @@ export {
   type MSFSessionConfig,
   type TrackInfo,
   type PublishedTrackInfo,
+  type ReversePublishOptions,
 } from './session/index.js';
+
+// ============================================================================
+// Pluggable auth providers (§17)
+// ============================================================================
+
+export {
+  AuthProviderRegistry,
+  MissingAuthProviderError,
+  type AuthProvider,
+  type AuthContext,
+  type AuthAction,
+  type AuthToken,
+  type AuthValidationResult,
+} from './auth/index.js';

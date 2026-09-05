@@ -217,7 +217,13 @@ export class CatalogPublisher {
   }
 
   /**
-   * Start publishing the catalog track
+   * Start publishing the catalog track.
+   *
+   * MSF §4 requires all catalog updates to travel on sub-group 0. We enforce
+   * this by pinning `deliveryMode` to `'stream'`; the underlying MOQT session
+   * writes every stream/datagram object with `subgroupId=0`, giving us the
+   * required (alias, group, subgroup=0) stream identity for free. Callers
+   * MUST NOT override `deliveryMode` on a catalog track.
    */
   async start(): Promise<void> {
     if (this.trackAlias !== null) {
