@@ -62,6 +62,7 @@ export {
   FullCatalogSchema,
   DeltaCatalogSchema,
   CatalogSchema,
+  InitDataEntrySchema,
   isDeltaCatalog,
   isFullCatalog,
   // Track schemas
@@ -104,6 +105,7 @@ export type {
   FullCatalog,
   DeltaCatalog,
   Catalog,
+  InitDataEntry,
   // Track types
   Packaging,
   TrackRole,

@@ -13,6 +13,7 @@ export {
   FullCatalogSchema,
   DeltaCatalogSchema,
   CatalogSchema,
+  InitDataEntrySchema,
   isDeltaCatalog,
   isFullCatalog,
 } from './catalog.js';
@@ -22,6 +23,7 @@ export type {
   FullCatalog,
   DeltaCatalog,
   Catalog,
+  InitDataEntry,
 } from './catalog.js';
 
 // Track schemas

@@ -12,6 +12,27 @@ import { MSF_VERSION } from '../version.js';
 import { TrackSchema, CloneTrackSchema } from './track.js';
 
 /**
+ * Initialization data list entry (MSF §5, `initDataList`).
+ *
+ * A single reference to init data that tracks can point at via `initRef`.
+ * The catalog spec models this as a JSON object; concrete shape is opaque
+ * (base64 blob, URI, or codec-specific fields) so we validate loosely and
+ * only require an `id` that `initRef` can match on.
+ */
+export const InitDataEntrySchema = z
+  .object({
+    /** Identifier that tracks reference via `initRef`. */
+    id: z.string().min(1),
+    /** Optional base64-encoded init blob. */
+    data: z.string().optional(),
+    /** Optional URI pointing at init data. */
+    uri: z.string().optional(),
+    /** Optional MIME type describing the init payload. */
+    mimeType: z.string().optional(),
+  })
+  .passthrough();
+
+/**
  * Catalog metadata fields
  */
 export const CatalogMetadataSchema = z.object({
@@ -33,6 +54,10 @@ export const FullCatalogSchema = CatalogMetadataSchema.extend({
   tracks: z.array(TrackSchema),
   /** Delta fields should not be present in full catalog */
   deltaUpdate: z.literal(false).optional(),
+  /** Tracks the subscriber may publish back on this session (§5). */
+  publishTracks: z.array(TrackSchema).optional(),
+  /** Init data references pointed at by track `initRef` fields (§5). */
+  initDataList: z.array(InitDataEntrySchema).optional(),
 });
 
 /**
@@ -76,3 +101,4 @@ export type CatalogMetadata = z.infer<typeof CatalogMetadataSchema>;
 export type FullCatalog = z.infer<typeof FullCatalogSchema>;
 export type DeltaCatalog = z.infer<typeof DeltaCatalogSchema>;
 export type Catalog = z.infer<typeof CatalogSchema>;
+export type InitDataEntry = z.infer<typeof InitDataEntrySchema>;

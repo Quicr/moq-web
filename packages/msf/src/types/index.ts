@@ -13,6 +13,7 @@ export type {
   FullCatalog,
   DeltaCatalog,
   Catalog,
+  InitDataEntry,
 } from '../schemas/catalog.js';
 
 // Track types

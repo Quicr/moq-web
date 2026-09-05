@@ -340,6 +340,39 @@ describe('CatalogSchema', () => {
       });
       expect(result.success).toBe(false);
     });
+
+    it('should accept catalog with publishTracks', () => {
+      const result = FullCatalogSchema.safeParse({
+        version: MSF_VERSION,
+        tracks: [],
+        publishTracks: [
+          { name: 'client-audio', packaging: 'loc', isLive: true },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept catalog with initDataList', () => {
+      const result = FullCatalogSchema.safeParse({
+        version: MSF_VERSION,
+        tracks: [
+          { name: 'video', packaging: 'loc', isLive: true },
+        ],
+        initDataList: [
+          { id: 'video-init', data: 'AAAA', mimeType: 'video/mp4' },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject initDataList entries without id', () => {
+      const result = FullCatalogSchema.safeParse({
+        version: MSF_VERSION,
+        tracks: [],
+        initDataList: [{ data: 'AAAA' }],
+      });
+      expect(result.success).toBe(false);
+    });
   });
 
   describe('DeltaCatalogSchema', () => {
