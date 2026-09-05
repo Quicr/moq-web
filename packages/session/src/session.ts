@@ -226,6 +226,26 @@ function mapSubscribeFilter(options: {
 }
 
 /**
+ * Draft-18 §3.2.1 — a Track Namespace whose first tuple field begins with
+ * '.' (0x2e) is reserved. The single-period namespace (`["."]`) is a hard
+ * reject; other reserved namespaces are pass-through to the application but
+ * MUST NOT be originated by this endpoint without an IANA-registered
+ * definition, so this client refuses to send outbound requests under any of
+ * them by default.
+ *
+ * Throws if `namespace` (or namespace prefix) starts with a '.'-prefixed
+ * field. Called from every outbound namespace-bearing API.
+ */
+function assertNotReservedNamespace(namespace: string[], action: string): void {
+  const first = namespace[0];
+  if (first === undefined || first.length === 0 || first.charCodeAt(0) !== 0x2e) return;
+  throw new Error(
+    `Draft-18 §3.2.1: refusing to ${action} under reserved namespace ` +
+      `starting with '.': ${JSON.stringify(namespace)}`,
+  );
+}
+
+/**
  * Draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX serializer.
  *
  * Encodes a namespace tuple `["a","b"]` the same way the wire codec does —
@@ -1544,6 +1564,7 @@ export class MOQTSession {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
+    assertNotReservedNamespace(namespace, 'request TRACK_STATUS');
 
     const requestId = this.getNextRequestId();
 
@@ -1625,6 +1646,10 @@ export class MOQTSession {
     }
     if (!this.isReady) {
       throw new Error('Session not ready');
+    }
+    assertNotReservedNamespace(namespacePrefix, 'SUBSCRIBE_TRACKS under');
+    if (options?.namespacePrefixParam) {
+      assertNotReservedNamespace(options.namespacePrefixParam, 'SUBSCRIBE_TRACKS under');
     }
 
     const requestId = this.getNextRequestId();
@@ -2080,6 +2105,7 @@ export class MOQTSession {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
+    assertNotReservedNamespace(namespace, 'SUBSCRIBE to');
 
     const requestId = this.getNextRequestId();
     const subscriptionId = requestId;
@@ -2429,6 +2455,7 @@ export class MOQTSession {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
+    assertNotReservedNamespace(namespace, 'FETCH from');
 
     const requestId = this.getNextRequestId();
     const fullTrackNameStr = [...namespace, trackName].join('/');
@@ -2769,6 +2796,7 @@ export class MOQTSession {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
+    assertNotReservedNamespace(namespacePrefix, 'SUBSCRIBE_NAMESPACE for');
 
     const requestId = this.getNextRequestId();
     const subscriptionId = requestId;
@@ -3242,6 +3270,7 @@ export class MOQTSession {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
+    assertNotReservedNamespace(namespace, 'PUBLISH');
 
     // Check for existing subscription with same track name to use its alias
     const requestId = this.getNextRequestId();
@@ -3408,6 +3437,7 @@ export class MOQTSession {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
+    assertNotReservedNamespace(namespace, 'ANNOUNCE');
 
     const namespaceStr = namespace.join('/');
     log.info('Announcing namespace', { namespace: namespaceStr });
@@ -3883,6 +3913,7 @@ export class MOQTSession {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
+    assertNotReservedNamespace(namespace, 'publish VOD content under');
 
     const requestId = this.getNextRequestId();
     const trackAlias = BigInt(requestId);
