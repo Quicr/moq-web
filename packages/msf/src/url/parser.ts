@@ -14,6 +14,10 @@ import {
   encodeNamespace,
   type TrackReference,
 } from './encoder.js';
+import {
+  parseFragmentVariables,
+  serializeFragmentVariables,
+} from './variables.js';
 
 /**
  * Error thrown when URL parsing fails
@@ -37,6 +41,8 @@ export interface MsfUrl {
   namespace: string[];
   /** Track name */
   trackName: string;
+  /** Variable substitutions parsed from the fragment (§8). */
+  variables: Record<string, string>;
 }
 
 /**
@@ -59,8 +65,21 @@ export function parseMsfUrl(url: string): MsfUrl {
     throw new MsfUrlError('URL must have a fragment with track reference');
   }
 
-  // Remove the # prefix
-  const trackRef = decodeTrackReference(fragment.substring(1));
+  // §8: fragment may contain `&key=value&…` variable pairs after the track
+  // reference. Split them off before decoding the track name (which is not
+  // permitted to contain `&`).
+  const raw = fragment.substring(1);
+  const ampIdx = raw.indexOf('&');
+  const refPart = ampIdx < 0 ? raw : raw.substring(0, ampIdx);
+  const varPart = ampIdx < 0 ? '' : raw.substring(ampIdx + 1);
+
+  const trackRef = decodeTrackReference(refPart);
+  let variables: Record<string, string> = {};
+  try {
+    variables = parseFragmentVariables(varPart);
+  } catch (err) {
+    throw new MsfUrlError((err as Error).message);
+  }
 
   // Construct base URL (without fragment)
   const baseUrl = url.split('#')[0];
@@ -73,6 +92,7 @@ export function parseMsfUrl(url: string): MsfUrl {
     relayUrl,
     namespace: trackRef.namespace,
     trackName: trackRef.trackName,
+    variables,
   };
 }
 
@@ -87,11 +107,18 @@ export function parseMsfUrl(url: string): MsfUrl {
 export function generateMsfUrl(
   relayUrl: string,
   namespace: string[],
-  trackName: string
+  trackName: string,
+  variables?: Record<string, string>
 ): string {
   // Ensure relay URL doesn't have a fragment
   const baseUrl = relayUrl.split('#')[0];
-  const fragment = encodeTrackReference(namespace, trackName);
+  let fragment = encodeTrackReference(namespace, trackName);
+  if (variables && Object.keys(variables).length > 0) {
+    const encoded = serializeFragmentVariables(variables);
+    if (encoded.length > 0) {
+      fragment += `&${encoded}`;
+    }
+  }
   return `${baseUrl}#${fragment}`;
 }
 
@@ -122,9 +149,12 @@ export function extractTrackReference(url: string): TrackReference {
     };
   }
 
-  // Otherwise, treat as fragment (with or without #)
+  // Otherwise, treat as fragment (with or without #). Strip any §8 variable
+  // pairs off the tail before decoding the track reference.
   const fragment = url.startsWith('#') ? url.substring(1) : url;
-  return decodeTrackReference(fragment);
+  const ampIdx = fragment.indexOf('&');
+  const refPart = ampIdx < 0 ? fragment : fragment.substring(0, ampIdx);
+  return decodeTrackReference(refPart);
 }
 
 /**

@@ -239,6 +239,15 @@ export {
   buildFragment,
   buildNamespaceFragment,
   type MsfUrl,
+  // Variable substitution (§8)
+  VariableSubstitutionError,
+  parseFragmentVariables,
+  serializeFragmentVariables,
+  substituteVariables,
+  substituteVariablesDeep,
+  extractVariableNames,
+  isValidVariableName,
+  isValidVariableValue,
 } from './url/index.js';
 
 // ============================================================================

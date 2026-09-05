@@ -28,3 +28,15 @@ export {
   buildNamespaceFragment,
   type MsfUrl,
 } from './parser.js';
+
+// Variable substitution (§8)
+export {
+  VariableSubstitutionError,
+  parseFragmentVariables,
+  serializeFragmentVariables,
+  substituteVariables,
+  substituteVariablesDeep,
+  extractVariableNames,
+  isValidVariableName,
+  isValidVariableValue,
+} from './variables.js';
