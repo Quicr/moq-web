@@ -15,12 +15,15 @@ export {
   parseDeltaCatalog,
   tryParseCatalog,
   parseCatalogFromBytes,
+  parseCompressedCatalog,
 } from './parser.js';
 
 export {
   serializeCatalog,
   serializeCatalogToBytes,
+  serializeCompressedCatalog,
   type SerializeOptions,
+  type CompressedSerializeOptions,
 } from './serializer.js';
 
 export {
@@ -31,3 +34,11 @@ export {
   createDelta,
   type DeltaOptions,
 } from './delta.js';
+
+export {
+  compressBytes,
+  decompressBytes,
+  CompressionError,
+  COMPRESSION_ALGORITHMS,
+  isCompressionAlgorithm,
+} from './compression.js';

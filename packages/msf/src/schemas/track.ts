@@ -150,6 +150,11 @@ export const CommonTrackFieldsSchema = z.object({
   connectionUri: z.string().min(1).optional(),
   /** Authorization token/credential for a publishTracks entry (§6 `token`). */
   token: z.string().min(1).optional(),
+  /**
+   * Per-track compression override (§9 `MSF_COMPRESSION`).
+   * When present, takes precedence over the catalog-level setting.
+   */
+  MSF_COMPRESSION: z.enum(['identity', 'gzip', 'deflate']).optional(),
 });
 
 /**

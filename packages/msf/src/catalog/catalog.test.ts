@@ -7,11 +7,22 @@ import {
   parseCatalog,
   parseFullCatalog,
   parseDeltaCatalog,
+  parseCompressedCatalog,
   CatalogParseError,
   parseCatalogFromBytes,
 } from './parser.js';
-import { serializeCatalog, serializeCatalogToBytes } from './serializer.js';
+import {
+  serializeCatalog,
+  serializeCatalogToBytes,
+  serializeCompressedCatalog,
+} from './serializer.js';
 import { generateDelta, applyDelta, createDelta, DeltaError } from './delta.js';
+import {
+  compressBytes,
+  decompressBytes,
+  isCompressionAlgorithm,
+  COMPRESSION_ALGORITHMS,
+} from './compression.js';
 import { MSF_VERSION } from '../version.js';
 import type { FullCatalog, Track } from '../schemas/index.js';
 
@@ -426,5 +437,84 @@ describe('Delta operations', () => {
       expect(delta.generatedAt).toBeGreaterThanOrEqual(before);
       expect(delta.generatedAt).toBeLessThanOrEqual(after);
     });
+  });
+});
+
+describe('MSF_COMPRESSION (§9)', () => {
+  it('accepts identity/gzip/deflate algorithm names', () => {
+    for (const algo of ['identity', 'gzip', 'deflate']) {
+      expect(isCompressionAlgorithm(algo)).toBe(true);
+    }
+    expect(isCompressionAlgorithm('brotli')).toBe(false);
+  });
+
+  it('exposes the full algorithm list', () => {
+    expect(COMPRESSION_ALGORITHMS).toEqual(['identity', 'gzip', 'deflate']);
+  });
+
+  it('roundtrips bytes through gzip', async () => {
+    const raw = new TextEncoder().encode('hello, world '.repeat(50));
+    const compressed = await compressBytes(raw, 'gzip');
+    expect(compressed.length).toBeGreaterThan(0);
+    // Should typically be smaller than the raw input for repetitive data
+    expect(compressed.length).toBeLessThan(raw.length);
+    const decompressed = await decompressBytes(compressed, 'gzip');
+    expect(new TextDecoder().decode(decompressed)).toBe(
+      'hello, world '.repeat(50)
+    );
+  });
+
+  it('roundtrips bytes through deflate', async () => {
+    const raw = new TextEncoder().encode('foo-bar-baz');
+    const compressed = await compressBytes(raw, 'deflate');
+    const decompressed = await decompressBytes(compressed, 'deflate');
+    expect(new TextDecoder().decode(decompressed)).toBe('foo-bar-baz');
+  });
+
+  it('passes bytes through unchanged on identity', async () => {
+    const raw = new Uint8Array([1, 2, 3, 4]);
+    const out = await compressBytes(raw, 'identity');
+    expect(out).toBe(raw);
+  });
+
+  it('roundtrips a catalog with catalog-level MSF_COMPRESSION=gzip', async () => {
+    const catalog = createCatalog()
+      .addVideoTrack({
+        name: 'video',
+        codec: 'avc1.4D401E',
+        width: 1280,
+        height: 720,
+        framerate: 30,
+        bitrate: 2_000_000,
+        isLive: true,
+      })
+      .build();
+    // Mark compression on the catalog metadata itself
+    (catalog as FullCatalog).MSF_COMPRESSION = 'gzip';
+
+    const { bytes, algorithm } = await serializeCompressedCatalog(catalog);
+    expect(algorithm).toBe('gzip');
+    const parsed = await parseCompressedCatalog(bytes, algorithm);
+    expect(parsed.version).toBe(MSF_VERSION);
+    expect(parsed.MSF_COMPRESSION).toBe('gzip');
+  });
+
+  it('accepts per-track MSF_COMPRESSION field', () => {
+    const catalog = createCatalog()
+      .addVideoTrack({
+        name: 'video',
+        codec: 'avc1',
+        width: 1280,
+        height: 720,
+        framerate: 30,
+        bitrate: 2_000_000,
+        isLive: true,
+      })
+      .build();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (catalog.tracks[0] as any).MSF_COMPRESSION = 'deflate';
+    const json = serializeCatalog(catalog);
+    const parsed = parseFullCatalog(json);
+    expect(parsed.tracks[0].MSF_COMPRESSION).toBe('deflate');
   });
 });

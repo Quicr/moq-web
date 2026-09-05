@@ -15,6 +15,7 @@ export {
   CatalogSchema,
   InitDataEntrySchema,
   UpdateTrackSchema,
+  CompressionAlgorithmEnum,
   isDeltaCatalog,
   isFullCatalog,
 } from './catalog.js';
@@ -26,6 +27,7 @@ export type {
   Catalog,
   InitDataEntry,
   UpdateTrack,
+  CompressionAlgorithm,
 } from './catalog.js';
 
 // Track schemas

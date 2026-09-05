@@ -33,6 +33,15 @@ export const InitDataEntrySchema = z
   .passthrough();
 
 /**
+ * MSF §9 `MSF_COMPRESSION` values.
+ */
+export const CompressionAlgorithmEnum = z.enum([
+  'identity',
+  'gzip',
+  'deflate',
+]);
+
+/**
  * Catalog metadata fields
  */
 export const CatalogMetadataSchema = z.object({
@@ -44,6 +53,12 @@ export const CatalogMetadataSchema = z.object({
   generatedAt: z.number().optional(),
   /** Whether the catalog is complete (all tracks known) */
   isComplete: z.boolean().optional(),
+  /**
+   * Compression applied to catalog OBJECTS in this track (§9).
+   * The catalog root document itself is always JSON, but subsequent objects
+   * MAY be compressed with this algorithm.
+   */
+  MSF_COMPRESSION: CompressionAlgorithmEnum.optional(),
 });
 
 /**
@@ -126,3 +141,4 @@ export type DeltaCatalog = z.infer<typeof DeltaCatalogSchema>;
 export type Catalog = z.infer<typeof CatalogSchema>;
 export type InitDataEntry = z.infer<typeof InitDataEntrySchema>;
 export type UpdateTrack = z.infer<typeof UpdateTrackSchema>;
+export type CompressionAlgorithm = z.infer<typeof CompressionAlgorithmEnum>;

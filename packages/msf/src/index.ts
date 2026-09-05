@@ -64,6 +64,7 @@ export {
   CatalogSchema,
   InitDataEntrySchema,
   UpdateTrackSchema,
+  CompressionAlgorithmEnum,
   isDeltaCatalog,
   isFullCatalog,
   // Track schemas
@@ -115,6 +116,7 @@ export type {
   Catalog,
   InitDataEntry,
   UpdateTrack,
+  CompressionAlgorithm,
   // Track types
   Packaging,
   TrackRole,
@@ -165,10 +167,13 @@ export {
   parseDeltaCatalog,
   tryParseCatalog,
   parseCatalogFromBytes,
+  parseCompressedCatalog,
   // Serializer
   serializeCatalog,
   serializeCatalogToBytes,
+  serializeCompressedCatalog,
   type SerializeOptions,
+  type CompressedSerializeOptions,
   // Delta
   DeltaError,
   generateDelta,
@@ -176,6 +181,12 @@ export {
   DeltaBuilder,
   createDelta,
   type DeltaOptions,
+  // Compression (§9)
+  compressBytes,
+  decompressBytes,
+  CompressionError,
+  COMPRESSION_ALGORITHMS,
+  isCompressionAlgorithm,
 } from './catalog/index.js';
 
 // ============================================================================
