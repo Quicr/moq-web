@@ -291,9 +291,31 @@ describe('Delta operations', () => {
       const delta = generateDelta(baseCatalog, newCatalog);
 
       expect(delta).not.toBeNull();
-      // Modified tracks are removed and re-added
+      // Modified tracks are removed and re-added by default (legacy shape).
       expect(delta!.removeTracks).toContain('track-a');
       expect(delta!.addTracks?.find((t) => t.name === 'track-a')).toBeDefined();
+    });
+
+    it('should emit update op when useUpdateOp=true (§7)', () => {
+      const newCatalog: FullCatalog = {
+        version: MSF_VERSION,
+        tracks: [
+          { name: 'track-a', packaging: 'loc', isLive: false },
+          baseCatalog.tracks[1],
+        ],
+      };
+
+      const delta = generateDelta(baseCatalog, newCatalog, {
+        useUpdateOp: true,
+      });
+
+      expect(delta).not.toBeNull();
+      expect(delta!.updateTracks).toHaveLength(1);
+      expect(delta!.updateTracks![0].parentName).toBe('track-a');
+      expect(delta!.updateTracks![0].isLive).toBe(false);
+      // Should NOT fall back to remove+add.
+      expect(delta!.removeTracks).toBeUndefined();
+      expect(delta!.addTracks).toBeUndefined();
     });
   });
 
@@ -345,6 +367,27 @@ describe('Delta operations', () => {
         .clone('nonexistent', 'new-track')
         .build();
 
+      expect(() => applyDelta(baseCatalog, delta)).toThrow(DeltaError);
+    });
+
+    it('should apply update patch to an existing track (§7)', () => {
+      const delta = createDelta()
+        .update('track-a', { isLive: false, label: 'renamed' })
+        .build();
+
+      const result = applyDelta(baseCatalog, delta);
+
+      expect(result.tracks).toHaveLength(2);
+      const target = result.tracks.find((t) => t.name === 'track-a')!;
+      expect(target.isLive).toBe(false);
+      expect(target.label).toBe('renamed');
+      // Other tracks untouched.
+      const other = result.tracks.find((t) => t.name === 'track-b')!;
+      expect(other.isLive).toBe(true);
+    });
+
+    it('should throw when update target is missing', () => {
+      const delta = createDelta().update('nonexistent', { isLive: false }).build();
       expect(() => applyDelta(baseCatalog, delta)).toThrow(DeltaError);
     });
   });

@@ -14,6 +14,7 @@ export type {
   DeltaCatalog,
   Catalog,
   InitDataEntry,
+  UpdateTrack,
 } from '../schemas/catalog.js';
 
 // Track types

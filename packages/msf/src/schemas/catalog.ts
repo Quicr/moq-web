@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { MSF_VERSION } from '../version.js';
-import { TrackSchema, CloneTrackSchema } from './track.js';
+import { TrackSchema, TrackObjectSchema, CloneTrackSchema } from './track.js';
 
 /**
  * Initialization data list entry (MSF §5, `initDataList`).
@@ -61,6 +61,22 @@ export const FullCatalogSchema = CatalogMetadataSchema.extend({
 });
 
 /**
+ * `update` delta operation (MSF §7).
+ *
+ * Targets an existing track by `parentName` (+ optional `parentNamespace`)
+ * and applies a partial patch. Any subset of track fields may be included
+ * except `name` (that's what identifies the target).
+ */
+export const UpdateTrackSchema = z
+  .object({
+    /** Name of the track to update. */
+    parentName: z.string().min(1),
+    /** Optional namespace scope for the target track. */
+    parentNamespace: z.array(z.string()).optional(),
+  })
+  .merge(TrackObjectSchema.partial().omit({ name: true }));
+
+/**
  * Delta catalog update (dependent object in group)
  */
 export const DeltaCatalogSchema = CatalogMetadataSchema.extend({
@@ -72,6 +88,8 @@ export const DeltaCatalogSchema = CatalogMetadataSchema.extend({
   removeTracks: z.array(z.string()).optional(),
   /** Tracks to clone */
   cloneTracks: z.array(CloneTrackSchema).optional(),
+  /** Track patches to apply in place (MSF §7 `update`). */
+  updateTracks: z.array(UpdateTrackSchema).optional(),
 });
 
 /**
@@ -102,3 +120,4 @@ export type FullCatalog = z.infer<typeof FullCatalogSchema>;
 export type DeltaCatalog = z.infer<typeof DeltaCatalogSchema>;
 export type Catalog = z.infer<typeof CatalogSchema>;
 export type InitDataEntry = z.infer<typeof InitDataEntrySchema>;
+export type UpdateTrack = z.infer<typeof UpdateTrackSchema>;
