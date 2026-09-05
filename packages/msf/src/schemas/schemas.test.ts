@@ -199,6 +199,9 @@ describe('PackagingEnum', () => {
     expect(PackagingEnum.safeParse('loc').success).toBe(true);
     expect(PackagingEnum.safeParse('mediatimeline').success).toBe(true);
     expect(PackagingEnum.safeParse('eventtimeline').success).toBe(true);
+    expect(PackagingEnum.safeParse('moqlog').success).toBe(true);
+    expect(PackagingEnum.safeParse('moqmetrics').success).toBe(true);
+    expect(PackagingEnum.safeParse('catalog').success).toBe(true);
   });
 
   it('should reject invalid packaging type', () => {
@@ -208,16 +211,29 @@ describe('PackagingEnum', () => {
 });
 
 describe('TrackRoleEnum', () => {
-  it('should accept all valid roles', () => {
-    const validRoles = [
-      'main', 'alternate', 'supplementary', 'commentary', 'dub',
-      'emergency', 'caption', 'subtitle', 'sign-language', 'metadata',
-      'logs', 'metrics',
+  it('should accept spec-reserved roles (§6 Table 4)', () => {
+    const specRoles = [
+      'audiodescription', 'video', 'audio', 'mediatimeline', 'eventtimeline',
+      'caption', 'subtitle', 'signlanguage', 'log', 'metrics', 'data',
     ];
-
-    for (const role of validRoles) {
+    for (const role of specRoles) {
       expect(TrackRoleEnum.safeParse(role).success).toBe(true);
     }
+  });
+
+  it('should accept common extension roles', () => {
+    const extensionRoles = [
+      'main', 'alternate', 'supplementary', 'commentary', 'dub', 'emergency',
+    ];
+    for (const role of extensionRoles) {
+      expect(TrackRoleEnum.safeParse(role).success).toBe(true);
+    }
+  });
+
+  it('should accept legacy aliases for backwards compatibility', () => {
+    expect(TrackRoleEnum.safeParse('sign-language').success).toBe(true);
+    expect(TrackRoleEnum.safeParse('metadata').success).toBe(true);
+    expect(TrackRoleEnum.safeParse('logs').success).toBe(true);
   });
 
   it('should reject invalid role', () => {

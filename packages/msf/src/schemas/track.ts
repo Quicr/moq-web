@@ -16,27 +16,44 @@ import { AccessibilityFieldsSchema } from './accessibility.js';
 import { MediaTimelineTemplateSchema } from './timeline.js';
 
 /**
- * Track packaging types
+ * Track packaging types (MSF §6, Table 2)
  */
-export const PackagingEnum = z.enum(['loc', 'mediatimeline', 'eventtimeline']);
+export const PackagingEnum = z.enum([
+  'loc',
+  'mediatimeline',
+  'eventtimeline',
+  'moqlog',
+  'moqmetrics',
+  'catalog',
+]);
 
 /**
- * Track role identifiers (including PR #121 additions)
+ * Track role identifiers (MSF §6, Table 4)
  */
 export const TrackRoleEnum = z.enum([
+  // Spec-reserved roles (§6, Table 4)
+  'audiodescription',
+  'video',
+  'audio',
+  'mediatimeline',
+  'eventtimeline',
+  'caption',
+  'subtitle',
+  'signlanguage',
+  'log',
+  'metrics',
+  'data',
+  // Widely-used extensions (not in Table 4 but commonly seen)
   'main',
   'alternate',
   'supplementary',
   'commentary',
   'dub',
   'emergency',
-  'caption',
-  'subtitle',
+  // Legacy aliases kept for backwards compatibility
   'sign-language',
   'metadata',
-  // PR #121: Logs/Metrics track roles
   'logs',
-  'metrics',
 ]);
 
 /**

@@ -108,11 +108,11 @@ export interface AudioTrackInput {
  */
 export interface DataTrackInput {
   name: string;
-  packaging: 'loc' | 'mediatimeline' | 'eventtimeline';
+  packaging: 'loc' | 'mediatimeline' | 'eventtimeline' | 'moqlog' | 'moqmetrics' | 'catalog';
   isLive: boolean;
   mimeType?: string;
   namespace?: string[];
-  role?: 'metadata' | 'logs' | 'metrics';
+  role?: 'metadata' | 'log' | 'logs' | 'metrics' | 'data';
   label?: string;
   timescale?: number;
 }
