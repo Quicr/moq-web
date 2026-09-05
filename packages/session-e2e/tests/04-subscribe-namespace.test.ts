@@ -43,12 +43,19 @@ describe.each([
     pub = await makeSession(profile);
     sub = await makeSession(profile);
 
+    // Filter on the exact namespace we're about to announce. The relay's
+    // NAMESPACE fan-out can also replay announcements from earlier CI runs
+    // that used the same profile prefix + test name — those show up with a
+    // different random suffix and would race ahead of ours if we resolved
+    // on the first event.
+    const expectedNs = namespace.join('/');
     const announced = new Promise<{ namespace: string[] }>((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error('timed out waiting for namespace-announced')),
         10_000,
       );
       sub!.session.on('namespace-announced', (evt) => {
+        if (evt.namespace.join('/') !== expectedNs) return;
         clearTimeout(timer);
         resolve({ namespace: evt.namespace });
       });

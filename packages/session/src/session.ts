@@ -2680,6 +2680,13 @@ export class MOQTSession {
     if (IS_DRAFT_18) {
       await this.fetchDraft18(requestId, namespace, trackName, range, options);
     } else {
+      // Draft-16 §7.4 End Location is exclusive on the wire: endObject == 0
+      // means the whole End Group; endObject == N means objects 0..N-1. The
+      // public FetchRange.endObject is inclusive, but callers use the sentinel
+      // 0 to mean "whole group" (the spec's own semantics), so we only apply
+      // the inclusive→exclusive +1 when the caller provided a specific object
+      // index. See the matching draft-18 conversion in fetchDraft18() below.
+      const wireEndObject = range.endObject === 0 ? 0 : range.endObject + 1;
       const fetchMessage: FetchMessage = {
         type: MessageType.FETCH,
         requestId,
@@ -2689,7 +2696,7 @@ export class MOQTSession {
         startGroup: range.startGroup,
         startObject: range.startObject,
         endGroup: range.endGroup,
-        endObject: range.endObject,
+        endObject: wireEndObject,
         parameters: new Map(),
       };
 
@@ -2728,7 +2735,8 @@ export class MOQTSession {
     // Draft-18 endLocation is *exclusive* per spec §7.5 (relays such as moxygen
     // decrement the object component to derive the inclusive "last" location).
     // The API's FetchRange.endObject is inclusive, so we bump the wire value
-    // by one before encoding.
+    // by one before encoding. `endObject == 0` is the caller's "whole End
+    // Group" sentinel (also spec-compliant on the wire), so leave it as 0.
     const fetchType = options?.fetchType ?? FetchTypeDraft18.STANDALONE;
     const isJoining =
       fetchType === FetchTypeDraft18.JOINING_RELATIVE ||
@@ -2761,7 +2769,7 @@ export class MOQTSession {
       },
       endLocation: {
         group: BigInt(range.endGroup),
-        object: BigInt(range.endObject + 1),
+        object: BigInt(range.endObject === 0 ? 0 : range.endObject + 1),
       },
       parameters: parameters.size > 0 ? parameters : undefined,
     };
@@ -4451,11 +4459,13 @@ export class MOQTSession {
       // Create encoder state for delta encoding across objects
       const fetchState = this.codec.createFetchEncoderState();
 
-      // Send objects in requested range
+      // Draft-16 §7.4: End Location is exclusive on the wire. endObject == 0
+      // means "entire End Group" (equivalent to objectsPerGroup); otherwise
+      // deliver objects 0..endObject-1 in the final group.
       for (let groupId = startGroup; groupId <= endGroup; groupId++) {
         const objStart = groupId === startGroup ? startObject : 0;
         const objEnd = groupId === endGroup && endObject > 0
-          ? endObject
+          ? endObject - 1
           : objectsPerGroup - 1;
 
         for (let objectId = objStart; objectId <= objEnd; objectId++) {
