@@ -13,6 +13,14 @@ export {
   type GroupNumberingStrategy,
 } from './group-numbering.js';
 
+// §10 Prior Group ID Gap
+export {
+  PRIOR_GROUP_ID_GAP_EXTENSION_ID,
+  GroupIdGapTracker,
+  encodePriorGroupIdGap,
+  decodePriorGroupIdGap,
+} from './group-gap.js';
+
 // Catalog track
 export {
   CatalogTrackError,

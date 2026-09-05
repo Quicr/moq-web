@@ -271,6 +271,11 @@ export {
   SequentialGroupNumbering,
   createGroupNumbering,
   type GroupNumberingStrategy,
+  // §10 Prior Group ID Gap
+  PRIOR_GROUP_ID_GAP_EXTENSION_ID,
+  GroupIdGapTracker,
+  encodePriorGroupIdGap,
+  decodePriorGroupIdGap,
   // Catalog track
   CatalogTrackError,
   CatalogSubscriber,
