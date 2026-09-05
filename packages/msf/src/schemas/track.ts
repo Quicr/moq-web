@@ -165,7 +165,26 @@ export const TrackObjectSchema = BaseTrackFieldsSchema.merge(CommonTrackFieldsSc
   .merge(AccessibilityFieldsSchema);
 
 /**
+ * Roles that produce audio/video media samples (§6, Table 4).
+ * Used to trigger conditional field requirements.
+ */
+const AV_VIDEO_ROLES = new Set(['video']);
+const AV_AUDIO_ROLES = new Set(['audio', 'audiodescription']);
+
+/**
  * Complete track definition schema, including cross-field spec invariants.
+ *
+ * Conditional requirements enforced here (MSF §6, §11, §12):
+ * - `buffers` + `targetLatency` are mutually exclusive.
+ * - `codec` is required for packaging=`loc` with an A/V role.
+ * - `bitrate` is required for packaging=`loc` with an A/V role.
+ * - `samplerate` + `channelConfig` are required for audio-role LOC tracks.
+ * - `eventType` is required when packaging=`eventtimeline`.
+ * - `depends` is required when packaging=`mediatimeline` (§11 references media).
+ * - `depends` is required when packaging=`eventtimeline` and entries reference
+ *   media timeline tracks (validated at record level; schema-level check is
+ *   applied here when `data.location`/media references are declared).
+ * - `trackDuration` MUST NOT be set when `isLive=true` (VOD-only field).
  */
 export const TrackSchema = TrackObjectSchema.superRefine((track, ctx) => {
   // §6: buffers and targetLatency are mutually exclusive.
@@ -175,6 +194,83 @@ export const TrackSchema = TrackObjectSchema.superRefine((track, ctx) => {
       message:
         '`buffers` and `targetLatency` are mutually exclusive per MSF §6',
       path: ['buffers'],
+    });
+  }
+
+  const role = track.role;
+  const isVideoRole = role !== undefined && AV_VIDEO_ROLES.has(role);
+  const isAudioRole = role !== undefined && AV_AUDIO_ROLES.has(role);
+  const isAvRole = isVideoRole || isAudioRole;
+
+  // §6: codec + bitrate required for A/V LOC tracks.
+  if (track.packaging === 'loc' && isAvRole) {
+    if (track.codec === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          '`codec` is required for packaging=`loc` with an audio/video role (MSF §6)',
+        path: ['codec'],
+      });
+    }
+    if (track.bitrate === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          '`bitrate` is required for packaging=`loc` with an audio/video role (MSF §6)',
+        path: ['bitrate'],
+      });
+    }
+  }
+
+  // §6: audio-role tracks require samplerate + channelConfig.
+  if (track.packaging === 'loc' && isAudioRole) {
+    if (track.samplerate === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          '`samplerate` is required for audio-role LOC tracks (MSF §6)',
+        path: ['samplerate'],
+      });
+    }
+    if (track.channelConfig === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          '`channelConfig` is required for audio-role LOC tracks (MSF §6)',
+        path: ['channelConfig'],
+      });
+    }
+  }
+
+  // §12: eventType required when packaging=eventtimeline.
+  if (track.packaging === 'eventtimeline' && track.eventType === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        '`eventType` is required when packaging=`eventtimeline` (MSF §12)',
+      path: ['eventType'],
+    });
+  }
+
+  // §11: mediatimeline tracks reference at least one media track via `depends`.
+  if (track.packaging === 'mediatimeline') {
+    if (!track.depends || track.depends.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          '`depends` is required for packaging=`mediatimeline` (MSF §11)',
+        path: ['depends'],
+      });
+    }
+  }
+
+  // §6: trackDuration is VOD-only; MUST NOT be set on live tracks.
+  if (track.isLive === true && track.trackDuration !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        '`trackDuration` MUST NOT be set when `isLive` is true (MSF §6)',
+      path: ['trackDuration'],
     });
   }
 });

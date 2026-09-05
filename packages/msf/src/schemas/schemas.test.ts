@@ -486,6 +486,7 @@ describe('CatalogSchema', () => {
       const result = DeltaCatalogSchema.safeParse({
         version: MSF_VERSION,
         deltaUpdate: true,
+        generatedAt: Date.now(),
         addTracks: [
           { name: 'new-track', packaging: 'loc', isLive: true },
         ],
@@ -497,6 +498,7 @@ describe('CatalogSchema', () => {
       const result = DeltaCatalogSchema.safeParse({
         version: MSF_VERSION,
         deltaUpdate: true,
+        generatedAt: Date.now(),
         removeTracks: ['old-track'],
       });
       expect(result.success).toBe(true);
@@ -506,6 +508,7 @@ describe('CatalogSchema', () => {
       const result = DeltaCatalogSchema.safeParse({
         version: MSF_VERSION,
         deltaUpdate: true,
+        generatedAt: Date.now(),
         cloneTracks: [
           { sourceName: 'video', name: 'video-copy' },
         ],
@@ -517,9 +520,115 @@ describe('CatalogSchema', () => {
       const result = DeltaCatalogSchema.safeParse({
         version: MSF_VERSION,
         deltaUpdate: false,
+        generatedAt: Date.now(),
         addTracks: [],
       });
       expect(result.success).toBe(false);
+    });
+
+    it('should require generatedAt on delta updates (§7)', () => {
+      const result = DeltaCatalogSchema.safeParse({
+        version: MSF_VERSION,
+        deltaUpdate: true,
+        addTracks: [
+          { name: 'new-track', packaging: 'loc', isLive: true },
+        ],
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('conditional field validation (§6/§11/§12)', () => {
+    it('should require codec + bitrate for A/V LOC tracks', () => {
+      const missingCodec = TrackSchema.safeParse({
+        name: 'video-main',
+        packaging: 'loc',
+        role: 'video',
+        isLive: true,
+        bitrate: 2_000_000,
+      });
+      expect(missingCodec.success).toBe(false);
+
+      const missingBitrate = TrackSchema.safeParse({
+        name: 'video-main',
+        packaging: 'loc',
+        role: 'video',
+        isLive: true,
+        codec: 'avc1.4D401E',
+      });
+      expect(missingBitrate.success).toBe(false);
+    });
+
+    it('should require samplerate + channelConfig for audio-role LOC', () => {
+      const result = TrackSchema.safeParse({
+        name: 'audio-main',
+        packaging: 'loc',
+        role: 'audio',
+        isLive: true,
+        codec: 'opus',
+        bitrate: 128_000,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept fully specified audio LOC track', () => {
+      const result = TrackSchema.safeParse({
+        name: 'audio-main',
+        packaging: 'loc',
+        role: 'audio',
+        isLive: true,
+        codec: 'opus',
+        bitrate: 128_000,
+        samplerate: 48000,
+        channelConfig: 'stereo',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should require eventType for eventtimeline packaging', () => {
+      const result = TrackSchema.safeParse({
+        name: 'events',
+        packaging: 'eventtimeline',
+        isLive: true,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should require depends for mediatimeline packaging', () => {
+      const missing = TrackSchema.safeParse({
+        name: 'timeline',
+        packaging: 'mediatimeline',
+        isLive: true,
+      });
+      expect(missing.success).toBe(false);
+
+      const ok = TrackSchema.safeParse({
+        name: 'timeline',
+        packaging: 'mediatimeline',
+        isLive: true,
+        depends: ['video-main'],
+      });
+      expect(ok.success).toBe(true);
+    });
+
+    it('should reject trackDuration on live tracks', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        trackDuration: 10_000,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept trackDuration on VOD tracks', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: false,
+        trackDuration: 10_000,
+      });
+      expect(result.success).toBe(true);
     });
   });
 });

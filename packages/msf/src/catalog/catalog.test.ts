@@ -141,6 +141,7 @@ describe('CatalogParser', () => {
     const json = JSON.stringify({
       version: MSF_VERSION,
       deltaUpdate: true,
+      generatedAt: Date.now(),
       addTracks: [
         { name: 'new-track', packaging: 'loc', isLive: false },
       ],
@@ -412,6 +413,16 @@ describe('Delta operations', () => {
       const after = Date.now();
 
       expect(delta.generatedAt).toBeDefined();
+      expect(delta.generatedAt).toBeGreaterThanOrEqual(before);
+      expect(delta.generatedAt).toBeLessThanOrEqual(after);
+    });
+
+    it('should default generatedAt on build (§7)', () => {
+      const before = Date.now();
+      const delta = createDelta()
+        .add({ name: 'x', packaging: 'loc', isLive: true })
+        .build();
+      const after = Date.now();
       expect(delta.generatedAt).toBeGreaterThanOrEqual(before);
       expect(delta.generatedAt).toBeLessThanOrEqual(after);
     });

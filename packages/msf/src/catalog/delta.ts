@@ -30,8 +30,11 @@ export class DeltaError extends Error {
  * Options for delta generation
  */
 export interface DeltaOptions {
-  /** Include generation timestamp */
-  generatedAt?: boolean;
+  /**
+   * Override the generation timestamp. Per MSF §7, `generatedAt` is REQUIRED
+   * on delta updates; when omitted here we default to `Date.now()`.
+   */
+  generatedAt?: number | false;
   /**
    * Emit `update` operations for modified tracks instead of `remove`+`add`.
    * Off by default so existing consumers keep the previous shape.
@@ -107,6 +110,10 @@ export function generateDelta(
   const delta: DeltaCatalog = {
     version: MSF_VERSION,
     deltaUpdate: true,
+    generatedAt:
+      typeof options.generatedAt === 'number'
+        ? options.generatedAt
+        : Date.now(),
   };
 
   if (addTracks.length > 0) {
@@ -119,10 +126,6 @@ export function generateDelta(
 
   if (updateTracks.length > 0) {
     delta.updateTracks = updateTracks;
-  }
-
-  if (options.generatedAt) {
-    delta.generatedAt = Date.now();
   }
 
   return delta;
@@ -279,12 +282,14 @@ export class DeltaBuilder {
   }
 
   /**
-   * Build the delta catalog
+   * Build the delta catalog. Per MSF §7 `generatedAt` is REQUIRED on delta
+   * updates; if not set explicitly we default to `Date.now()`.
    */
   build(): DeltaCatalog {
     const delta: DeltaCatalog = {
       version: MSF_VERSION,
       deltaUpdate: true,
+      generatedAt: this._generatedAt ?? Date.now(),
     };
 
     if (this.addTracks.length > 0) {
@@ -301,10 +306,6 @@ export class DeltaBuilder {
 
     if (this.updateTracks.length > 0) {
       delta.updateTracks = this.updateTracks;
-    }
-
-    if (this._generatedAt !== undefined) {
-      delta.generatedAt = this._generatedAt;
     }
 
     return delta;

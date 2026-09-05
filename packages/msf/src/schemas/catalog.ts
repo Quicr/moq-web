@@ -78,10 +78,15 @@ export const UpdateTrackSchema = z
 
 /**
  * Delta catalog update (dependent object in group)
+ *
+ * §7: `generatedAt` is REQUIRED on delta updates so subscribers can order
+ * concurrent patches.
  */
 export const DeltaCatalogSchema = CatalogMetadataSchema.extend({
   /** Must be true for delta updates */
   deltaUpdate: z.literal(true),
+  /** Generation timestamp (epoch milliseconds); REQUIRED on delta updates. */
+  generatedAt: z.number(),
   /** Tracks to add */
   addTracks: z.array(TrackSchema).optional(),
   /** Track names to remove */
