@@ -1567,6 +1567,13 @@ export interface ServerSetupMessageDraft18 {
    * decode with any KVP not matching a well-known SetupOption.
    */
   extensions?: Map<number, SetupExtensionValue>;
+  /**
+   * §10.2 MOQT_IMPLEMENTATION SetupOption value, if present on the wire.
+   * The same SETUP frame is used in both directions; decoding preserves the
+   * string so tests and callers can inspect it. Callers should be aware of
+   * §13.8: relying on this for identification enables fingerprinting.
+   */
+  moqtImplementation?: string;
 }
 
 /**

@@ -592,6 +592,14 @@ export class MOQTSession {
    * inspect via the `peerExtensions` getter.
    */
   private _peerExtensions?: Map<number, import('@moq-web/core').SetupExtensionValue>;
+  /**
+   * Draft-18 §13.8: implementation identifier the client advertises in the
+   * MOQT_IMPLEMENTATION SetupOption. `undefined` (the default) means we do
+   * NOT advertise, per §13.8 which cautions against unconditional
+   * fingerprintable identifiers. Callers can opt in with
+   * `setImplementationString(...)` before `setup()`.
+   */
+  private _implementationString?: string;
   // @ts-expect-error Reserved for token alias caching support (aliasType 1/2)
   private tokenAliasCache = new Map<number, { tokenType: number; tokenValue: Uint8Array }>();
   // @ts-expect-error Reserved for token alias caching support
@@ -1448,6 +1456,26 @@ export class MOQTSession {
   }
 
   /**
+   * Draft-18 §13.8: opt in to sending the MOQT_IMPLEMENTATION SetupOption.
+   *
+   * §13.8 cautions endpoints against always advertising an implementation
+   * identifier because it enables passive fingerprinting. By default this
+   * client omits the field; call this before `setup()` with a string to
+   * advertise it, or with `undefined` to explicitly disable (also the
+   * default). Must be called before `setup()` — the value is read once when
+   * CLIENT_SETUP is encoded.
+   */
+  setImplementationString(value: string | undefined): void {
+    if (this._state !== 'none') {
+      throw new Error(`Cannot set implementation string after setup() (state=${this._state})`);
+    }
+    if (value !== undefined && value.length === 0) {
+      throw new Error('Implementation string must be non-empty (or undefined to disable)');
+    }
+    this._implementationString = value;
+  }
+
+  /**
    * Draft-18 §13.6.1 — configure application-level idle handling.
    *
    * MOQT itself defers idle timeouts to QUIC's `max_idle_timeout` (RFC 9000
@@ -1602,9 +1630,14 @@ export class MOQTSession {
           tokenValue: tokenBytes,
         });
       }
+      // §13.8: MOQT_IMPLEMENTATION aids interoperability debugging but also
+      // enables passive fingerprinting. The spec cautions against always
+      // advertising it, so this client omits it by default and only sends
+      // when the caller has explicitly opted in via
+      // `setImplementationString()`.
       const clientSetup: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
-        moqtImplementation: 'moq-web 0.1.0',
+        moqtImplementation: this._implementationString,
         extensions: this._clientExtensions,
         authToken: setupAuthToken,
       };
