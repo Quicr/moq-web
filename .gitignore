@@ -47,3 +47,16 @@ certs/*
 *.pem
 *.key
 certificate_fingerprint.hex
+
+# Private / patent-sensitive docs (local only, never commit)
+/group_design_plan.md
+/group_design_plan.html
+/android_video_aspect_ratio.md
+/android_video_aspect_ratio.html
+/docs/api-unification-proposal.md
+/docs/catalog-driven-ux-design.md
+/docs/catalog-implementation-plan.md
+/docs/draft-18-feature-audit.md
+/docs/draft-18-feature-audit.html
+/docs/fetch-video-analysis.md
+/docs/testing-vod-subtitles-timeline.md
