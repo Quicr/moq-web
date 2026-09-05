@@ -63,6 +63,10 @@ export const CatalogMetadataSchema = z.object({
 
 /**
  * Full catalog (independent object in group)
+ *
+ * §13.5 / §14.5: `moqlog` / `moqmetrics` tracks MUST live in `publishTracks`
+ * (not the main `tracks` array), with the expected role, and MUST NOT appear
+ * in the main tracks list.
  */
 export const FullCatalogSchema = CatalogMetadataSchema.extend({
   /** All tracks in this catalog */
@@ -73,6 +77,41 @@ export const FullCatalogSchema = CatalogMetadataSchema.extend({
   publishTracks: z.array(TrackSchema).optional(),
   /** Init data references pointed at by track `initRef` fields (§5). */
   initDataList: z.array(InitDataEntrySchema).optional(),
+}).superRefine((cat, ctx) => {
+  // §13.5 / §14.5: moqlog + moqmetrics tracks belong in publishTracks only.
+  cat.tracks.forEach((t, i) => {
+    if (t.packaging === 'moqlog' || t.packaging === 'moqmetrics') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `packaging=\`${t.packaging}\` tracks MUST be declared in \`publishTracks\`, not \`tracks\` (MSF §13.5/§14.5)`,
+        path: ['tracks', i, 'packaging'],
+      });
+    }
+  });
+
+  // §13.5 / §14.5: role must match packaging for moqlog / moqmetrics.
+  cat.publishTracks?.forEach((t, i) => {
+    if (t.packaging === 'moqlog' && t.role !== undefined && t.role !== 'log') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'packaging=`moqlog` tracks MUST have role=`log` (MSF §13.5)',
+        path: ['publishTracks', i, 'role'],
+      });
+    }
+    if (
+      t.packaging === 'moqmetrics' &&
+      t.role !== undefined &&
+      t.role !== 'metrics'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'packaging=`moqmetrics` tracks MUST have role=`metrics` (MSF §14.5)',
+        path: ['publishTracks', i, 'role'],
+      });
+    }
+  });
 });
 
 /**

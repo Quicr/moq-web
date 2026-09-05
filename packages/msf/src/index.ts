@@ -263,6 +263,44 @@ export {
 } from './url/index.js';
 
 // ============================================================================
+// Publish tracks (§13 moqlog, §14 moqmetrics)
+// ============================================================================
+
+export {
+  // Log track (§13)
+  LOG_NAMESPACE_BASE,
+  LogSeverity,
+  logNamespace,
+  encodeLogTrackName,
+  decodeLogTrackName,
+  logGroupIdFromMillis,
+  logGroupIdFromMicros,
+  LogEntrySchema,
+  LogTrackError,
+  type LogEntry,
+  type LogLocation,
+  // Metrics track (§14)
+  METRICS_NAMESPACE_BASE,
+  METRICS_HEADER_OBJECT_ID,
+  MetricsGranularity,
+  metricsNamespace,
+  encodeMetricsTrackName,
+  decodeMetricsTrackName,
+  metricsGroupIdFromMillis,
+  GaugeSchema,
+  CounterSchema,
+  MetricValueSchema,
+  MetricsHeaderSchema,
+  MetricRecordSchema,
+  MetricsTrackError,
+  type Gauge,
+  type Counter,
+  type MetricValue,
+  type MetricsHeader,
+  type MetricRecord,
+} from './publish-tracks/index.js';
+
+// ============================================================================
 // Session integration
 // ============================================================================
 
