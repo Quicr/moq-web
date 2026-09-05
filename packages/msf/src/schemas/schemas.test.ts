@@ -332,16 +332,15 @@ describe('EncryptionSchemeEnum', () => {
     expect(EncryptionSchemeEnum.safeParse('moq-secure-objects').success).toBe(true);
   });
 
-  it('should accept legacy schemes', () => {
-    const legacySchemes = ['cenc', 'cbc1', 'cens', 'cbcs'];
-
-    for (const scheme of legacySchemes) {
-      expect(EncryptionSchemeEnum.safeParse(scheme).success).toBe(true);
-    }
+  it('should accept reverse-DNS custom schemes (§3)', () => {
+    expect(EncryptionSchemeEnum.safeParse('com.example.custom-scheme').success).toBe(true);
+    expect(EncryptionSchemeEnum.safeParse('org.moq.experimental.foo').success).toBe(true);
   });
 
-  it('should reject invalid scheme', () => {
-    expect(EncryptionSchemeEnum.safeParse('aes').success).toBe(false);
+  it('should reject bare shortnames like DASH CENC identifiers', () => {
+    for (const scheme of ['cenc', 'cbc1', 'cens', 'cbcs', 'aes']) {
+      expect(EncryptionSchemeEnum.safeParse(scheme).success).toBe(false);
+    }
   });
 });
 

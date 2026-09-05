@@ -92,6 +92,7 @@ export {
   KeyIdSchema,
   TrackBaseKeySchema,
   EncryptionFieldsSchema,
+  RECOMMENDED_ENCRYPTION_SCHEME,
   // Accessibility schemas (PR #133)
   AccessibilityTypeEnum,
   AccessibilitySchema,

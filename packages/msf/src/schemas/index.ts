@@ -82,6 +82,7 @@ export {
   KeyIdSchema,
   TrackBaseKeySchema,
   EncryptionFieldsSchema,
+  RECOMMENDED_ENCRYPTION_SCHEME,
 } from './encryption.js';
 
 export type { EncryptionScheme, CipherSuite, EncryptionFields } from './encryption.js';
