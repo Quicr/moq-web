@@ -473,6 +473,28 @@ describe('Draft18MessageCodec', () => {
 
       expect(() => Draft18MessageCodec.encode(message)).toThrow(/REDIRECT/);
     });
+
+    it('§14 grease: an unknown REQUEST_ERROR code decodes to INTERNAL_ERROR', () => {
+      // 0x9d is the base draft-18 §14 grease value (0x7f * 0 + 0x9d).
+      // Encoding accepts any varint on the wire; the receiver normalizes.
+      const message: RequestErrorMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_ERROR,
+        requestId: 0n,
+        // Cast: the message interface types errorCode as RequestErrorCode
+        // (draft-16 enum), but the draft-18 codec passes it through as a
+        // varint on the wire so any number is legal to encode.
+        errorCode: 0x9d as unknown as RequestErrorMessageDraft18['errorCode'],
+        retryInterval: 500n,
+        reasonPhrase: 'grease-code test',
+      };
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as RequestErrorMessageDraft18;
+      expect(d.errorCode).toBe(0x0 /* INTERNAL_ERROR */);
+      // Preserved fields survive the normalization.
+      expect(d.retryInterval).toBe(500n);
+      expect(d.reasonPhrase).toBe('grease-code test');
+    });
   });
 
   describe('REQUEST_OK', () => {
@@ -936,6 +958,24 @@ describe('Draft18MessageCodec', () => {
       expect(d.reasonPhrase).toBe('End of stream');
       expect(d.statusCode).toBe(1n);
       expect(d.streamCount).toBe(10n);
+    });
+
+    it('§14 grease: an unknown PUBLISH_DONE code decodes to INTERNAL_ERROR (0)', () => {
+      // 0x11c is the second draft-18 §14 grease value.
+      const message: PublishDoneMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH_DONE,
+        requestId: 0n,
+        finalLocation: { group: 0n, object: 0n },
+        statusCode: 0x11cn,
+        streamCount: 3n,
+        reasonPhrase: 'grease',
+      };
+      const encoded = Draft18MessageCodec.encode(message);
+      const [decoded] = Draft18MessageCodec.decode(encoded);
+      const d = decoded as PublishDoneMessageDraft18;
+      expect(d.statusCode).toBe(0n /* INTERNAL_ERROR */);
+      expect(d.streamCount).toBe(3n);
+      expect(d.reasonPhrase).toBe('grease');
     });
   });
 

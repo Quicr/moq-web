@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 74 · 🟡 3 · ❌ 3 · **92% complete** of 80 features
+**Progress:** ✅ 75 · 🟡 3 · ❌ 2 · **93% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -167,7 +167,7 @@
 
 | Feature | §Spec | Wire encode | Wire decode | Session-layer | Unit test | E2E test | Status | Notes |
 |---|---|---|---|---|---|---|---|---|
-| Grease (random reserved codes) | §14 | — | — | MISSING | MISSING | MISSING | ❌ | No greasing anywhere in codec/session. |
+| Grease (reserved codepoints) | §14 | — | `grease.ts` `isGreaseCode()` + normalizers; `draft18-message-codec.ts` `decodeRequestError` / `decodePublishDone` normalize unknown codes to INTERNAL_ERROR | `session.ts` `handleTransportClosed` normalizes Session Termination codes; `object-router.ts` normalizes Stream Reset codes; Setup Options / Property KVP loops already retain unknown keys | `grease.test.ts`, `draft18-message-codec.test.ts` (REQUEST_ERROR + PUBLISH_DONE grease), `session-grease.test.ts` (Session Termination) | `28-grease.test.ts` | ✅ | §14 mandates receiver tolerance across seven registries; sending grease is optional. Setup Options / Property registries already accept unknown keys; error-code registries now map unknown → INTERNAL_ERROR per §14. |
 
 ---
 
@@ -181,7 +181,7 @@
 
 4. ~~**Track-property key enum for §12 is absent.**~~ Resolved: `TrackPropertyDraft18` in `packages/core/src/messages/types.ts` and `parseTrackProperties` in `packages/session/src/track-properties.ts` now decode the full §12 map into `SubscribeOkEvent.trackProperties`. Prior Group/Object ID Gap (§12.8/§12.9) are also plumbed through `PublishOptions.priorGroupIdGap` / `priorObjectIdGap` on the encode side.
 
-5. **Several control-message paths are stubs on the receive/response side.** Incoming REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_TRACKS, and PUBLISH_DONE handlers only log; SUBSCRIBE_TRACKS on the send side always emits an empty parameter list; joining fetch type 0x3 is conflated with 0x2 in the decoder and unreachable from any session API. MOQT URI scheme validation, connection migration via `newSessionUri`, and grease are entirely absent. (Reserved-namespace enforcement per §3.2.1 is now wired.)
+5. **Several control-message paths are stubs on the receive/response side.** Incoming REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_TRACKS, and PUBLISH_DONE handlers only log; SUBSCRIBE_TRACKS on the send side always emits an empty parameter list; joining fetch type 0x3 is conflated with 0x2 in the decoder and unreachable from any session API. MOQT URI scheme validation and connection migration via `newSessionUri` remain absent. (Reserved-namespace enforcement per §3.2.1 and §14 grease-code tolerance are now wired.)
 
 ---
 
