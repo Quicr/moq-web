@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 75 · 🟡 3 · ❌ 2 · **93% complete** of 80 features
+**Progress:** ✅ 75 · 🟡 2 · ❌ 0 · **97% complete** of 77 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -29,12 +29,12 @@
 | Feature | §Spec | Wire encode | Wire decode | Session-layer | Unit test | E2E test | Status | Notes |
 |---|---|---|---|---|---|---|---|---|
 | Session establishment via WebTransport | §3.1.3 | `session.ts:1053-1082` | `draft18-message-codec.ts:236-247` | `session.ts:1053` (`setup()`) | `draft18-message-codec.test.ts:34-82` | `01-setup.test.ts` | ✅ | WebTransport-only client. |
-| MOQT URI scheme (`moqt://`) | §3.1.1 | — | — | MISSING | MISSING | MISSING | ❌ | No scheme validation; callers pass `https://` URLs. |
-| Native QUIC transport | §3.1.4 | — | — | MISSING | MISSING | MISSING | ❌ | Browser-only; native QUIC path not applicable. |
+| MOQT URI scheme (`moqt://`) | §3.1.1 | — | — | — | — | — | N/A | `moqt://` is the native-QUIC URI scheme. This client is browser-only and connects via WebTransport, whose URLs use `https://` (§3.1.3). A caller cannot use `moqt://` from a browser at all, so scheme validation would only reject valid input. |
+| Native QUIC transport | §3.1.4 | — | — | — | — | — | N/A | Browser-only client; native QUIC sockets are not exposed to web platforms. WebTransport (§3.1.3) is the only transport this package can carry MOQT over. |
 | Session termination | §3.5 | `session.ts` `close({code,reason})` + `goAway()` | `transport.ts` `'closed'` event surfaces peer `closeCode`/`reason` | `session.ts` `handleTransportClosed()` emits `session-terminated` when `remote=true` | `session-migration.test.ts` | `13-session-termination.test.ts` | ✅ | Typed event carries `SessionErrorCodeDraft18`; local closes suppressed. |
 | GOAWAY handling | §10.4 | `draft18-message-codec.ts:852-859` | `draft18-message-codec.ts:861-873` | `session.ts:1137`, `session.ts:4846-4858` | `draft18-message-codec.test.ts:354-402, 732-767` | `11-goaway.test.ts` | ✅ | Both control-stream & request-stream variants; migration URI cached on receipt. |
 | Migration | §3.6 | — | — | `session.ts` `migrate(newSessionUri?)` + `autoMigrate` config + cached `pendingMigrationUri` from GOAWAY | `session-migration.test.ts` | `13-session-termination.test.ts` | 🟡 | Client-side wiring complete (worker mode reconnect + SETUP replay); dual-relay over-the-wire smoke test tracked in `docs/draft-18-interop-plan.md`. |
-| Congestion control | §3.7 | — | — | `transport.ts:91-92,153,230` (`congestionControl` option) | MISSING | MISSING | 🟡 | Sets WebTransport `default`/`throughput` hint only; no bufferbloat/app-limited logic. |
+| Congestion control | §3.7 | — | — | `transport.ts:91-92,153,230` (`congestionControl` option) | — | — | N/A | WebTransport intentionally hides QUIC-level congestion control from JavaScript. The only knob the platform exposes is the `congestionControl: 'default' \| 'throughput' \| 'low-latency'` hint, which we already thread through; there is no API for the bufferbloat / app-limited / pacing logic §3.7 discusses. |
 
 ## Extension Negotiation (§3.2, §4)
 
@@ -181,7 +181,9 @@
 
 4. ~~**Track-property key enum for §12 is absent.**~~ Resolved: `TrackPropertyDraft18` in `packages/core/src/messages/types.ts` and `parseTrackProperties` in `packages/session/src/track-properties.ts` now decode the full §12 map into `SubscribeOkEvent.trackProperties`. Prior Group/Object ID Gap (§12.8/§12.9) are also plumbed through `PublishOptions.priorGroupIdGap` / `priorObjectIdGap` on the encode side.
 
-5. **Several control-message paths are stubs on the receive/response side.** Incoming REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_TRACKS, and PUBLISH_DONE handlers only log; SUBSCRIBE_TRACKS on the send side always emits an empty parameter list; joining fetch type 0x3 is conflated with 0x2 in the decoder and unreachable from any session API. MOQT URI scheme validation and connection migration via `newSessionUri` remain absent. (Reserved-namespace enforcement per §3.2.1 and §14 grease-code tolerance are now wired.)
+5. ~~**Several control-message paths are stubs on the receive/response side.**~~ Resolved: incoming REQUEST_UPDATE dispatches to typed forward-pause/resume events (§10.9.1) and namespace-scoped variants (§10.9.2); TRACK_STATUS on the publisher side answers from `PublicationManager` with LARGEST_OBJECT; SUBSCRIBE_TRACKS carries the full parameter surface on both send and receive; PUBLISH_DONE emits a typed event with the normalized §15.10.3 status code; joining fetch types 0x2 and 0x3 are distinguished in the codec and selectable via `FetchOptions.fetchType`. Migration via `newSessionUri` is wired client-side (`session.migrate()` + cached `pendingMigrationUri` from GOAWAY) with a dual-relay smoke test tracked in `docs/draft-18-interop-plan.md`. Reserved-namespace enforcement (§3.2.1) and §14 grease-code tolerance are also complete.
+
+6. **Platform-limited features marked N/A.** Three §3 items cannot be implemented in a browser-only WebTransport client and are marked N/A rather than left as gaps: `moqt://` URI scheme (§3.1.1, native-QUIC only), native QUIC transport (§3.1.4, no browser API), and QUIC-level congestion control (§3.7, WebTransport exposes only a coarse hint which we thread through). These would only become in-scope if a native/desktop build target is added.
 
 ---
 
