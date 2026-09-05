@@ -192,6 +192,76 @@ describe('TrackSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('§6 track fields added for spec compliance', () => {
+    it('should accept initRef and authInfo', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        initRef: 'video-init',
+        authInfo: { scheme: 'privacy-pass', token: 'opaque' },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept publishTracks-oriented fields', () => {
+      const result = TrackSchema.safeParse({
+        name: 'client-audio',
+        packaging: 'loc',
+        isLive: true,
+        connectionUri: 'https://relay.example/moq',
+        token: 'jwt.opaque.token',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept max{Gop,Group}Duration and avgBitrate', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        avgBitrate: 4_000_000,
+        maxGopDuration: 2000,
+        maxGroupDuration: 2500,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept buffers alone', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        buffers: { target: 1500, min: 500, max: 3000 },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject buffers combined with targetLatency', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        buffers: { target: 1500 },
+        targetLatency: 800,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toContain('mutually exclusive');
+      }
+    });
+
+    it('should reject authInfo without scheme', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        authInfo: { token: 'x' },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('PackagingEnum', () => {

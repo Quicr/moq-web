@@ -70,8 +70,11 @@ export {
   TrackRoleEnum,
   BaseTrackFieldsSchema,
   CommonTrackFieldsSchema,
+  TrackObjectSchema,
   TrackSchema,
   CloneTrackSchema,
+  BuffersSchema,
+  AuthInfoSchema,
   // Video/Audio schemas
   VideoFieldsSchema,
   AudioFieldsSchema,
@@ -111,6 +114,8 @@ export type {
   TrackRole,
   Track,
   CloneTrack,
+  Buffers,
+  AuthInfo,
   // Video/Audio types
   VideoFields,
   ChannelConfig,

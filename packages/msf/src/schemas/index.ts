@@ -32,11 +32,21 @@ export {
   TrackRoleEnum,
   BaseTrackFieldsSchema,
   CommonTrackFieldsSchema,
+  TrackObjectSchema,
   TrackSchema,
   CloneTrackSchema,
+  BuffersSchema,
+  AuthInfoSchema,
 } from './track.js';
 
-export type { Packaging, TrackRole, Track, CloneTrack } from './track.js';
+export type {
+  Packaging,
+  TrackRole,
+  Track,
+  CloneTrack,
+  Buffers,
+  AuthInfo,
+} from './track.js';
 
 // Video track fields
 export { VideoFieldsSchema } from './video-track.js';

@@ -17,7 +17,14 @@ export type {
 } from '../schemas/catalog.js';
 
 // Track types
-export type { Packaging, TrackRole, Track, CloneTrack } from '../schemas/track.js';
+export type {
+  Packaging,
+  TrackRole,
+  Track,
+  CloneTrack,
+  Buffers,
+  AuthInfo,
+} from '../schemas/track.js';
 
 // Video/Audio types
 export type { VideoFields } from '../schemas/video-track.js';

@@ -69,6 +69,30 @@ export const BaseTrackFieldsSchema = z.object({
 });
 
 /**
+ * Buffer target/min/max durations in milliseconds (§6, `buffers`).
+ * Mutually exclusive with `targetLatency`.
+ */
+export const BuffersSchema = z.object({
+  /** Target playback buffer in milliseconds. */
+  target: z.number().nonnegative(),
+  /** Minimum playback buffer in milliseconds. */
+  min: z.number().nonnegative().optional(),
+  /** Maximum playback buffer in milliseconds. */
+  max: z.number().nonnegative().optional(),
+});
+
+/**
+ * Authorization info blob attached to a track (§6, `authInfo`; §17 Table 7).
+ * `scheme` uses reserved values (`privacy-pass`, `cat`) or reverse-DNS custom
+ * identifiers; extra scheme-specific fields ride along via passthrough.
+ */
+export const AuthInfoSchema = z
+  .object({
+    scheme: z.string().min(1),
+  })
+  .passthrough();
+
+/**
  * Common optional track fields
  */
 export const CommonTrackFieldsSchema = z.object({
@@ -82,14 +106,18 @@ export const CommonTrackFieldsSchema = z.object({
   renderGroup: z.number().int().nonnegative().optional(),
   /** Alt group identifier for switching */
   altGroup: z.number().int().nonnegative().optional(),
-  /** Target latency in milliseconds */
+  /** Target latency in milliseconds (§6). MUST NOT be combined with `buffers`. */
   targetLatency: z.number().int().nonnegative().optional(),
+  /** Buffer target/min/max in milliseconds (§6). MUST NOT be combined with `targetLatency`. */
+  buffers: BuffersSchema.optional(),
   /** Human-readable label */
   label: z.string().optional(),
   /** Track dependencies (names of tracks this depends on) */
   depends: z.array(z.string()).optional(),
   /** Base64-encoded initialization data */
   initData: z.string().optional(),
+  /** Reference to an entry in the catalog `initDataList` (§6 `initRef`). */
+  initRef: z.string().min(1).optional(),
   /** MIME type */
   mimeType: z.string().optional(),
   /** BCP 47 language code */
@@ -106,20 +134,50 @@ export const CommonTrackFieldsSchema = z.object({
   totalGroups: z.number().int().nonnegative().optional(),
   /** GOP duration in milliseconds (for VOD pacing) */
   gopDuration: z.number().positive().optional(),
+  /** Average bitrate over the lifetime of the track (§6 `avgBitrate`). */
+  avgBitrate: z.number().int().positive().optional(),
+  /** Maximum milliseconds between random-access points (§6 `maxGopDuration`). */
+  maxGopDuration: z.number().int().positive().optional(),
+  /** Maximum milliseconds of any MOQT Group in the track (§6 `maxGroupDuration`). */
+  maxGroupDuration: z.number().int().positive().optional(),
   /** Media timeline template for fixed-duration content */
   timelineTemplate: MediaTimelineTemplateSchema.optional(),
   /** Event type for eventtimeline tracks (defines data structure) */
   eventType: z.string().optional(),
+  /** Authorization info for the track (§6 `authInfo`, §17 Table 7). */
+  authInfo: AuthInfoSchema.optional(),
+  /** MOQT connection endpoint URI for a publishTracks entry (§6 `connectionUri`). */
+  connectionUri: z.string().min(1).optional(),
+  /** Authorization token/credential for a publishTracks entry (§6 `token`). */
+  token: z.string().min(1).optional(),
 });
 
 /**
- * Complete track definition schema
+ * Track object shape as a plain ZodObject.
+ *
+ * Prefer {@link TrackSchema} for parse/validate; use this base when you need
+ * `.partial()`, `.omit()`, or `.extend()` (e.g. for the clone-overrides shape).
  */
-export const TrackSchema = BaseTrackFieldsSchema.merge(CommonTrackFieldsSchema)
+export const TrackObjectSchema = BaseTrackFieldsSchema.merge(CommonTrackFieldsSchema)
   .merge(VideoFieldsSchema)
   .merge(AudioFieldsSchema)
   .merge(EncryptionFieldsSchema)
   .merge(AccessibilityFieldsSchema);
+
+/**
+ * Complete track definition schema, including cross-field spec invariants.
+ */
+export const TrackSchema = TrackObjectSchema.superRefine((track, ctx) => {
+  // §6: buffers and targetLatency are mutually exclusive.
+  if (track.buffers !== undefined && track.targetLatency !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        '`buffers` and `targetLatency` are mutually exclusive per MSF §6',
+      path: ['buffers'],
+    });
+  }
+});
 
 /**
  * Track for clone operation (only name required)
@@ -130,10 +188,12 @@ export const CloneTrackSchema = z.object({
   /** New track name */
   name: z.string().min(1),
   /** Fields to override in the cloned track */
-  overrides: TrackSchema.partial().omit({ name: true }).optional(),
+  overrides: TrackObjectSchema.partial().omit({ name: true }).optional(),
 });
 
 export type Packaging = z.infer<typeof PackagingEnum>;
 export type TrackRole = z.infer<typeof TrackRoleEnum>;
 export type Track = z.infer<typeof TrackSchema>;
 export type CloneTrack = z.infer<typeof CloneTrackSchema>;
+export type Buffers = z.infer<typeof BuffersSchema>;
+export type AuthInfo = z.infer<typeof AuthInfoSchema>;
