@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 73 · 🟡 4 · ❌ 3 · **91% complete** of 80 features
+**Progress:** ✅ 74 · 🟡 3 · ❌ 3 · **92% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -161,7 +161,7 @@
 |---|---|---|---|---|---|---|---|---|
 | Authorization token replay protection | §13.3.1 | `security/auth-token-replay.ts` (bounded LRU by `tokenType` + `tokenValue`, TTL default 5 min, max 1024 entries) | consumer-side check via `AuthTokenReplayCache.check(token)` returning `fresh` / `duplicate` / `expired` | Exported from `@moq-web/core`; not attached to session by default (server-side concern — consumers instantiate one per session or per relay). | `security/auth-token-replay.test.ts` | — | ✅ | Helper available for peers to reject replayed tokens; aliasType=2 (USE_ALIAS) is not fingerprinted. |
 | Idle connection handling | §13.6.1 | — | — | `session.ts` `configureIdle({ idleTimeoutMs, keepaliveIntervalMs })` — keepalive emits §11.5 padding datagrams, idle-close raises §15.10.3 `CONTROL_MESSAGE_TIMEOUT` and fires `session-terminated` | `session-idle-timeout.test.ts` | `26-idle-timeout.test.ts` | ✅ | §13.6.1 defers to QUIC's `max_idle_timeout` (RFC 9000 §10.2) which WebTransport doesn't expose; both knobs are opt-in and approximate the spec's "periodic PING frames" recommendation. |
-| Fingerprinting mitigation | §13.8 | `MOQT_IMPLEMENTATION` opt (`draft18-message-codec.ts:315-323`) | `:372-376` | `session.ts:1069` (fixed `"moq-web 0.1.0"`) | MISSING | MISSING | 🟡 | Sent unconditionally; spec cautions against always advertising. |
+| Fingerprinting mitigation | §13.8 | `MOQT_IMPLEMENTATION` opt (`draft18-message-codec.ts`) | `draft18-message-codec.ts` (preserves peer value on `ServerSetupMessageDraft18.moqtImplementation`) | `session.ts` `setImplementationString()` — opt-in; default omits the SetupOption entirely | `session-implementation-string.test.ts` | `27-implementation-string.test.ts` | ✅ | Client omits `MOQT_IMPLEMENTATION` by default per §13.8; callers can opt in with a specific string before `setup()`. |
 
 ## Grease (§14)
 

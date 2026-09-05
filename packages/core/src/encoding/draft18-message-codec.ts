@@ -381,6 +381,7 @@ export class Draft18MessageCodec {
     let authority: string | undefined;
     let maxAuthTokenCacheSize: number | undefined;
     let authToken: Uint8Array | undefined;
+    let moqtImplementation: string | undefined;
     // §3.2: retain unknown KVPs so callers can inspect peer-advertised
     // extensions (e.g. custom auth schemes, feature flags). Even keys carry
     // a varint value; odd keys carry length-prefixed bytes.
@@ -415,7 +416,7 @@ export class Draft18MessageCodec {
         }
         case SetupOptionDraft18.MOQT_IMPLEMENTATION: {
           const length = reader.readVarIntNumber();
-          reader.skip(length);
+          moqtImplementation = new TextDecoder().decode(reader.readBytes(length));
           break;
         }
         default:
@@ -442,6 +443,7 @@ export class Draft18MessageCodec {
       authority,
       maxAuthTokenCacheSize,
       authToken,
+      moqtImplementation,
       extensions,
     };
   }
