@@ -263,6 +263,29 @@ export {
 } from './url/index.js';
 
 // ============================================================================
+// Security bridge (§3 moq-secure-objects integration)
+// ============================================================================
+
+export {
+  CipherSuiteMappingError,
+  MSF_TO_SO_CIPHER_SUITE,
+  SO_TO_MSF_CIPHER_SUITE,
+  toSoCipherSuite,
+  toMsfCipherSuite,
+  TrackSecurityError,
+  isSecureObjectsTrack,
+  createTrackContext,
+  parseKeyIdToBigInt,
+  MsfSecurityGateway,
+  ENCRYPTED_PROPERTIES_EXTENSION_ID,
+  trackRequiresGateway,
+  type CreateTrackContextOptions,
+  type SealedObject,
+  type OpenedObject,
+  type EncryptedPropertiesExtension,
+} from './security/index.js';
+
+// ============================================================================
 // Publish tracks (§13 moqlog, §14 moqmetrics)
 // ============================================================================
 

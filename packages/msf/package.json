@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@moq-web/core": "workspace:*",
+    "@moq-web/secure-objects": "workspace:*",
     "@moq-web/session": "workspace:*",
     "zod": "^3.23.0"
   },
