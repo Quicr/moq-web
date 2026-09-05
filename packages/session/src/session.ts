@@ -491,6 +491,30 @@ export class MOQTSession {
   private publisherTimeoutConfig = new Map<string, { subgroupDeliveryTimeoutMs?: number }>();
   /** Transport event cleanup handlers */
   private transportCleanup: Array<() => void> = [];
+
+  /**
+   * Draft-18 §13.6.1 idle-connection state.
+   *
+   * §13.6.1 defers idle handling to the underlying QUIC transport, but a
+   * client "with long-lived subscriptions might want to send periodic PING
+   * frames to keep the QUIC connection alive". WebTransport doesn't expose
+   * PING, so we approximate it by sending a §11.5 padding datagram, and we
+   * offer a mirror-image application-idle timer that closes the session
+   * with §15.10.3 CONTROL_MESSAGE_TIMEOUT if neither side has spoken for
+   * `idleTimeoutMs`.
+   *
+   * Both cadences are opt-in via `configureIdle()`. When disabled the
+   * whole subsystem is dormant (no interval timer running).
+   */
+  private idleConfig: { idleTimeoutMs?: number; keepaliveIntervalMs?: number } = {};
+  /** Monotonic ms of the last outbound send (control or datagram). */
+  private lastOutboundActivityMs = 0;
+  /** Monotonic ms of the last inbound frame (control or datagram). */
+  private lastInboundActivityMs = 0;
+  /** Interval handle for the idle/keepalive tick. */
+  private idleTimer?: ReturnType<typeof setInterval>;
+  /** Test-only hook so unit tests can observe the idle-close path. */
+  private idleClosePending = false;
   /** Message buffer for incomplete control messages */
   private controlBuffer = new Uint8Array(0);
   /** Offset into controlBuffer where unprocessed data starts */
@@ -831,6 +855,7 @@ export class MOQTSession {
    * Send data on control stream (works in both modes)
    */
   private async doSendControl(data: Uint8Array): Promise<void> {
+    this.markOutboundActivity();
     if (this.useWorker) {
       this.transportWorker!.sendControl(data);
     } else {
@@ -842,6 +867,7 @@ export class MOQTSession {
    * Send datagram (works in both modes)
    */
   private async doSendDatagram(data: Uint8Array): Promise<void> {
+    this.markOutboundActivity();
     if (this.useWorker) {
       this.transportWorker!.sendDatagram(data);
     } else {
@@ -948,6 +974,7 @@ export class MOQTSession {
 
     // Set up datagram handler
     const datagramCleanup = this.transport.on('datagram', (data) => {
+      this.markInboundActivity();
       this.objectRouter.handleDatagram(data);
     });
     this.transportCleanup.push(datagramCleanup);
@@ -996,6 +1023,7 @@ export class MOQTSession {
 
     // Datagrams from worker
     this.transportWorker.on('datagram', ({ data }) => {
+      this.markInboundActivity();
       this.objectRouter.handleDatagram(data);
     });
 
@@ -1417,6 +1445,128 @@ export class MOQTSession {
    */
   get peerExtensions(): ReadonlyMap<number, import('@moq-web/core').SetupExtensionValue> | undefined {
     return this._peerExtensions;
+  }
+
+  /**
+   * Draft-18 §13.6.1 — configure application-level idle handling.
+   *
+   * MOQT itself defers idle timeouts to QUIC's `max_idle_timeout` (RFC 9000
+   * §10.2), which WebTransport doesn't expose. This client offers two knobs
+   * that approximate the spec's recommendation ("might want to send periodic
+   * PING frames to keep the QUIC connection alive"):
+   *
+   *   - `keepaliveIntervalMs` — if the outbound side has been silent for
+   *     this many ms while the session is in `ready`, emit a §11.5 padding
+   *     datagram to reset the peer's idle timer. Omit or set to 0 to
+   *     disable.
+   *   - `idleTimeoutMs` — if *no* activity in either direction has been
+   *     seen for this many ms, close the session with §15.10.3
+   *     `CONTROL_MESSAGE_TIMEOUT`. Omit or set to 0 to disable.
+   *
+   * May be called before or after `setup()`. Calling it while `ready` will
+   * reconfigure the running timer.
+   */
+  configureIdle(config: { idleTimeoutMs?: number; keepaliveIntervalMs?: number }): void {
+    this.idleConfig = {
+      idleTimeoutMs: config.idleTimeoutMs && config.idleTimeoutMs > 0 ? config.idleTimeoutMs : undefined,
+      keepaliveIntervalMs: config.keepaliveIntervalMs && config.keepaliveIntervalMs > 0
+        ? config.keepaliveIntervalMs
+        : undefined,
+    };
+    if (this._state === 'ready') {
+      // Reset baselines so a reconfigure doesn't accidentally trip
+      // thresholds against a very old activity timestamp, then restart.
+      this.lastOutboundActivityMs = this.now();
+      this.lastInboundActivityMs = this.now();
+      this.stopIdleTimer();
+      this.startIdleTimer();
+    }
+  }
+
+  private now(): number {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  private markOutboundActivity(): void {
+    if (this.idleConfig.idleTimeoutMs || this.idleConfig.keepaliveIntervalMs) {
+      this.lastOutboundActivityMs = this.now();
+    }
+  }
+
+  private markInboundActivity(): void {
+    if (this.idleConfig.idleTimeoutMs || this.idleConfig.keepaliveIntervalMs) {
+      this.lastInboundActivityMs = this.now();
+    }
+  }
+
+  private startIdleTimer(): void {
+    if (this.idleTimer !== undefined) return;
+    const { idleTimeoutMs, keepaliveIntervalMs } = this.idleConfig;
+    if (!idleTimeoutMs && !keepaliveIntervalMs) return;
+    // Tick at a granularity that catches the tightest threshold reasonably
+    // fast without polling too aggressively.
+    const tick = Math.max(50, Math.min(idleTimeoutMs ?? Infinity, keepaliveIntervalMs ?? Infinity) / 4);
+    const started = this.now();
+    if (this.lastOutboundActivityMs === 0) this.lastOutboundActivityMs = started;
+    if (this.lastInboundActivityMs === 0) this.lastInboundActivityMs = started;
+    this.idleTimer = setInterval(() => { this.onIdleTick(); }, tick);
+  }
+
+  private stopIdleTimer(): void {
+    if (this.idleTimer !== undefined) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+  }
+
+  private onIdleTick(): void {
+    if (this._state !== 'ready') return;
+    const now = this.now();
+    const { idleTimeoutMs, keepaliveIntervalMs } = this.idleConfig;
+
+    if (keepaliveIntervalMs && !this.idleClosePending) {
+      const sinceOutbound = now - this.lastOutboundActivityMs;
+      if (sinceOutbound >= keepaliveIntervalMs) {
+        // §11.5 padding datagram — a single byte payload is enough to reset
+        // the peer's QUIC idle timer. Fire-and-forget; `sendPaddingDatagram`
+        // calls `markOutboundActivity()` for us via `doSendDatagram()`.
+        this.sendPaddingDatagram(1).catch((err: unknown) => {
+          log.warn('Idle keepalive padding datagram failed', { err: String(err) });
+        });
+      }
+    }
+
+    if (idleTimeoutMs && !this.idleClosePending) {
+      const sinceActivity = Math.min(
+        now - this.lastOutboundActivityMs,
+        now - this.lastInboundActivityMs,
+      );
+      if (sinceActivity >= idleTimeoutMs) {
+        this.idleClosePending = true;
+        const sinceMs = Math.round(sinceActivity);
+        log.warn('Draft-18 §13.6.1 idle timeout — closing session', {
+          idleTimeoutMs,
+          sinceLastActivityMs: sinceMs,
+        });
+        // Surface it as a local session-terminated event so UIs can react —
+        // handleTransportClosed suppresses events for local closes, but the
+        // idle path is a policy decision by *this* endpoint that consumers
+        // should see explicitly.
+        this.emit('session-terminated', {
+          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+          reason: `idle timeout (${sinceMs}ms > ${idleTimeoutMs}ms)`,
+          remote: false,
+        } as SessionTerminatedEvent);
+        // CONTROL_MESSAGE_TIMEOUT (§15.10.3 / SessionErrorCodeDraft18 0x11)
+        // is the closest spec code for "the peer stopped talking to us."
+        this.close({
+          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+          reason: 'idle timeout',
+        }).catch(() => {/* best effort */});
+      }
+    }
   }
 
   /**
@@ -1853,6 +2003,11 @@ export class MOQTSession {
     const code = options?.code ?? SessionErrorCodeDraft18.NO_ERROR;
     const reason = options?.reason ?? 'Normal closure';
     log.info('Closing session', { code, reason });
+
+    // §13.6.1: cancel the idle/keepalive timer before we tear down the
+    // transport, otherwise a stale tick could try to send on a closed
+    // stream.
+    this.stopIdleTimer();
 
     // Stop all publications
     for (const [trackAlias] of this.publicationManager) {
@@ -6034,6 +6189,7 @@ export class MOQTSession {
    * Handle incoming control messages
    */
   private handleControlMessage(data: Uint8Array): void {
+    this.markInboundActivity();
     const remainingBytes = this.controlBuffer.length - this.controlBufferOffset;
     log.debug('Control message received', {
       newDataSize: data.length,
@@ -6543,6 +6699,15 @@ export class MOQTSession {
     this._state = state;
     log.info('Session state changed', { from: prev, to: state });
     this.emit('state-change', state);
+
+    // §13.6.1: arm the idle/keepalive timer once we've completed SETUP and
+    // disarm on any leave. Configuration may have been set before setup(),
+    // in which case this is the first place we can honor it.
+    if (state === 'ready') {
+      this.startIdleTimer();
+    } else {
+      this.stopIdleTimer();
+    }
   }
 
   /**
