@@ -6,7 +6,7 @@
 **Branch reviewed:** `main` (after PR #35)
 
 <!-- audit-progress:begin -->
-**Progress:** ✅ 71 · 🟡 4 · ❌ 5 · **88% complete** of 80 features
+**Progress:** ✅ 72 · 🟡 4 · ❌ 4 · **90% complete** of 80 features
 <!-- audit-progress:end -->
 
 > This is a **living document**. Regenerate the progress line with `scripts/audit-progress.sh -w`. Each row's Status column is the source of truth — update it as features land.
@@ -41,7 +41,7 @@
 | Feature | §Spec | Wire encode | Wire decode | Session-layer | Unit test | E2E test | Status | Notes |
 |---|---|---|---|---|---|---|---|---|
 | Extension advertisement in SETUP | §3.2 | `draft18-message-codec.ts` `encodeSetup()` (reserved-key + parity checks) | `draft18-message-codec.ts` `decodeSetup()` (captures unknown KVPs into `extensions` map) | `session.ts` `setClientExtensions()` / `peerExtensions` getter; passes through `ClientSetupMessageDraft18.extensions` | `draft18-message-codec.test.ts` (`SETUP extensions (§3.2)` suite) + `session-setup-extensions.test.ts` | `14-setup-extensions.test.ts` | ✅ | Custom extensions round-trip through SETUP with reserved-key collision + even/odd parity enforcement. |
-| Reserved namespaces | §3.2.1 | — | — | MISSING | MISSING | MISSING | ❌ | No enforcement of `moq-ext` reserved namespace. |
+| Reserved namespaces | §3.2.1 | — | — | `session.ts` `assertNotReservedNamespace()` guards every outbound publish/subscribe/fetch/trackStatus/subscribeNamespace/subscribeTracks/announce/publishVOD | `session-reserved-namespace.test.ts` | `25-reserved-namespace.test.ts` | ✅ | Refuses to originate any request whose first namespace-tuple field starts with '.' (0x2e), per §3.2.1. |
 
 ## Control Messages (§10.3–10.20)
 
@@ -181,7 +181,7 @@
 
 4. ~~**Track-property key enum for §12 is absent.**~~ Resolved: `TrackPropertyDraft18` in `packages/core/src/messages/types.ts` and `parseTrackProperties` in `packages/session/src/track-properties.ts` now decode the full §12 map into `SubscribeOkEvent.trackProperties`. Prior Group/Object ID Gap (§12.8/§12.9) are also plumbed through `PublishOptions.priorGroupIdGap` / `priorObjectIdGap` on the encode side.
 
-5. **Several control-message paths are stubs on the receive/response side.** Incoming REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_TRACKS, and PUBLISH_DONE handlers only log; SUBSCRIBE_TRACKS on the send side always emits an empty parameter list; joining fetch type 0x3 is conflated with 0x2 in the decoder and unreachable from any session API. MOQT URI scheme validation, connection migration via `newSessionUri`, reserved-namespace enforcement, and grease are entirely absent.
+5. **Several control-message paths are stubs on the receive/response side.** Incoming REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_TRACKS, and PUBLISH_DONE handlers only log; SUBSCRIBE_TRACKS on the send side always emits an empty parameter list; joining fetch type 0x3 is conflated with 0x2 in the decoder and unreachable from any session API. MOQT URI scheme validation, connection migration via `newSessionUri`, and grease are entirely absent. (Reserved-namespace enforcement per §3.2.1 is now wired.)
 
 ---
 
