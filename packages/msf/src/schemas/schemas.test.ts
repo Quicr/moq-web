@@ -679,14 +679,33 @@ describe('TimelineSchemas', () => {
       expect(result.success).toBe(true);
     });
 
-    it('should accept entry with multiple references', () => {
+    it('should reject entry with multiple temporal indices (MSF §12)', () => {
       const result = EventTimelineEntrySchema.safeParse({
         t: 1700000000000,
         l: [1, 0],
         m: 90000,
         data: { combined: true },
       });
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject entry with two of t/l/m (MSF §12)', () => {
+      expect(
+        EventTimelineEntrySchema.safeParse({ t: 1, l: [0, 0] }).success
+      ).toBe(false);
+      expect(
+        EventTimelineEntrySchema.safeParse({ t: 1, m: 2 }).success
+      ).toBe(false);
+      expect(
+        EventTimelineEntrySchema.safeParse({ l: [0, 0], m: 2 }).success
+      ).toBe(false);
+    });
+
+    it('should reject entry with no temporal index (MSF §12)', () => {
+      const result = EventTimelineEntrySchema.safeParse({
+        data: { orphan: true },
+      });
+      expect(result.success).toBe(false);
     });
 
     it('should reject invalid location format', () => {

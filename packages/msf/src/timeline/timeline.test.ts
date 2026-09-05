@@ -32,6 +32,7 @@ import {
   createAudioTemplate,
   templateFromArray,
   templateToArray,
+  assertTemplateUnchanged,
   TimelineTemplateError,
 } from './template.js';
 import type { MediaTimelineTemplateArray } from '../schemas/index.js';
@@ -614,6 +615,65 @@ describe('MediaTimelineTemplate', () => {
 
       expect(points[0].wallclockTime).toBeUndefined();
       expect(points[1].wallclockTime).toBeUndefined();
+    });
+  });
+
+  describe('assertTemplateUnchanged (MSF §11 immutability)', () => {
+    const base = {
+      startMediaTime: 0,
+      deltaMediaTime: 3000,
+      startGroupId: 0,
+      startObjectId: 0,
+      deltaGroupId: 0,
+      deltaObjectId: 1,
+      startWallclock: 1700000000000,
+      deltaWallclock: 33,
+    };
+
+    it('should accept identical template', () => {
+      expect(() => assertTemplateUnchanged(base, { ...base })).not.toThrow();
+    });
+
+    it('should treat omitted defaults as equal to explicit defaults', () => {
+      expect(() =>
+        assertTemplateUnchanged(
+          { deltaMediaTime: 3000, startGroupId: 0 },
+          {
+            deltaMediaTime: 3000,
+            startGroupId: 0,
+            startMediaTime: 0,
+            startObjectId: 0,
+            deltaGroupId: 0,
+            deltaObjectId: 1,
+            startWallclock: 0,
+            deltaWallclock: 0,
+          }
+        )
+      ).not.toThrow();
+    });
+
+    it('should throw when deltaMediaTime changes', () => {
+      expect(() =>
+        assertTemplateUnchanged(base, { ...base, deltaMediaTime: 1500 })
+      ).toThrow(TimelineTemplateError);
+    });
+
+    it('should throw when startGroupId changes', () => {
+      expect(() =>
+        assertTemplateUnchanged(base, { ...base, startGroupId: 1 })
+      ).toThrow(TimelineTemplateError);
+    });
+
+    it('should throw when deltaObjectId changes', () => {
+      expect(() =>
+        assertTemplateUnchanged(base, { ...base, deltaObjectId: 2 })
+      ).toThrow(TimelineTemplateError);
+    });
+
+    it('should throw when startWallclock changes', () => {
+      expect(() =>
+        assertTemplateUnchanged(base, { ...base, startWallclock: 1700000000001 })
+      ).toThrow(TimelineTemplateError);
     });
   });
 });

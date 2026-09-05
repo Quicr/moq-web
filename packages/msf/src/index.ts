@@ -225,6 +225,7 @@ export {
   createAudioTemplate,
   templateFromArray,
   templateToArray,
+  assertTemplateUnchanged,
 } from './timeline/index.js';
 
 // ============================================================================

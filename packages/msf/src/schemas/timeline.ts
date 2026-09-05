@@ -43,19 +43,35 @@ export const MediaTimelineEntrySchema = z.union([
 ]);
 
 /**
- * Event timeline entry per MSF spec
- * Only one temporal index (t, l, or m) should be present per record
+ * Event timeline entry per MSF §12.
+ *
+ * Exactly ONE temporal index (`t`, `l`, or `m`) MUST be present per record.
+ * A record with all three or none is a spec violation.
  */
-export const EventTimelineEntrySchema = z.object({
-  /** Wallclock time (milliseconds since Unix epoch) */
-  t: z.number().optional(),
-  /** Location reference [groupId, objectId] */
-  l: LocationRefSchema.optional(),
-  /** Media time (milliseconds) */
-  m: z.number().optional(),
-  /** Event-specific data (structure defined by track's eventType) */
-  data: z.record(z.unknown()).optional(),
-});
+export const EventTimelineEntrySchema = z
+  .object({
+    /** Wallclock time (milliseconds since Unix epoch) */
+    t: z.number().optional(),
+    /** Location reference [groupId, objectId] */
+    l: LocationRefSchema.optional(),
+    /** Media time (milliseconds) */
+    m: z.number().optional(),
+    /** Event-specific data (structure defined by track's eventType) */
+    data: z.record(z.unknown()).optional(),
+  })
+  .superRefine((entry, ctx) => {
+    const count =
+      (entry.t !== undefined ? 1 : 0) +
+      (entry.l !== undefined ? 1 : 0) +
+      (entry.m !== undefined ? 1 : 0);
+    if (count !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'event timeline entry must have exactly one temporal index (t | l | m) per MSF §12',
+      });
+    }
+  });
 
 /**
  * Media timeline template per MSF spec

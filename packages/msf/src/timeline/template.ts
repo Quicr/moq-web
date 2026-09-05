@@ -47,6 +47,39 @@ export function templateFromArray(arr: MediaTimelineTemplateArray): MediaTimelin
 }
 
 /**
+ * MSF §11: media timeline template values are immutable once published.
+ *
+ * When a publisher (re)emits the same template, every field MUST match
+ * bit-for-bit. This helper compares two normalized templates and throws
+ * on any drift, so callers can gate republish/update paths.
+ */
+export function assertTemplateUnchanged(
+  previous: MediaTimelineTemplate,
+  next: MediaTimelineTemplate
+): void {
+  const normalize = (t: MediaTimelineTemplate) => ({
+    startMediaTime: t.startMediaTime ?? 0,
+    deltaMediaTime: t.deltaMediaTime,
+    startGroupId: t.startGroupId,
+    startObjectId: t.startObjectId ?? 0,
+    deltaGroupId: t.deltaGroupId ?? 0,
+    deltaObjectId: t.deltaObjectId ?? 1,
+    startWallclock: t.startWallclock ?? 0,
+    deltaWallclock: t.deltaWallclock ?? 0,
+  });
+  const a = normalize(previous);
+  const b = normalize(next);
+  for (const key of Object.keys(a) as (keyof typeof a)[]) {
+    if (a[key] !== b[key]) {
+      throw new TimelineTemplateError(
+        `MSF §11: template values are immutable once published; ` +
+          `field '${key}' changed from ${a[key]} to ${b[key]}`
+      );
+    }
+  }
+}
+
+/**
  * Convert object format to spec array format
  */
 export function templateToArray(template: MediaTimelineTemplate): MediaTimelineTemplateArray {
