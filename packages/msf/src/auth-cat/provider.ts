@@ -4,12 +4,13 @@
 /**
  * @fileoverview CAT/C4M {@link AuthProvider} implementation (MSF §17).
  *
- * Bridges the {@link AuthProvider} contract to `@moq-web/cat`'s
- * {@link CatTokenBuilder}. Each `obtainToken` call assembles a fresh
- * COSE_Sign1 token scoped to the requesting track and action, signs it with
- * the caller-supplied private key, and returns raw bytes plus the C4M token
- * type (`0x63346d`) so the session can populate the MoQT
- * `AUTHORIZATION_TOKEN` parameter directly.
+ * Bridges the {@link AuthProvider} contract to `@moq-web/cat`. Signing side
+ * composes {@link CatTokenBuilder} + optional {@link createDpopProof} so the
+ * MoQT `AUTHORIZATION_TOKEN` parameter and any adjacent DPoP proof can be
+ * produced in one call. Validation side composes {@link validateCatRequest},
+ * which layers signature check, DPoP binding, replay protection, and
+ * CAT-4-MOQT request policy (scope + URI/headers/geo constraints) on top of
+ * the plain CWT validator.
  *
  * This module lives in a subpath so core MSF stays free of the `@moq-web/cat`
  * dependency; apps that want CAT auth import it explicitly via
@@ -18,12 +19,24 @@
 
 import {
   CatTokenBuilder,
-  CatTokenDecoder,
   C4M_TOKEN_TYPE,
   CoseAlgorithm,
   MoqtAction,
+  createDpopProof,
+  jwkThumbprint,
+  moqtAuthorizationContext,
+  resolveCatVerificationKey,
+  validateCatRequest,
+  type CatKeyResolver,
+  type CatPolicyOptions,
+  type CatRequestContext,
+  type CatSecurityValidationOptions,
+  type CatSecurityValidationResult,
   type CatValidationOptions,
+  type CborValue,
+  type DpopValidationOptions,
   type MoqtScope,
+  type ReplayStore,
 } from '@moq-web/cat';
 
 import type {
@@ -33,6 +46,31 @@ import type {
   AuthToken,
   AuthValidationResult,
 } from '../auth/provider.js';
+
+/**
+ * DPoP signing keypair + optional labels/nonce hook used when the provider
+ * needs to emit a proof alongside the CAT.
+ */
+export interface CatDpopSigningOptions {
+  /** DPoP keypair (private = sign, public = key binding). */
+  keyPair: CryptoKeyPair;
+  /** COSE algorithm for the proof (default: {@link CoseAlgorithm.ES256}). */
+  algorithm?: CoseAlgorithm;
+  /**
+   * Nonce resolver invoked per proof. Return `undefined` to skip the `nonce`
+   * claim. Callers wire this to whatever replay-nonce mechanism the relay
+   * uses.
+   */
+  nonce?: (context: AuthContext) => string | undefined | Promise<string | undefined>;
+}
+
+/**
+ * DPoP-side of the {@link AuthToken} returned by {@link CatAuthProvider.obtainToken}.
+ */
+export interface CatDpopProof {
+  proofBytes: Uint8Array;
+  algorithm: CoseAlgorithm;
+}
 
 /**
  * Configuration for {@link CatAuthProvider}.
@@ -64,10 +102,16 @@ export interface CatAuthProviderOptions {
   ttlSeconds?: number;
   /**
    * Optional verification key used by {@link CatAuthProvider.validateToken}.
-   * When omitted, `validateToken` is not exposed (undefined on the provider
-   * instance) so callers know validation is out-of-scope for this provider.
+   * When both this and `keyResolver` are absent, `validateToken` short-circuits
+   * with `valid: false` so callers know validation is out-of-scope.
    */
   verificationKey?: CryptoKey;
+  /**
+   * Alternative to `verificationKey` — resolves the key from the token's
+   * `kid` (see {@link staticCatKeyResolver}). Takes precedence over
+   * `verificationKey` when both are set.
+   */
+  keyResolver?: CatKeyResolver;
   /**
    * Extra validation options threaded to {@link CatTokenDecoder.validate}
    * (audience match, clock skew, required algorithm, …).
@@ -82,6 +126,29 @@ export interface CatAuthProviderOptions {
    * an empty array yields a token with no `moqt` claim.
    */
   scopeBuilder?: (context: AuthContext) => MoqtScope[];
+  /**
+   * When set, {@link CatAuthProvider.obtainToken} also produces a DPoP proof
+   * bound to the returned CAT (matches CTA-5007-B `cnf.jkt`). The proof is
+   * returned via {@link AuthToken.details.dpopProof} so callers can forward
+   * it alongside the token (relay side-channel, HTTP header, etc.).
+   */
+  dpop?: CatDpopSigningOptions;
+  /**
+   * Replay store threaded to {@link validateCatRequest} — required for tokens
+   * that assert `catreplay` or DPoP proofs that demand `jti` uniqueness.
+   */
+  replayStore?: ReplayStore;
+  /**
+   * Static extra options for DPoP validation (nonce, expected JKT/CKT, etc.).
+   * Runtime values from the {@link AuthContext} (namespace/track/action) are
+   * merged in automatically.
+   */
+  dpopValidation?: Omit<DpopValidationOptions, 'expectedJkt' | 'expectedCkt'>;
+  /**
+   * Policy knobs for {@link evaluateCatPolicy} (require `moqt` claim, allow
+   * regex matchers, …). See {@link CatPolicyOptions}.
+   */
+  policy?: CatPolicyOptions;
 }
 
 /**
@@ -114,18 +181,55 @@ function defaultScope(context: AuthContext): MoqtScope[] {
 }
 
 /**
+ * Build the CAT request context passed to `evaluateCatPolicy` from
+ * MSF-level {@link AuthContext}.
+ */
+function toCatRequestContext(context: AuthContext): CatRequestContext {
+  const base: CatRequestContext = {
+    action: actionToMoqt(context.action),
+    namespace: context.namespace,
+    trackName: context.trackName,
+  };
+  const req = context.request;
+  if (!req) return base;
+  return {
+    ...base,
+    uri: req.uri,
+    method: req.method,
+    headers: req.headers,
+    alpn: req.alpn,
+    ipAddress: req.ipAddress,
+    countryCode: req.countryCode,
+    coordinate: req.coordinate,
+    altitude: req.altitude,
+  };
+}
+
+/**
  * {@link AuthProvider} that mints CAT/C4M tokens using `@moq-web/cat`.
  *
- * @example
+ * @example Basic signing + validation
  * ```typescript
- * const { privateKey } = await generateTestKeyPair();
+ * const { privateKey, publicKey } = await generateTestKeyPair();
  * const provider = new CatAuthProvider({
  *   signingKey: privateKey,
+ *   verificationKey: publicKey,
  *   issuer: 'https://auth.example.com',
  *   audience: 'moq-relay',
  *   subject: (ctx) => (ctx.sessionContext?.userId as string) ?? 'anon',
  * });
- * const session = createMSFSession(moqt, ns, { authProviders: [provider] });
+ * ```
+ *
+ * @example DPoP-bound tokens + replay protection
+ * ```typescript
+ * const dpop = await generateDpopKeyPair();
+ * const provider = new CatAuthProvider({
+ *   signingKey, verificationKey, issuer, audience, subject,
+ *   dpop: { keyPair: dpop },
+ *   replayStore: new MemoryReplayStore(),
+ * });
+ * const token = await provider.obtainToken(ctx);
+ * // token.details.dpopProof carries the paired DPoP proof
  * ```
  */
 export class CatAuthProvider implements AuthProvider {
@@ -161,37 +265,119 @@ export class CatAuthProvider implements AuthProvider {
       builder.moqtScopes(scopes);
     }
 
+    if (this.options.dpop !== undefined) {
+      // Bind the CAT to the DPoP public-key thumbprint (CTA-5007-B cnf.jkt).
+      const jkt = await jwkThumbprint(this.options.dpop.keyPair.publicKey);
+      const cnf = new Map<number, CborValue>([[323, jkt]]);
+      builder.confirmation(cnf);
+    }
+
     const tokenBytes = await builder.sign(this.options.signingKey);
+    const dpopProof = await this.maybeCreateDpopProof(context, tokenBytes);
     return {
       tokenBytes,
       tokenType: C4M_TOKEN_TYPE,
       expiresAt: now + ttl,
+      ...(dpopProof !== undefined
+        ? { details: { dpopProof } as Record<string, unknown> }
+        : {}),
     };
   }
 
   async validateToken(
     tokenBytes: Uint8Array,
-    _context: AuthContext
+    context: AuthContext
   ): Promise<AuthValidationResult> {
-    if (this.options.verificationKey === undefined) {
+    let verificationKey: CryptoKey;
+    if (this.options.keyResolver !== undefined) {
+      try {
+        verificationKey = await resolveCatVerificationKey(
+          tokenBytes,
+          this.options.keyResolver
+        );
+      } catch (err) {
+        return {
+          valid: false,
+          reason: err instanceof Error ? err.message : 'CAT key resolution failed',
+        };
+      }
+    } else if (this.options.verificationKey !== undefined) {
+      verificationKey = this.options.verificationKey;
+    } else {
       return {
         valid: false,
-        reason: 'CatAuthProvider was configured without a verificationKey',
+        reason:
+          'CatAuthProvider was configured without a verificationKey or keyResolver',
       };
     }
-    const result = await CatTokenDecoder.validate(
+
+    const validationOptions: CatSecurityValidationOptions = {
+      requiredAlgorithm: this.algorithm,
+      ...this.options.validationOptions,
+      dpopProof: context.dpopProof,
+      dpop: this.options.dpopValidation,
+      replayStore: this.options.replayStore,
+      request: toCatRequestContext(context),
+      policy: this.options.policy,
+    };
+
+    const result = await validateCatRequest(
       tokenBytes,
-      this.options.verificationKey,
-      {
-        requiredAlgorithm: this.algorithm,
-        ...this.options.validationOptions,
-      }
+      verificationKey,
+      validationOptions
     );
+    return this.toAuthValidationResult(result);
+  }
+
+  /**
+   * Convenience: sign a token *and* immediately validate it against the same
+   * provider config. Useful for local round-trip tests; production callers
+   * ship the bytes across the wire.
+   */
+  async roundTrip(context: AuthContext): Promise<AuthValidationResult> {
+    const token = await this.obtainToken(context);
+    const dpopProof = (token.details?.dpopProof as CatDpopProof | undefined)
+      ?.proofBytes;
+    return this.validateToken(token.tokenBytes, { ...context, dpopProof });
+  }
+
+  private async maybeCreateDpopProof(
+    context: AuthContext,
+    tokenBytes: Uint8Array
+  ): Promise<CatDpopProof | undefined> {
+    const dpop = this.options.dpop;
+    if (!dpop) return undefined;
+    const nonce = dpop.nonce ? await dpop.nonce(context) : undefined;
+    const proofBytes = await createDpopProof({
+      privateKey: dpop.keyPair.privateKey,
+      publicKey: dpop.keyPair.publicKey,
+      algorithm: dpop.algorithm ?? CoseAlgorithm.ES256,
+      authorizationContext: moqtAuthorizationContext({
+        action: context.action,
+        trackNamespace: context.namespace,
+        trackName: context.trackName,
+      }),
+      accessToken: tokenBytes,
+      ...(nonce !== undefined ? { nonce } : {}),
+    });
+    return { proofBytes, algorithm: dpop.algorithm ?? CoseAlgorithm.ES256 };
+  }
+
+  private toAuthValidationResult(
+    result: CatSecurityValidationResult
+  ): AuthValidationResult {
+    const details: Record<string, unknown> = {};
+    if (result.dpop !== undefined) details.dpop = result.dpop;
+    if (result.policy !== undefined) details.policy = result.policy;
+    if (result.replayChecked !== undefined) {
+      details.replayChecked = result.replayChecked;
+    }
     return {
       valid: result.valid,
       reason: result.error,
       subject: result.token?.claims.sub,
       expiresAt: result.token?.claims.exp,
+      ...(Object.keys(details).length > 0 ? { details } : {}),
     };
   }
 }
