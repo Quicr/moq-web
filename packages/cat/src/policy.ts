@@ -50,10 +50,14 @@ export async function evaluateCatPolicy(claims: CwtClaims, request: CatRequestCo
 export function moqtScopeAllows(scope: MoqtScope, action: MoqtAction, namespace: readonly BinaryValue[], trackName?: BinaryValue): boolean {
   if (!scope.actions.includes(action)) return false;
   if (scope.namespaceMatch !== undefined) {
-    const exactLength = scope.namespaceMatch.length > 0 && scope.namespaceMatch[scope.namespaceMatch.length - 1] === null;
-    const matches = scope.namespaceMatch.filter((match): match is MoqtMatch => match !== null);
-    if (namespace.length < matches.length || exactLength && namespace.length !== matches.length) return false;
-    for (let index = 0; index < matches.length; index++) if (!binaryMatch(matches[index], namespace[index])) return false;
+    const namespaceMatch = scope.namespaceMatch;
+    const exactLength = namespaceMatch.length > 0 && namespaceMatch[namespaceMatch.length - 1] === null;
+    const matchCount = exactLength ? namespaceMatch.length - 1 : namespaceMatch.length;
+    if (namespace.length < matchCount || exactLength && namespace.length !== matchCount) return false;
+    for (let index = 0; index < matchCount; index++) {
+      const match = namespaceMatch[index];
+      if (match === null || !binaryMatch(match, namespace[index])) return false;
+    }
   }
   return scope.trackMatch === undefined || trackName !== undefined && binaryMatch(scope.trackMatch, trackName);
 }
@@ -133,7 +137,14 @@ async function matchMap(matches: Map<number, CborValue>, actual: string, options
 }
 
 function binaryMatch(match: MoqtMatch, actual: BinaryValue): boolean {
+  if (typeof match === 'string' && typeof actual === 'string' && isAscii(match) && isAscii(actual)) return match === actual;
+  if (match instanceof Uint8Array && actual instanceof Uint8Array) return bytesEqual(match, actual);
   if (typeof match === 'string' || match instanceof Uint8Array) return bytesEqual(toBytes(match), toBytes(actual));
+  if (typeof match.value === 'string' && typeof actual === 'string' && isAscii(match.value) && isAscii(actual)) {
+    if (match.type === 1) return actual.startsWith(match.value);
+    if (match.type === 2) return actual.endsWith(match.value);
+    return false;
+  }
   const expected = toBytes(match.value);
   const candidate = toBytes(actual);
   if (match.type === 1) return startsWith(candidate, expected);
@@ -190,6 +201,7 @@ function parseIp(value: string): { bytes: Uint8Array } | undefined {
 }
 
 function toBytes(value: BinaryValue): Uint8Array { return typeof value === 'string' ? new TextEncoder().encode(value) : value; }
+function isAscii(value: string): boolean { for (let index = 0; index < value.length; index++) if (value.charCodeAt(index) > 0x7f) return false; return true; }
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean { return a.length === b.length && a.every((value, index) => value === b[index]); }
 function startsWith(value: Uint8Array, prefix: Uint8Array): boolean { return prefix.length <= value.length && bytesEqual(value.slice(0, prefix.length), prefix); }
 function endsWith(value: Uint8Array, suffix: Uint8Array): boolean { return suffix.length <= value.length && bytesEqual(value.slice(value.length - suffix.length), suffix); }

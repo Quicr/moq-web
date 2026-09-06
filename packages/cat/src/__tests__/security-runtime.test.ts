@@ -20,6 +20,7 @@ import {
   staticCatKeyResolver,
   validateCatRequest,
   validateCatRequestWithResolver,
+  moqtScopeAllows,
 } from '../index.js';
 import type { CwtClaims, MoqtScope } from '../index.js';
 
@@ -36,6 +37,17 @@ describe('runtime CAT security modules', () => {
     expect(allowed.allowed).toBe(true);
     expect(wrongNamespace.allowed).toBe(false);
     expect(wrongTrack.allowed).toBe(false);
+  });
+
+  it('preserves UTF-8 byte semantics for MOQT matches', () => {
+    const scope: MoqtScope = {
+      actions: [MoqtAction.Subscribe],
+      namespaceMatch: ['café', { type: MoqtMatchType.Prefix, value: '用户-' }],
+      trackMatch: { type: MoqtMatchType.Suffix, value: new TextEncoder().encode('.m4s') },
+    };
+    expect(moqtScopeAllows(scope, MoqtAction.Subscribe, ['café', '用户-alice'], 'video.m4s')).toBe(true);
+    expect(moqtScopeAllows(scope, MoqtAction.Subscribe, [new TextEncoder().encode('café'), new TextEncoder().encode('用户-alice')], new TextEncoder().encode('video.m4s'))).toBe(true);
+    expect(moqtScopeAllows(scope, MoqtAction.Subscribe, ['café', '用户-alice'], 'video.m4s')).toBe(false);
   });
 
   it('enforces method, ALPN, URI, and header claims', async () => {
