@@ -156,6 +156,64 @@ importers:
         specifier: ^7.3.1
         version: 7.3.1(@types/node@20.19.30)(jiti@1.21.7)
 
+  apps/studio-watch-party:
+    dependencies:
+      '@moq-web/cat':
+        specifier: workspace:*
+        version: link:../../packages/cat
+      '@moq-web/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@moq-web/media':
+        specifier: workspace:*
+        version: link:../../packages/media
+      '@moq-web/msf':
+        specifier: workspace:*
+        version: link:../../packages/msf
+      '@moq-web/secure-objects':
+        specifier: workspace:*
+        version: link:../../packages/secure-objects
+      '@moq-web/session':
+        specifier: workspace:*
+        version: link:../../packages/session
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
+      zustand:
+        specifier: ^4.4.0
+        version: 4.5.7(@types/react@18.3.27)(react@18.3.1)
+    devDependencies:
+      '@types/react':
+        specifier: ^18.2.0
+        version: 18.3.27
+      '@types/react-dom':
+        specifier: ^18.2.0
+        version: 18.3.7(@types/react@18.3.27)
+      '@vitejs/plugin-basic-ssl':
+        specifier: ^2.0.0
+        version: 2.1.4(vite@7.3.1(@types/node@20.19.30)(jiti@1.21.7))
+      '@vitejs/plugin-react':
+        specifier: ^4.2.0
+        version: 4.7.0(vite@7.3.1(@types/node@20.19.30)(jiti@1.21.7))
+      autoprefixer:
+        specifier: ^10.4.16
+        version: 10.4.23(postcss@8.5.6)
+      postcss:
+        specifier: ^8.4.32
+        version: 8.5.6
+      tailwindcss:
+        specifier: ^3.3.6
+        version: 3.4.19
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.1
+        version: 7.3.1(@types/node@20.19.30)(jiti@1.21.7)
+
   apps/tempo-jam:
     dependencies:
       '@moq-web/core':
