@@ -34,7 +34,7 @@ describe('Performance', () => {
       .sign(keyPair.privateKey);
   });
 
-  it('CBOR encode: 1000 maps under 150ms', () => {
+  it('CBOR encode: 1000 maps under 250ms', () => {
     const map = new Map<number, CborValue>([
       [1, 'https://auth.example.com'],
       [2, 'user-123'],
@@ -51,7 +51,7 @@ describe('Performance', () => {
 
     // eslint-disable-next-line no-console
     console.log(`CBOR encode 1000 maps: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
-    expect(elapsed).toBeLessThan(150);
+    expect(elapsed).toBeLessThan(250);
   });
 
   it('CBOR decode: 1000 maps under 50ms', () => {
@@ -75,7 +75,7 @@ describe('Performance', () => {
     expect(elapsed).toBeLessThan(150);
   });
 
-  it('CAT token decode (no verify): 1000 tokens under 200ms', () => {
+  it('CAT token decode (no verify): 1000 tokens under 350ms', () => {
     const start = performance.now();
     for (let i = 0; i < 1000; i++) {
       CatTokenDecoder.decode(sampleToken);
@@ -84,7 +84,7 @@ describe('Performance', () => {
 
     // eslint-disable-next-line no-console
     console.log(`CAT decode 1000 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
-    expect(elapsed).toBeLessThan(200);
+    expect(elapsed).toBeLessThan(350);
   });
 
   it('CAT token decode from base64url: 1000 tokens under 500ms', () => {

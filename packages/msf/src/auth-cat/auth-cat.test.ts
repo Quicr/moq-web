@@ -6,10 +6,13 @@ import {
   C4M_TOKEN_TYPE,
   CatTokenDecoder,
   CoseAlgorithm,
+  MemoryReplayStore,
   MoqtAction,
+  generateDpopKeyPair,
   generateTestKeyPair,
+  staticCatKeyResolver,
 } from '@moq-web/cat';
-import { CatAuthProvider, createCatAuthProvider } from './provider.js';
+import { CatAuthProvider, createCatAuthProvider, type CatDpopProof } from './provider.js';
 import type { AuthContext } from '../auth/provider.js';
 
 function ctx(overrides: Partial<AuthContext> = {}): AuthContext {
@@ -169,5 +172,179 @@ describe('CatAuthProvider', () => {
     const token = await provider.obtainToken(ctx());
     const decoded = CatTokenDecoder.decode(token.tokenBytes);
     expect(decoded.claims.moqt).toBeUndefined();
+  });
+
+  describe('DPoP-bound tokens', () => {
+    it('emits a DPoP proof and validates the bound CAT + proof', async () => {
+      const { privateKey, publicKey } = await generateTestKeyPair();
+      const dpop = await generateDpopKeyPair();
+      const provider = new CatAuthProvider({
+        signingKey: privateKey,
+        verificationKey: publicKey,
+        issuer: 'https://auth.example.com',
+        audience: 'moq-relay',
+        subject: 'user-42',
+        dpop: { keyPair: dpop },
+      });
+
+      const token = await provider.obtainToken(ctx({ action: 'publish' }));
+      const proof = token.details?.dpopProof as CatDpopProof | undefined;
+      expect(proof?.proofBytes).toBeInstanceOf(Uint8Array);
+      expect(proof?.algorithm).toBe(CoseAlgorithm.ES256);
+
+      // CAT should carry the cnf.jkt confirmation binding
+      const decoded = CatTokenDecoder.decode(token.tokenBytes);
+      expect(decoded.claims.cnf).toBeInstanceOf(Map);
+
+      // Round-trip validate CAT + proof through the provider
+      const result = await provider.validateToken(
+        token.tokenBytes,
+        ctx({ action: 'publish', dpopProof: proof!.proofBytes })
+      );
+      expect(result.valid).toBe(true);
+      const details = result.details as { dpop?: { valid: boolean } } | undefined;
+      expect(details?.dpop?.valid).toBe(true);
+    });
+
+    it('rejects a bound CAT presented without a DPoP proof', async () => {
+      const { privateKey, publicKey } = await generateTestKeyPair();
+      const dpop = await generateDpopKeyPair();
+      const provider = new CatAuthProvider({
+        signingKey: privateKey,
+        verificationKey: publicKey,
+        issuer: 'https://auth.example.com',
+        audience: 'moq-relay',
+        subject: 'user-42',
+        dpop: { keyPair: dpop },
+      });
+
+      const token = await provider.obtainToken(ctx());
+      const result = await provider.validateToken(token.tokenBytes, ctx());
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/DPoP/i);
+    });
+  });
+
+  describe('key resolver', () => {
+    it('resolves the verification key from the token kid', async () => {
+      const { privateKey, publicKey } = await generateTestKeyPair();
+      const resolver = staticCatKeyResolver({}, publicKey);
+      const provider = new CatAuthProvider({
+        signingKey: privateKey,
+        keyResolver: resolver,
+        issuer: 'https://auth.example.com',
+        audience: 'moq-relay',
+        subject: 'user-42',
+      });
+
+      const token = await provider.obtainToken(ctx());
+      const result = await provider.validateToken(token.tokenBytes, ctx());
+      expect(result.valid).toBe(true);
+      expect(result.subject).toBe('user-42');
+    });
+
+    it('reports a friendly reason when the resolver has no key', async () => {
+      const { privateKey } = await generateTestKeyPair();
+      const resolver = staticCatKeyResolver({});
+      const provider = new CatAuthProvider({
+        signingKey: privateKey,
+        keyResolver: resolver,
+        issuer: 'https://auth.example.com',
+        audience: 'moq-relay',
+        subject: 'user-42',
+      });
+      const token = await provider.obtainToken(ctx());
+      const result = await provider.validateToken(token.tokenBytes, ctx());
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBeDefined();
+    });
+  });
+
+  describe('policy evaluation', () => {
+    it('rejects a token whose scope does not cover the requested action', async () => {
+      const { privateKey, publicKey } = await generateTestKeyPair();
+      const provider = new CatAuthProvider({
+        signingKey: privateKey,
+        verificationKey: publicKey,
+        issuer: 'https://auth.example.com',
+        audience: 'moq-relay',
+        subject: 'user-42',
+        // Only allow Subscribe scope regardless of request action
+        scopeBuilder: () => [
+          {
+            actions: [MoqtAction.Subscribe],
+            namespaceMatch: ['conference', 'room-1'],
+          },
+        ],
+      });
+
+      const token = await provider.obtainToken(ctx());
+      // Validate against a publish request — the token only permits subscribe
+      const result = await provider.validateToken(
+        token.tokenBytes,
+        ctx({ action: 'publish' })
+      );
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/not authorized/i);
+    });
+
+    it('accepts a token when scope matches the requested action + track', async () => {
+      const { privateKey, publicKey } = await generateTestKeyPair();
+      const provider = new CatAuthProvider({
+        signingKey: privateKey,
+        verificationKey: publicKey,
+        issuer: 'https://auth.example.com',
+        audience: 'moq-relay',
+        subject: 'user-42',
+      });
+      const token = await provider.obtainToken(ctx({ action: 'fetch' }));
+      const result = await provider.validateToken(
+        token.tokenBytes,
+        ctx({ action: 'fetch' })
+      );
+      expect(result.valid).toBe(true);
+      const details = result.details as { policy?: { allowed: boolean } } | undefined;
+      expect(details?.policy?.allowed).toBe(true);
+    });
+  });
+
+  describe('replay store integration', () => {
+    it('accepts distinct tokens and continues to accept them', async () => {
+      const { privateKey, publicKey } = await generateTestKeyPair();
+      const store = new MemoryReplayStore();
+      const provider = new CatAuthProvider({
+        signingKey: privateKey,
+        verificationKey: publicKey,
+        issuer: 'https://auth.example.com',
+        audience: 'moq-relay',
+        subject: 'user-42',
+        replayStore: store,
+      });
+
+      // Non-replay-protected tokens don't consume the store; both should pass.
+      const t1 = await provider.obtainToken(ctx());
+      const t2 = await provider.obtainToken(ctx());
+      const r1 = await provider.validateToken(t1.tokenBytes, ctx());
+      const r2 = await provider.validateToken(t2.tokenBytes, ctx());
+      expect(r1.valid).toBe(true);
+      expect(r2.valid).toBe(true);
+    });
+  });
+
+  describe('roundTrip convenience', () => {
+    it('mints + validates in one call for DPoP-bound tokens', async () => {
+      const { privateKey, publicKey } = await generateTestKeyPair();
+      const dpop = await generateDpopKeyPair();
+      const provider = new CatAuthProvider({
+        signingKey: privateKey,
+        verificationKey: publicKey,
+        issuer: 'https://auth.example.com',
+        audience: 'moq-relay',
+        subject: 'user-42',
+        dpop: { keyPair: dpop },
+      });
+      const result = await provider.roundTrip(ctx({ action: 'subscribe' }));
+      expect(result.valid).toBe(true);
+    });
   });
 });

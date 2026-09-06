@@ -12,4 +12,6 @@ export {
   CatAuthProvider,
   createCatAuthProvider,
   type CatAuthProviderOptions,
+  type CatDpopSigningOptions,
+  type CatDpopProof,
 } from './provider.js';

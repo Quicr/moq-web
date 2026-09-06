@@ -51,6 +51,28 @@ export interface AuthContext {
   action: AuthAction;
   /** Optional application-supplied hints (e.g. userId, tenant). */
   sessionContext?: Record<string, unknown>;
+  /**
+   * Optional wire-level details for scheme-specific policy checks
+   * (URI, HTTP method, headers, ALPN, IP, geo). Providers that don't consume
+   * these ignore them; the CAT provider forwards them to `evaluateCatPolicy`
+   * (`catu`/`cath`/`catnip`/`catgeo*` claims).
+   */
+  request?: {
+    uri?: string | URL;
+    method?: string;
+    headers?: Headers | ReadonlyMap<string, string> | Readonly<Record<string, string>>;
+    alpn?: Uint8Array;
+    ipAddress?: string;
+    countryCode?: string;
+    coordinate?: readonly [number, number];
+    altitude?: number;
+  };
+  /**
+   * Optional DPoP proof bytes carried alongside the token being validated.
+   * Only meaningful on `validateToken` paths for schemes that support DPoP
+   * (currently just `cat`).
+   */
+  dpopProof?: Uint8Array;
 }
 
 /**
@@ -70,6 +92,12 @@ export interface AuthToken {
   tokenType?: number;
   /** Optional expiration (epoch seconds); helps callers refresh eagerly. */
   expiresAt?: number;
+  /**
+   * Scheme-specific extras produced alongside the token (e.g. a DPoP proof).
+   * Providers document their own shape; callers must key on `scheme` before
+   * casting.
+   */
+  details?: Record<string, unknown>;
 }
 
 /**
@@ -83,6 +111,12 @@ export interface AuthValidationResult {
   subject?: string;
   /** Optional expiration (epoch seconds). */
   expiresAt?: number;
+  /**
+   * Scheme-specific detail bag. CAT populates `{ dpop?, policy?, replayChecked? }`;
+   * other providers may attach their own shape. Kept `unknown`-friendly so the
+   * base interface stays scheme-agnostic.
+   */
+  details?: Record<string, unknown>;
 }
 
 /**
