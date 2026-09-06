@@ -49,6 +49,13 @@ export async function generateTestKeyPair(
     // Return same key for both sign and verify (symmetric)
     return { privateKey: key, publicKey: key } as unknown as CryptoKeyPair;
   }
+  if (params.keyType === 'RSA') {
+    return crypto.subtle.generateKey(
+      { name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: params.hash },
+      extractable,
+      ['sign', 'verify'],
+    );
+  }
   return crypto.subtle.generateKey(
     { name: params.name, namedCurve: params.namedCurve! },
     extractable,

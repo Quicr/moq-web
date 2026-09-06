@@ -21,6 +21,7 @@ import type { CborValue, CoseSign1 } from '../index.js';
 describe('COSE_Sign1', () => {
   let es256KeyPair: CryptoKeyPair;
   let es384KeyPair: CryptoKeyPair;
+  let ps256KeyPair: CryptoKeyPair;
 
   beforeAll(async () => {
     es256KeyPair = await crypto.subtle.generateKey(
@@ -30,6 +31,11 @@ describe('COSE_Sign1', () => {
     );
     es384KeyPair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-384' },
+      true,
+      ['sign', 'verify'],
+    );
+    ps256KeyPair = await crypto.subtle.generateKey(
+      { name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
       true,
       ['sign', 'verify'],
     );
@@ -56,7 +62,7 @@ describe('COSE_Sign1', () => {
       expect(decoded.unprotectedHeader.size).toBe(0);
     });
 
-    it('encodes as bare array (no CBOR Tag 18)', () => {
+    it('encodes with the COSE_Sign1 tag (18)', () => {
       const sign1: CoseSign1 = {
         protectedHeader: new Uint8Array([0xa0]),
         unprotectedHeader: new Map(),
@@ -64,8 +70,8 @@ describe('COSE_Sign1', () => {
         signature: new Uint8Array(64),
       };
       const encoded = coseSign1Encode(sign1);
-      // First byte should be 0x84 (4-element array), NOT 0xd2 (tag 18)
-      expect(encoded[0]).toBe(0x84);
+      // Tag 18 uses the one-byte tag encoding 0xd2.
+      expect(encoded[0]).toBe(0xd2);
     });
 
     it('decodes tagged COSE_Sign1 (Tag 18)', () => {
@@ -75,7 +81,7 @@ describe('COSE_Sign1', () => {
         payload: new Uint8Array([1]),
         signature: new Uint8Array(64),
       };
-      const bareArray = coseSign1Encode(sign1);
+      const bareArray = cborEncode([sign1.protectedHeader, sign1.unprotectedHeader, sign1.payload, sign1.signature]);
 
       // Manually wrap with Tag 18: 0xd2 prefix
       const tagged = new Uint8Array(1 + bareArray.length);
@@ -180,6 +186,17 @@ describe('COSE_Sign1', () => {
 
       expect(sign1.signature.length).toBe(96); // ES384 = 96 bytes
       expect(await coseSign1Verify(sign1, es384KeyPair.publicKey)).toBe(true);
+    });
+
+    it('signs and verifies with PS256', async () => {
+      const sign1 = await coseSign1Sign(
+        CoseAlgorithm.PS256,
+        new Map(),
+        new Uint8Array([1, 2, 3]),
+        ps256KeyPair.privateKey,
+      );
+      expect(sign1.signature.length).toBe(256);
+      expect(await coseSign1Verify(sign1, ps256KeyPair.publicKey)).toBe(true);
     });
 
     it('sets algorithm in protected header automatically', async () => {

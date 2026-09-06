@@ -45,11 +45,17 @@ export {
   COSE_ALG_PARAMS,
   CwtClaimKey,
   MoqtAction,
+  MoqtMatchType,
   type CborValue,
+  type CborMapKey,
   type CborTagged,
   type CoseSign1,
+  type CoseMac0,
+  type CoseEncrypt0,
   type CwtClaims,
   type MoqtScope,
+  type MoqtMatch,
+  type MoqtPattern,
   type CatToken,
   type CatValidationResult,
   type CatValidationOptions,
@@ -61,6 +67,7 @@ export {
   cborEncode,
   cborDecode,
   cborDecodeTagged,
+  cborDecodeExact,
   cborEncodeTagged,
   CborError,
 } from './cbor.js';
@@ -69,8 +76,12 @@ export {
 export {
   coseSign1Encode,
   coseSign1Decode,
+  coseMac0Encode,
+  coseMac0Decode,
   coseSign1Sign,
+  coseMac0Sign,
   coseSign1Verify,
+  coseMac0Verify,
   coseSign1SigStructure,
   coseMac0MacStructure,
   coseSign1GetAlgorithm,
@@ -99,6 +110,80 @@ export {
   base64urlEncode,
   CatError,
 } from './cat.js';
+
+// Generic CWT DPoP
+export {
+  DPOP_PROOF_CWT_TYP,
+  generateDpopKeyPair,
+  createDpopProof,
+  decodeDpopProof,
+  validateDpopProof,
+  validateCatDpopBinding,
+  coseKeyFromPublicKey,
+  jwkThumbprint,
+  coseKeyThumbprint,
+  moqtAuthorizationContext,
+  DpopError,
+  type DpopLabels,
+  type DpopProofOptions,
+  type DpopProof,
+  type DpopValidationOptions,
+  type DpopValidationResult,
+  type MoqtDpopContext,
+} from './dpop.js';
+
+// Request policy and replay protection
+export {
+  evaluateCatPolicy,
+  moqtScopeAllows,
+  type BinaryValue,
+  type CatRequestContext,
+  type CatPolicyOptions,
+  type CatPolicyResult,
+} from './policy.js';
+export {
+  MemoryReplayStore,
+  acceptCatReplay,
+  acceptDpopReplay,
+  ReplayError,
+  type ReplayStore,
+  type ReplayStoreOptions,
+  type CatReplayOptions,
+  type DpopReplayOptions,
+} from './replay.js';
+
+// Encrypted CWT payloads
+export {
+  COSE_ENCRYPT0_TAG,
+  COSE_AES_GCM_ALGORITHMS,
+  coseEncrypt0Encode,
+  coseEncrypt0Decode,
+  coseEncrypt0Encrypt,
+  coseEncrypt0Decrypt,
+  encryptCwtClaims,
+  decryptCwtClaims,
+  generateAesGcmKey,
+  EncryptionError,
+  type CoseEncrypt0Options,
+} from './encryption.js';
+
+// Verification-key resolution
+export {
+  resolveCatVerificationKey,
+  staticCatKeyResolver,
+  importCatJwk,
+  isCompatibleKey,
+  KeyManagementError,
+  type CatKeyResolver,
+} from './keys.js';
+
+// Composed security validation
+export {
+  validateCatRequest,
+  validateCatRequestWithResolver,
+  type CatSecurityValidationOptions,
+  type CatSecurityValidationResult,
+} from './security.js';
 
 // Test utilities
 export {

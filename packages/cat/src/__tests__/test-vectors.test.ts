@@ -14,9 +14,8 @@
  * - MoQT scope decoding
  * - Validation logic (exp, nbf, audience)
  *
- * Not yet covered (needs HMAC-SHA256 alg -4 support):
- * - HMAC-SHA256 signed token verification
- * - DPoP binding verification
+ * HMAC-256/256 COSE_Mac0 and generic CWT-DPoP coverage live in the focused
+ * interop and dpop test suites.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -97,12 +96,11 @@ describe('Catapult test vectors: CBOR encoding', () => {
     expect(new TextDecoder().decode(claims.cti)).toBe('test-token-001');
   });
 
-  it('cbor_cat_version_usage: CAT-specific claims stored as additional', () => {
-    const data = hexToBytes('a2190136664341542d763119013805');
+  it('cbor_cat_version_usage: CAT-specific claims use their assigned labels', () => {
+    const data = hexToBytes('a219013601190138a100a100656874747073');
     const claims = cwtClaimsDecode(data);
-    // catv (310) = "CAT-v1", catu (312) = 5
-    expect(claims.additionalClaims?.get(310)).toBe('CAT-v1');
-    expect(claims.additionalClaims?.get(312)).toBe(5);
+    expect(claims.catv).toBe(1);
+    expect(claims.catu?.get(0)?.get(0)).toBe('https');
   });
 });
 

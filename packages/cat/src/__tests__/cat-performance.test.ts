@@ -10,6 +10,7 @@ import {
   cborDecode,
   generateTestKeyPair,
   base64urlEncode,
+  moqtScopeAllows,
 } from '../index.js';
 import type { CborValue } from '../index.js';
 
@@ -134,5 +135,21 @@ describe('Performance', () => {
     // eslint-disable-next-line no-console
     console.log(`CAT validate 100 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 100).toFixed(2)}ms/op)`);
     expect(elapsed).toBeLessThan(10000);
+  });
+
+  it('MoQT scope policy: 100000 checks under 500ms', () => {
+    const scope = {
+      actions: [MoqtAction.Subscribe],
+      namespaceMatch: ['conference', { type: 1 as const, value: 'room-' }],
+      trackMatch: { type: 2 as const, value: '.m4s' },
+    };
+    const start = performance.now();
+    for (let i = 0; i < 100_000; i++) {
+      moqtScopeAllows(scope, MoqtAction.Subscribe, ['conference', 'room-1'], 'video.m4s');
+    }
+    const elapsed = performance.now() - start;
+    // eslint-disable-next-line no-console
+    console.log(`MoQT scope policy 100000 checks: ${elapsed.toFixed(2)}ms (${(elapsed / 100_000).toFixed(4)}ms/op)`);
+    expect(elapsed).toBeLessThan(500);
   });
 });
