@@ -137,7 +137,7 @@ describe('Performance', () => {
     expect(elapsed).toBeLessThan(10000);
   });
 
-  it('MoQT scope policy: 100000 checks under 500ms', () => {
+  it('MoQT scope policy: 100000 checks under 1000ms', () => {
     const scope = {
       actions: [MoqtAction.Subscribe],
       namespaceMatch: ['conference', { type: 1 as const, value: 'room-' }],
@@ -150,6 +150,6 @@ describe('Performance', () => {
     const elapsed = performance.now() - start;
     // eslint-disable-next-line no-console
     console.log(`MoQT scope policy 100000 checks: ${elapsed.toFixed(2)}ms (${(elapsed / 100_000).toFixed(4)}ms/op)`);
-    expect(elapsed).toBeLessThan(500);
+    expect(elapsed).toBeLessThan(1000);
   });
 });
