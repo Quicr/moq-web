@@ -137,16 +137,9 @@ async function matchMap(matches: Map<number, CborValue>, actual: string, options
 }
 
 function binaryMatch(match: MoqtMatch, actual: BinaryValue): boolean {
-  if (typeof match === 'string' && typeof actual === 'string' && isAscii(match) && isAscii(actual)) return match === actual;
-  if (match instanceof Uint8Array && actual instanceof Uint8Array) return bytesEqual(match, actual);
-  if (typeof match === 'string' || match instanceof Uint8Array) return bytesEqual(toBytes(match), toBytes(actual));
-  if (typeof match.value === 'string' && typeof actual === 'string' && isAscii(match.value) && isAscii(actual)) {
-    if (match.type === 1) return actual.startsWith(match.value);
-    if (match.type === 2) return actual.endsWith(match.value);
-    return false;
-  }
-  const expected = toBytes(match.value);
   const candidate = toBytes(actual);
+  if (typeof match === 'string' || match instanceof Uint8Array) return bytesEqual(toBytes(match), candidate);
+  const expected = toBytes(match.value);
   if (match.type === 1) return startsWith(candidate, expected);
   if (match.type === 2) return endsWith(candidate, expected);
   return false;
@@ -200,11 +193,11 @@ function parseIp(value: string): { bytes: Uint8Array } | undefined {
   return { bytes };
 }
 
-function toBytes(value: BinaryValue): Uint8Array { return typeof value === 'string' ? new TextEncoder().encode(value) : value; }
-function isAscii(value: string): boolean { for (let index = 0; index < value.length; index++) if (value.charCodeAt(index) > 0x7f) return false; return true; }
+const textEncoder = new TextEncoder();
+function toBytes(value: BinaryValue): Uint8Array { return typeof value === 'string' ? textEncoder.encode(value) : value; }
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean { return a.length === b.length && a.every((value, index) => value === b[index]); }
-function startsWith(value: Uint8Array, prefix: Uint8Array): boolean { return prefix.length <= value.length && bytesEqual(value.slice(0, prefix.length), prefix); }
-function endsWith(value: Uint8Array, suffix: Uint8Array): boolean { return suffix.length <= value.length && bytesEqual(value.slice(value.length - suffix.length), suffix); }
+function startsWith(value: Uint8Array, prefix: Uint8Array): boolean { if (prefix.length > value.length) return false; for (let index = 0; index < prefix.length; index++) if (value[index] !== prefix[index]) return false; return true; }
+function endsWith(value: Uint8Array, suffix: Uint8Array): boolean { if (suffix.length > value.length) return false; const offset = value.length - suffix.length; for (let index = 0; index < suffix.length; index++) if (value[offset + index] !== suffix[index]) return false; return true; }
 function prefixEqual(value: Uint8Array, prefix: Uint8Array, bits: number): boolean { if (prefix.length * 8 < bits) return false; for (let bit = 0; bit < bits; bit++) if ((value[bit >> 3] & (0x80 >> (bit & 7))) !== (prefix[bit >> 3] & (0x80 >> (bit & 7)))) return false; return true; }
 function isUnsigned(value: CborValue): boolean { return typeof value === 'bigint' ? value >= 0n : typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
 function isTagged(value: CborValue): value is { tag: number; value: CborValue } { return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array) && !(value instanceof Map) && 'tag' in value && 'value' in value; }
