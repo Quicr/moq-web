@@ -8,7 +8,13 @@
  */
 
 import { MSF_VERSION } from '../version.js';
-import type { FullCatalog, DeltaCatalog, Track, CloneTrack } from '../schemas/index.js';
+import type {
+  FullCatalog,
+  DeltaCatalog,
+  Track,
+  CloneTrack,
+  UpdateTrack,
+} from '../schemas/index.js';
 
 /**
  * Error thrown when delta operations fail
@@ -24,8 +30,16 @@ export class DeltaError extends Error {
  * Options for delta generation
  */
 export interface DeltaOptions {
-  /** Include generation timestamp */
-  generatedAt?: boolean;
+  /**
+   * Override the generation timestamp. Per MSF §7, `generatedAt` is REQUIRED
+   * on delta updates; when omitted here we default to `Date.now()`.
+   */
+  generatedAt?: number | false;
+  /**
+   * Emit `update` operations for modified tracks instead of `remove`+`add`.
+   * Off by default so existing consumers keep the previous shape.
+   */
+  useUpdateOp?: boolean;
 }
 
 /**
@@ -65,20 +79,41 @@ export function generateDelta(
     }
   }
 
-  // If there are modified tracks, they need to be removed and re-added
+  const updateTracks: UpdateTrack[] = [];
   if (modifiedTracks.length > 0) {
-    removeTracks.push(...modifiedTracks.map((t) => t.name));
-    addTracks.push(...modifiedTracks);
+    if (options.useUpdateOp) {
+      for (const t of modifiedTracks) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { name, namespace, ...patch } = t;
+        const op: UpdateTrack = { parentName: name, ...patch };
+        if (namespace !== undefined) {
+          op.parentNamespace = namespace;
+        }
+        updateTracks.push(op);
+      }
+    } else {
+      // Legacy path: encode as remove+add so older consumers keep working.
+      removeTracks.push(...modifiedTracks.map((t) => t.name));
+      addTracks.push(...modifiedTracks);
+    }
   }
 
   // No changes
-  if (addTracks.length === 0 && removeTracks.length === 0) {
+  if (
+    addTracks.length === 0 &&
+    removeTracks.length === 0 &&
+    updateTracks.length === 0
+  ) {
     return null;
   }
 
   const delta: DeltaCatalog = {
     version: MSF_VERSION,
     deltaUpdate: true,
+    generatedAt:
+      typeof options.generatedAt === 'number'
+        ? options.generatedAt
+        : Date.now(),
   };
 
   if (addTracks.length > 0) {
@@ -89,8 +124,8 @@ export function generateDelta(
     delta.removeTracks = removeTracks;
   }
 
-  if (options.generatedAt) {
-    delta.generatedAt = Date.now();
+  if (updateTracks.length > 0) {
+    delta.updateTracks = updateTracks;
   }
 
   return delta;
@@ -155,6 +190,27 @@ export function applyDelta(
     }
   }
 
+  // Update tracks in place (MSF §7 `update`).
+  if (delta.updateTracks && delta.updateTracks.length > 0) {
+    for (const patch of delta.updateTracks) {
+      const idx = tracks.findIndex((t) => {
+        if (t.name !== patch.parentName) return false;
+        if (patch.parentNamespace === undefined) return true;
+        const tns = t.namespace ?? [];
+        if (tns.length !== patch.parentNamespace.length) return false;
+        return tns.every((v, i) => v === patch.parentNamespace![i]);
+      });
+      if (idx < 0) {
+        throw new DeltaError(
+          `Parent track '${patch.parentName}' not found for update`
+        );
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { parentName, parentNamespace, ...rest } = patch;
+      tracks[idx] = { ...tracks[idx], ...rest };
+    }
+  }
+
   return {
     version: MSF_VERSION,
     tracks,
@@ -170,6 +226,7 @@ export class DeltaBuilder {
   private addTracks: Track[] = [];
   private removeTracks: string[] = [];
   private cloneTracks: CloneTrack[] = [];
+  private updateTracks: UpdateTrack[] = [];
   private _generatedAt?: number;
 
   /**
@@ -201,6 +258,22 @@ export class DeltaBuilder {
   }
 
   /**
+   * Update an existing track by name (MSF §7 `update`).
+   */
+  update(
+    parentName: string,
+    patch: Partial<Omit<Track, 'name'>>,
+    parentNamespace?: string[]
+  ): this {
+    const op: UpdateTrack = { parentName, ...patch };
+    if (parentNamespace !== undefined) {
+      op.parentNamespace = parentNamespace;
+    }
+    this.updateTracks.push(op);
+    return this;
+  }
+
+  /**
    * Set generation timestamp
    */
   generatedAt(timestamp?: number): this {
@@ -209,12 +282,14 @@ export class DeltaBuilder {
   }
 
   /**
-   * Build the delta catalog
+   * Build the delta catalog. Per MSF §7 `generatedAt` is REQUIRED on delta
+   * updates; if not set explicitly we default to `Date.now()`.
    */
   build(): DeltaCatalog {
     const delta: DeltaCatalog = {
       version: MSF_VERSION,
       deltaUpdate: true,
+      generatedAt: this._generatedAt ?? Date.now(),
     };
 
     if (this.addTracks.length > 0) {
@@ -229,8 +304,8 @@ export class DeltaBuilder {
       delta.cloneTracks = this.cloneTracks;
     }
 
-    if (this._generatedAt !== undefined) {
-      delta.generatedAt = this._generatedAt;
+    if (this.updateTracks.length > 0) {
+      delta.updateTracks = this.updateTracks;
     }
 
     return delta;
@@ -243,7 +318,8 @@ export class DeltaBuilder {
     return (
       this.addTracks.length > 0 ||
       this.removeTracks.length > 0 ||
-      this.cloneTracks.length > 0
+      this.cloneTracks.length > 0 ||
+      this.updateTracks.length > 0
     );
   }
 }

@@ -14,7 +14,7 @@ export interface CatalogOptions {
 }
 
 export function generateCatalog(options: CatalogOptions): string {
-  const builder = createCatalog().generatedAt().isComplete(true);
+  const builder = createCatalog().generatedAt().isComplete();
 
   for (let i = 0; i < options.numTracks; i++) {
     const isVideo = i % 2 === 0;

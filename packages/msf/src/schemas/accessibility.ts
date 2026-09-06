@@ -2,37 +2,71 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * @fileoverview Accessibility schema fields per PR #133
+ * @fileoverview Accessibility schema fields (MSF §16).
  *
- * Supports SCTE-35 markers and CEA-608/708 closed captions.
+ * Accessibility descriptors follow the DASH scheme/value model:
+ *   { scheme: "urn:scte:dash:cc:cea-608:2015", value: "CC1=eng;CC3=spa" }
+ *
+ * Also supports SCTE-35 markers for ad insertion.
  */
 
 import { z } from 'zod';
 
 /**
- * Accessibility feature types
+ * Known accessibility scheme URNs (MSF §16 Table).
  */
-export const AccessibilityTypeEnum = z.enum([
-  'cea608',
-  'cea708',
-  'dvb-subtitles',
-  'ttml',
-  'webvtt',
-]);
+export const AccessibilityScheme = {
+  CEA608: 'urn:scte:dash:cc:cea-608:2015',
+  CEA708: 'urn:scte:dash:cc:cea-708:2015',
+} as const;
 
 /**
- * Accessibility configuration for a track
+ * URN of an accessibility scheme (MSF §16).
+ *
+ * Reserved URNs: {@link AccessibilityScheme.CEA608}, {@link AccessibilityScheme.CEA708}.
+ * Custom URNs are permitted; any RFC 8141-shaped URN is accepted.
+ */
+export const AccessibilitySchemeSchema = z
+  .string()
+  .min(1)
+  .refine((v) => /^urn:[A-Za-z0-9][A-Za-z0-9-]{0,31}:[^\s]+$/.test(v), {
+    message: 'accessibility.scheme must be a URN (RFC 8141)',
+  });
+
+/**
+ * SCTE 214-1 accessibility value format: semicolon-separated `channel=lang`
+ * pairs (e.g. `"CC1=eng;CC3=spa"`).
+ */
+export const AccessibilityValueSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (v) =>
+      v.split(';').every((pair) => /^[A-Za-z0-9._-]+=[A-Za-z0-9-]+$/.test(pair.trim())),
+    {
+      message:
+        'accessibility.value must be SCTE 214-1 pairs (e.g. "CC1=eng;CC3=spa")',
+    }
+  );
+
+/**
+ * Accessibility descriptor for a track (MSF §16).
  */
 export const AccessibilitySchema = z.object({
-  /** Type of accessibility feature */
-  type: AccessibilityTypeEnum,
-  /** Language code (BCP 47) */
-  lang: z.string().optional(),
-  /** Human-readable label */
+  /** URN identifying the accessibility scheme. */
+  scheme: AccessibilitySchemeSchema,
+  /** Scheme-specific value; SCTE 214-1 formatted for CEA-608/708. */
+  value: AccessibilityValueSchema.optional(),
+  /** Human-readable label. */
   label: z.string().optional(),
-  /** Channel/service number for CEA-608/708 */
-  channel: z.number().int().min(1).max(63).optional(),
 });
+
+/**
+ * @deprecated Legacy shortname enum kept only for the two MSF §16 Table
+ * accessibility schemes. Non-spec shortnames (`ttml`, `webvtt`, `dvb-subtitles`)
+ * were removed; use the URN forms in {@link AccessibilityScheme} instead.
+ */
+export const AccessibilityTypeEnum = z.enum(['cea608', 'cea708']);
 
 /**
  * SCTE-35 marker configuration

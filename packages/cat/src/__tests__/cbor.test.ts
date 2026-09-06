@@ -282,9 +282,10 @@ describe('CBOR Codec', () => {
       expect(value).toEqual([1, 2, 3]);
     });
 
-    it('rejects unsupported tags', () => {
+    it('preserves application tags', () => {
       const encoded = cborEncodeTagged(99, [1, 2, 3]);
-      expect(() => cborDecode(encoded)).toThrow(CborError);
+      const { value } = cborDecode(encoded);
+      expect(value).toEqual({ tag: 99, value: [1, 2, 3] });
     });
   });
 
@@ -339,10 +340,12 @@ describe('CBOR Codec', () => {
       expect(() => cborDecode(data)).toThrow(CborError);
     });
 
-    it('throws on float values', () => {
+    it('decodes preferred floating-point values', () => {
       // CBOR half-float: 0xf9 0x3c 0x00 = 1.0
       const floatData = new Uint8Array([0xf9, 0x3c, 0x00]);
-      expect(() => cborDecode(floatData)).toThrow(CborError);
+      expect(cborDecode(floatData).value).toBe(1);
+      expect(cborEncode(1.5)).toEqual(new Uint8Array([0xf9, 0x3e, 0x00]));
+      expect(cborEncode(2 ** -24)).toEqual(new Uint8Array([0xf9, 0x00, 0x01]));
     });
 
     it('throws on unsupported value types', () => {

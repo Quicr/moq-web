@@ -7,11 +7,22 @@ import {
   parseCatalog,
   parseFullCatalog,
   parseDeltaCatalog,
+  parseCompressedCatalog,
   CatalogParseError,
   parseCatalogFromBytes,
 } from './parser.js';
-import { serializeCatalog, serializeCatalogToBytes } from './serializer.js';
+import {
+  serializeCatalog,
+  serializeCatalogToBytes,
+  serializeCompressedCatalog,
+} from './serializer.js';
 import { generateDelta, applyDelta, createDelta, DeltaError } from './delta.js';
+import {
+  compressBytes,
+  decompressBytes,
+  isCompressionAlgorithm,
+  COMPRESSION_ALGORITHMS,
+} from './compression.js';
 import { MSF_VERSION } from '../version.js';
 import type { FullCatalog, Track } from '../schemas/index.js';
 
@@ -141,6 +152,7 @@ describe('CatalogParser', () => {
     const json = JSON.stringify({
       version: MSF_VERSION,
       deltaUpdate: true,
+      generatedAt: Date.now(),
       addTracks: [
         { name: 'new-track', packaging: 'loc', isLive: false },
       ],
@@ -291,9 +303,31 @@ describe('Delta operations', () => {
       const delta = generateDelta(baseCatalog, newCatalog);
 
       expect(delta).not.toBeNull();
-      // Modified tracks are removed and re-added
+      // Modified tracks are removed and re-added by default (legacy shape).
       expect(delta!.removeTracks).toContain('track-a');
       expect(delta!.addTracks?.find((t) => t.name === 'track-a')).toBeDefined();
+    });
+
+    it('should emit update op when useUpdateOp=true (§7)', () => {
+      const newCatalog: FullCatalog = {
+        version: MSF_VERSION,
+        tracks: [
+          { name: 'track-a', packaging: 'loc', isLive: false },
+          baseCatalog.tracks[1],
+        ],
+      };
+
+      const delta = generateDelta(baseCatalog, newCatalog, {
+        useUpdateOp: true,
+      });
+
+      expect(delta).not.toBeNull();
+      expect(delta!.updateTracks).toHaveLength(1);
+      expect(delta!.updateTracks![0].parentName).toBe('track-a');
+      expect(delta!.updateTracks![0].isLive).toBe(false);
+      // Should NOT fall back to remove+add.
+      expect(delta!.removeTracks).toBeUndefined();
+      expect(delta!.addTracks).toBeUndefined();
     });
   });
 
@@ -347,6 +381,27 @@ describe('Delta operations', () => {
 
       expect(() => applyDelta(baseCatalog, delta)).toThrow(DeltaError);
     });
+
+    it('should apply update patch to an existing track (§7)', () => {
+      const delta = createDelta()
+        .update('track-a', { isLive: false, label: 'renamed' })
+        .build();
+
+      const result = applyDelta(baseCatalog, delta);
+
+      expect(result.tracks).toHaveLength(2);
+      const target = result.tracks.find((t) => t.name === 'track-a')!;
+      expect(target.isLive).toBe(false);
+      expect(target.label).toBe('renamed');
+      // Other tracks untouched.
+      const other = result.tracks.find((t) => t.name === 'track-b')!;
+      expect(other.isLive).toBe(true);
+    });
+
+    it('should throw when update target is missing', () => {
+      const delta = createDelta().update('nonexistent', { isLive: false }).build();
+      expect(() => applyDelta(baseCatalog, delta)).toThrow(DeltaError);
+    });
   });
 
   describe('DeltaBuilder', () => {
@@ -372,5 +427,94 @@ describe('Delta operations', () => {
       expect(delta.generatedAt).toBeGreaterThanOrEqual(before);
       expect(delta.generatedAt).toBeLessThanOrEqual(after);
     });
+
+    it('should default generatedAt on build (§7)', () => {
+      const before = Date.now();
+      const delta = createDelta()
+        .add({ name: 'x', packaging: 'loc', isLive: true })
+        .build();
+      const after = Date.now();
+      expect(delta.generatedAt).toBeGreaterThanOrEqual(before);
+      expect(delta.generatedAt).toBeLessThanOrEqual(after);
+    });
+  });
+});
+
+describe('MSF_COMPRESSION (§9)', () => {
+  it('accepts identity/gzip/deflate algorithm names', () => {
+    for (const algo of ['identity', 'gzip', 'deflate']) {
+      expect(isCompressionAlgorithm(algo)).toBe(true);
+    }
+    expect(isCompressionAlgorithm('brotli')).toBe(false);
+  });
+
+  it('exposes the full algorithm list', () => {
+    expect(COMPRESSION_ALGORITHMS).toEqual(['identity', 'gzip', 'deflate']);
+  });
+
+  it('roundtrips bytes through gzip', async () => {
+    const raw = new TextEncoder().encode('hello, world '.repeat(50));
+    const compressed = await compressBytes(raw, 'gzip');
+    expect(compressed.length).toBeGreaterThan(0);
+    // Should typically be smaller than the raw input for repetitive data
+    expect(compressed.length).toBeLessThan(raw.length);
+    const decompressed = await decompressBytes(compressed, 'gzip');
+    expect(new TextDecoder().decode(decompressed)).toBe(
+      'hello, world '.repeat(50)
+    );
+  });
+
+  it('roundtrips bytes through deflate', async () => {
+    const raw = new TextEncoder().encode('foo-bar-baz');
+    const compressed = await compressBytes(raw, 'deflate');
+    const decompressed = await decompressBytes(compressed, 'deflate');
+    expect(new TextDecoder().decode(decompressed)).toBe('foo-bar-baz');
+  });
+
+  it('passes bytes through unchanged on identity', async () => {
+    const raw = new Uint8Array([1, 2, 3, 4]);
+    const out = await compressBytes(raw, 'identity');
+    expect(out).toBe(raw);
+  });
+
+  it('roundtrips a catalog with catalog-level MSF_COMPRESSION=gzip', async () => {
+    const catalog = createCatalog()
+      .addVideoTrack({
+        name: 'video',
+        codec: 'avc1.4D401E',
+        width: 1280,
+        height: 720,
+        framerate: 30,
+        bitrate: 2_000_000,
+        isLive: true,
+      })
+      .build();
+    // Mark compression on the catalog metadata itself
+    (catalog as FullCatalog).MSF_COMPRESSION = 'gzip';
+
+    const { bytes, algorithm } = await serializeCompressedCatalog(catalog);
+    expect(algorithm).toBe('gzip');
+    const parsed = await parseCompressedCatalog(bytes, algorithm);
+    expect(parsed.version).toBe(MSF_VERSION);
+    expect(parsed.MSF_COMPRESSION).toBe('gzip');
+  });
+
+  it('accepts per-track MSF_COMPRESSION field', () => {
+    const catalog = createCatalog()
+      .addVideoTrack({
+        name: 'video',
+        codec: 'avc1',
+        width: 1280,
+        height: 720,
+        framerate: 30,
+        bitrate: 2_000_000,
+        isLive: true,
+      })
+      .build();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (catalog.tracks[0] as any).MSF_COMPRESSION = 'deflate';
+    const json = serializeCatalog(catalog);
+    const parsed = parseFullCatalog(json);
+    expect(parsed.tracks[0].MSF_COMPRESSION).toBe('deflate');
   });
 });

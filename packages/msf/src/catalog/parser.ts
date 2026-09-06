@@ -16,6 +16,7 @@ import {
   type FullCatalog,
   type DeltaCatalog,
 } from '../schemas/index.js';
+import { decompressBytes, type CompressionAlgorithm } from './compression.js';
 
 /**
  * Error thrown when catalog parsing fails
@@ -147,4 +148,19 @@ export function parseCatalogFromBytes(data: Uint8Array): Catalog {
   const decoder = new TextDecoder();
   const json = decoder.decode(data);
   return parseCatalog(json);
+}
+
+/**
+ * Decompress + parse an MSF §9 compressed catalog payload.
+ *
+ * @param data - Compressed catalog bytes.
+ * @param algorithm - Algorithm advertised by the transport (from the previous
+ *   catalog's `MSF_COMPRESSION` field or the associated header extension).
+ */
+export async function parseCompressedCatalog(
+  data: Uint8Array,
+  algorithm: CompressionAlgorithm
+): Promise<Catalog> {
+  const raw = await decompressBytes(data, algorithm);
+  return parseCatalogFromBytes(raw);
 }

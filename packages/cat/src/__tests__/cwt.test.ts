@@ -126,6 +126,27 @@ describe('CWT Claims', () => {
       expect(claims.exp).toBe(9999999);
     });
 
+    it('round-trips structured CTA claims', () => {
+      const claims: CwtClaims = {
+        catpor: [0.00005, new Uint8Array([1, 2, 3]), 1_700_000_000],
+        catnip: [{ tag: 52, value: new Uint8Array([127, 0, 0, 1]) }],
+        catu: new Map([[0, new Map([[0, 'https']])]]),
+        cath: new Map([['x-client', new Map([[1, 'moq']])]]),
+        catgeoalt: [100, 10],
+        catdpop: new Map([[0, 300], [1, 1]]),
+        catif: new Map([[ [4], [307, new Map([['Location', '/login']])] ]]),
+        catr: new Map([[0, 0], [1, 300]]),
+      };
+      const decoded = cwtClaimsDecode(cwtClaimsEncode(claims));
+      expect(decoded.catpor?.[0]).toBe(0.00005);
+      expect(decoded.catnip?.[0]).toEqual(claims.catnip?.[0]);
+      expect(decoded.catu?.get(0)?.get(0)).toBe('https');
+      expect(decoded.cath?.get('x-client')?.get(1)).toBe('moq');
+      expect(decoded.catgeoalt).toEqual([100, 10]);
+      expect(decoded.catif?.size).toBe(1);
+      expect(decoded.catr?.get(1)).toBe(300);
+    });
+
     it('handles legacy MOQT claim key 65000', () => {
       const scopes: CborValue[] = [
         [[0, 4], ['room', 'test']],
@@ -225,21 +246,17 @@ describe('MoQT Scopes', () => {
     });
   });
 
-  describe('handles invalid scope data gracefully', () => {
-    it('returns empty for non-array scopes', () => {
-      const result = moqtScopesDecode([42 as unknown as CborValue]);
-      expect(result.length).toBe(0);
+  describe('rejects malformed scope data', () => {
+    it('rejects non-array scopes', () => {
+      expect(() => moqtScopesDecode([42 as unknown as CborValue])).toThrow(CwtError);
     });
 
-    it('skips scopes with non-array actions', () => {
-      const result = moqtScopesDecode([['not-an-array-of-nums']]);
-      expect(result.length).toBe(0);
+    it('rejects scopes with non-array actions', () => {
+      expect(() => moqtScopesDecode([['not-an-array-of-nums']])).toThrow(CwtError);
     });
 
-    it('filters out invalid action numbers', () => {
-      const result = moqtScopesDecode([[[0, 99, 4]]]);
-      expect(result.length).toBe(1);
-      expect(result[0].actions).toEqual([MoqtAction.ClientSetup, MoqtAction.Subscribe]);
+    it('rejects invalid action numbers', () => {
+      expect(() => moqtScopesDecode([[[0, 99, 4]]])).toThrow(CwtError);
     });
   });
 });

@@ -62,6 +62,9 @@ export {
   FullCatalogSchema,
   DeltaCatalogSchema,
   CatalogSchema,
+  InitDataEntrySchema,
+  UpdateTrackSchema,
+  CompressionAlgorithmEnum,
   isDeltaCatalog,
   isFullCatalog,
   // Track schemas
@@ -69,8 +72,13 @@ export {
   TrackRoleEnum,
   BaseTrackFieldsSchema,
   CommonTrackFieldsSchema,
+  TrackObjectSchema,
   TrackSchema,
   CloneTrackSchema,
+  BuffersSchema,
+  AuthInfoSchema,
+  AuthSchemeSchema,
+  RESERVED_AUTH_SCHEMES,
   // Video/Audio schemas
   VideoFieldsSchema,
   AudioFieldsSchema,
@@ -87,11 +95,18 @@ export {
   KeyIdSchema,
   TrackBaseKeySchema,
   EncryptionFieldsSchema,
-  // Accessibility schemas (PR #133)
-  AccessibilityTypeEnum,
+  RECOMMENDED_ENCRYPTION_SCHEME,
+  // Accessibility schemas (MSF §16)
+  AccessibilityScheme,
+  AccessibilitySchemeSchema,
+  AccessibilityValueSchema,
   AccessibilitySchema,
   Scte35Schema,
   AccessibilityFieldsSchema,
+  AccessibilityTypeEnum,
+  // Immutability guards (§5.6, §6)
+  CatalogImmutabilityError,
+  assertCatalogImmutability,
 } from './schemas/index.js';
 
 // ============================================================================
@@ -104,11 +119,16 @@ export type {
   FullCatalog,
   DeltaCatalog,
   Catalog,
+  InitDataEntry,
+  UpdateTrack,
+  CompressionAlgorithm,
   // Track types
   Packaging,
   TrackRole,
   Track,
   CloneTrack,
+  Buffers,
+  AuthInfo,
   // Video/Audio types
   VideoFields,
   ChannelConfig,
@@ -152,10 +172,13 @@ export {
   parseDeltaCatalog,
   tryParseCatalog,
   parseCatalogFromBytes,
+  parseCompressedCatalog,
   // Serializer
   serializeCatalog,
   serializeCatalogToBytes,
+  serializeCompressedCatalog,
   type SerializeOptions,
+  type CompressedSerializeOptions,
   // Delta
   DeltaError,
   generateDelta,
@@ -163,6 +186,12 @@ export {
   DeltaBuilder,
   createDelta,
   type DeltaOptions,
+  // Compression (§9)
+  compressBytes,
+  decompressBytes,
+  CompressionError,
+  COMPRESSION_ALGORITHMS,
+  isCompressionAlgorithm,
 } from './catalog/index.js';
 
 // ============================================================================
@@ -201,6 +230,7 @@ export {
   createAudioTemplate,
   templateFromArray,
   templateToArray,
+  assertTemplateUnchanged,
 } from './timeline/index.js';
 
 // ============================================================================
@@ -226,7 +256,77 @@ export {
   buildFragment,
   buildNamespaceFragment,
   type MsfUrl,
+  // Variable substitution (§8)
+  VariableSubstitutionError,
+  parseFragmentVariables,
+  serializeFragmentVariables,
+  substituteVariables,
+  substituteVariablesDeep,
+  extractVariableNames,
+  isValidVariableName,
+  isValidVariableValue,
 } from './url/index.js';
+
+// ============================================================================
+// Security bridge (§3 moq-secure-objects integration)
+// ============================================================================
+
+export {
+  CipherSuiteMappingError,
+  MSF_TO_SO_CIPHER_SUITE,
+  SO_TO_MSF_CIPHER_SUITE,
+  toSoCipherSuite,
+  toMsfCipherSuite,
+  TrackSecurityError,
+  isSecureObjectsTrack,
+  createTrackContext,
+  parseKeyIdToBigInt,
+  MsfSecurityGateway,
+  ENCRYPTED_PROPERTIES_EXTENSION_ID,
+  trackRequiresGateway,
+  type CreateTrackContextOptions,
+  type SealedObject,
+  type OpenedObject,
+  type EncryptedPropertiesExtension,
+} from './security/index.js';
+
+// ============================================================================
+// Publish tracks (§13 moqlog, §14 moqmetrics)
+// ============================================================================
+
+export {
+  // Log track (§13)
+  LOG_NAMESPACE_BASE,
+  LogSeverity,
+  logNamespace,
+  encodeLogTrackName,
+  decodeLogTrackName,
+  logGroupIdFromMillis,
+  logGroupIdFromMicros,
+  LogEntrySchema,
+  LogTrackError,
+  type LogEntry,
+  type LogLocation,
+  // Metrics track (§14)
+  METRICS_NAMESPACE_BASE,
+  METRICS_HEADER_OBJECT_ID,
+  MetricsGranularity,
+  metricsNamespace,
+  encodeMetricsTrackName,
+  decodeMetricsTrackName,
+  metricsGroupIdFromMillis,
+  GaugeSchema,
+  CounterSchema,
+  MetricValueSchema,
+  MetricsHeaderSchema,
+  MetricRecordSchema,
+  MetricsTrackError,
+  type Gauge,
+  type Counter,
+  type MetricValue,
+  type MetricsHeader,
+  type MetricRecord,
+} from './publish-tracks/index.js';
 
 // ============================================================================
 // Session integration
@@ -238,6 +338,11 @@ export {
   SequentialGroupNumbering,
   createGroupNumbering,
   type GroupNumberingStrategy,
+  // §10 Prior Group ID Gap
+  PRIOR_GROUP_ID_GAP_EXTENSION_ID,
+  GroupIdGapTracker,
+  encodePriorGroupIdGap,
+  decodePriorGroupIdGap,
   // Catalog track
   CatalogTrackError,
   CatalogSubscriber,
@@ -253,4 +358,19 @@ export {
   type MSFSessionConfig,
   type TrackInfo,
   type PublishedTrackInfo,
+  type ReversePublishOptions,
 } from './session/index.js';
+
+// ============================================================================
+// Pluggable auth providers (§17)
+// ============================================================================
+
+export {
+  AuthProviderRegistry,
+  MissingAuthProviderError,
+  type AuthProvider,
+  type AuthContext,
+  type AuthAction,
+  type AuthToken,
+  type AuthValidationResult,
+} from './auth/index.js';

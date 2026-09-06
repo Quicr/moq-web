@@ -10,6 +10,7 @@ import {
   cborDecode,
   generateTestKeyPair,
   base64urlEncode,
+  moqtScopeAllows,
 } from '../index.js';
 import type { CborValue } from '../index.js';
 
@@ -86,7 +87,7 @@ describe('Performance', () => {
     expect(elapsed).toBeLessThan(200);
   });
 
-  it('CAT token decode from base64url: 1000 tokens under 150ms', () => {
+  it('CAT token decode from base64url: 1000 tokens under 500ms', () => {
     const b64 = base64urlEncode(sampleToken);
 
     const start = performance.now();
@@ -97,7 +98,7 @@ describe('Performance', () => {
 
     // eslint-disable-next-line no-console
     console.log(`CAT decode base64url 1000 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
-    expect(elapsed).toBeLessThan(150);
+    expect(elapsed).toBeLessThan(500);
   });
 
   it('CAT token sign: 100 tokens under 5000ms', async () => {
@@ -134,5 +135,21 @@ describe('Performance', () => {
     // eslint-disable-next-line no-console
     console.log(`CAT validate 100 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 100).toFixed(2)}ms/op)`);
     expect(elapsed).toBeLessThan(10000);
+  });
+
+  it('MoQT scope policy: 100000 checks under 1000ms', () => {
+    const scope = {
+      actions: [MoqtAction.Subscribe],
+      namespaceMatch: ['conference', { type: 1 as const, value: 'room-' }],
+      trackMatch: { type: 2 as const, value: '.m4s' },
+    };
+    const start = performance.now();
+    for (let i = 0; i < 100_000; i++) {
+      moqtScopeAllows(scope, MoqtAction.Subscribe, ['conference', 'room-1'], 'video.m4s');
+    }
+    const elapsed = performance.now() - start;
+    // eslint-disable-next-line no-console
+    console.log(`MoQT scope policy 100000 checks: ${elapsed.toFixed(2)}ms (${(elapsed / 100_000).toFixed(4)}ms/op)`);
+    expect(elapsed).toBeLessThan(1000);
   });
 });

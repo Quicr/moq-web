@@ -18,6 +18,14 @@ import {
   buildFragment,
   MsfUrlError,
 } from './parser.js';
+import {
+  parseFragmentVariables,
+  serializeFragmentVariables,
+  substituteVariables,
+  substituteVariablesDeep,
+  extractVariableNames,
+  VariableSubstitutionError,
+} from './variables.js';
 
 describe('NamespaceEncoder', () => {
   describe('encodeElement/decodeElement', () => {
@@ -226,6 +234,165 @@ describe('MsfUrlParser', () => {
       expect(parsed.namespace).toEqual(namespace);
       expect(parsed.trackName).toBe(trackName);
       expect(parsed.relayUrl).toBe(relayUrl);
+    });
+  });
+});
+
+describe('Variable substitution (§8)', () => {
+  describe('parseFragmentVariables', () => {
+    it('parses simple k=v pairs', () => {
+      expect(parseFragmentVariables('bitrate=1000&lang=en')).toEqual({
+        bitrate: '1000',
+        lang: 'en',
+      });
+    });
+
+    it('accepts empty input', () => {
+      expect(parseFragmentVariables('')).toEqual({});
+    });
+
+    it('accepts @ in values', () => {
+      expect(parseFragmentVariables('user=alice@example')).toEqual({
+        user: 'alice@example',
+      });
+    });
+
+    it('rejects invalid names', () => {
+      expect(() => parseFragmentVariables('bad name=1')).toThrow(
+        VariableSubstitutionError
+      );
+      expect(() => parseFragmentVariables('bad%name=1')).toThrow();
+    });
+
+    it('rejects invalid values', () => {
+      expect(() => parseFragmentVariables('k=has space')).toThrow(
+        VariableSubstitutionError
+      );
+      expect(() => parseFragmentVariables('k=has/slash')).toThrow();
+    });
+
+    it("rejects '?' (reserved server-side)", () => {
+      expect(() => parseFragmentVariables('k=v?extra=1')).toThrow(
+        VariableSubstitutionError
+      );
+    });
+
+    it('rejects duplicates', () => {
+      expect(() => parseFragmentVariables('k=1&k=2')).toThrow(
+        VariableSubstitutionError
+      );
+    });
+
+    it('rejects missing "="', () => {
+      expect(() => parseFragmentVariables('k')).toThrow(
+        VariableSubstitutionError
+      );
+    });
+  });
+
+  describe('serializeFragmentVariables', () => {
+    it('roundtrips', () => {
+      const vars = { bitrate: '1000', lang: 'en' };
+      expect(parseFragmentVariables(serializeFragmentVariables(vars))).toEqual(
+        vars
+      );
+    });
+
+    it('rejects invalid names/values', () => {
+      expect(() => serializeFragmentVariables({ 'bad name': 'v' })).toThrow();
+      expect(() => serializeFragmentVariables({ k: 'has space' })).toThrow();
+    });
+  });
+
+  describe('substituteVariables', () => {
+    it('substitutes tokens', () => {
+      expect(
+        substituteVariables('rate-%bitrate%-%lang%', {
+          bitrate: '1000',
+          lang: 'en',
+        })
+      ).toBe('rate-1000-en');
+    });
+
+    it('throws on unresolved by default', () => {
+      expect(() =>
+        substituteVariables('%missing%', { present: 'x' })
+      ).toThrow(VariableSubstitutionError);
+    });
+
+    it('leaves unresolved when allowUnresolved=true', () => {
+      expect(
+        substituteVariables('%missing%', { present: 'x' }, {
+          allowUnresolved: true,
+        })
+      ).toBe('%missing%');
+    });
+
+    it('leaves plain text alone', () => {
+      expect(substituteVariables('no tokens here', {})).toBe('no tokens here');
+    });
+  });
+
+  describe('substituteVariablesDeep', () => {
+    it('walks nested objects and arrays', () => {
+      const template = {
+        codec: '%codec%',
+        list: ['%a%', 'plain'],
+        nested: { path: 'items/%id%' },
+        n: 42,
+      };
+      const result = substituteVariablesDeep(template, {
+        codec: 'avc1',
+        a: 'first',
+        id: '123',
+      });
+      expect(result).toEqual({
+        codec: 'avc1',
+        list: ['first', 'plain'],
+        nested: { path: 'items/123' },
+        n: 42,
+      });
+    });
+  });
+
+  describe('extractVariableNames', () => {
+    it('collects unique names', () => {
+      expect(extractVariableNames('%a%-%b%/%a%')).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('parseMsfUrl with variables', () => {
+    it('parses trailing k=v pairs', () => {
+      const url = 'https://relay.example/moq#room-1--video&bitrate=1000&lang=en';
+      const parsed = parseMsfUrl(url);
+      expect(parsed.namespace).toEqual(['room', '1']);
+      expect(parsed.trackName).toBe('video');
+      expect(parsed.variables).toEqual({
+        bitrate: '1000',
+        lang: 'en',
+      });
+    });
+
+    it('defaults variables to empty', () => {
+      const url = 'https://relay.example/moq#room--video';
+      const parsed = parseMsfUrl(url);
+      expect(parsed.variables).toEqual({});
+    });
+  });
+
+  describe('generateMsfUrl with variables', () => {
+    it('appends k=v pairs to the fragment', () => {
+      const url = generateMsfUrl(
+        'https://relay.example/moq',
+        ['room'],
+        'video',
+        { bitrate: '1000', lang: 'en' }
+      );
+      expect(url).toBe(
+        'https://relay.example/moq#room--video&bitrate=1000&lang=en'
+      );
+      const parsed = parseMsfUrl(url);
+      expect(parsed.variables).toEqual({ bitrate: '1000', lang: 'en' });
     });
   });
 });

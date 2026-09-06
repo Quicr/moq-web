@@ -11,17 +11,30 @@
 import { z } from 'zod';
 
 /**
- * Encryption scheme identifiers per MSF spec
- * moq-secure-objects is the recommended scheme
+ * Recommended `encryptionScheme` value (MSF §3).
  */
-export const EncryptionSchemeEnum = z.enum([
-  'moq-secure-objects',
-  // Legacy/alternative schemes for compatibility
-  'cenc',
-  'cbc1',
-  'cens',
-  'cbcs',
-]);
+export const RECOMMENDED_ENCRYPTION_SCHEME = 'moq-secure-objects' as const;
+
+/**
+ * `encryptionScheme` identifier (MSF §3, §6).
+ *
+ * The spec calls out `moq-secure-objects` as the RECOMMENDED value; any other
+ * identifier MUST use reverse Domain Name Notation (e.g.
+ * `com.example.custom-scheme`). We accept the recommended value or any
+ * reverse-DNS-shaped string and reject bare shortnames.
+ */
+export const EncryptionSchemeEnum = z
+  .string()
+  .min(1)
+  .refine(
+    (v) =>
+      v === RECOMMENDED_ENCRYPTION_SCHEME ||
+      /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*){2,}$/.test(v),
+    {
+      message:
+        "encryptionScheme must be 'moq-secure-objects' or a reverse-DNS identifier (e.g. 'com.example.scheme')",
+    }
+  );
 
 /**
  * Cipher suites for moq-secure-objects encryption

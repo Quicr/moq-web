@@ -8,6 +8,10 @@
  */
 
 import type { Catalog } from '../schemas/index.js';
+import {
+  compressBytes,
+  type CompressionAlgorithm,
+} from './compression.js';
 
 /**
  * Options for catalog serialization
@@ -17,6 +21,15 @@ export interface SerializeOptions {
   pretty?: boolean;
   /** Number of spaces for indentation (default: 2) */
   indent?: number;
+}
+
+/**
+ * Options for compressed catalog serialization (§9 MSF_COMPRESSION).
+ */
+export interface CompressedSerializeOptions extends SerializeOptions {
+  /** Compression algorithm to apply. Defaults to the catalog's own
+   *  `MSF_COMPRESSION`; use `identity` to disable. */
+  compression?: CompressionAlgorithm;
 }
 
 /**
@@ -50,4 +63,22 @@ export function serializeCatalogToBytes(
   const json = serializeCatalog(catalog, options);
   const encoder = new TextEncoder();
   return encoder.encode(json);
+}
+
+/**
+ * Serialize a catalog and apply MSF §9 compression.
+ *
+ * If `options.compression` is not provided, the catalog's own
+ * `MSF_COMPRESSION` field is used; if that is also missing, the payload is
+ * returned uncompressed (`identity`).
+ */
+export async function serializeCompressedCatalog(
+  catalog: Catalog,
+  options: CompressedSerializeOptions = {}
+): Promise<{ bytes: Uint8Array; algorithm: CompressionAlgorithm }> {
+  const algorithm =
+    options.compression ?? catalog.MSF_COMPRESSION ?? 'identity';
+  const raw = serializeCatalogToBytes(catalog, options);
+  const bytes = await compressBytes(raw, algorithm);
+  return { bytes, algorithm };
 }

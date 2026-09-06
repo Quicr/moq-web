@@ -13,10 +13,19 @@ export type {
   FullCatalog,
   DeltaCatalog,
   Catalog,
+  InitDataEntry,
+  UpdateTrack,
 } from '../schemas/catalog.js';
 
 // Track types
-export type { Packaging, TrackRole, Track, CloneTrack } from '../schemas/track.js';
+export type {
+  Packaging,
+  TrackRole,
+  Track,
+  CloneTrack,
+  Buffers,
+  AuthInfo,
+} from '../schemas/track.js';
 
 // Video/Audio types
 export type { VideoFields } from '../schemas/video-track.js';
@@ -108,11 +117,11 @@ export interface AudioTrackInput {
  */
 export interface DataTrackInput {
   name: string;
-  packaging: 'loc' | 'mediatimeline' | 'eventtimeline';
+  packaging: 'loc' | 'mediatimeline' | 'eventtimeline' | 'moqlog' | 'moqmetrics' | 'catalog';
   isLive: boolean;
   mimeType?: string;
   namespace?: string[];
-  role?: 'metadata' | 'logs' | 'metrics';
+  role?: 'metadata' | 'log' | 'logs' | 'metrics' | 'data';
   label?: string;
   timescale?: number;
 }

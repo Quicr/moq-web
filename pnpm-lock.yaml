@@ -321,9 +321,15 @@ importers:
 
   packages/msf:
     dependencies:
+      '@moq-web/cat':
+        specifier: workspace:*
+        version: link:../cat
       '@moq-web/core':
         specifier: workspace:*
         version: link:../core
+      '@moq-web/secure-objects':
+        specifier: workspace:*
+        version: link:../secure-objects
       '@moq-web/session':
         specifier: workspace:*
         version: link:../session

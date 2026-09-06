@@ -1,14 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
-/**
- * @fileoverview COSE_Sign1 Implementation (RFC 9052)
- *
- * Implements COSE_Sign1 structure for creating and verifying
- * signed tokens using ECDSA (ES256/ES384/ES512) via WebCrypto.
- */
+/** RFC 9052 COSE_Sign1 and COSE_Mac0 with WebCrypto-backed algorithms. */
 
-import { cborEncode, cborDecode, cborDecodeTagged } from './cbor.js';
+import { cborEncode, cborDecodeExact, cborDecodeTagged } from './cbor.js';
 import {
   CoseAlgorithm,
   CoseHeaderParam,
@@ -17,140 +12,74 @@ import {
   type CborValue,
 } from './types.js';
 
-/** COSE_Sign1 CBOR tag number */
+const COSE_MAC0_TAG = 17;
 const COSE_SIGN1_TAG = 18;
 
-/**
- * Convert Uint8Array to ArrayBuffer for WebCrypto API compatibility.
- */
-function toArrayBuffer(arr: Uint8Array): ArrayBuffer {
-  return arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength) as ArrayBuffer;
+function toArrayBuffer(value: Uint8Array): ArrayBuffer {
+  return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
 }
 
-// ============================================================================
-// Encoding / Decoding
-// ============================================================================
+function coseArray(message: CoseSign1): CborValue[] {
+  return [message.protectedHeader, message.unprotectedHeader, message.payload, message.signature];
+}
 
-/**
- * Encode a COSE_Sign1 structure to CBOR bytes.
- * Produces a bare 4-element array (no CBOR Tag 18) for relay compatibility.
- */
+function decodeMessage(data: Uint8Array, expectedTag: number, name: string): CoseSign1 {
+  const decoded = cborDecodeTagged(data);
+  if (decoded.bytesRead !== data.length) throw new CoseError('Trailing bytes after COSE message');
+  if (decoded.tag !== -1 && decoded.tag !== expectedTag) throw new CoseError(`Unexpected CBOR tag: ${decoded.tag}`);
+  if (!Array.isArray(decoded.value) || decoded.value.length !== 4) throw new CoseError(`${name} must be a four-element array`);
+  const [protectedHeader, unprotectedHeader, payload, signature] = decoded.value;
+  if (!(protectedHeader instanceof Uint8Array)) throw new CoseError('COSE protected header must be a bstr');
+  if (!(unprotectedHeader instanceof Map)) throw new CoseError('COSE unprotected header must be a map');
+  for (const key of unprotectedHeader.keys()) {
+    if (typeof key !== 'number' || !Number.isSafeInteger(key)) throw new CoseError('COSE header labels must be safe integer labels');
+  }
+  if (!(payload instanceof Uint8Array)) throw new CoseError('COSE payload must be a bstr');
+  if (!(signature instanceof Uint8Array)) throw new CoseError('COSE signature/MAC must be a bstr');
+  const message = { protectedHeader, unprotectedHeader: unprotectedHeader as Map<number, CborValue>, payload, signature };
+  validateHeaders(message);
+  return message;
+}
+
+function validateHeaders(message: CoseSign1): void {
+  if (message.protectedHeader.length === 0) throw new CoseError('Protected header must be a bstr containing a CBOR map');
+  const protectedMap = cborDecodeExact(message.protectedHeader);
+  if (!(protectedMap instanceof Map)) throw new CoseError('Protected header must be a CBOR map');
+  for (const key of message.unprotectedHeader.keys()) {
+    if (protectedMap.has(key)) throw new CoseError(`COSE header parameter appears in both protected and unprotected headers: ${key}`);
+  }
+}
+
 export function coseSign1Encode(sign1: CoseSign1): Uint8Array {
-  const array: CborValue[] = [
-    sign1.protectedHeader,
-    sign1.unprotectedHeader,
-    sign1.payload,
-    sign1.signature,
-  ];
-  return cborEncode(array);
+  validateHeaders(sign1);
+  return wrapCose(COSE_SIGN1_TAG, sign1);
 }
 
-/**
- * Decode a COSE_Sign1 structure from CBOR bytes.
- * Handles both CBOR Tag 18 and bare 4-element array.
- *
- * @throws {CoseError} If the data is not a valid COSE_Sign1 structure
- */
 export function coseSign1Decode(data: Uint8Array): CoseSign1 {
-  const { tag, value } = cborDecodeTagged(data);
-
-  // Accept both tagged (18) and bare array
-  if (tag !== -1 && tag !== COSE_SIGN1_TAG) {
-    throw new CoseError(`Unexpected CBOR tag: ${tag}, expected ${COSE_SIGN1_TAG}`);
-  }
-
-  if (!Array.isArray(value) || value.length !== 4) {
-    throw new CoseError(`COSE_Sign1 must be a 4-element array, got ${Array.isArray(value) ? value.length : typeof value}`);
-  }
-
-  const [protectedHeader, unprotectedHeader, payload, signature] = value;
-
-  if (!(protectedHeader instanceof Uint8Array)) {
-    throw new CoseError('COSE_Sign1 protected header must be a bstr');
-  }
-  if (!(payload instanceof Uint8Array)) {
-    throw new CoseError('COSE_Sign1 payload must be a bstr');
-  }
-  if (!(signature instanceof Uint8Array)) {
-    throw new CoseError('COSE_Sign1 signature must be a bstr');
-  }
-
-  // Decode unprotected header map
-  let unprotectedMap: Map<number, CborValue>;
-  if (unprotectedHeader instanceof Map) {
-    unprotectedMap = unprotectedHeader as Map<number, CborValue>;
-  } else {
-    unprotectedMap = new Map();
-  }
-
-  return {
-    protectedHeader,
-    unprotectedHeader: unprotectedMap,
-    payload,
-    signature,
-  };
+  return decodeMessage(data, COSE_SIGN1_TAG, 'COSE_Sign1');
 }
 
-// ============================================================================
-// Sig_structure (RFC 9052 Section 4.4)
-// ============================================================================
-
-/**
- * Construct the Sig_structure for COSE_Sign1 signing/verification.
- *
- * Sig_structure = [
- *   context : "Signature1",
- *   body_protected : bstr,
- *   external_aad : bstr,
- *   payload : bstr
- * ]
- */
-export function coseSign1SigStructure(
-  protectedHeader: Uint8Array,
-  payload: Uint8Array,
-  externalAAD: Uint8Array = new Uint8Array(0),
-): Uint8Array {
-  const structure: CborValue[] = [
-    'Signature1',
-    protectedHeader,
-    externalAAD,
-    payload,
-  ];
-  return cborEncode(structure);
+export function coseMac0Encode(mac0: CoseSign1): Uint8Array {
+  validateHeaders(mac0);
+  return wrapCose(COSE_MAC0_TAG, mac0);
 }
 
-/**
- * Construct the MAC_structure for COSE_Mac0 (RFC 9052 Section 6.3).
- *
- * MAC_structure = [
- *   context : "MAC0",
- *   body_protected : bstr,
- *   external_aad : bstr,
- *   payload : bstr
- * ]
- */
-export function coseMac0MacStructure(
-  protectedHeader: Uint8Array,
-  payload: Uint8Array,
-  externalAAD: Uint8Array = new Uint8Array(0),
-): Uint8Array {
-  const structure: CborValue[] = [
-    'MAC0',
-    protectedHeader,
-    externalAAD,
-    payload,
-  ];
-  return cborEncode(structure);
+export function coseMac0Decode(data: Uint8Array): CoseSign1 {
+  return decodeMessage(data, COSE_MAC0_TAG, 'COSE_Mac0');
 }
 
-// ============================================================================
-// Sign / Verify
-// ============================================================================
+function wrapCose(tag: number, message: CoseSign1): Uint8Array {
+  return cborEncode({ tag, value: coseArray(message) });
+}
 
-/**
- * Create and sign a COSE_Sign1 or COSE_Mac0 structure.
- * Automatically selects Sig_structure vs MAC_structure based on algorithm.
- */
+export function coseSign1SigStructure(protectedHeader: Uint8Array, payload: Uint8Array, externalAAD = new Uint8Array(0)): Uint8Array {
+  return cborEncode(['Signature1', protectedHeader, externalAAD, payload]);
+}
+
+export function coseMac0MacStructure(protectedHeader: Uint8Array, payload: Uint8Array, externalAAD = new Uint8Array(0)): Uint8Array {
+  return cborEncode(['MAC0', protectedHeader, externalAAD, payload]);
+}
+
 export async function coseSign1Sign(
   algorithm: CoseAlgorithm,
   protectedHeaders: Map<number, CborValue>,
@@ -158,176 +87,115 @@ export async function coseSign1Sign(
   privateKey: CryptoKey,
   unprotectedHeaders?: Map<number, CborValue>,
 ): Promise<CoseSign1> {
-  const algParams = COSE_ALG_PARAMS[algorithm];
-  if (!algParams) {
-    throw new CoseError(`Unsupported COSE algorithm: ${algorithm}`);
-  }
+  const params = algorithmParams(algorithm);
+  if (params.isMac) throw new CoseError('HMAC uses COSE_Mac0, not COSE_Sign1');
+  const message = await signMessage(algorithm, protectedHeaders, payload, privateKey, unprotectedHeaders, false);
+  return message;
+}
 
-  // Build protected header map with algorithm
+export async function coseMac0Sign(
+  algorithm: CoseAlgorithm,
+  protectedHeaders: Map<number, CborValue>,
+  payload: Uint8Array,
+  secretKey: CryptoKey,
+  unprotectedHeaders?: Map<number, CborValue>,
+): Promise<CoseSign1> {
+  const params = algorithmParams(algorithm);
+  if (!params.isMac) throw new CoseError('COSE_Mac0 requires a MAC algorithm');
+  return signMessage(algorithm, protectedHeaders, payload, secretKey, unprotectedHeaders, true);
+}
+
+async function signMessage(
+  algorithm: CoseAlgorithm,
+  protectedHeaders: Map<number, CborValue>,
+  payload: Uint8Array,
+  key: CryptoKey,
+  unprotectedHeaders: Map<number, CborValue> | undefined,
+  isMac: boolean,
+): Promise<CoseSign1> {
+  const params = algorithmParams(algorithm);
   const headerMap = new Map<number, CborValue>(protectedHeaders);
   headerMap.set(CoseHeaderParam.ALG, algorithm);
-
-  // Encode protected header to CBOR
   const protectedHeader = cborEncode(headerMap);
-
-  // Construct signing/MAC input based on algorithm type
-  const toBeSigned = algParams.isMac
-    ? coseMac0MacStructure(protectedHeader, payload)
-    : coseSign1SigStructure(protectedHeader, payload);
-
-  // Sign or MAC with WebCrypto
-  let signatureBuffer: ArrayBuffer;
-  if (algParams.isMac) {
-    signatureBuffer = await crypto.subtle.sign(
-      algParams.name,
-      privateKey,
-      toArrayBuffer(toBeSigned),
-    );
-  } else {
-    signatureBuffer = await crypto.subtle.sign(
-      { name: algParams.name, hash: algParams.hash },
-      privateKey,
-      toArrayBuffer(toBeSigned),
-    );
-  }
-
-  const signature = new Uint8Array(signatureBuffer);
-
-  // Validate signature/tag length
-  if (signature.length !== algParams.sigLength) {
-    throw new CoseError(
-      `Unexpected signature length: ${signature.length}, expected ${algParams.sigLength}`,
-    );
-  }
-
-  return {
-    protectedHeader,
-    unprotectedHeader: unprotectedHeaders ?? new Map(),
-    payload,
-    signature,
-  };
+  const unprotectedHeader = unprotectedHeaders ?? new Map<number, CborValue>();
+  const message: CoseSign1 = { protectedHeader, unprotectedHeader, payload, signature: new Uint8Array(0) };
+  validateHeaders(message);
+  const input = isMac ? coseMac0MacStructure(protectedHeader, payload) : coseSign1SigStructure(protectedHeader, payload);
+  const signature = await crypto.subtle.sign(cryptoAlgorithm(params), key, toArrayBuffer(input));
+  const bytes = new Uint8Array(signature);
+  if (params.sigLength > 0 && bytes.length !== params.sigLength) throw new CoseError(`Unexpected signature length: ${bytes.length}`);
+  message.signature = bytes;
+  return message;
 }
 
-/**
- * Verify the signature of a COSE_Sign1 structure.
- *
- * Accepts an optional `requiredAlgorithm` to prevent algorithm confusion.
- * When provided, the token's algorithm must match exactly.
- *
- * Only catches DOMException from WebCrypto. Other errors propagate.
- */
-export async function coseSign1Verify(
-  sign1: CoseSign1,
-  publicKey: CryptoKey,
-  requiredAlgorithm?: CoseAlgorithm,
-): Promise<boolean> {
-  // Extract algorithm from protected header
+export async function coseSign1Verify(sign1: CoseSign1, publicKey: CryptoKey, requiredAlgorithm?: CoseAlgorithm): Promise<boolean> {
   const algorithm = coseSign1GetAlgorithm(sign1);
-  const algParams = COSE_ALG_PARAMS[algorithm];
-  if (!algParams) {
-    return false;
-  }
+  const params = algorithmParams(algorithm);
+  if (params.isMac || (requiredAlgorithm !== undefined && algorithm !== requiredAlgorithm)) return false;
+  if (publicKey.type !== 'public') return false;
+  if (!keyMatches(params, publicKey)) return false;
+  return verifyMessage(sign1, publicKey, false, requiredAlgorithm);
+}
 
-  // Enforce required algorithm if specified
-  if (requiredAlgorithm !== undefined && algorithm !== requiredAlgorithm) {
-    return false;
-  }
+export async function coseMac0Verify(mac0: CoseSign1, secretKey: CryptoKey, requiredAlgorithm?: CoseAlgorithm): Promise<boolean> {
+  const algorithm = coseSign1GetAlgorithm(mac0);
+  const params = algorithmParams(algorithm);
+  if (!params.isMac || (requiredAlgorithm !== undefined && algorithm !== requiredAlgorithm)) return false;
+  if (secretKey.type !== 'secret' || !keyMatches(params, secretKey)) return false;
+  return verifyMessage(mac0, secretKey, true, requiredAlgorithm);
+}
 
-  // For ECDSA: verify algorithm matches the public key's curve
-  if (!algParams.isMac) {
-    const keyAlg = publicKey.algorithm as EcKeyAlgorithm;
-    if (keyAlg.namedCurve && keyAlg.namedCurve !== algParams.namedCurve) {
-      return false;
-    }
-  }
-
-  // Validate signature/tag length
-  if (sign1.signature.length !== algParams.sigLength) {
-    return false;
-  }
-
-  // Construct signing/MAC input based on algorithm type
-  const toBeVerified = algParams.isMac
-    ? coseMac0MacStructure(sign1.protectedHeader, sign1.payload)
-    : coseSign1SigStructure(sign1.protectedHeader, sign1.payload);
-
-  // Only catch DOMException from WebCrypto, let other errors propagate
+async function verifyMessage(message: CoseSign1, key: CryptoKey, isMac: boolean, requiredAlgorithm?: CoseAlgorithm): Promise<boolean> {
   try {
-    if (algParams.isMac) {
-      return await crypto.subtle.verify(
-        algParams.name,
-        publicKey, // for HMAC, this is the shared secret key
-        toArrayBuffer(sign1.signature),
-        toArrayBuffer(toBeVerified),
-      );
-    }
-    return await crypto.subtle.verify(
-      { name: algParams.name, hash: algParams.hash },
-      publicKey,
-      toArrayBuffer(sign1.signature),
-      toArrayBuffer(toBeVerified),
-    );
-  } catch (e) {
-    if (e instanceof DOMException) {
-      return false;
-    }
-    throw e;
+    validateHeaders(message);
+    const algorithm = coseSign1GetAlgorithm(message);
+    const params = algorithmParams(algorithm);
+    if (requiredAlgorithm !== undefined && algorithm !== requiredAlgorithm) return false;
+    if (params.sigLength > 0 && message.signature.length !== params.sigLength) return false;
+    const input = isMac ? coseMac0MacStructure(message.protectedHeader, message.payload) : coseSign1SigStructure(message.protectedHeader, message.payload);
+    return await crypto.subtle.verify(cryptoAlgorithm(params), key, toArrayBuffer(message.signature), toArrayBuffer(input));
+  } catch (error) {
+    if (error instanceof DOMException || error instanceof CoseError) return false;
+    throw error;
   }
 }
 
-/**
- * Extract the algorithm from a COSE_Sign1 protected header.
- *
- * @throws {CoseError} If the algorithm is missing or unsupported
- */
+function cryptoAlgorithm(params: Readonly<(typeof COSE_ALG_PARAMS)[CoseAlgorithm]>): AlgorithmIdentifier | RsaPssParams | EcKeyImportParams {
+  if (params.keyType === 'MAC') return { name: params.name };
+  if (params.keyType === 'RSA') return { name: params.name, hash: params.hash, saltLength: params.saltLength! } as RsaPssParams;
+  return { name: params.name, hash: params.hash } as EcdsaParams;
+}
+
+function keyMatches(params: Readonly<(typeof COSE_ALG_PARAMS)[CoseAlgorithm]>, key: CryptoKey): boolean {
+  const algorithm = key.algorithm as EcKeyAlgorithm & RsaHashedKeyAlgorithm;
+  if (params.keyType === 'EC') return algorithm.name === 'ECDSA' && algorithm.namedCurve === params.namedCurve;
+  if (params.keyType === 'RSA') return algorithm.name === 'RSA-PSS';
+  return algorithm.name === 'HMAC';
+}
+
+function algorithmParams(algorithm: CoseAlgorithm) {
+  const params = COSE_ALG_PARAMS[algorithm];
+  if (!params) throw new CoseError(`Unsupported COSE algorithm: ${algorithm}`);
+  return params;
+}
+
 export function coseSign1GetAlgorithm(sign1: CoseSign1): CoseAlgorithm {
-  // Empty protected header (zero bytes) is invalid — must contain at least an empty map
-  if (sign1.protectedHeader.length === 0) {
-    throw new CoseError('Empty protected header');
-  }
-
-  const decoded = cborDecode(sign1.protectedHeader);
-  if (!(decoded.value instanceof Map)) {
-    throw new CoseError('Protected header must be a CBOR map');
-  }
-
-  const alg = decoded.value.get(CoseHeaderParam.ALG);
-  if (alg === undefined) {
-    throw new CoseError('Algorithm (alg) not found in protected header');
-  }
-
-  const algValue = typeof alg === 'number' ? alg : Number(alg);
-  if (!(algValue in COSE_ALG_PARAMS)) {
-    throw new CoseError(`Unsupported algorithm: ${algValue}`);
-  }
-
-  return algValue as CoseAlgorithm;
+  const header = coseSign1DecodeProtectedHeader(sign1.protectedHeader);
+  const value = header.get(CoseHeaderParam.ALG);
+  if (typeof value !== 'number' && typeof value !== 'bigint') throw new CoseError('Algorithm missing from protected header');
+  const algorithm = Number(value);
+  if (!Number.isSafeInteger(algorithm) || !(algorithm in COSE_ALG_PARAMS)) throw new CoseError(`Unsupported algorithm: ${algorithm}`);
+  return algorithm as CoseAlgorithm;
 }
 
-/**
- * Decode the protected header of a COSE_Sign1 as a map.
- *
- * Rejects truly empty headers (0 bytes). Accepts empty CBOR map (0xa0).
- */
-export function coseSign1DecodeProtectedHeader(
-  protectedHeader: Uint8Array,
-): Map<number, CborValue> {
-  if (protectedHeader.length === 0) {
-    throw new CoseError('Protected header must not be empty');
-  }
-  const decoded = cborDecode(protectedHeader);
-  if (!(decoded.value instanceof Map)) {
-    throw new CoseError('Protected header must be a CBOR map');
-  }
-  return decoded.value as Map<number, CborValue>;
+export function coseSign1DecodeProtectedHeader(protectedHeader: Uint8Array): Map<number, CborValue> {
+  if (protectedHeader.length === 0) throw new CoseError('Protected header must not be empty');
+  const value = cborDecodeExact(protectedHeader);
+  if (!(value instanceof Map)) throw new CoseError('Protected header must be a CBOR map');
+  for (const key of value.keys()) if (typeof key !== 'number') throw new CoseError('COSE header labels must be integers');
+  return value as Map<number, CborValue>;
 }
 
-/**
- * COSE encoding/decoding error.
- */
 export class CoseError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'CoseError';
-  }
+  constructor(message: string) { super(message); this.name = 'CoseError'; }
 }

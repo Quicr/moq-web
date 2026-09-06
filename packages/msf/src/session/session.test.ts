@@ -7,6 +7,12 @@ import {
   SequentialGroupNumbering,
   createGroupNumbering,
 } from './group-numbering.js';
+import {
+  GroupIdGapTracker,
+  PRIOR_GROUP_ID_GAP_EXTENSION_ID,
+  encodePriorGroupIdGap,
+  decodePriorGroupIdGap,
+} from './group-gap.js';
 
 describe('GroupNumbering', () => {
   describe('EpochGroupNumbering', () => {
@@ -153,3 +159,99 @@ describe('GroupNumbering', () => {
 // Note: CatalogSubscriber and CatalogPublisher tests would require
 // mocking MOQTSession, which is more complex. These are integration
 // tests that should be run with a real or mocked session.
+
+describe('Prior Group ID Gap extension (§10)', () => {
+  it('reserves extension id 0x20', () => {
+    expect(PRIOR_GROUP_ID_GAP_EXTENSION_ID).toBe(0x20);
+  });
+
+  describe('varint codec', () => {
+    it('roundtrips 1-byte values', () => {
+      for (const v of [0n, 1n, 42n, 63n]) {
+        const bytes = encodePriorGroupIdGap(v);
+        expect(bytes).toHaveLength(1);
+        expect(decodePriorGroupIdGap(bytes).value).toBe(v);
+      }
+    });
+
+    it('roundtrips 2-byte values', () => {
+      for (const v of [64n, 0x3fffn]) {
+        const bytes = encodePriorGroupIdGap(v);
+        expect(bytes).toHaveLength(2);
+        expect(decodePriorGroupIdGap(bytes).value).toBe(v);
+      }
+    });
+
+    it('roundtrips 4-byte values', () => {
+      for (const v of [0x4000n, 0x3fff_ffffn]) {
+        const bytes = encodePriorGroupIdGap(v);
+        expect(bytes).toHaveLength(4);
+        expect(decodePriorGroupIdGap(bytes).value).toBe(v);
+      }
+    });
+
+    it('roundtrips 8-byte values', () => {
+      for (const v of [0x4000_0000n, 0x3fff_ffff_ffff_ffffn]) {
+        const bytes = encodePriorGroupIdGap(v);
+        expect(bytes).toHaveLength(8);
+        expect(decodePriorGroupIdGap(bytes).value).toBe(v);
+      }
+    });
+
+    it('rejects negative values', () => {
+      expect(() => encodePriorGroupIdGap(-1)).toThrow(RangeError);
+    });
+
+    it('rejects overflow', () => {
+      expect(() => encodePriorGroupIdGap(0x4000_0000_0000_0000n)).toThrow(
+        RangeError
+      );
+    });
+  });
+
+  describe('GroupIdGapTracker', () => {
+    it('emits no extension when there was no prior state', () => {
+      const t = new GroupIdGapTracker();
+      const { groupId, extension } = t.nextGroupAfterRestart(10);
+      expect(groupId).toBe(10n);
+      expect(extension).toBeUndefined();
+    });
+
+    it('emits Prior Group ID Gap after restart', () => {
+      const t = new GroupIdGapTracker(42);
+      t.restart();
+      const { groupId, extension } = t.nextGroupAfterRestart(100);
+      expect(groupId).toBe(100n);
+      expect(extension).toBeDefined();
+      expect(extension!.id).toBe(PRIOR_GROUP_ID_GAP_EXTENSION_ID);
+      expect(decodePriorGroupIdGap(extension!.value).value).toBe(42n);
+    });
+
+    it('forces next groupId strictly greater than the prior max', () => {
+      const t = new GroupIdGapTracker(50);
+      t.restart();
+      // Publisher tried to reuse 30 by mistake; tracker bumps to 51.
+      const { groupId } = t.nextGroupAfterRestart(30);
+      expect(groupId).toBe(51n);
+    });
+
+    it('records groups so a later restart uses the highest observed id', () => {
+      const t = new GroupIdGapTracker();
+      t.recordGroup(1);
+      t.recordGroup(5);
+      t.recordGroup(3);
+      t.restart();
+      const { extension } = t.nextGroupAfterRestart(10);
+      expect(decodePriorGroupIdGap(extension!.value).value).toBe(5n);
+    });
+
+    it('emits the extension only on the first group after each restart', () => {
+      const t = new GroupIdGapTracker(1);
+      t.restart();
+      const first = t.nextGroupAfterRestart(2);
+      const second = t.nextGroupAfterRestart(3);
+      expect(first.extension).toBeDefined();
+      expect(second.extension).toBeUndefined();
+    });
+  });
+});

@@ -43,4 +43,5 @@ export {
   createAudioTemplate,
   templateFromArray,
   templateToArray,
+  assertTemplateUnchanged,
 } from './template.js';

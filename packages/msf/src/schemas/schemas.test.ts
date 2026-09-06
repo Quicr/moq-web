@@ -10,13 +10,18 @@ import {
   EncryptionSchemeEnum,
   CipherSuiteEnum,
   AccessibilityTypeEnum,
+  AccessibilitySchema,
   FullCatalogSchema,
   DeltaCatalogSchema,
   MediaTimelineTemplateSchema,
   MediaTimelineTemplateArraySchema,
   EventTimelineEntrySchema,
   LocationRefSchema,
+  AuthSchemeSchema,
+  assertCatalogImmutability,
+  CatalogImmutabilityError,
 } from './index.js';
+import type { FullCatalog } from './index.js';
 import { MSF_VERSION } from '../version.js';
 
 describe('TrackSchema', () => {
@@ -123,7 +128,7 @@ describe('TrackSchema', () => {
         isLive: true,
         role: 'caption',
         accessibility: [
-          { type: 'cea708', lang: 'en', channel: 1 },
+          { scheme: 'urn:scte:dash:cc:cea-708:2015', value: 'CC1=eng' },
         ],
       });
       expect(result.success).toBe(true);
@@ -192,6 +197,76 @@ describe('TrackSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('§6 track fields added for spec compliance', () => {
+    it('should accept initRef and authInfo', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        initRef: 'video-init',
+        authInfo: { scheme: 'privacy-pass', token: 'opaque' },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept publishTracks-oriented fields', () => {
+      const result = TrackSchema.safeParse({
+        name: 'client-audio',
+        packaging: 'loc',
+        isLive: true,
+        connectionUri: 'https://relay.example/moq',
+        token: 'jwt.opaque.token',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept max{Gop,Group}Duration and avgBitrate', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        avgBitrate: 4_000_000,
+        maxGopDuration: 2000,
+        maxGroupDuration: 2500,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept buffers alone', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        buffers: { target: 1500, min: 500, max: 3000 },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject buffers combined with targetLatency', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        buffers: { target: 1500 },
+        targetLatency: 800,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toContain('mutually exclusive');
+      }
+    });
+
+    it('should reject authInfo without scheme', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        authInfo: { token: 'x' },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('PackagingEnum', () => {
@@ -199,6 +274,9 @@ describe('PackagingEnum', () => {
     expect(PackagingEnum.safeParse('loc').success).toBe(true);
     expect(PackagingEnum.safeParse('mediatimeline').success).toBe(true);
     expect(PackagingEnum.safeParse('eventtimeline').success).toBe(true);
+    expect(PackagingEnum.safeParse('moqlog').success).toBe(true);
+    expect(PackagingEnum.safeParse('moqmetrics').success).toBe(true);
+    expect(PackagingEnum.safeParse('catalog').success).toBe(true);
   });
 
   it('should reject invalid packaging type', () => {
@@ -208,16 +286,29 @@ describe('PackagingEnum', () => {
 });
 
 describe('TrackRoleEnum', () => {
-  it('should accept all valid roles', () => {
-    const validRoles = [
-      'main', 'alternate', 'supplementary', 'commentary', 'dub',
-      'emergency', 'caption', 'subtitle', 'sign-language', 'metadata',
-      'logs', 'metrics',
+  it('should accept spec-reserved roles (§6 Table 4)', () => {
+    const specRoles = [
+      'audiodescription', 'video', 'audio', 'mediatimeline', 'eventtimeline',
+      'caption', 'subtitle', 'signlanguage', 'log', 'metrics', 'data',
     ];
-
-    for (const role of validRoles) {
+    for (const role of specRoles) {
       expect(TrackRoleEnum.safeParse(role).success).toBe(true);
     }
+  });
+
+  it('should accept common extension roles', () => {
+    const extensionRoles = [
+      'main', 'alternate', 'supplementary', 'commentary', 'dub', 'emergency',
+    ];
+    for (const role of extensionRoles) {
+      expect(TrackRoleEnum.safeParse(role).success).toBe(true);
+    }
+  });
+
+  it('should accept legacy aliases for backwards compatibility', () => {
+    expect(TrackRoleEnum.safeParse('sign-language').success).toBe(true);
+    expect(TrackRoleEnum.safeParse('metadata').success).toBe(true);
+    expect(TrackRoleEnum.safeParse('logs').success).toBe(true);
   });
 
   it('should reject invalid role', () => {
@@ -246,16 +337,15 @@ describe('EncryptionSchemeEnum', () => {
     expect(EncryptionSchemeEnum.safeParse('moq-secure-objects').success).toBe(true);
   });
 
-  it('should accept legacy schemes', () => {
-    const legacySchemes = ['cenc', 'cbc1', 'cens', 'cbcs'];
-
-    for (const scheme of legacySchemes) {
-      expect(EncryptionSchemeEnum.safeParse(scheme).success).toBe(true);
-    }
+  it('should accept reverse-DNS custom schemes (§3)', () => {
+    expect(EncryptionSchemeEnum.safeParse('com.example.custom-scheme').success).toBe(true);
+    expect(EncryptionSchemeEnum.safeParse('org.moq.experimental.foo').success).toBe(true);
   });
 
-  it('should reject invalid scheme', () => {
-    expect(EncryptionSchemeEnum.safeParse('aes').success).toBe(false);
+  it('should reject bare shortnames like DASH CENC identifiers', () => {
+    for (const scheme of ['cenc', 'cbc1', 'cens', 'cbcs', 'aes']) {
+      expect(EncryptionSchemeEnum.safeParse(scheme).success).toBe(false);
+    }
   });
 });
 
@@ -274,17 +364,53 @@ describe('CipherSuiteEnum', () => {
   });
 });
 
-describe('AccessibilityTypeEnum', () => {
-  it('should accept all accessibility types', () => {
-    const validTypes = ['cea608', 'cea708', 'dvb-subtitles', 'ttml', 'webvtt'];
+describe('AccessibilitySchema (§16)', () => {
+  it('should accept CEA-608/708 URNs with SCTE 214-1 values', () => {
+    for (const scheme of [
+      'urn:scte:dash:cc:cea-608:2015',
+      'urn:scte:dash:cc:cea-708:2015',
+    ]) {
+      const result = AccessibilitySchema.safeParse({
+        scheme,
+        value: 'CC1=eng;CC3=spa',
+        label: 'English + Spanish',
+      });
+      expect(result.success).toBe(true);
+    }
+  });
 
-    for (const type of validTypes) {
+  it('should accept custom URN schemes', () => {
+    const result = AccessibilitySchema.safeParse({
+      scheme: 'urn:example:custom-cc',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject shortname scheme values', () => {
+    const result = AccessibilitySchema.safeParse({ scheme: 'cea708' });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject malformed SCTE 214-1 value', () => {
+    const result = AccessibilitySchema.safeParse({
+      scheme: 'urn:scte:dash:cc:cea-608:2015',
+      value: 'CC1 eng; CC3=spa', // no `=` on first pair
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('AccessibilityTypeEnum (legacy shortnames)', () => {
+  it('should accept the two spec-listed shortnames', () => {
+    for (const type of ['cea608', 'cea708']) {
       expect(AccessibilityTypeEnum.safeParse(type).success).toBe(true);
     }
   });
 
-  it('should reject invalid type', () => {
-    expect(AccessibilityTypeEnum.safeParse('srt').success).toBe(false);
+  it('should reject non-spec legacy names (removed after URN migration)', () => {
+    for (const removed of ['ttml', 'webvtt', 'dvb-subtitles', 'srt']) {
+      expect(AccessibilityTypeEnum.safeParse(removed).success).toBe(false);
+    }
   });
 });
 
@@ -324,6 +450,39 @@ describe('CatalogSchema', () => {
       });
       expect(result.success).toBe(false);
     });
+
+    it('should accept catalog with publishTracks', () => {
+      const result = FullCatalogSchema.safeParse({
+        version: MSF_VERSION,
+        tracks: [],
+        publishTracks: [
+          { name: 'client-audio', packaging: 'loc', isLive: true },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept catalog with initDataList', () => {
+      const result = FullCatalogSchema.safeParse({
+        version: MSF_VERSION,
+        tracks: [
+          { name: 'video', packaging: 'loc', isLive: true },
+        ],
+        initDataList: [
+          { id: 'video-init', data: 'AAAA', mimeType: 'video/mp4' },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject initDataList entries without id', () => {
+      const result = FullCatalogSchema.safeParse({
+        version: MSF_VERSION,
+        tracks: [],
+        initDataList: [{ data: 'AAAA' }],
+      });
+      expect(result.success).toBe(false);
+    });
   });
 
   describe('DeltaCatalogSchema', () => {
@@ -331,6 +490,7 @@ describe('CatalogSchema', () => {
       const result = DeltaCatalogSchema.safeParse({
         version: MSF_VERSION,
         deltaUpdate: true,
+        generatedAt: Date.now(),
         addTracks: [
           { name: 'new-track', packaging: 'loc', isLive: true },
         ],
@@ -342,6 +502,7 @@ describe('CatalogSchema', () => {
       const result = DeltaCatalogSchema.safeParse({
         version: MSF_VERSION,
         deltaUpdate: true,
+        generatedAt: Date.now(),
         removeTracks: ['old-track'],
       });
       expect(result.success).toBe(true);
@@ -351,6 +512,7 @@ describe('CatalogSchema', () => {
       const result = DeltaCatalogSchema.safeParse({
         version: MSF_VERSION,
         deltaUpdate: true,
+        generatedAt: Date.now(),
         cloneTracks: [
           { sourceName: 'video', name: 'video-copy' },
         ],
@@ -362,9 +524,115 @@ describe('CatalogSchema', () => {
       const result = DeltaCatalogSchema.safeParse({
         version: MSF_VERSION,
         deltaUpdate: false,
+        generatedAt: Date.now(),
         addTracks: [],
       });
       expect(result.success).toBe(false);
+    });
+
+    it('should require generatedAt on delta updates (§7)', () => {
+      const result = DeltaCatalogSchema.safeParse({
+        version: MSF_VERSION,
+        deltaUpdate: true,
+        addTracks: [
+          { name: 'new-track', packaging: 'loc', isLive: true },
+        ],
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('conditional field validation (§6/§11/§12)', () => {
+    it('should require codec + bitrate for A/V LOC tracks', () => {
+      const missingCodec = TrackSchema.safeParse({
+        name: 'video-main',
+        packaging: 'loc',
+        role: 'video',
+        isLive: true,
+        bitrate: 2_000_000,
+      });
+      expect(missingCodec.success).toBe(false);
+
+      const missingBitrate = TrackSchema.safeParse({
+        name: 'video-main',
+        packaging: 'loc',
+        role: 'video',
+        isLive: true,
+        codec: 'avc1.4D401E',
+      });
+      expect(missingBitrate.success).toBe(false);
+    });
+
+    it('should require samplerate + channelConfig for audio-role LOC', () => {
+      const result = TrackSchema.safeParse({
+        name: 'audio-main',
+        packaging: 'loc',
+        role: 'audio',
+        isLive: true,
+        codec: 'opus',
+        bitrate: 128_000,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept fully specified audio LOC track', () => {
+      const result = TrackSchema.safeParse({
+        name: 'audio-main',
+        packaging: 'loc',
+        role: 'audio',
+        isLive: true,
+        codec: 'opus',
+        bitrate: 128_000,
+        samplerate: 48000,
+        channelConfig: 'stereo',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should require eventType for eventtimeline packaging', () => {
+      const result = TrackSchema.safeParse({
+        name: 'events',
+        packaging: 'eventtimeline',
+        isLive: true,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should require depends for mediatimeline packaging', () => {
+      const missing = TrackSchema.safeParse({
+        name: 'timeline',
+        packaging: 'mediatimeline',
+        isLive: true,
+      });
+      expect(missing.success).toBe(false);
+
+      const ok = TrackSchema.safeParse({
+        name: 'timeline',
+        packaging: 'mediatimeline',
+        isLive: true,
+        depends: ['video-main'],
+      });
+      expect(ok.success).toBe(true);
+    });
+
+    it('should reject trackDuration on live tracks', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: true,
+        trackDuration: 10_000,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept trackDuration on VOD tracks', () => {
+      const result = TrackSchema.safeParse({
+        name: 'video',
+        packaging: 'loc',
+        isLive: false,
+        trackDuration: 10_000,
+      });
+      expect(result.success).toBe(true);
     });
   });
 });
@@ -415,14 +683,33 @@ describe('TimelineSchemas', () => {
       expect(result.success).toBe(true);
     });
 
-    it('should accept entry with multiple references', () => {
+    it('should reject entry with multiple temporal indices (MSF §12)', () => {
       const result = EventTimelineEntrySchema.safeParse({
         t: 1700000000000,
         l: [1, 0],
         m: 90000,
         data: { combined: true },
       });
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject entry with two of t/l/m (MSF §12)', () => {
+      expect(
+        EventTimelineEntrySchema.safeParse({ t: 1, l: [0, 0] }).success
+      ).toBe(false);
+      expect(
+        EventTimelineEntrySchema.safeParse({ t: 1, m: 2 }).success
+      ).toBe(false);
+      expect(
+        EventTimelineEntrySchema.safeParse({ l: [0, 0], m: 2 }).success
+      ).toBe(false);
+    });
+
+    it('should reject entry with no temporal index (MSF §12)', () => {
+      const result = EventTimelineEntrySchema.safeParse({
+        data: { orphan: true },
+      });
+      expect(result.success).toBe(false);
     });
 
     it('should reject invalid location format', () => {
@@ -502,5 +789,168 @@ describe('TimelineSchemas', () => {
         expect(result.data.startObjectId).toBe(0);
       }
     });
+  });
+});
+
+describe('AuthSchemeSchema (§17 Table 7)', () => {
+  it('should accept reserved schemes privacy-pass and cat', () => {
+    expect(AuthSchemeSchema.safeParse('privacy-pass').success).toBe(true);
+    expect(AuthSchemeSchema.safeParse('cat').success).toBe(true);
+  });
+
+  it('should accept reverse-DNS custom identifiers', () => {
+    expect(AuthSchemeSchema.safeParse('com.example.auth').success).toBe(true);
+    expect(AuthSchemeSchema.safeParse('org.moq.experimental.foo').success).toBe(true);
+  });
+
+  it('should reject bare shortnames outside the reserved set', () => {
+    for (const bad of ['oauth', 'bearer', 'jwt', 'basic']) {
+      expect(AuthSchemeSchema.safeParse(bad).success).toBe(false);
+    }
+  });
+});
+
+describe('DeltaCatalogSchema strictness (§7)', () => {
+  it('should reject unknown fields on delta root', () => {
+    const result = DeltaCatalogSchema.safeParse({
+      version: MSF_VERSION,
+      deltaUpdate: true,
+      generatedAt: Date.now(),
+      addTracks: [],
+      // §7 forbids anything other than the listed keys on a delta root:
+      someUnknownField: 'nope',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('FullCatalogSchema altGroup alignment (§2)', () => {
+  it('should reject altGroup peers with mismatched timescale', () => {
+    const result = FullCatalogSchema.safeParse({
+      version: MSF_VERSION,
+      tracks: [
+        {
+          name: 'v-720',
+          packaging: 'loc',
+          isLive: true,
+          altGroup: 1,
+          timescale: 90000,
+        },
+        {
+          name: 'v-480',
+          packaging: 'loc',
+          isLive: true,
+          altGroup: 1,
+          timescale: 48000,
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject VOD altGroup peers with mismatched trackDuration', () => {
+    const result = FullCatalogSchema.safeParse({
+      version: MSF_VERSION,
+      tracks: [
+        {
+          name: 'v-720',
+          packaging: 'loc',
+          isLive: false,
+          altGroup: 2,
+          trackDuration: 60_000,
+        },
+        {
+          name: 'v-480',
+          packaging: 'loc',
+          isLive: false,
+          altGroup: 2,
+          trackDuration: 61_000,
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept altGroup peers that agree on timescale', () => {
+    const result = FullCatalogSchema.safeParse({
+      version: MSF_VERSION,
+      tracks: [
+        {
+          name: 'v-720',
+          packaging: 'loc',
+          isLive: true,
+          altGroup: 3,
+          timescale: 90000,
+        },
+        {
+          name: 'v-480',
+          packaging: 'loc',
+          isLive: true,
+          altGroup: 3,
+          timescale: 90000,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('assertCatalogImmutability (§5.6, §6)', () => {
+  const base: FullCatalog = {
+    version: MSF_VERSION,
+    tracks: [{ name: 'video-main', packaging: 'loc', isLive: true }],
+  };
+
+  it('accepts a no-op republish', () => {
+    expect(() => assertCatalogImmutability(base, base)).not.toThrow();
+  });
+
+  it('rejects removing `isComplete: true`', () => {
+    const prev: FullCatalog = { ...base, isComplete: true };
+    expect(() => assertCatalogImmutability(prev, base)).toThrow(
+      CatalogImmutabilityError
+    );
+  });
+
+  it('accepts adding `isComplete: true`', () => {
+    const next: FullCatalog = { ...base, isComplete: true };
+    expect(() => assertCatalogImmutability(base, next)).not.toThrow();
+  });
+
+  it('rejects flipping isLive from false → true', () => {
+    const prev: FullCatalog = {
+      ...base,
+      tracks: [{ name: 'video-main', packaging: 'loc', isLive: false }],
+    };
+    const next: FullCatalog = {
+      ...base,
+      tracks: [{ name: 'video-main', packaging: 'loc', isLive: true }],
+    };
+    expect(() => assertCatalogImmutability(prev, next)).toThrow(
+      CatalogImmutabilityError
+    );
+  });
+
+  it('accepts flipping isLive from true → false (live→VOD is allowed)', () => {
+    const prev: FullCatalog = {
+      ...base,
+      tracks: [{ name: 'video-main', packaging: 'loc', isLive: true }],
+    };
+    const next: FullCatalog = {
+      ...base,
+      tracks: [{ name: 'video-main', packaging: 'loc', isLive: false }],
+    };
+    expect(() => assertCatalogImmutability(prev, next)).not.toThrow();
+  });
+
+  it('ignores tracks that only appear in `next`', () => {
+    const next: FullCatalog = {
+      ...base,
+      tracks: [
+        { name: 'video-main', packaging: 'loc', isLive: true },
+        { name: 'audio-main', packaging: 'loc', isLive: true },
+      ],
+    };
+    expect(() => assertCatalogImmutability(base, next)).not.toThrow();
   });
 });

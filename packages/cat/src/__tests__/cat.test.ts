@@ -233,14 +233,13 @@ describe('CatTokenDecoder', () => {
       expect(result.error).toContain('exp');
     });
 
-    it('defaults requireExp to true', async () => {
+    it('does not require exp by default (CTA claims are optional)', async () => {
       const tokenBytes = await new CatTokenBuilder()
         .issuer('test')
         .sign(keyPair.privateKey);
 
       const result = await CatTokenDecoder.validate(tokenBytes, keyPair.publicKey);
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('exp');
+      expect(result.valid).toBe(true);
     });
 
     it('allows missing exp when requireExp is false', async () => {

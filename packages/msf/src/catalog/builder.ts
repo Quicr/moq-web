@@ -8,7 +8,7 @@
  */
 
 import { MSF_VERSION } from '../version.js';
-import type { FullCatalog, Track } from '../schemas/index.js';
+import type { FullCatalog, InitDataEntry, Track } from '../schemas/index.js';
 import type { VideoTrackInput, AudioTrackInput, DataTrackInput } from '../types/index.js';
 
 /**
@@ -37,8 +37,10 @@ import type { VideoTrackInput, AudioTrackInput, DataTrackInput } from '../types/
  */
 export class CatalogBuilder {
   private tracks: Track[] = [];
+  private _publishTracks: Track[] = [];
+  private _initDataList: InitDataEntry[] = [];
   private _generatedAt?: number;
-  private _isComplete?: boolean;
+  private _isComplete?: true;
 
   /**
    * Set the generation timestamp to now
@@ -49,10 +51,14 @@ export class CatalogBuilder {
   }
 
   /**
-   * Mark the catalog as complete (all tracks known)
+   * Mark the catalog as complete (all tracks known).
+   *
+   * MSF §5.6: `isComplete` MUST NOT be included if it is false — this is a
+   * one-way latch that promises no further tracks or objects will be added.
+   * The builder therefore only accepts the `true` value.
    */
-  isComplete(complete = true): this {
-    this._isComplete = complete;
+  isComplete(): this {
+    this._isComplete = true;
     return this;
   }
 
@@ -156,6 +162,22 @@ export class CatalogBuilder {
   }
 
   /**
+   * Add a track subscribers may publish back on this session (§5 `publishTracks`).
+   */
+  addPublishTrack(track: Track): this {
+    this._publishTracks.push(track);
+    return this;
+  }
+
+  /**
+   * Register an initialization-data entry referenced by track `initRef` (§5 `initDataList`).
+   */
+  addInitData(entry: InitDataEntry): this {
+    this._initDataList.push(entry);
+    return this;
+  }
+
+  /**
    * Build the catalog
    */
   build(): FullCatalog {
@@ -170,6 +192,14 @@ export class CatalogBuilder {
 
     if (this._isComplete !== undefined) {
       catalog.isComplete = this._isComplete;
+    }
+
+    if (this._publishTracks.length > 0) {
+      catalog.publishTracks = this._publishTracks;
+    }
+
+    if (this._initDataList.length > 0) {
+      catalog.initDataList = this._initDataList;
     }
 
     return catalog;

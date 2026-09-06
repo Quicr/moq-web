@@ -8,7 +8,7 @@
  * management and track discovery.
  */
 
-import type { MOQTSession, VODPublishOptions } from '@moq-web/session';
+import type { MOQTSession, PublishOptions, VODPublishOptions } from '@moq-web/session';
 import type { FullCatalog, Track } from '../schemas/index.js';
 import {
   CatalogSubscriber,
@@ -18,6 +18,12 @@ import {
   type CatalogPublishOptions,
 } from './catalog-track.js';
 import { generateMsfUrl, generateCatalogUrl, parseMsfUrl } from '../url/index.js';
+import {
+  AuthProviderRegistry,
+  MissingAuthProviderError,
+  type AuthContext,
+  type AuthProvider,
+} from '../auth/index.js';
 
 /**
  * Published track info
@@ -34,6 +40,31 @@ export interface PublishedTrackInfo {
 export interface MSFSessionConfig {
   /** Catalog publish options */
   catalogPublishOptions?: CatalogPublishOptions;
+  /**
+   * Pluggable auth providers keyed by scheme (§17). Apps hand in one
+   * provider per scheme they intend to support; MSF selects the right one
+   * by matching against each track's `authInfo.scheme`. Either pass a
+   * pre-built registry or an array of providers to auto-register.
+   */
+  authProviders?: AuthProviderRegistry | readonly AuthProvider[];
+}
+
+/**
+ * Options for publishing a reverse (§5 `publishTracks`) track.
+ */
+export interface ReversePublishOptions {
+  /**
+   * Application-level session context threaded through to the auth
+   * provider (e.g. userId, tenant, capability hints). Ignored when the
+   * target track has no `authInfo`.
+   */
+  sessionContext?: Record<string, unknown>;
+  /**
+   * Publish options forwarded to the underlying session. Auth token +
+   * namespace/name are supplied by MSF from the catalog entry; anything
+   * else (priority, deliveryMode, expires) rides through unchanged.
+   */
+  publishOptions?: Omit<PublishOptions, 'authToken'>;
 }
 
 /**
@@ -71,6 +102,7 @@ export class MSFSession {
   private catalogPublisher: CatalogPublisher | null = null;
   private config: MSFSessionConfig;
   private publishedTracks: Map<string, PublishedTrackInfo> = new Map();
+  private authProviders: AuthProviderRegistry;
 
   constructor(
     session: MOQTSession,
@@ -80,6 +112,19 @@ export class MSFSession {
     this.session = session;
     this.namespace = namespace;
     this.config = config;
+    if (config.authProviders instanceof AuthProviderRegistry) {
+      this.authProviders = config.authProviders;
+    } else {
+      this.authProviders = new AuthProviderRegistry(config.authProviders ?? []);
+    }
+  }
+
+  /**
+   * Expose the auth provider registry so apps can register/unregister
+   * providers after session creation (e.g. after a login flow).
+   */
+  getAuthProviders(): AuthProviderRegistry {
+    return this.authProviders;
   }
 
   /**
@@ -293,6 +338,89 @@ export class MSFSession {
       trackAlias,
       trackName,
       type: 'vod',
+    });
+
+    return trackAlias;
+  }
+
+  /**
+   * Resolve the auth token (if any) for a track by delegating to the
+   * matching provider. Throws {@link MissingAuthProviderError} when the
+   * track declares an `authInfo.scheme` but no provider is registered.
+   */
+  private async resolveAuthToken(
+    track: Track,
+    action: AuthContext['action'],
+    sessionContext?: Record<string, unknown>
+  ): Promise<
+    | { tokenBytes: Uint8Array; tokenType?: number }
+    | undefined
+  > {
+    const scheme = track.authInfo?.scheme;
+    if (scheme === undefined) return undefined;
+    const provider = this.authProviders.get(scheme);
+    if (provider === undefined) {
+      throw new MissingAuthProviderError(scheme);
+    }
+    const token = await provider.obtainToken({
+      namespace: track.namespace ?? this.namespace,
+      trackName: track.name,
+      track,
+      authInfo: track.authInfo,
+      action,
+      sessionContext,
+    });
+    if (token === null) return undefined;
+    return { tokenBytes: token.tokenBytes, tokenType: token.tokenType };
+  }
+
+  /**
+   * Publish a reverse-direction (§5 `publishTracks`) track.
+   *
+   * Subscribers that received a catalog with `publishTracks` may open a
+   * publication back to the session for logs/metrics/custom uplinks. This
+   * looks up the track entry in the current catalog's `publishTracks`,
+   * resolves any `authInfo` via the registered auth providers, and delegates
+   * to `session.publish()`.
+   *
+   * @param trackName Name of the track (must appear in `publishTracks`).
+   * @param options   Optional publish options + auth session context.
+   * @returns The track alias assigned by the underlying session.
+   */
+  async publishReverse(
+    trackName: string,
+    options: ReversePublishOptions = {}
+  ): Promise<bigint> {
+    const catalog = this.getCatalog();
+    const entry = catalog?.publishTracks?.find((t) => t.name === trackName);
+    if (!entry) {
+      throw new Error(
+        `Track '${trackName}' not found in catalog publishTracks (§5)`
+      );
+    }
+
+    const targetNamespace = entry.namespace ?? this.namespace;
+    const authToken = await this.resolveAuthToken(
+      entry,
+      'publish',
+      options.sessionContext
+    );
+
+    const publishOptions: PublishOptions = {
+      ...options.publishOptions,
+      ...(authToken !== undefined ? { authToken } : {}),
+    };
+
+    const trackAlias = await this.session.publish(
+      targetNamespace,
+      trackName,
+      publishOptions
+    );
+
+    this.publishedTracks.set(trackName, {
+      trackAlias,
+      trackName,
+      type: 'live',
     });
 
     return trackAlias;
