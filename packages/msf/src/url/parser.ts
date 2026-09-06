@@ -74,7 +74,7 @@ export function parseMsfUrl(url: string): MsfUrl {
   const varPart = ampIdx < 0 ? '' : raw.substring(ampIdx + 1);
 
   const trackRef = decodeTrackReference(refPart);
-  let variables: Record<string, string> = {};
+  let variables: Record<string, string>;
   try {
     variables = parseFragmentVariables(varPart);
   } catch (err) {

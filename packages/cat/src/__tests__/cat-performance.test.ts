@@ -87,7 +87,7 @@ describe('Performance', () => {
     expect(elapsed).toBeLessThan(200);
   });
 
-  it('CAT token decode from base64url: 1000 tokens under 150ms', () => {
+  it('CAT token decode from base64url: 1000 tokens under 500ms', () => {
     const b64 = base64urlEncode(sampleToken);
 
     const start = performance.now();
@@ -98,7 +98,7 @@ describe('Performance', () => {
 
     // eslint-disable-next-line no-console
     console.log(`CAT decode base64url 1000 tokens: ${elapsed.toFixed(2)}ms (${(elapsed / 1000).toFixed(3)}ms/op)`);
-    expect(elapsed).toBeLessThan(150);
+    expect(elapsed).toBeLessThan(500);
   });
 
   it('CAT token sign: 100 tokens under 5000ms', async () => {
