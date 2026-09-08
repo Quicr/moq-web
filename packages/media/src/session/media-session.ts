@@ -77,6 +77,13 @@ export interface MediaSessionOptions {
 const log = Logger.create('moqt:media:session');
 
 /**
+ * Suffix appended to a media track name to derive its timing-feedback track.
+ * Kept as a single constant so producers and consumers can't drift, and so
+ * anything downstream can cheaply detect and skip feedback tracks.
+ */
+const TIMING_FEEDBACK_SUFFIX = '/_timing';
+
+/**
  * Active publication with pipeline
  */
 interface ActivePublication {
@@ -1695,7 +1702,13 @@ export class MediaSession {
    * Get timing feedback track name for a media track
    */
   private getTimingFeedbackTrackName(trackName: string): string {
-    return `${trackName}/_timing`;
+    return `${trackName}${TIMING_FEEDBACK_SUFFIX}`;
+  }
+
+  /** True for `<media>/_timing` tracks — used to short-circuit paths that
+   *  would otherwise wrap the suffix a second time. */
+  private isTimingFeedbackTrack(trackName: string): boolean {
+    return trackName.endsWith(TIMING_FEEDBACK_SUFFIX);
   }
 
   /**
@@ -1703,6 +1716,11 @@ export class MediaSession {
    * Receives timing echoes from subscribers to compute clock offset
    */
   private async subscribeToTimingFeedback(publication: ActivePublication): Promise<void> {
+    // Guard: never wrap a feedback track in another `_timing` layer. The
+    // caller-facing side (`publish()`) never hands us a feedback publication,
+    // but the subscriber-side `publishTimingFeedback` path also runs through
+    // `session.publish()` and would loop otherwise.
+    if (this.isTimingFeedbackTrack(publication.trackName)) return;
     const feedbackTrackName = this.getTimingFeedbackTrackName(publication.trackName);
 
     try {
@@ -1760,6 +1778,11 @@ export class MediaSession {
     captureTimestamp: number,
     receiveTime: number
   ): Promise<void> {
+    // Skip if this subscription is itself a feedback track — otherwise we'd
+    // publish `<media>/_timing/_timing` and recurse. Belt-and-braces: the
+    // handler that creates decode pipelines already filters feedback tracks
+    // out, so we shouldn't reach here from that path.
+    if (this.isTimingFeedbackTrack(subscription.trackName)) return;
     if (!subscription.feedbackTrackAlias) {
       // Check if publication is already in progress
       if (this.feedbackPublishPending.has(subscription.subscriptionId)) {
@@ -1933,6 +1956,16 @@ export class MediaSession {
       log.debug('No config for namespace subscription, skipping pipeline creation', {
         namespaceSubscriptionId: event.namespaceSubscriptionId,
       });
+      return;
+    }
+
+    // Timing-feedback tracks live under `<media>/_timing` — they carry
+    // subscriber-side clock echoes back to the publisher, not media. Never
+    // create a decode pipeline for one; doing so would wire latency-stats →
+    // publishTimingFeedback → publish `<media>/_timing/_timing`, which is
+    // caught here on the other side and repeats until the frame overflows.
+    if (this.isTimingFeedbackTrack(event.trackName)) {
+      log.debug('Skipping pipeline for timing-feedback track', { trackName: event.trackName });
       return;
     }
 
