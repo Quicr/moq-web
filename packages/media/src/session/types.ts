@@ -27,6 +27,8 @@ export type MediaSessionEventType =
   | 'error'
   | 'publish-stats'
   | 'subscribe-stats'
+  | 'subscribe-error'
+  | 'namespace-error'
   | 'incoming-subscribe'
   | 'incoming-publish'
   | 'incoming-fetch'

@@ -25,6 +25,8 @@ import {
   type FetchErrorEvent,
   type VODPublishOptions,
   type ForwardStateChangeEvent,
+  type SubscribeErrorEvent,
+  type NamespaceErrorEvent,
 } from '@moq-web/session';
 import {
   SecureObjectsContext,
@@ -1626,6 +1628,8 @@ export class MediaSession {
   on(event: 'jitter-sample', handler: (data: { subscriptionId: number; sample: JitterSample }) => void): () => void;
   on(event: 'latency-stats', handler: (data: { subscriptionId: number; stats: LatencyStatsSample }) => void): () => void;
   on(event: 'error', handler: (err: Error) => void): () => void;
+  on(event: 'subscribe-error', handler: (event: SubscribeErrorEvent) => void): () => void;
+  on(event: 'namespace-error', handler: (event: NamespaceErrorEvent) => void): () => void;
   on(event: 'publish-stats', handler: (stats: { trackAlias: string; type: string; groupId: number; objectId: number; bytes: number }) => void): () => void;
   on(event: 'subscribe-stats', handler: (stats: { subscriptionId: number; groupId: number; objectId: number; bytes: number }) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
@@ -1812,7 +1816,9 @@ export class MediaSession {
     });
     this.sessionCleanup.push(stateCleanup);
 
-    // Forward errors and stop pipelines on session error
+    // Forward fatal session errors (protocol violations, transport failures)
+    // and tear everything down. Per-subscription failures come through
+    // `subscribe-error` below and only tear down the affected pipeline.
     const errorCleanup = this.session.on('error', (err: Error) => {
       this.emit('error', err);
       this.stopAllPipelines().catch((stopErr) => {
@@ -1820,6 +1826,36 @@ export class MediaSession {
       });
     });
     this.sessionCleanup.push(errorCleanup);
+
+    // Per-subscription failure: stop just the affected pipeline (if any) and
+    // forward the event to the app. Keep other publications/subscriptions
+    // running — SUBSCRIBE_ERROR is not fatal to the session.
+    const subscribeErrorCleanup = this.session.on('subscribe-error', (event) => {
+      const subId = event.subscriptionId;
+      if (subId !== undefined) {
+        const subscription = this.subscriptions.get(subId);
+        if (subscription) {
+          subscription.pipeline
+            .stop()
+            .catch((stopErr) => {
+              log.error('Failed to stop subscribe pipeline on subscribe-error', stopErr as Error);
+            })
+            .finally(() => {
+              this.pipelineToSubscriptionId.delete(subscription.pipeline);
+              this.subscriptionIdToPipeline.delete(subId);
+              this.subscriptions.delete(subId);
+            });
+        }
+      }
+      this.emit('subscribe-error', event);
+    });
+    this.sessionCleanup.push(subscribeErrorCleanup);
+
+    // Namespace-level rejections are per-namespace; just forward to the app.
+    const namespaceErrorCleanup = this.session.on('namespace-error', (event) => {
+      this.emit('namespace-error', event);
+    });
+    this.sessionCleanup.push(namespaceErrorCleanup);
 
     // Forward publish stats
     const publishStatsCleanup = this.session.on('publish-stats', (stats) => {

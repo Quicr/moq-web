@@ -26,6 +26,8 @@ export type SessionEventType =
   | 'publish-stats'
   | 'subscribe-stats'
   | 'subscribe-ok'
+  | 'subscribe-error'
+  | 'namespace-error'
   | 'request-ok'
   | 'incoming-subscribe'
   | 'namespace-acknowledged'
@@ -324,6 +326,45 @@ export interface SubscribeOkEvent {
   largestObjectId?: number;
   /** Draft-18 track properties (§12) — undefined on draft-16 sessions */
   trackProperties?: TrackProperties;
+}
+
+/**
+ * Subscribe error event - emitted when SUBSCRIBE_ERROR is received.
+ *
+ * SUBSCRIBE_ERROR is a per-subscription failure; it is not a fatal session
+ * error. Listeners handle their own subscription lifecycle; the session itself
+ * only cleans up the request bookkeeping and continues serving other tracks.
+ */
+export interface SubscribeErrorEvent {
+  /** Request ID from the failed SUBSCRIBE (matches subscriptionId on draft-16). */
+  requestId: number;
+  /** Local subscription ID that was cleaned up (if we still tracked it). */
+  subscriptionId?: number;
+  /** Wire error code from the peer. */
+  errorCode: number;
+  /** Human-readable reason phrase from the peer. */
+  reasonPhrase: string;
+  /** Track alias the peer echoed back (draft-16 only; 0 on draft-18). */
+  trackAlias?: number;
+}
+
+/**
+ * Namespace-scoped error event — emitted when the peer rejects a
+ * PUBLISH_NAMESPACE (announce) or SUBSCRIBE_NAMESPACE (announce interest).
+ *
+ * These failures are per-request; the session itself keeps running.
+ */
+export interface NamespaceErrorEvent {
+  /** Which namespace request failed. */
+  kind: 'publish-namespace' | 'subscribe-namespace';
+  /** Namespace (or prefix, for SUBSCRIBE_NAMESPACE) the peer rejected. */
+  namespace: string[];
+  /** Wire error code. */
+  errorCode: number;
+  /** Reason phrase from the peer. */
+  reasonPhrase: string;
+  /** Draft-16 request id, when available. */
+  requestId?: number;
 }
 
 /**

@@ -110,6 +110,8 @@ import type {
   PublishStatsEvent,
   SubscribeStatsEvent,
   SubscribeOkEvent,
+  SubscribeErrorEvent,
+  NamespaceErrorEvent,
   RequestOkEvent,
   PublishDoneEvent,
   PublishBlockedEvent,
@@ -3310,8 +3312,15 @@ export class MOQTSession {
           errorCode: error.errorCode,
           reasonPhrase: error.reasonPhrase,
         });
+        const failedSub = this.namespaceSubscriptions.get(subscriptionId);
         this.namespaceSubscriptions.delete(subscriptionId);
-        this.emit('error', new Error(`Namespace subscription failed: ${error.reasonPhrase}`));
+        this.emit('namespace-error', {
+          kind: 'subscribe-namespace',
+          namespace: failedSub?.namespacePrefix ?? [],
+          errorCode: error.errorCode,
+          reasonPhrase: error.reasonPhrase,
+          requestId: Number(error.requestId),
+        });
         break;
       }
 
@@ -5231,6 +5240,8 @@ export class MOQTSession {
   on(event: 'publish-stats', handler: (stats: PublishStatsEvent) => void): () => void;
   on(event: 'subscribe-stats', handler: (stats: SubscribeStatsEvent) => void): () => void;
   on(event: 'subscribe-ok', handler: (event: SubscribeOkEvent) => void): () => void;
+  on(event: 'subscribe-error', handler: (event: SubscribeErrorEvent) => void): () => void;
+  on(event: 'namespace-error', handler: (event: NamespaceErrorEvent) => void): () => void;
   on(event: 'request-ok', handler: (event: RequestOkEvent) => void): () => void;
   on(event: 'publish-done', handler: (event: PublishDoneEvent) => void): () => void;
   on(event: 'publish-blocked', handler: (event: PublishBlockedEvent) => void): () => void;
@@ -6440,8 +6451,16 @@ export class MOQTSession {
           this.subscriptionManager.remove(sub.subscriptionId);
         }
 
-        // Emit error
-        this.emit('error', new Error(`Subscription failed: ${subscribeError.reasonPhrase} (code: ${subscribeError.errorCode})`));
+        // SUBSCRIBE_ERROR is per-subscription, not fatal to the session.
+        // Emit a dedicated event so callers can handle the specific failure
+        // without tearing down other in-flight subscriptions/publications.
+        this.emit('subscribe-error', {
+          requestId: subscribeError.requestId,
+          subscriptionId: sub?.subscriptionId,
+          errorCode: subscribeError.errorCode,
+          reasonPhrase: subscribeError.reasonPhrase,
+          trackAlias: subscribeError.trackAlias,
+        });
         break;
       }
 
@@ -6565,7 +6584,12 @@ export class MOQTSession {
 
         // Remove the failed namespace announcement
         this.announcedNamespaces.delete(namespaceStr);
-        this.emit('error', new Error(`Namespace announcement failed: ${publishNamespaceError.reasonPhrase}`));
+        this.emit('namespace-error', {
+          kind: 'publish-namespace',
+          namespace: publishNamespaceError.namespace,
+          errorCode: publishNamespaceError.errorCode,
+          reasonPhrase: publishNamespaceError.reasonPhrase,
+        });
         break;
       }
 
@@ -6627,15 +6651,22 @@ export class MOQTSession {
           reasonPhrase: subscribeNamespaceError.reasonPhrase,
         });
 
+        let failedPrefix: string[] = subscribeNamespaceError.namespacePrefix ?? [];
         if (subscriptionId !== undefined) {
           const subscription = this.namespaceSubscriptions.get(subscriptionId);
-          // Remove the failed subscription
+          if (subscription) failedPrefix = subscription.namespacePrefix;
           this.namespaceSubscriptions.delete(subscriptionId);
           if (subscription) {
             this.namespaceSubscriptionByRequestId.delete(subscription.requestId);
           }
         }
-        this.emit('error', new Error(`Namespace subscription failed: ${subscribeNamespaceError.reasonPhrase}`));
+        this.emit('namespace-error', {
+          kind: 'subscribe-namespace',
+          namespace: failedPrefix,
+          errorCode: subscribeNamespaceError.errorCode,
+          reasonPhrase: subscribeNamespaceError.reasonPhrase,
+          requestId: subscribeNamespaceError.requestId,
+        });
         break;
       }
 
