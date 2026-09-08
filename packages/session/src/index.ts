@@ -71,6 +71,8 @@ export type {
   PublishStatsEvent,
   SubscribeStatsEvent,
   SubscribeOkEvent,
+  SubscribeErrorEvent,
+  NamespaceErrorEvent,
   RequestOkEvent,
   PublishDoneEvent,
   PublishBlockedEvent,
