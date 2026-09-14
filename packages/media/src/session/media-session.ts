@@ -176,6 +176,7 @@ export class MediaSession {
   private subscriptionIdToPipeline = new Map<number, SubscribePipeline>();
   /** Namespace subscription configs for auto-creating pipelines */
   private namespaceConfigs = new Map<number, NamespaceSubscriptionConfig>();
+  private pendingNamespaceConfigs = new Map<string, MediaConfig>();
   /** Event handlers */
   private handlers = new Map<MediaSessionEventType, Set<(data: unknown) => void>>();
   /** Session event cleanup handlers */
@@ -496,7 +497,6 @@ export class MediaSession {
           this.session.sendObject(trackAlias, ciphertext, {
             groupId: obj.groupId,
             objectId: obj.objectId,
-            newGroup: obj.isKeyframe,
             type: 'audio',
           });
         }).catch((err) => {
@@ -506,7 +506,6 @@ export class MediaSession {
         this.session.sendObject(trackAlias, obj.data, {
           groupId: obj.groupId,
           objectId: obj.objectId,
-          newGroup: obj.isKeyframe,
           type: 'audio',
         });
       }
@@ -1139,14 +1138,22 @@ export class MediaSession {
     config?: MediaConfig,
     options?: SubscribeNamespaceOptions
   ): Promise<number> {
+    // Store config by prefix BEFORE subscribing so that incoming-publish
+    // events that fire during the await can find the config.
+    const prefixKey = namespacePrefix.join('/');
+    if (config) {
+      this.pendingNamespaceConfigs.set(prefixKey, config);
+    }
+
     const subscriptionId = await this.session.subscribeNamespace(namespacePrefix, options);
 
-    // Store config for auto-creating pipelines when tracks are discovered
+    // Move config to the primary map keyed by subscription ID
     if (config) {
+      this.pendingNamespaceConfigs.delete(prefixKey);
       this.namespaceConfigs.set(subscriptionId, { subscriptionId, config });
       log.info('Stored namespace config for auto-pipeline creation', {
         subscriptionId,
-        namespacePrefix: namespacePrefix.join('/'),
+        namespacePrefix: prefixKey,
       });
     }
 
@@ -1267,7 +1274,6 @@ export class MediaSession {
           this.session.sendObject(trackAlias, ciphertext, {
             groupId: obj.groupId,
             objectId: obj.objectId,
-            newGroup: obj.isKeyframe,
             type: 'audio',
           });
         }).catch((err) => {
@@ -1277,7 +1283,6 @@ export class MediaSession {
         this.session.sendObject(trackAlias, obj.data, {
           groupId: obj.groupId,
           objectId: obj.objectId,
-          newGroup: obj.isKeyframe,
           type: 'audio',
         });
       }
@@ -1951,7 +1956,24 @@ export class MediaSession {
    * Handle incoming PUBLISH by creating a decode pipeline if config is available
    */
   private async handleIncomingPublish(event: IncomingPublishEvent): Promise<void> {
-    const nsConfig = this.namespaceConfigs.get(event.namespaceSubscriptionId);
+    let nsConfig = this.namespaceConfigs.get(event.namespaceSubscriptionId);
+    if (!nsConfig) {
+      // Fallback: config may still be pending if incoming-publish fired during
+      // the subscribeNamespace await. Match by namespace prefix.
+      const nsStr = event.namespace.join('/');
+      for (const [prefix, config] of this.pendingNamespaceConfigs) {
+        if (nsStr.startsWith(prefix)) {
+          nsConfig = { subscriptionId: event.namespaceSubscriptionId, config };
+          this.namespaceConfigs.set(event.namespaceSubscriptionId, nsConfig);
+          this.pendingNamespaceConfigs.delete(prefix);
+          log.info('Resolved pending namespace config for incoming publish', {
+            namespaceSubscriptionId: event.namespaceSubscriptionId,
+            prefix,
+          });
+          break;
+        }
+      }
+    }
     if (!nsConfig) {
       log.debug('No config for namespace subscription, skipping pipeline creation', {
         namespaceSubscriptionId: event.namespaceSubscriptionId,

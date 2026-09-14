@@ -766,14 +766,11 @@ export class SubscribePipeline {
       quicrInterop: this.config.quicrInteropEnabled,
     });
 
-    // Handle codec description from keyframe
-    if (isKeyframe && frame.codecDescription && this.videoDecoder) {
-      log.info('Reconfiguring decoder with codec description', {
+    // Skip decoder reconfigure with description — encoder uses Annex B format,
+    // but codecDescription is avcC. Passing it would switch decoder to AVCC mode.
+    if (isKeyframe && frame.codecDescription) {
+      log.info('Keyframe has codec description (not reconfiguring — Annex B mode)', {
         descriptionSize: frame.codecDescription.byteLength,
-      });
-      this.videoDecoder.reconfigure({
-        ...this.config.video!,
-        description: frame.codecDescription,
       });
     }
 

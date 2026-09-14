@@ -22,6 +22,7 @@ let transport: WebTransport | null = null;
 let controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let controlReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 let setupWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
+let datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let currentState: TransportState = 'disconnected';
 let debug = false;
 // True when the local side called disconnect() before `transport.closed` resolved;
@@ -124,6 +125,9 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
       log('Control stream established');
     }
 
+    // Acquire datagram writer once to avoid WritableStream lock contention
+    datagramWriter = transport.datagrams.writable.getWriter();
+
     // Start listeners
     if (!IS_DRAFT_18) {
       listenForControlMessages();
@@ -188,6 +192,7 @@ function cleanup(): void {
   controlWriter = null;
   controlReader = null;
   setupWriter = null;
+  datagramWriter = null;
   setupStreamTypeSent = false;
   outgoingStreams.clear();
   nextStreamId = 0;
@@ -423,6 +428,7 @@ function handleConnectionClosed(): void {
       }
     })
     .catch((err) => {
+      console.error('[transport-worker] Transport closed with error:', (err as Error).message);
       log('Transport closed with error', err);
       if (currentState !== 'disconnected') {
         setState('failed');
@@ -486,15 +492,13 @@ async function sendControl(data: Uint8Array): Promise<void> {
  * Send datagram
  */
 async function sendDatagram(data: Uint8Array): Promise<void> {
-  if (!transport) {
+  if (!datagramWriter) {
     respond({ type: 'error', message: 'Not connected' });
     return;
   }
 
   try {
-    const writer = transport.datagrams.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
+    await datagramWriter.write(data);
   } catch (err) {
     respond({ type: 'error', message: (err as Error).message });
   }

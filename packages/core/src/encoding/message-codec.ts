@@ -2541,16 +2541,15 @@ export class ObjectCodec {
 
     const writer = new BufferWriter();
     if (IS_DRAFT_16) {
-      // Draft-16 §10.3.1: Type is a bit-flag byte in 0b00X0XXXX form.
-      //   0x01 EXTENSIONS, 0x02 END_OF_GROUP, 0x04 ZERO_OBJECT_ID,
-      //   0x08 DEFAULT_PRIORITY, 0x20 STATUS.
-      // Sending Object ID + Publisher Priority + Payload → all flags clear.
-      // NOTE: If EXTENSIONS bit is not set, no length field is written.
-      writer.writeVarInt(0x00);
+      // Relay wire format: 0x01 | TrackAlias | GroupID | ObjectID |
+      // ExtensionHeaders(length-prefixed) | Payload.
+      // The relay hardcodes type=0x01 and does not read publisher priority
+      // from the datagram (priority comes from track properties instead).
+      writer.writeVarInt(0x01);
       writer.writeVarInt(header.trackAlias);
       writer.writeVarInt(header.groupId);
       writer.writeVarInt(header.objectId);
-      writer.writeByte(header.publisherPriority);
+      writer.writeVarInt(0);
     } else {
       writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
       writer.writeVarInt(header.trackAlias);
@@ -2597,37 +2596,24 @@ export class ObjectCodec {
     let objectId: number;
 
     if (IS_DRAFT_16) {
-      // Draft-16 §10.3.1 Type byte: 0b00X0XXXX
-      //   0x01 EXTENSIONS, 0x02 END_OF_GROUP, 0x04 ZERO_OBJECT_ID,
-      //   0x08 DEFAULT_PRIORITY, 0x20 STATUS
-      if ((streamType & ~0x2f) !== 0 || (streamType & 0x10) !== 0) {
+      // Relay wire format: 0x01 | TrackAlias | GroupID | ObjectID |
+      // ExtensionHeaders(length-prefixed) | Payload.
+      // No publisher priority or status on the wire.
+      if (streamType !== 0x01) {
         throw new MessageCodecError(
-          `Invalid OBJECT_DATAGRAM Type 0x${streamType.toString(16)}`,
+          `Expected datagram type 0x01, got 0x${streamType.toString(16)}`,
           streamType,
         );
       }
-      const hasExtensions = (streamType & 0x01) !== 0;
-      const zeroObjectId = (streamType & 0x04) !== 0;
-      const defaultPriority = (streamType & 0x08) !== 0;
-      const hasStatus = (streamType & 0x20) !== 0;
-
       trackAliasBigInt = reader.readVarInt();
       groupId = reader.readVarIntNumber();
-      objectId = zeroObjectId ? 0 : reader.readVarIntNumber();
-      publisherPriority = defaultPriority ? 128 : reader.readByte();
-      if (hasExtensions) {
-        const extensionLength = reader.readVarIntNumber();
-        if (extensionLength === 0) {
-          throw new MessageCodecError(
-            'OBJECT_DATAGRAM EXTENSIONS bit set with zero-length extensions',
-            streamType,
-          );
-        }
+      objectId = reader.readVarIntNumber();
+      const extensionLength = reader.readVarIntNumber();
+      if (extensionLength > 0) {
         reader.readBytes(extensionLength);
       }
-      objectStatus = hasStatus
-        ? (reader.readVarIntNumber() as ObjectStatus)
-        : ObjectStatus.NORMAL;
+      publisherPriority = 128;
+      objectStatus = ObjectStatus.NORMAL;
     } else {
       if (streamType !== DataStreamType.OBJECT_DATAGRAM) {
         throw new MessageCodecError(

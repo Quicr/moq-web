@@ -506,16 +506,13 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
             console.log(`[CodecDecodeWorker] Decoder closed, recreating (channel ${channel.channelId})`);
             initVideoDecoder(channel, channel.videoConfig);
           } else if (decoderState === 'configured') {
-            // Decoder still usable, just reset it
+            // Decoder still usable, just reset it — omit description for Annex B mode
             channel.videoDecoder!.reset();
             const decoderConfig: VideoDecoderConfig = {
               codec: channel.videoConfig.codec,
               codedWidth: channel.videoConfig.codedWidth,
               codedHeight: channel.videoConfig.codedHeight,
             };
-            if (channel.videoConfig.description) {
-              decoderConfig.description = channel.videoConfig.description;
-            }
             channel.videoDecoder!.configure(decoderConfig);
             console.log(`[CodecDecodeWorker] Decoder reset and reconfigured (channel ${channel.channelId})`);
           }
@@ -535,15 +532,12 @@ function initVideoDecoder(channel: DecodeChannel, config: VideoDecoderWorkerConf
     },
   });
 
+  // Omit description to keep decoder in Annex B mode — encoder uses annexb format
   const decoderConfig: VideoDecoderConfig = {
     codec: config.codec,
     codedWidth: config.codedWidth,
     codedHeight: config.codedHeight,
   };
-
-  if (config.description) {
-    decoderConfig.description = config.description;
-  }
 
   channel.videoDecoder.configure(decoderConfig);
   log(`Video decoder configured (channel ${channel.channelId})`, config);
@@ -648,18 +642,13 @@ function reconfigureVideoDecoder(channel: DecodeChannel, config: VideoDecoderWor
 
   channel.videoConfig = config;
 
+  // Omit description to keep decoder in Annex B mode
   const decoderConfig: VideoDecoderConfig = {
     codec: config.codec,
     codedWidth: config.codedWidth,
     codedHeight: config.codedHeight,
   };
 
-  if (config.description) {
-    decoderConfig.description = config.description;
-  }
-
-  // Reset before reconfigure to ensure clean state transition
-  // (e.g., switching from no-description/Annex B to AVCC with description)
   channel.videoDecoder.reset();
   channel.videoDecoder.configure(decoderConfig);
   log(`Video decoder reconfigured (channel ${channel.channelId})`, config);
@@ -906,11 +895,12 @@ function decodeVideoFrame(
       droppedBeforeKeyframe: channel.droppedFramesBeforeKeyframe,
     });
 
-    // Reconfigure decoder if this keyframe has a codec description that differs from current
-    // This MUST happen at decode time (not push time) because the arbiter may buffer
-    // the keyframe while still outputting delta frames from the previous group
-    // IMPORTANT: Only reconfigure if description actually changed to avoid resetting
-    // the decoder's reference frame buffer (which breaks B-frame decoding)
+    // Encoder uses avc: { format: 'annexb' }, so encoded data has Annex B
+    // start codes. The codecDescription from WebCodecs is always avcC format.
+    // Passing an avcC description to the decoder would switch it to AVCC mode
+    // (expecting length-prefixed NALUs), causing decode failure on Annex B data.
+    // Instead, skip the description — the decoder stays in Annex B mode and
+    // reads SPS/PPS directly from keyframe start codes.
     if (frameData.codecDescription && channel.videoConfig) {
       const desc = frameData.codecDescription;
       const needsReconfigure = !channel.lastCodecDescription ||
@@ -921,24 +911,16 @@ function decodeVideoFrame(
         const firstBytes = Array.from(desc.slice(0, Math.min(16, desc.length)))
           .map(b => b.toString(16).padStart(2, '0'))
           .join(' ');
-        log(`Reconfiguring decoder with NEW codec description (channel ${channel.channelId})`, {
+        log(`Keyframe codec description changed (channel ${channel.channelId}) — NOT reconfiguring decoder (Annex B mode)`, {
           size: desc.length,
           firstBytes,
           isAvcC: desc[0] === 1,
           groupId,
           objectId,
-          hadPreviousDescription: !!channel.lastCodecDescription,
         });
 
-        reconfigureVideoDecoder(channel, {
-          ...channel.videoConfig,
-          description: frameData.codecDescription,
-        });
-
-        // Store the new description for future comparison
         channel.lastCodecDescription = new Uint8Array(desc);
 
-        // Parse SPS for max_num_reorder_frames and notify main thread
         try {
           const spsInfo = parseH264SPS(new Uint8Array(frameData.codecDescription));
           if (spsInfo) {
@@ -957,14 +939,8 @@ function decodeVideoFrame(
             });
           }
         } catch {
-          // SPS parsing failure is non-fatal — reorder buffer keeps its default
+          // SPS parsing failure is non-fatal
         }
-      } else {
-        log(`Skipping decoder reconfigure - codec description unchanged (channel ${channel.channelId})`, {
-          groupId,
-          objectId,
-          descSize: desc.length,
-        });
       }
     }
   }
@@ -1336,16 +1312,13 @@ function resetChannel(channel: DecodeChannel): void {
     try {
       console.log(`[CodecDecodeWorker] Resetting video decoder (channel ${channel.channelId})`);
       channel.videoDecoder.reset();
-      // Reconfigure after reset to restore decoder to usable state
+      // Reconfigure after reset — omit description to stay in Annex B mode
       if (channel.videoConfig) {
         const decoderConfig: VideoDecoderConfig = {
           codec: channel.videoConfig.codec,
           codedWidth: channel.videoConfig.codedWidth,
           codedHeight: channel.videoConfig.codedHeight,
         };
-        if (channel.videoConfig.description) {
-          decoderConfig.description = channel.videoConfig.description;
-        }
         channel.videoDecoder.configure(decoderConfig);
         console.log(`[CodecDecodeWorker] Video decoder reconfigured after reset (channel ${channel.channelId})`);
       }

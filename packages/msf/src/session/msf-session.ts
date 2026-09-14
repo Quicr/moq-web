@@ -9,7 +9,7 @@
  */
 
 import type { MOQTSession, PublishOptions, VODPublishOptions } from '@moq-web/session';
-import type { FullCatalog, Track } from '../schemas/index.js';
+import type { Catalog, FullCatalog, Track } from '../schemas/index.js';
 import {
   CatalogSubscriber,
   CatalogPublisher,
@@ -213,6 +213,21 @@ export class MSFSession {
       throw new Error('Not publishing catalog');
     }
     await this.catalogPublisher.publishFull(catalog);
+  }
+
+  /**
+   * Publish a delta update to the catalog (§5.7).
+   *
+   * Requires a prior `publishCatalog(full)` — the delta is emitted as the next
+   * object in the current group and the publisher tracks the resulting merged
+   * state internally. Pass either a full catalog (rare — republishes) or a
+   * `DeltaCatalog` produced via `createDelta().addTrack(...).build()`.
+   */
+  async publishCatalogDelta(catalog: Catalog): Promise<void> {
+    if (!this.catalogPublisher) {
+      throw new Error('Not publishing catalog');
+    }
+    await this.catalogPublisher.publishDelta(catalog);
   }
 
   /**

@@ -328,6 +328,7 @@ export class PublishPipeline {
           height: this.config.video.height,
           bitrate: this.config.video.bitrate,
           framerate: this.config.video.framerate,
+          keyframeInterval: this.config.video.keyframeInterval,
         } : undefined,
         audio: this.config.audio ? {
           codec: 'opus',

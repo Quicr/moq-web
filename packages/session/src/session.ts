@@ -1062,6 +1062,7 @@ export class MOQTSession {
 
     // Error handler
     this.transportWorker.on('error', ({ message }) => {
+      console.error('[MOQT] Worker transport error:', message);
       log.error('Worker transport error', { message });
       this.handleError(new Error(message));
     });
@@ -1072,6 +1073,7 @@ export class MOQTSession {
     // the peer initiated the close. We only escalate to `handleError` when the
     // close was remote AND carried a non-zero SessionErrorCode.
     this.transportWorker.on('disconnected', ({ reason, closeCode, remote }) => {
+      console.warn('[MOQT] Worker transport disconnected:', reason, 'code:', closeCode, 'remote:', remote);
       log.warn('Worker transport disconnected', { reason, closeCode, remote });
       this.handleTransportClosed({
         closeCode: closeCode ?? 0,
@@ -1335,8 +1337,10 @@ export class MOQTSession {
         const [message, bytesRead] = this.codec.decodeControlMessage(view);
         consumed += bytesRead;
 
+        const msgTypeName = MessageType[message.type] ?? `unknown(${message.type})`;
+        console.warn('[MOQT-DIAG] Bidi stream message (worker)', { type: msgTypeName, subscriptionId, streamId });
         log.info('Received message on namespace subscription stream (worker)', {
-          type: MessageType[message.type],
+          type: msgTypeName,
           subscriptionId,
           streamId,
         });
@@ -3035,6 +3039,7 @@ export class MOQTSession {
           const streamId = await this.transportWorker.createBidiStream();
           this.transportWorker.writeStream(streamId, bytes, false);
           this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
+          console.warn('[MOQT-DIAG] Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { prefix: prefixStr, requestId, streamId, subscriptionId });
           log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { namespacePrefix: prefixStr, requestId, streamId });
         } else if (this.transport) {
           const bidiStream = await this.transport.createBidirectionalStream();
@@ -3582,6 +3587,7 @@ export class MOQTSession {
 
       // Wait for PUBLISH_OK
       const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
+      console.warn('[MOQT-DIAG] PUBLISH_OK received', { requestId, forward: publishOkResult.forward, track: `${namespace.join('/')}/${trackName}` });
       log.info('Received PUBLISH_OK', {
         requestId,
         forward: publishOkResult.forward,
@@ -3915,6 +3921,13 @@ export class MOQTSession {
     const fullTrackNameStr = [...namespace, trackName].join('/');
     const namespaceStr = namespace.join('/');
 
+    console.warn('[MOQT-DIAG] handleIncomingPublish', {
+      fullTrackName: fullTrackNameStr,
+      ownPrefix: this.ownNamespacePrefix,
+      namespaceSubscriptionCount: this.namespaceSubscriptions.size,
+      subscriptions: Array.from(this.namespaceSubscriptions.values()).map(s => s.namespacePrefix.join('/')),
+    });
+
     log.info('Received PUBLISH (subscribe namespace flow)', {
       requestId: message.requestId,
       namespace: namespaceStr,
@@ -3925,6 +3938,7 @@ export class MOQTSession {
 
     // Check if this is our own publish (filter out self)
     if (this.ownNamespacePrefix && namespaceStr.startsWith(this.ownNamespacePrefix)) {
+      console.warn('[MOQT-DIAG] Filtered out own PUBLISH', { namespaceStr, ownPrefix: this.ownNamespacePrefix });
       log.debug('Ignoring own PUBLISH', { namespace: namespaceStr });
       return;
     }
@@ -3988,6 +4002,15 @@ export class MOQTSession {
     this.subscriptionManager.add(subscription);
 
     // Emit event for application to handle
+    console.warn('[MOQT-DIAG] Emitting incoming-publish', {
+      subscriptionId,
+      trackName,
+      namespace: namespace.join('/'),
+      trackAlias: message.trackAlias.toString(),
+    });
+    const g = globalThis as any;
+    if (!g.__moqtDiag) g.__moqtDiag = { controlMessages: {}, incomingPublish: [] };
+    g.__moqtDiag.incomingPublish.push({ trackName, namespace: namespace.join('/'), ts: Date.now() });
     this.emit('incoming-publish', {
       namespaceSubscriptionId: matchingSubscription.subscriptionId,
       subscriptionId,
@@ -4813,6 +4836,15 @@ export class MOQTSession {
     const aliasKey = trackAlias.toString();
 
     try {
+      log.info('sendObjectWithGOP', {
+        trackAlias: aliasKey,
+        groupId: metadata.groupId,
+        objectId: metadata.objectId,
+        newGroup: metadata.newGroup,
+        type: metadata.type,
+        existingGroupId: this.activeVideoStreams.get(aliasKey)?.groupId,
+      });
+
       if (metadata.newGroup) {
         // Close existing stream — END_OF_GROUP is signaled by the header bit,
         // so just close the stream without writing a status object
@@ -6297,6 +6329,12 @@ export class MOQTSession {
             remainingBuffer: bufferLength - this.controlBufferOffset,
           });
 
+          // Persist control message stats on globalThis for late console inspection
+          const g = globalThis as any;
+          if (!g.__moqtDiag) g.__moqtDiag = { controlMessages: {}, incomingPublish: [] };
+          const typeName = MessageType[message.type] ?? `unknown(${message.type})`;
+          g.__moqtDiag.controlMessages[typeName] = (g.__moqtDiag.controlMessages[typeName] ?? 0) + 1;
+
           // Handle setup callback
           if (this.onMessage) {
             this.onMessage(message as MOQTMessage);
@@ -6316,6 +6354,7 @@ export class MOQTSession {
           }
           const view = this.controlBuffer.subarray(this.controlBufferOffset);
           const hexPreview = Array.from(view.subarray(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+          console.error('[MOQT-DIAG] Control message decode FAILED', { error: (err as Error).message, hex: hexPreview, bufferSize: bufferLength - this.controlBufferOffset });
           log.error('Control message decode error', {
             error: (err as Error).message,
             bufferSize: bufferLength - this.controlBufferOffset,
@@ -6595,6 +6634,10 @@ export class MOQTSession {
 
       case MessageType.SUBSCRIBE_NAMESPACE_OK: {
         const subscribeNamespaceOk = message as SubscribeNamespaceOkMessage;
+        console.warn('[MOQT-DIAG] Received SUBSCRIBE_NAMESPACE_OK', {
+          requestId: subscribeNamespaceOk.requestId,
+          namespacePrefix: subscribeNamespaceOk.namespacePrefix?.join('/'),
+        });
         let subscriptionId: number | undefined;
 
         if (IS_DRAFT_16 && subscribeNamespaceOk.requestId !== undefined) {
@@ -6682,7 +6725,14 @@ export class MOQTSession {
       case MessageType.PUBLISH: {
         // Handle incoming PUBLISH (subscribe namespace flow - we are the subscriber)
         const publishMessage = message as PublishMessage;
+        console.warn('[MOQT-DIAG] Received PUBLISH on control stream', {
+          requestId: publishMessage.requestId,
+          trackName: publishMessage.fullTrackName?.trackName,
+          namespace: publishMessage.fullTrackName?.namespace?.join('/'),
+          trackAlias: publishMessage.trackAlias?.toString(),
+        });
         this.handleIncomingPublish(publishMessage).catch(err => {
+          console.error('[MOQT-DIAG] Error handling incoming PUBLISH', err);
           log.error('Error handling incoming PUBLISH', { error: (err as Error).message });
         });
         break;

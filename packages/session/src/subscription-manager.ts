@@ -169,11 +169,11 @@ export class SubscriptionManager {
     const trackNameKey = this.makeTrackNameKey(sub.namespace, sub.trackName);
     this.subscriptionsByTrackName.delete(trackNameKey);
 
-    // Remove from alias maps - need to be careful not to remove another subscription's alias
-    if (sub.trackAlias !== undefined) {
-      const aliasKey = sub.trackAlias.toString();
-      const aliased = this.subscriptionsByAlias.get(aliasKey);
-      if (aliased && aliased.subscriptionId === subscriptionId) {
+    // Remove ALL alias entries that point to this subscription.
+    // A subscription can have multiple aliases (server-assigned + original client alias)
+    // so we must scan the map rather than just checking sub.trackAlias.
+    for (const [aliasKey, aliased] of this.subscriptionsByAlias) {
+      if (aliased.subscriptionId === subscriptionId) {
         this.subscriptionsByAlias.delete(aliasKey);
       }
     }
