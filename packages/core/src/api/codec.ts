@@ -8,7 +8,10 @@
  * This layer handles the mapping so application code never sees draft-specific types.
  */
 
-import { IS_DRAFT_18, IS_DRAFT_16 } from '../version/constants.js';
+import { DEFAULT_DRAFT, type DraftVersion } from '../version/constants.js';
+
+const isDraft18 = (d: DraftVersion): boolean => d === 'draft-18';
+const isDraft16 = (d: DraftVersion): boolean => d === 'draft-16' || d === 'draft-17';
 import {
   Version,
   SubscriptionFilter,
@@ -63,21 +66,23 @@ import { WireSubscriptionFilter as WireFilterTypeV18 } from '../internal/wire-v1
 // =============================================================================
 
 /**
- * Build-time codec capabilities
+ * Codec capabilities for a given draft.
  */
-export const capabilities: CodecCapabilities = {
-  perRequestStreams: IS_DRAFT_18,
-  subscribeTracks: IS_DRAFT_18,
-  moqtVarInt: IS_DRAFT_18,
-  unifiedErrors: IS_DRAFT_16 || IS_DRAFT_18,
-};
+export function capabilitiesFor(draft: DraftVersion = DEFAULT_DRAFT): CodecCapabilities {
+  return {
+    perRequestStreams: isDraft18(draft),
+    subscribeTracks: isDraft18(draft),
+    moqtVarInt: isDraft18(draft),
+    unifiedErrors: isDraft16(draft) || isDraft18(draft),
+  };
+}
 
 /**
- * Current protocol version
+ * Protocol version enum value for a given draft.
  */
-export const currentVersion: Version = IS_DRAFT_18
-  ? Version.DRAFT_18
-  : Version.DRAFT_16;
+export function currentVersionFor(draft: DraftVersion = DEFAULT_DRAFT): Version {
+  return isDraft18(draft) ? Version.DRAFT_18 : Version.DRAFT_16;
+}
 
 // =============================================================================
 // Filter/GroupOrder Mapping
@@ -184,9 +189,10 @@ function modeToWireOptionsV14(mode: NamespaceSubscribeMode): number {
  */
 export function subscribeRequestToWire(
   req: SubscribeRequest,
-  requestId: bigint
+  requestId: bigint,
+  draft: DraftVersion = DEFAULT_DRAFT
 ): WireSubscribeV14 | WireSubscribeV18 {
-  if (IS_DRAFT_18) {
+  if (isDraft18(draft)) {
     return subscribeRequestToWireV18(req, requestId);
   }
   return subscribeRequestToWireV14(req, Number(requestId));
@@ -292,9 +298,10 @@ function subscribeResponseFromWireV18(wire: WireSubscribeOkV18): SubscribeRespon
 export function publishRequestToWire(
   req: PublishRequest,
   requestId: bigint,
-  trackAlias: bigint
+  trackAlias: bigint,
+  draft: DraftVersion = DEFAULT_DRAFT
 ): WirePublishV14 | WirePublishV18 {
-  if (IS_DRAFT_18) {
+  if (isDraft18(draft)) {
     return publishRequestToWireV18(req, requestId, trackAlias);
   }
   return publishRequestToWireV14(req, Number(requestId), Number(trackAlias));
@@ -357,9 +364,10 @@ export function publishResponseFromWire(
  */
 export function fetchRequestToWire(
   req: FetchRequest,
-  requestId: bigint
+  requestId: bigint,
+  draft: DraftVersion = DEFAULT_DRAFT
 ): WireFetchV14 | WireFetchV18 {
-  if (IS_DRAFT_18) {
+  if (isDraft18(draft)) {
     return fetchRequestToWireV18(req, requestId);
   }
   return fetchRequestToWireV14(req, Number(requestId));
@@ -437,14 +445,15 @@ export function fetchResponseFromWire(
  */
 export function subscribeNamespaceRequestToWire(
   req: SubscribeNamespaceRequest,
-  requestId: bigint
+  requestId: bigint,
+  draft: DraftVersion = DEFAULT_DRAFT
 ): {
   namespaceWire: WireSubscribeNamespaceV14 | WireSubscribeNamespaceV18;
   tracksWire?: WireSubscribeTracksV18;
 } {
   const mode = req.mode ?? NamespaceSubscribeMode.DISCOVER;
 
-  if (IS_DRAFT_18) {
+  if (isDraft18(draft)) {
     return subscribeNamespaceRequestToWireV18(req, requestId, mode);
   }
   return {
@@ -509,9 +518,10 @@ function subscribeNamespaceRequestToWireV18(
  */
 export function publishNamespaceRequestToWire(
   req: PublishNamespaceRequest,
-  requestId: bigint
+  requestId: bigint,
+  draft: DraftVersion = DEFAULT_DRAFT
 ): WirePublishNamespaceV14 | WirePublishNamespaceV18 {
-  if (IS_DRAFT_18) {
+  if (isDraft18(draft)) {
     return {
       requestId,
       trackNamespacePrefix: req.trackNamespacePrefix,

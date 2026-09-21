@@ -16,14 +16,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   Draft18MessageCodec,
-  IS_DRAFT_18,
   MOQTransport,
   SetupOptionDraft18,
   type ServerSetupMessageDraft18,
+  DEFAULT_DRAFT,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 
+
+const IS_DRAFT_18 = DEFAULT_DRAFT === 'draft-18';
 interface SessionInternals {
   _state: string;
   _implementationString?: string;

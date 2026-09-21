@@ -33,7 +33,11 @@
  */
 
 import { Logger } from '../utils/logger.js';
-import { getCurrentALPNProtocol, IS_DRAFT_18 } from '../version/constants.js';
+import {
+  alpnProtocolFor,
+  DEFAULT_DRAFT,
+  type DraftVersion,
+} from '../version/constants.js';
 import { MOQTVarInt } from '../encoding/moqt-varint.js';
 import { StreamTypeDraft18 } from '../messages/types.js';
 
@@ -100,6 +104,14 @@ export type TransportEventHandler<T extends TransportEventType> = (
  * Configuration options for MOQTransport
  */
 export interface TransportConfig {
+  /**
+   * MOQT draft version to speak on this connection.
+   *
+   * Selects the ALPN protocol string and the setup-stream layout.
+   * Defaults to the build-time DEFAULT_DRAFT (draft-16 unless overridden).
+   * Pass explicitly when your relay fleet mixes drafts.
+   */
+  draft?: DraftVersion;
   /** Maximum datagram size in bytes (default: 1200) */
   maxDatagramSize?: number;
   /** Enable congestion control (default: true) */
@@ -151,6 +163,8 @@ export class MOQTransport {
   private handlers = new Map<TransportEventType, Set<TransportEventHandler<TransportEventType>>>();
   /** Configuration */
   private config: Required<TransportConfig>;
+  /** Draft version selected for this transport */
+  private readonly _draft: DraftVersion;
   /** Connection URL */
   private _url?: string;
   /** Abort controller for connection timeout */
@@ -164,7 +178,9 @@ export class MOQTransport {
    * @param config - Configuration options
    */
   constructor(config: TransportConfig = {}) {
+    this._draft = config.draft ?? DEFAULT_DRAFT;
     this.config = {
+      draft: this._draft,
       maxDatagramSize: config.maxDatagramSize ?? 1200,
       congestionControl: config.congestionControl ?? true,
       serverCertificateHashes: config.serverCertificateHashes ?? [],
@@ -172,6 +188,21 @@ export class MOQTransport {
     };
 
     log.debug('MOQTransport created', this.config);
+  }
+
+  /**
+   * Draft version this transport is speaking.
+   */
+  get draft(): DraftVersion {
+    return this._draft;
+  }
+
+  /**
+   * True when this transport is speaking draft-18 (per-request bidi
+   * streams, unidirectional setup pair, MOQT varints, etc).
+   */
+  private get isDraft18(): boolean {
+    return this._draft === 'draft-18';
   }
 
   /**
@@ -241,7 +272,7 @@ export class MOQTransport {
 
     try {
       // Create WebTransport connection
-      const alpnProtocol = getCurrentALPNProtocol();
+      const alpnProtocol = alpnProtocolFor(this._draft);
       log.info('Using ALPN protocol', { protocol: alpnProtocol });
       const options: WebTransportOptions & { protocols?: string[] } = {
         congestionControl: this.config.congestionControl ? 'default' : 'throughput',
@@ -280,7 +311,7 @@ export class MOQTransport {
 
       log.debug('WebTransport connected');
 
-      if (IS_DRAFT_18) {
+      if (this.isDraft18) {
         // Draft-18: Setup uses pair of unidirectional streams with 0x2F00 type
         // Create outgoing setup stream
         const setupStream = await this.transport.createUnidirectionalStream();
@@ -364,7 +395,7 @@ export class MOQTransport {
           break;
         }
 
-        if (IS_DRAFT_18) {
+        if (this.isDraft18) {
           // Draft-18: Check stream type to route appropriately
           this.handleDraft18UnidirectionalStream(stream);
         } else {
@@ -624,7 +655,7 @@ export class MOQTransport {
    * ```
    */
   async sendControl(data: Uint8Array): Promise<void> {
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       if (!this.setupWriter) {
         throw new Error('Setup stream not connected');
       }

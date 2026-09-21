@@ -17,19 +17,12 @@
  *
  * @example
  * ```typescript
- * // Unified API (recommended)
  * import {
  *   SubscriptionFilter,
  *   GroupOrder,
- *   capabilities,
- *   currentVersion,
- * } from '@web-moq/core';
- *
- * console.log('Protocol version:', currentVersion);
- * console.log('Has SUBSCRIBE_TRACKS:', capabilities.subscribeTracks);
- *
- * // Legacy API (still supported)
- * import {
+ *   capabilitiesFor,
+ *   currentVersionFor,
+ *   DEFAULT_DRAFT,
  *   MessageCodec,
  *   MessageType,
  *   Version,
@@ -40,15 +33,13 @@
  *   MOQTransport,
  *   StreamManager,
  *   DatagramManager,
- *   IS_DRAFT_16,
- *   IS_DRAFT_18,
  * } from '@moq-web/core';
  *
  * // Configure logging
  * Logger.setLevel(LogLevel.DEBUG);
  *
  * // Check version at runtime
- * console.log('Building for draft-16:', IS_DRAFT_16);
+ * console.log('Default draft:', DEFAULT_DRAFT);
  *
  * // Create track manager
  * const tracks = new TrackManager();
@@ -122,8 +113,8 @@ export {
 
 // Codec utilities
 export {
-  capabilities,
-  currentVersion,
+  capabilitiesFor,
+  currentVersionFor,
   subscribeRequestToWire,
   subscribeResponseFromWire,
   publishRequestToWire,
@@ -142,14 +133,14 @@ export {
 // ============================================================================
 
 export {
-  MOQT_VERSION,
-  IS_DRAFT_18,
-  IS_DRAFT_16,
+  DEFAULT_DRAFT,
   VERSION_NUMBER,
   ALPN_PROTOCOL,
-  getCurrentVersionNumber,
-  getCurrentALPNProtocol,
+  versionNumberFor,
+  versionEnumFor,
+  alpnProtocolFor,
 } from './version/constants.js';
+export type { DraftVersion } from './version/constants.js';
 
 // Message types and enums (Draft 14/16)
 export {
@@ -326,8 +317,6 @@ export type { SwitchingSetAssignment } from './encoding/dts.js';
 export {
   getProtocolCodec,
   getProtocolCodecForVersion,
-  usesMoqtVarInt,
-  usesQuicVarInt,
   Draft18BufferWriter,
   Draft18BufferReader,
 } from './encoding/protocol-codec.js';

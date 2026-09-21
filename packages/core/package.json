@@ -1,11 +1,30 @@
 {
   "name": "@moq-web/core",
-  "version": "0.1.0",
-  "description": "Core MOQT protocol types, encoding, state management, and transport layer",
+  "version": "0.2.0",
+  "description": "Core MOQT protocol types, encoding, state management, and transport layer for Media over QUIC",
+  "keywords": [
+    "moq",
+    "moqt",
+    "webtransport",
+    "quic",
+    "media"
+  ],
+  "license": "BSD-2-Clause",
+  "homepage": "https://github.com/Quicr/moq-web#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Quicr/moq-web.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/Quicr/moq-web/issues"
+  },
+  "author": "Cisco Systems, Inc.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -13,8 +32,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",

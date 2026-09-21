@@ -116,19 +116,16 @@ export interface MediaConfig {
   /** Jitter buffer delay in milliseconds (default: 100) */
   jitterBufferDelay?: number;
 
-  // Group-aware jitter buffer options (for parallel QUIC stream handling)
-  /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
-  useGroupArbiter?: boolean;
-
   /**
-   * Policy type for frame release strategy (new architecture, takes precedence over useGroupArbiter)
+   * Policy type for frame release strategy.
    * - 'vod': Sequential playback, no skipping, wait for all frames (use for DVR/recorded content)
    * - 'live': Deadline-based with jitter buffer (for real-time streaming)
    * - 'adaptive': Auto-detect based on arrival patterns
+   * When `isLive` is provided from the catalog, the policy is selected automatically.
    */
   policyType?: 'vod' | 'live' | 'adaptive';
 
-  /** Whether content is live (from catalog) - used with policyType to select behavior */
+  /** Whether content is live (from catalog) — drives catalog-based policy selection */
   isLive?: boolean;
   /** Filter type for subscription: 'latest' (default) or 'absolute' (start from beginning for VOD) */
   filterType?: 'latest' | 'absolute';
@@ -152,8 +149,6 @@ export interface MediaConfig {
   catchUpThreshold?: number;
   /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
   useLatencyDeadline?: boolean;
-  /** Enable GroupArbiter debug logging (default: false) */
-  arbiterDebug?: boolean;
   /** Minimum frames to buffer before starting VOD playback (default: 30) */
   minBufferFrames?: number;
 

@@ -15,7 +15,7 @@ import type {
   TransportState,
   StreamInfo,
 } from './transport-worker-types.js';
-import { getCurrentALPNProtocol, IS_DRAFT_16, IS_DRAFT_18, MOQTVarInt, StreamTypeDraft18 } from '@moq-web/core';
+import { alpnProtocolFor, DEFAULT_DRAFT, MOQTVarInt, StreamTypeDraft18, type DraftVersion } from '@moq-web/core';
 
 // Worker state
 let transport: WebTransport | null = null;
@@ -25,6 +25,12 @@ let setupWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let currentState: TransportState = 'disconnected';
 let debug = false;
+/**
+ * Draft version this worker instance is speaking. Set on `connect()` from
+ * `TransportWorkerConfig.draft`; used to select ALPN and setup-stream layout.
+ */
+let workerDraft: DraftVersion = DEFAULT_DRAFT;
+const isDraft18 = () => workerDraft === 'draft-18';
 // True when the local side called disconnect() before `transport.closed` resolved;
 // used to distinguish local vs peer-initiated close in the disconnected event.
 let localDisconnectInitiated = false;
@@ -72,26 +78,15 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
   }
 
   debug = config.debug ?? false;
+  workerDraft = config.draft ?? DEFAULT_DRAFT;
   localDisconnectInitiated = false;
-  log('Connecting to', config.url);
+  log('Connecting to', config.url, 'as', workerDraft);
   setState('connecting');
 
   try {
-    // Build WebTransport options
-    // Only set protocols (WT-Available-Protocols) for draft-16+
-    // Draft-14 relays don't support WebTransport protocol negotiation
     const options: WebTransportOptions & { protocols?: string[] } = {};
-    const alpnProtocol = getCurrentALPNProtocol();
-    console.log('[transport-worker] Version check:', {
-      IS_DRAFT_16,
-      IS_DRAFT_18,
-      alpnProtocol,
-      willSetProtocols: IS_DRAFT_16 || IS_DRAFT_18,
-    });
-    if (IS_DRAFT_16 || IS_DRAFT_18) {
-      options.protocols = [alpnProtocol];
-    }
-    console.log('[transport-worker] WebTransport options:', JSON.stringify(options));
+    const alpnProtocol = alpnProtocolFor(workerDraft);
+    options.protocols = [alpnProtocol];
     if (config.serverCertificateHashes?.length) {
       options.serverCertificateHashes = config.serverCertificateHashes.map((hash) => ({
         algorithm: 'sha-256',
@@ -111,7 +106,7 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     await Promise.race([transport.ready, timeoutPromise]);
     log('WebTransport connected');
 
-    if (IS_DRAFT_18) {
+    if (isDraft18()) {
       // Draft-18: Setup uses unidirectional stream with 0x2F00 type prefix
       const setupStream = await transport.createUnidirectionalStream();
       log('Draft-18 setup stream created', { streamId: (setupStream as any).id ?? (setupStream as any).streamId ?? 'unknown' });
@@ -129,7 +124,7 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     datagramWriter = transport.datagrams.writable.getWriter();
 
     // Start listeners
-    if (!IS_DRAFT_18) {
+    if (!isDraft18()) {
       listenForControlMessages();
     }
     listenForDatagrams();
@@ -270,7 +265,7 @@ async function listenForIncomingStreams(): Promise<void> {
       }
 
       console.log('[transport-worker] Received incoming unidirectional stream');
-      if (IS_DRAFT_18) {
+      if (isDraft18()) {
         handleDraft18IncomingStream(stream);
       } else {
         const streamId = nextStreamId++;
@@ -449,7 +444,7 @@ function handleConnectionClosed(): void {
 let setupStreamTypeSent = false;
 
 async function sendControl(data: Uint8Array): Promise<void> {
-  if (IS_DRAFT_18) {
+  if (isDraft18()) {
     if (!setupWriter) {
       respond({ type: 'error', message: 'Setup stream not connected' });
       return;

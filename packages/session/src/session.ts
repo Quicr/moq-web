@@ -43,10 +43,11 @@ import {
   ObjectExtension,
   BufferWriter,
   Logger,
-  IS_DRAFT_16,
-  IS_DRAFT_18,
-  getCurrentALPNProtocol,
-  getProtocolCodec,
+  alpnProtocolFor,
+  DEFAULT_DRAFT,
+  versionEnumFor,
+  getProtocolCodecForVersion,
+  type DraftVersion,
   DataStreamType,
   type ClientSetupMessage,
   type ServerSetupMessage,
@@ -417,6 +418,12 @@ class Draft18RequestStream {
 export interface MOQTSessionConfig {
   /** Worker instance for transport operations */
   worker: Worker;
+  /**
+   * MOQT draft version this session will speak. Defaults to
+   * `DEFAULT_DRAFT` (draft-16 unless overridden at build time). Pass
+   * explicitly whenever your relay fleet mixes drafts.
+   */
+  draft?: DraftVersion;
   /** Server certificate hashes for self-signed certs */
   serverCertificateHashes?: ArrayBuffer[];
   /** Connection timeout in ms */
@@ -523,13 +530,19 @@ export class MOQTSession {
   /** Offset into controlBuffer where unprocessed data starts */
   private controlBufferOffset = 0;
   /**
+   * MOQT draft version this session is speaking. Derived from the passed
+   * transport (main-thread mode) or explicitly from config (worker mode);
+   * falls back to `DEFAULT_DRAFT`.
+   */
+  private readonly _draft: DraftVersion;
+  /**
    * Next request ID for subscribing/publishing
    * Draft-14: Start at 1, increment by 1
    * Draft-16+: Clients use even IDs (0, 2, 4, ...), servers use odd (1, 3, 5, ...)
    */
-  private nextRequestId = (IS_DRAFT_16 || IS_DRAFT_18) ? 0 : 1;
+  private nextRequestId: number;
   /** Protocol codec for version-specific encoding/decoding */
-  private readonly codec = getProtocolCodec();
+  private readonly codec: IProtocolCodec;
   /** Temporary message handler for setup */
   private onMessage?: (message: MOQTMessage) => void;
   /** Active video GOP streams by track alias (for GOP batching) */
@@ -663,6 +676,7 @@ export class MOQTSession {
       // Main thread mode - existing behavior
       this.transport = transportOrConfig;
       this.useWorker = false;
+      this._draft = transportOrConfig.draft;
       // Capture the URL the caller connected the transport to, so migration
       // (§3.6) can surface it as `oldSessionUri` on migration events.
       this._lastConnectUrl = transportOrConfig.url;
@@ -678,7 +692,15 @@ export class MOQTSession {
       this.workerConfig = transportOrConfig;
       this.transportWorker = new TransportWorkerClient(transportOrConfig.worker);
       this.useWorker = true;
+      this._draft = transportOrConfig.draft ?? DEFAULT_DRAFT;
     }
+
+    // Bind codec and request-ID scheme to the resolved draft.
+    this.codec = getProtocolCodecForVersion(versionEnumFor(this._draft) as Version);
+    // Draft-14: 1-based. Draft-16+: clients use even IDs starting at 0.
+    this.nextRequestId = this._draft === 'draft-16' || this._draft === 'draft-17' || this._draft === 'draft-18'
+      ? 0
+      : 1;
 
     this.objectRouter = new ObjectRouter(this.subscriptionManager, (sub, data, groupId, objectId, timestamp) => {
       this.emit('object', {
@@ -697,7 +719,7 @@ export class MOQTSession {
         objectId,
         bytes: data.byteLength,
       } as SubscribeStatsEvent);
-    });
+    }, this._draft);
 
     // §8: surface subscriber-side delivery deadline expiries to consumers.
     this.objectRouter.setDeliveryTimeoutCallback((sub, reason, resetCode, detail) => {
@@ -770,8 +792,8 @@ export class MOQTSession {
     });
 
     log.debug('MOQTSession created', {
-      isDraft18: IS_DRAFT_18,
-      isDraft16: IS_DRAFT_16,
+      isDraft18: this.isDraft18,
+      isDraft16: this.isDraft16,
       version: Version[this.codec.version],
       useWorker: this.useWorker,
     });
@@ -836,6 +858,7 @@ export class MOQTSession {
 
     await this.transportWorker.connect({
       url,
+      draft: this._draft,
       serverCertificateHashes: this.workerConfig.serverCertificateHashes,
       connectionTimeout: this.workerConfig.connectionTimeout,
       debug: this.workerConfig.debug,
@@ -855,7 +878,7 @@ export class MOQTSession {
    */
   private getNextRequestId(): number {
     const id = this.nextRequestId;
-    this.nextRequestId += (IS_DRAFT_16 || IS_DRAFT_18) ? 2 : 1;
+    this.nextRequestId += (this.isDraft16 || this.isDraft18) ? 2 : 1;
     return id;
   }
 
@@ -902,7 +925,7 @@ export class MOQTSession {
     publisherPriority: number | undefined,
     groupId: number,
   ): number | undefined {
-    if (!IS_DRAFT_18) return undefined;
+    if (!this.isDraft18) return undefined;
     const pub = this.publicationManager.get(trackAlias);
     const subP = pub?.subscriberPriority ?? 128;
     const go = pub?.subscriberGroupOrder ?? GroupOrder.ASCENDING;
@@ -962,7 +985,7 @@ export class MOQTSession {
   private setupTransportHandlers(): void {
     if (!this.transport) return;
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Setup messages come on separate setup stream event
       const setupCleanup = this.transport.on('setup-message', (data) => {
         this.handleSetupMessage(data);
@@ -1014,7 +1037,7 @@ export class MOQTSession {
   private setupWorkerHandlers(): void {
     if (!this.transportWorker) return;
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Setup messages come on dedicated setup stream
       this.transportWorker.on('setup-message', ({ data }) => {
         this.handleSetupMessage(data);
@@ -1411,6 +1434,23 @@ export class MOQTSession {
   }
 
   /**
+   * MOQT draft version this session is speaking.
+   */
+  get draft(): DraftVersion {
+    return this._draft;
+  }
+
+  /** True when this session is speaking draft-18 (per-request bidi streams, MOQT varints, ...). */
+  private get isDraft18(): boolean {
+    return this._draft === 'draft-18';
+  }
+
+  /** True when this session is speaking draft-16 or draft-17. */
+  private get isDraft16(): boolean {
+    return this._draft === 'draft-16' || this._draft === 'draft-17';
+  }
+
+  /**
    * Get current session state
    */
   get state(): SessionState {
@@ -1614,7 +1654,7 @@ export class MOQTSession {
       throw new Error(`Cannot setup: session is ${this._state}`);
     }
 
-    log.info('Setting up MOQT session', { useWorker: this.useWorker, isDraft18: IS_DRAFT_18 });
+    log.info('Setting up MOQT session', { useWorker: this.useWorker, isDraft18: this.isDraft18 });
     this.setState('setup');
 
     // Set up event handlers based on mode
@@ -1624,7 +1664,7 @@ export class MOQTSession {
       this.setupTransportHandlers();
     }
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Single SETUP message with no version/role (negotiated via ALPN)
       // On the setup stream, message type is implicit (stream type = 0x2F00)
       // Wire format: Length (16-bit) | Setup Options
@@ -1655,7 +1695,7 @@ export class MOQTSession {
       log.info('SETUP bytes (draft-18)', {
         length: setupBytes.length,
         hex: hexBytes,
-        alpnProtocol: getCurrentALPNProtocol(),
+        alpnProtocol: alpnProtocolFor(this._draft),
       });
 
       await this.doSendControl(setupBytes);
@@ -1690,13 +1730,13 @@ export class MOQTSession {
       log.info('CLIENT_SETUP bytes', {
         length: setupBytes.length,
         hex: hexBytes,
-        isDraft16: IS_DRAFT_16,
-        alpnProtocol: getCurrentALPNProtocol(),
+        isDraft16: this.isDraft16,
+        alpnProtocol: alpnProtocolFor(this._draft),
       });
 
       await this.doSendControl(setupBytes);
       log.info('Sent CLIENT_SETUP');
-      this.emitMessageSent('CLIENT_SETUP', setupBytes.length, 'draft-16', { isDraft16: IS_DRAFT_16 });
+      this.emitMessageSent('CLIENT_SETUP', setupBytes.length, 'draft-16', { isDraft16: this.isDraft16 });
 
       // Wait for SERVER_SETUP
       await this.waitForServerSetup();
@@ -1715,7 +1755,7 @@ export class MOQTSession {
    * @param timeoutMs Grace period in milliseconds before the sender enforces closure (spec §10.4)
    */
   async goAway(newSessionUri?: string, timeoutMs: bigint = 0n): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       log.warn('goAway only supported in draft-18');
       return;
     }
@@ -1748,7 +1788,7 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
   ): Promise<TrackStatusResult> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('trackStatus() requires draft-18');
     }
     if (!this.isReady) {
@@ -1831,7 +1871,7 @@ export class MOQTSession {
       parameters?: Map<number, Uint8Array>;
     }
   ): Promise<number> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('subscribeTracks() requires draft-18');
     }
     if (!this.isReady) {
@@ -1919,7 +1959,7 @@ export class MOQTSession {
     forwardState: boolean,
     options?: { awaitAck?: boolean; newGroupRequest?: boolean | number },
   ): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendRequestUpdate() requires draft-18');
     }
 
@@ -1991,7 +2031,7 @@ export class MOQTSession {
     reasonPhrase?: string,
     statusCode?: PublishDoneErrorCodeDraft18
   ): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendPublishDone() requires draft-18');
     }
 
@@ -2019,7 +2059,7 @@ export class MOQTSession {
    * is expected to raise its stream limit; there is no reply.
    */
   async sendPublishBlocked(trackAlias: bigint | number | string): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendPublishBlocked() requires draft-18');
     }
     const alias = typeof trackAlias === 'bigint' ? trackAlias : BigInt(trackAlias);
@@ -2248,7 +2288,7 @@ export class MOQTSession {
    * `bytes`; pass 0 to emit just the type varint.
    */
   async sendPaddingStream(bytes: number): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendPaddingStream requires draft-18');
     }
     if (!Number.isInteger(bytes) || bytes < 0) {
@@ -2268,7 +2308,7 @@ export class MOQTSession {
    * zero-filled bytes. Receivers MUST discard.
    */
   async sendPaddingDatagram(bytes: number): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendPaddingDatagram requires draft-18');
     }
     if (!Number.isInteger(bytes) || bytes < 0) {
@@ -2314,7 +2354,7 @@ export class MOQTSession {
       fullTrackName: fullTrackNameForLog,
       subscriptionId,
       trackAlias: trackAlias.toString(),
-      isDraft18: IS_DRAFT_18,
+      isDraft18: this.isDraft18,
     });
 
     // Create subscription
@@ -2332,7 +2372,7 @@ export class MOQTSession {
     };
     this.subscriptionManager.add(subscription);
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Send SUBSCRIBE on a new bidirectional stream
       await this.subscribeDraft18(requestId, namespace, trackName, trackAlias, options);
     } else {
@@ -2570,7 +2610,7 @@ export class MOQTSession {
 
     log.info('Unsubscribing', { subscriptionId });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Send REQUEST_UPDATE with forwardState=false to unsubscribe.
       // Fire-and-forget: the relay resets the data streams on cancel and
       // may close the bidi without a REQUEST_OK.
@@ -2683,7 +2723,7 @@ export class MOQTSession {
       this.on('fetch-object', handler);
     }
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.fetchDraft18(requestId, namespace, trackName, range, options);
     } else {
       // Draft-16 §7.4 End Location is exclusive on the wire: endObject == 0
@@ -2857,7 +2897,7 @@ export class MOQTSession {
 
     log.info('Cancelling fetch', { requestId });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18 has no FETCH_CANCEL message; the equivalent is REQUEST_UPDATE
       // with forwardState=false, which terminates delivery for this requestId.
       // The relay resets the fetch data stream in response; fire-and-forget.
@@ -3019,7 +3059,7 @@ export class MOQTSession {
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Send SUBSCRIBE_NAMESPACE on per-request bidi stream
       await this.subscribeNamespaceDraft18(requestId, namespacePrefix, subscriptionId);
     } else {
@@ -3034,7 +3074,7 @@ export class MOQTSession {
       const bytes = this.codec.encodeControlMessage(message);
 
       // Draft-16: SUBSCRIBE_NAMESPACE must be sent on a new bidirectional stream
-      if (IS_DRAFT_16) {
+      if (this.isDraft16) {
         if (this.useWorker && this.transportWorker) {
           const streamId = await this.transportWorker.createBidiStream();
           this.transportWorker.writeStream(streamId, bytes, false);
@@ -3550,7 +3590,7 @@ export class MOQTSession {
       });
     }
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.publishDraft18(requestId, namespace, trackName, trackAlias, options);
     } else {
       // Send PUBLISH message
@@ -3677,7 +3717,7 @@ export class MOQTSession {
 
     const requestId = this.getNextRequestId();
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Send PUBLISH_NAMESPACE on per-request bidi stream
       await this.announceNamespaceDraft18(requestId, namespace, namespaceStr, announceInfo);
     } else {
@@ -4623,7 +4663,7 @@ export class MOQTSession {
     await this.closeVideoGOPStream(key);
 
     // Send PUBLISH_DONE to notify the relay/subscribers
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.sendPublishDone(
         publication.requestId,
         0,
@@ -5113,7 +5153,7 @@ export class MOQTSession {
 
     log.info('Pausing subscription', { subscriptionId });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.sendRequestUpdate(subscription.requestId, false);
       subscription.paused = true;
     } else {
@@ -5156,7 +5196,7 @@ export class MOQTSession {
 
     log.info('Resuming subscription', { subscriptionId });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.sendRequestUpdate(subscription.requestId, true);
       subscription.paused = false;
     } else {
@@ -6174,7 +6214,7 @@ export class MOQTSession {
     // §14 grease: normalize unknown Session Termination codes to
     // INTERNAL_ERROR before emitting. Preserve the raw code on the event so
     // callers with newer registry knowledge can still inspect it if needed.
-    const normalizedCode = IS_DRAFT_18
+    const normalizedCode = this.isDraft18
       ? normalizeSessionErrorCode(info.closeCode)
       : info.closeCode;
     log.info('Peer closed session', { ...info, normalizedCode });
@@ -6579,7 +6619,7 @@ export class MOQTSession {
         let namespaceStr: string;
         let namespace: string[];
 
-        if (IS_DRAFT_16 && publishNamespaceOk.requestId !== undefined) {
+        if (this.isDraft16 && publishNamespaceOk.requestId !== undefined) {
           // Draft-16: Look up namespace by requestId
           namespaceStr = this.announceRequestIdToNamespace.get(publishNamespaceOk.requestId) ?? '';
           namespace = namespaceStr ? namespaceStr.split('/') : [];
@@ -6640,7 +6680,7 @@ export class MOQTSession {
         });
         let subscriptionId: number | undefined;
 
-        if (IS_DRAFT_16 && subscribeNamespaceOk.requestId !== undefined) {
+        if (this.isDraft16 && subscribeNamespaceOk.requestId !== undefined) {
           // Draft-16: Use requestId to find subscription
           subscriptionId = this.namespaceSubscriptionByRequestId.get(subscribeNamespaceOk.requestId);
         } else if (subscribeNamespaceOk.namespacePrefix) {
@@ -6675,7 +6715,7 @@ export class MOQTSession {
         const subscribeNamespaceError = message as SubscribeNamespaceErrorMessage;
         let subscriptionId: number | undefined;
 
-        if (IS_DRAFT_16 && subscribeNamespaceError.requestId !== undefined) {
+        if (this.isDraft16 && subscribeNamespaceError.requestId !== undefined) {
           subscriptionId = this.namespaceSubscriptionByRequestId.get(subscribeNamespaceError.requestId);
         } else if (subscribeNamespaceError.namespacePrefix) {
           const prefixStr = subscribeNamespaceError.namespacePrefix.join('/');

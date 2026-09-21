@@ -12,8 +12,6 @@
  * Adapts to dynamic GOP sizes automatically by tracking keyframe intervals.
  */
 
-import type { TimingConfig, GroupState } from './group-arbiter-types';
-import type { TickProvider } from './tick-provider';
 
 /**
  * Configuration for TimingEstimator
@@ -163,28 +161,6 @@ export class TimingEstimator {
   }
 
   /**
-   * Calculate deadline tick for a group
-   *
-   * @param group - Group state
-   * @param tickProvider - Tick provider for time conversion
-   * @param maxLatency - Maximum acceptable latency in ms
-   * @returns Deadline tick value
-   */
-  calculateDeadline<T>(
-    group: GroupState<T>,
-    tickProvider: TickProvider,
-    maxLatency: number
-  ): number {
-    const gopMs = this.estimatedGopDuration;
-
-    // Deadline = arrival time + GOP duration + max latency
-    const deadlineMs =
-      tickProvider.ticksToMs(group.firstFrameReceivedTick) + gopMs + maxLatency;
-
-    return tickProvider.msToTicks(deadlineMs);
-  }
-
-  /**
    * Get current estimated GOP duration in milliseconds
    */
   getEstimatedGopDuration(): number {
@@ -234,13 +210,3 @@ export class TimingEstimator {
   }
 }
 
-/**
- * Create a TimingEstimator from TimingConfig
- */
-export function createTimingEstimator(config: TimingConfig): TimingEstimator {
-  return new TimingEstimator({
-    initialGopDuration: config.estimatedGopDuration,
-    catalogFramerate: config.catalogFramerate,
-    catalogTimescale: config.catalogTimescale,
-  });
-}

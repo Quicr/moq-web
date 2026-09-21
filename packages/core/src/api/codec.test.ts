@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 import { describe, it, expect } from 'vitest';
-import { IS_DRAFT_18, IS_DRAFT_16 } from '../version/constants.js';
+import { DEFAULT_DRAFT } from '../version/constants.js';
+
+const IS_DRAFT_18 = DEFAULT_DRAFT === 'draft-18';
+const IS_DRAFT_16 = DEFAULT_DRAFT === 'draft-16' || DEFAULT_DRAFT === 'draft-17';
 import {
-  capabilities,
-  currentVersion,
+  capabilitiesFor,
+  currentVersionFor,
   subscribeRequestToWire,
   subscribeResponseFromWire,
   publishRequestToWire,
@@ -17,6 +20,9 @@ import {
   filterFromWireV14,
   filterFromWireV18,
 } from './codec.js';
+
+const capabilities = capabilitiesFor(DEFAULT_DRAFT);
+const currentVersion = currentVersionFor(DEFAULT_DRAFT);
 import {
   Version,
   SubscriptionFilter,

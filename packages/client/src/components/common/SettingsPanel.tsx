@@ -298,8 +298,6 @@ export const SettingsPanel: React.FC = () => {
     setCatchUpThreshold,
     useLatencyDeadline,
     setUseLatencyDeadline,
-    arbiterDebug,
-    setArbiterDebug,
     experienceProfile,
     applyExperienceProfile,
     secureObjectsEnabled,
@@ -503,12 +501,6 @@ export const SettingsPanel: React.FC = () => {
             onChange={(e) => setCatchUpThreshold(Number(e.target.value))} className="w-full h-1.5 accent-sky-500" />
         </div>
       )}
-      <div className="pt-3 mt-3 border-t border-gray-200 dark:border-gray-700">
-        <label className="flex items-center justify-between">
-          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Debug Logging</span>
-          <Toggle enabled={arbiterDebug} onChange={() => setArbiterDebug(!arbiterDebug)} size="sm" color="bg-orange-500" />
-        </label>
-      </div>
     </div>
   );
 

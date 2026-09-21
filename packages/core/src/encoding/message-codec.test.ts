@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { MessageCodec, ObjectCodec, MessageCodecError } from './message-codec';
-import { IS_DRAFT_18 } from '../version/constants';
+import { DEFAULT_DRAFT } from '../version/constants';
 import { BufferReader } from './varint';
 import {
   MessageType,
@@ -745,7 +745,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it.skipIf(IS_DRAFT_18)('decodes standard MOQT subgroup header (0x04)', () => {
+    it.skipIf(DEFAULT_DRAFT === 'draft-18')('decodes standard MOQT subgroup header (0x04)', () => {
       // Manually construct a standard MOQT subgroup header
       // Standard MOQT format: type(varint) + trackAlias(varint) + groupId(varint) + subgroupId(varint) + publisherPriority(varint)
       const buffer = new Uint8Array([

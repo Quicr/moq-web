@@ -12,13 +12,13 @@ import {
   Logger,
   ObjectCodec,
   ObjectStatus,
-  IS_DRAFT_16,
-  IS_DRAFT_18,
+  DEFAULT_DRAFT,
   DataStreamType,
   BufferReader,
   Draft18StreamCodec,
   StreamResetErrorCodeDraft18,
   normalizeStreamResetErrorCode,
+  type DraftVersion,
 } from '@moq-web/core';
 import type { FetchDecoderState, FetchObjectDraft18 } from '@moq-web/core';
 import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
@@ -147,10 +147,21 @@ export class ObjectRouter {
    */
   private activeReaders = new Map<string, ReadableStreamDefaultReader<Uint8Array>>();
 
+  private readonly _draft: DraftVersion;
+  private get isDraft18(): boolean {
+    return this._draft === 'draft-18';
+  }
+  private get isDraft16(): boolean {
+    return this._draft === 'draft-16' || this._draft === 'draft-17';
+  }
+
   constructor(
     private subscriptionManager: SubscriptionManager,
-    private onObject?: ObjectCallback
-  ) {}
+    private onObject?: ObjectCallback,
+    draft: DraftVersion = DEFAULT_DRAFT
+  ) {
+    this._draft = draft;
+  }
 
   /** Register the callback fired when a §8 delivery deadline elapses. */
   setDeliveryTimeoutCallback(cb: DeliveryTimeoutCallback): void {
@@ -299,7 +310,7 @@ export class ObjectRouter {
 
         // Parse header if not yet done
         if (!headerParsed && viewLength > 0) {
-          if (IS_DRAFT_18 || IS_DRAFT_16) {
+          if (this.isDraft18 || this.isDraft16) {
             // Draft-16/18: Stream starts with Type (0x10-0x3D range for subgroups, 0x05 for FETCH)
             const firstByte = bufferView[0];
             const streamType = firstByte & 0x3f;
@@ -556,7 +567,7 @@ export class ObjectRouter {
         // §14 grease: unknown Stream Reset codes MUST be treated as
         // INTERNAL_ERROR for this registry. Draft-16 doesn't define grease so
         // we only normalize on draft-18.
-        const normalizedCode = IS_DRAFT_18
+        const normalizedCode = this.isDraft18
           ? normalizeStreamResetErrorCode(streamErrorCode)
           : streamErrorCode;
         this.onStreamReset(subscription, normalizedCode, errorMessage, detail);
@@ -694,10 +705,10 @@ export class ObjectRouter {
     log.info('Handling FETCH stream', {
       requestId,
       initialBufferSize: buffer.length,
-      draft: IS_DRAFT_18 ? 'draft-18' : 'draft-16',
+      draft: this.isDraft18 ? 'draft-18' : 'draft-16',
     });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       return this.handleFetchStreamDraft18(reader, buffer, bufferOffset, done, requestId);
     }
     return this.handleFetchStreamLegacy(reader, buffer, bufferOffset, done, requestId);

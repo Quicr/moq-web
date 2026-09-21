@@ -37,8 +37,8 @@ import {
   ApiGroupOrder as GroupOrder,
   ApiObjectStatus as ObjectStatus,
   NamespaceSubscribeMode,
-  capabilities,
-  currentVersion,
+  capabilitiesFor,
+  currentVersionFor,
   GroupOrder as LegacyGroupOrder,
   MOQTransport,
 } from '@moq-web/core';
@@ -128,11 +128,11 @@ export class UnifiedSession implements ISession {
   }
 
   get version(): Version {
-    return currentVersion;
+    return currentVersionFor(this.session.draft);
   }
 
   get capabilities(): CodecCapabilities {
-    return capabilities;
+    return capabilitiesFor(this.session.draft);
   }
 
   // =========================================================================

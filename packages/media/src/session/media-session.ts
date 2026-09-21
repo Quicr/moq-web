@@ -700,9 +700,7 @@ export class MediaSession {
       jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
-      // GroupArbiter options for parallel QUIC stream handling
-      useGroupArbiter: config.useGroupArbiter,
-      // New PlayoutBuffer architecture options
+      // PlayoutBuffer + ReleasePolicy configuration
       policyType: config.policyType,
       isLive: config.isLive,
       maxLatency: config.maxLatency,
@@ -719,7 +717,6 @@ export class MediaSession {
       hasVideoConfig: mediaType !== 'audio',
       hasAudioConfig: mediaType !== 'video',
       useDecodeWorker: !!this.workers?.decodeWorker,
-      useGroupArbiter: config.useGroupArbiter,
       policyType: config.policyType,
       isLive: config.isLive,
     });
@@ -1529,7 +1526,6 @@ export class MediaSession {
       jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
-      useGroupArbiter: config.useGroupArbiter,
       policyType: config.policyType,
       isLive: config.isLive,
       maxLatency: config.maxLatency,
@@ -2021,9 +2017,7 @@ export class MediaSession {
       jitterBufferDelay: config.jitterBufferDelay ?? 100,
       decodeWorker: this.workers?.decodeWorker,
       enableStats: config.enableStats,
-      // GroupArbiter options for parallel QUIC stream handling
-      useGroupArbiter: config.useGroupArbiter,
-      // New PlayoutBuffer architecture options
+      // PlayoutBuffer + ReleasePolicy configuration
       policyType: config.policyType,
       isLive: config.isLive,
       maxLatency: config.maxLatency,
@@ -2052,7 +2046,6 @@ export class MediaSession {
       namespaceSubscriptionId: event.namespaceSubscriptionId,
       trackName: event.trackName,
       mediaType,
-      useGroupArbiter: config.useGroupArbiter,
       quicrInteropEnabled: config.quicrInteropEnabled,
       policyType: config.policyType,
       isLive: config.isLive,

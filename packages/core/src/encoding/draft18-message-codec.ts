@@ -52,6 +52,12 @@ import {
 
 const log = Logger.create('moqt:core:draft18-codec');
 
+// Module-level singletons — TextEncoder/TextDecoder are safe to reuse and
+// allocating per-call showed up as measurable overhead on the encode/decode
+// hot path.
+const TE = new TextEncoder();
+const TD = new TextDecoder();
+
 export class Draft18CodecError extends Error {
   messageType?: MessageTypeDraft18;
 
@@ -285,7 +291,7 @@ export class Draft18MessageCodec {
       options.push({
         key: SetupOptionDraft18.PATH,
         encode: (w) => {
-          const bytes = new TextEncoder().encode(message.path!);
+          const bytes = TE.encode(message.path!);
           w.writeVarInt(BigInt(bytes.length));
           w.writeBytes(bytes);
         },
@@ -312,7 +318,7 @@ export class Draft18MessageCodec {
       options.push({
         key: SetupOptionDraft18.AUTHORITY,
         encode: (w) => {
-          const bytes = new TextEncoder().encode(message.authority!);
+          const bytes = TE.encode(message.authority!);
           w.writeVarInt(BigInt(bytes.length));
           w.writeBytes(bytes);
         },
@@ -322,7 +328,7 @@ export class Draft18MessageCodec {
       options.push({
         key: SetupOptionDraft18.MOQT_IMPLEMENTATION,
         encode: (w) => {
-          const bytes = new TextEncoder().encode(message.moqtImplementation!);
+          const bytes = TE.encode(message.moqtImplementation!);
           w.writeVarInt(BigInt(bytes.length));
           w.writeBytes(bytes);
         },
@@ -400,7 +406,7 @@ export class Draft18MessageCodec {
       switch (key) {
         case SetupOptionDraft18.PATH: {
           const length = reader.readVarIntNumber();
-          path = new TextDecoder().decode(reader.readBytes(length));
+          path = TD.decode(reader.readBytes(length));
           break;
         }
         case SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE:
@@ -415,12 +421,12 @@ export class Draft18MessageCodec {
         }
         case SetupOptionDraft18.AUTHORITY: {
           const length = reader.readVarIntNumber();
-          authority = new TextDecoder().decode(reader.readBytes(length));
+          authority = TD.decode(reader.readBytes(length));
           break;
         }
         case SetupOptionDraft18.MOQT_IMPLEMENTATION: {
           const length = reader.readVarIntNumber();
-          moqtImplementation = new TextDecoder().decode(reader.readBytes(length));
+          moqtImplementation = TD.decode(reader.readBytes(length));
           break;
         }
         default:
@@ -1367,7 +1373,7 @@ export class Draft18MessageCodec {
   private static encodeTrackNamespace(writer: Draft18BufferWriter, namespace: TrackNamespace): void {
     writer.writeVarInt(namespace.length);
     for (const field of namespace) {
-      const bytes = new TextEncoder().encode(field);
+      const bytes = TE.encode(field);
       writer.writeVarInt(bytes.length);
       writer.writeBytes(bytes);
     }
@@ -1379,13 +1385,13 @@ export class Draft18MessageCodec {
     for (let i = 0; i < count; i++) {
       const length = reader.readVarIntNumber();
       const bytes = reader.readBytes(length);
-      namespace.push(new TextDecoder().decode(bytes));
+      namespace.push(TD.decode(bytes));
     }
     return namespace;
   }
 
   private static encodeString(writer: Draft18BufferWriter, str: string): void {
-    const bytes = new TextEncoder().encode(str);
+    const bytes = TE.encode(str);
     writer.writeVarInt(bytes.length);
     writer.writeBytes(bytes);
   }
@@ -1393,7 +1399,7 @@ export class Draft18MessageCodec {
   private static decodeString(reader: Draft18BufferReader): string {
     const length = reader.readVarIntNumber();
     const bytes = reader.readBytes(length);
-    return new TextDecoder().decode(bytes);
+    return TD.decode(bytes);
   }
 
   private static encodeLocation(writer: Draft18BufferWriter, location: Location): void {

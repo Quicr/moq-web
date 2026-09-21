@@ -12,8 +12,8 @@ export * from './types.js';
 
 // Codec adapters
 export {
-  capabilities,
-  currentVersion,
+  capabilitiesFor,
+  currentVersionFor,
   subscribeRequestToWire,
   subscribeResponseFromWire,
   publishRequestToWire,

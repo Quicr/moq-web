@@ -15,9 +15,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { MOQTransport } from './transport.js';
 import { MOQTVarInt } from '../encoding/moqt-varint.js';
 import { StreamTypeDraft18 } from '../messages/types.js';
-import { IS_DRAFT_18 } from '../version/constants.js';
+import { DEFAULT_DRAFT } from '../version/constants.js';
 
-describe.skipIf(!IS_DRAFT_18)('draft-18 §11.5.1 padding stream receiver-side discard', () => {
+describe.skipIf(DEFAULT_DRAFT !== 'draft-18')('draft-18 §11.5.1 padding stream receiver-side discard', () => {
   it('does not emit unidirectional-stream for a PADDING stream and drains all bytes', async () => {
     const transport = new MOQTransport();
     const emitted: ReadableStream<Uint8Array>[] = [];

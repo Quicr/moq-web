@@ -19,6 +19,7 @@
     "dev:draft-18": "MOQT_VERSION=draft-18 pnpm --filter @moq-web/client run dev",
     "dev:draft-16": "MOQT_VERSION=draft-16 pnpm --filter @moq-web/client run dev",
     "clean": "pnpm -r run clean",
+    "publish:dry-run": "pnpm --filter @moq-web/core --filter @moq-web/cat --filter @moq-web/secure-objects --filter @moq-web/session --filter @moq-web/msf --filter @moq-web/media exec pnpm publish --dry-run --no-git-checks",
     "bun:build": "MOQT_VERSION=draft-16 bun run --filter '*' build",
     "bun:test": "MOQT_VERSION=draft-16 bun run --filter '*' test",
     "bun:lint": "bun run --filter '*' lint",

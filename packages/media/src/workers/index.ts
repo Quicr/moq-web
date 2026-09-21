@@ -15,14 +15,6 @@ export type {
   EncodeWorkerConfig,
 } from './encode-worker-api.js';
 
-// LOC-only decode worker (existing)
-export { DecodeWorkerClient } from './decode-worker-api.js';
-export type {
-  DecodeWorkerRequest,
-  DecodeWorkerResponse,
-  DecodeWorkerConfig,
-} from './decode-worker-api.js';
-
 // Full codec + LOC encode worker (new - WebCodecs in worker)
 export { CodecEncodeWorkerClient } from './codec-encode-worker-api.js';
 export type {
@@ -75,27 +67,3 @@ export function createEncodeWorker(): Worker {
   return new Worker(new URL('./encode-worker.js', import.meta.url), { type: 'module' });
 }
 
-/**
- * Create a decode worker
- *
- * @example
- * ```typescript
- * const worker = createDecodeWorker();
- * const client = new DecodeWorkerClient(worker);
- * await client.init({ mediaType: 'video', jitterBufferDelay: 100 });
- *
- * // Handle decoded frames
- * client.on('video-frame', (frame) => {
- *   decoder.decode(frame.data, frame.isKeyframe, frame.timestamp);
- * });
- *
- * // Push received data
- * client.push(locData, groupId, objectId, timestamp);
- *
- * // Poll for ready frames
- * setInterval(() => client.poll(), 16);
- * ```
- */
-export function createDecodeWorker(): Worker {
-  return new Worker(new URL('./decode-worker.js', import.meta.url), { type: 'module' });
-}

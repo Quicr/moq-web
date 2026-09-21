@@ -15,18 +15,20 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
-  IS_DRAFT_18,
   MOQTransport,
   MessageTypeDraft18,
   GroupOrder,
   RequestParameterDraft18,
   type SubscribeMessageDraft18,
   type RequestUpdateMessageDraft18,
+  DEFAULT_DRAFT,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 import { computeSendOrder } from './priority.js';
 
+
+const IS_DRAFT_18 = DEFAULT_DRAFT === 'draft-18';
 interface PrivateSession {
   handleIncomingSubscribeDraft18: (
     m: SubscribeMessageDraft18,

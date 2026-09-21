@@ -25,6 +25,12 @@ export type TransportState =
 export interface TransportWorkerConfig {
   /** WebTransport URL (must start with https://) */
   url: string;
+  /**
+   * MOQT draft version the worker should speak. String selector so the
+   * config is structured-cloneable across the postMessage boundary.
+   * Defaults to 'draft-16' in the worker when omitted.
+   */
+  draft?: 'draft-16' | 'draft-17' | 'draft-18';
   /** Server certificate hashes for self-signed certs */
   serverCertificateHashes?: ArrayBuffer[];
   /** Connection timeout in ms (default: 300000 = 5 minutes) */

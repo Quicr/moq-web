@@ -1,11 +1,29 @@
 {
   "name": "@moq-web/session",
-  "version": "0.1.0",
-  "description": "Generic MOQT session management - protocol layer without media",
+  "version": "0.2.0",
+  "description": "Generic MOQT session management for Media over QUIC — protocol layer without media codecs",
+  "keywords": [
+    "moq",
+    "moqt",
+    "session",
+    "webtransport"
+  ],
+  "license": "BSD-2-Clause",
+  "homepage": "https://github.com/Quicr/moq-web#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Quicr/moq-web.git",
+    "directory": "packages/session"
+  },
+  "bugs": {
+    "url": "https://github.com/Quicr/moq-web/issues"
+  },
+  "author": "Cisco Systems, Inc.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,8 +35,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run --passWithNoTests",
@@ -27,8 +50,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@moq-web/core": "workspace:*",
-    "@moq-web/cat": "workspace:*"
+    "@moq-web/core": "workspace:^",
+    "@moq-web/cat": "workspace:^"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

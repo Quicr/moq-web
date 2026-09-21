@@ -380,7 +380,7 @@ export interface Location {
  * - NAMESPACE (0x08) = PUBLISH_NAMESPACE_ERROR
  * - NAMESPACE_DONE (0x0e) = TRACK_STATUS_OK
  *
- * The actual wire format differs based on IS_DRAFT_16 at build time.
+ * The actual wire format differs based on the negotiated draft.
  */
 export const MessageTypeDraft16 = {
   REQUEST_UPDATE: 0x02,
@@ -1449,7 +1449,7 @@ export interface MOQTObject {
  *
  * Note: Draft-16 messages that share wire values with draft-14 messages
  * (REQUEST_UPDATE, REQUEST_ERROR, REQUEST_OK, NAMESPACE, NAMESPACE_DONE)
- * are handled by the same encoder/decoder with IS_DRAFT_16 conditional logic.
+ * are handled by the same encoder/decoder with draft-scoped conditional logic.
  */
 export type ControlMessage =
   // Session messages

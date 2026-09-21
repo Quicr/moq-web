@@ -9,8 +9,8 @@
  * encoding and the MOQT Draft 14/16 specification format.
  *
  * Build-time version selection:
- * - IS_DRAFT_16=false: Draft-14 wire format (default)
- * - IS_DRAFT_16=true: Draft-16 wire format (includes draft-15 changes)
+ * - isDraft16Active()=false: Draft-14 wire format (default)
+ * - isDraft16Active()=true: Draft-16 wire format (includes draft-15 changes)
  *
  * @see https://datatracker.ietf.org/doc/draft-ietf-moq-transport/14/
  * @see https://datatracker.ietf.org/doc/draft-ietf-moq-transport/16/
@@ -34,8 +34,55 @@
 
 import { Logger } from '../utils/logger.js';
 import { BufferReader, BufferWriter, VarInt } from './varint.js';
-import { IS_DRAFT_16, IS_DRAFT_18 } from '../version/constants.js';
+import { DEFAULT_DRAFT, type DraftVersion } from '../version/constants.js';
 import { Draft18StreamCodec } from './draft18-stream-codec.js';
+
+// -----------------------------------------------------------------------------
+// Draft-scoped codec state
+// -----------------------------------------------------------------------------
+//
+// MessageCodec / ObjectCodec expose a wide static API and are called from
+// ~50 sites. Rather than thread `draft` through every static method (a
+// mechanical but sprawling refactor), we keep the branching logic and drive
+// it from a *scoped* draft that Draft16Codec / Draft18Codec set for the
+// duration of each call via {@link withDraft}. All codec paths are
+// synchronous, so this pin/restore idiom is race-free.
+//
+// Downstream reads go through `isDraft16Active()` / `isDraft18Active()`,
+// which check the pinned draft (falling back to DEFAULT_DRAFT). The former
+// `isDraft16Active()` / `isDraft18Active()` module constants are gone; the getters
+// below preserve identical semantics but are per-invocation.
+
+let _activeDraft: DraftVersion = DEFAULT_DRAFT;
+
+// Module-level singletons — TextEncoder/TextDecoder are safe to reuse and
+// allocating per-call showed up as measurable overhead on the encode/decode
+// hot path.
+const TE = new TextEncoder();
+const TD = new TextDecoder();
+
+/** Pin the active draft for the synchronous duration of `fn`. */
+export function withDraft<T>(draft: DraftVersion, fn: () => T): T {
+  const previous = _activeDraft;
+  _activeDraft = draft;
+  try {
+    return fn();
+  } finally {
+    _activeDraft = previous;
+  }
+}
+
+/** True while a draft-16 (or draft-17) codec call is on the stack. */
+function isDraft16Active(): boolean {
+  return _activeDraft === 'draft-16' || _activeDraft === 'draft-17';
+}
+
+/** True while a draft-18 codec call is on the stack. */
+function isDraft18Active(): boolean {
+  return _activeDraft === 'draft-18';
+}
+
+
 import { MOQTVarInt } from './moqt-varint.js';
 import type { SubgroupHeaderDraft18, ObjectHeaderDraft18, ObjectDatagramDraft18 } from '../messages/types.js';
 import {
@@ -467,8 +514,19 @@ export class MessageCodec {
    */
   private static decodeNamespace(reader: BufferReader): TrackNamespace {
     const count = reader.readVarIntNumber();
+    if (count > MessageCodec.MAX_NAMESPACE_TUPLE_COUNT) {
+      throw new MessageCodecError(
+        `Namespace tuple count ${count} exceeds max ${MessageCodec.MAX_NAMESPACE_TUPLE_COUNT}`
+      );
+    }
     const namespace: TrackNamespace = [];
     for (let i = 0; i < count; i++) {
+      const elementLength = reader.peekVarIntNumber();
+      if (elementLength > MessageCodec.MAX_STRING_LENGTH) {
+        throw new MessageCodecError(
+          `Namespace element length ${elementLength} exceeds max ${MessageCodec.MAX_STRING_LENGTH}`
+        );
+      }
       namespace.push(reader.readString());
     }
     return namespace;
@@ -507,12 +565,29 @@ export class MessageCodec {
   private static decodeFullTrackName(reader: BufferReader): FullTrackName {
     // Read namespace as tuple (count + elements)
     const namespaceCount = reader.readVarIntNumber();
+    if (namespaceCount > MessageCodec.MAX_NAMESPACE_TUPLE_COUNT) {
+      throw new MessageCodecError(
+        `Namespace tuple count ${namespaceCount} exceeds max ${MessageCodec.MAX_NAMESPACE_TUPLE_COUNT}`
+      );
+    }
     const namespace: string[] = [];
     for (let i = 0; i < namespaceCount; i++) {
+      const elementLength = reader.peekVarIntNumber();
+      if (elementLength > MessageCodec.MAX_STRING_LENGTH) {
+        throw new MessageCodecError(
+          `Namespace element length ${elementLength} exceeds max ${MessageCodec.MAX_STRING_LENGTH}`
+        );
+      }
       namespace.push(reader.readString());
     }
 
     // Read track name separately (length + bytes)
+    const trackNameLength = reader.peekVarIntNumber();
+    if (trackNameLength > MessageCodec.MAX_STRING_LENGTH) {
+      throw new MessageCodecError(
+        `Track name length ${trackNameLength} exceeds max ${MessageCodec.MAX_STRING_LENGTH}`
+      );
+    }
     const trackName = reader.readString();
 
     return {
@@ -533,7 +608,7 @@ export class MessageCodec {
   ): void {
     writer.writeVarInt(parameters.size);
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: Delta-encoded keys, even keys = varint value, odd keys = length + bytes
       // Sort entries by key for delta encoding
       const sortedEntries = Array.from(parameters.entries()).sort((a, b) => a[0] - b[0]);
@@ -558,7 +633,7 @@ export class MessageCodec {
             writer.writeVarInt(value.length);
             writer.writeBytes(value);
           } else if (typeof value === 'string') {
-            const bytes = new TextEncoder().encode(value);
+            const bytes = TE.encode(value);
             writer.writeVarInt(bytes.length);
             writer.writeBytes(bytes);
           } else {
@@ -589,6 +664,7 @@ export class MessageCodec {
   // Security limits for input validation
   private static readonly MAX_PARAMETER_COUNT = 100;
   private static readonly MAX_STRING_LENGTH = 65536;
+  private static readonly MAX_NAMESPACE_TUPLE_COUNT = 32;
 
   /**
    * Encode an AuthorizationToken to bytes for use as a setup or request parameter value.
@@ -686,7 +762,7 @@ export class MessageCodec {
 
     const parameters = new Map<SetupParameter, number | string | Uint8Array>();
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: Delta-encoded keys, even keys = varint value, odd keys = length + bytes
       let previousKey = 0;
 
@@ -711,7 +787,7 @@ export class MessageCodec {
             parameters.set(key, bytes);
           } else {
             // Other odd keys are strings (PATH, ENDPOINT_ID, AUTHORITY, etc.)
-            parameters.set(key, new TextDecoder().decode(bytes));
+            parameters.set(key, TD.decode(bytes));
           }
         }
       }
@@ -727,7 +803,7 @@ export class MessageCodec {
         if (key === SetupParameter.PATH) {
           // PATH is a string
           const bytes = reader.readBytes(valueLength);
-          parameters.set(key, new TextDecoder().decode(bytes));
+          parameters.set(key, TD.decode(bytes));
         } else if (key === SetupParameter.AUTHORIZATION_TOKEN) {
           // AUTHORIZATION_TOKEN carries binary COSE_Sign1 data — preserve as bytes
           const bytes = reader.readBytes(valueLength);
@@ -757,7 +833,7 @@ export class MessageCodec {
     const count = parameters?.size ?? 0;
     writer.writeVarInt(count);
     if (parameters) {
-      if (IS_DRAFT_16) {
+      if (isDraft16Active()) {
         // Draft-16: Sort by key ascending, delta encode keys
         // Even keys = value directly, Odd keys = length + bytes
         const sortedEntries = Array.from(parameters.entries()).sort((a, b) => a[0] - b[0]);
@@ -916,7 +992,7 @@ export class MessageCodec {
 
     const parameters = new Map<RequestParameter, Uint8Array>();
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: Delta encoded keys
       // Even keys = value directly (varint), Odd keys = length + bytes
       let previousKey = 0;
@@ -979,7 +1055,7 @@ export class MessageCodec {
   // ============================================================================
 
   private static encodeClientSetupPayload(writer: BufferWriter, message: ClientSetupMessage): void {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: No version list (negotiated via ALPN)
       // Format: Num Params + Params[]
       MessageCodec.encodeSetupParameters(writer, message.parameters);
@@ -995,7 +1071,7 @@ export class MessageCodec {
   }
 
   private static decodeClientSetupPayload(reader: BufferReader): ClientSetupMessage {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: No version list (negotiated via ALPN)
       const parameters = MessageCodec.decodeSetupParameters(reader);
       return {
@@ -1021,7 +1097,7 @@ export class MessageCodec {
   }
 
   private static encodeServerSetupPayload(writer: BufferWriter, message: ServerSetupMessage): void {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: No selected version (determined by ALPN)
       // Format: Num Params + Params[]
       MessageCodec.encodeSetupParameters(writer, message.parameters);
@@ -1034,7 +1110,7 @@ export class MessageCodec {
   }
 
   private static decodeServerSetupPayload(reader: BufferReader): ServerSetupMessage {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: No selected version (determined by ALPN)
       const parameters = MessageCodec.decodeSetupParameters(reader);
       return {
@@ -1060,7 +1136,7 @@ export class MessageCodec {
   // ============================================================================
 
   private static encodeSubscribePayload(writer: BufferWriter, message: SubscribeMessage): void {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16 SUBSCRIBE format:
       // Subscribe ID, Full Track Name, Parameters
       // Filter Type, subscriberPriority, groupOrder are all in Parameters
@@ -1129,7 +1205,7 @@ export class MessageCodec {
   }
 
   private static decodeSubscribePayload(reader: BufferReader): SubscribeMessage {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16 SUBSCRIBE format:
       // Subscribe ID, Full Track Name, Parameters
       // All other fields (filterType, subscriberPriority, groupOrder) are in parameters
@@ -1221,7 +1297,7 @@ export class MessageCodec {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.subscriptionRequestId);
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16 §9.11 REQUEST_UPDATE only carries fields that actually
       // change: Forward and/or Subscriber Priority. A pause/resume update
       // must not include SUBSCRIPTION_FILTER — openmoq resets the control
@@ -1270,7 +1346,7 @@ export class MessageCodec {
     const subscriptionRequestId = reader.readVarIntNumber();
     log.info('SUBSCRIBE_UPDATE field', { field: 'subscriptionRequestId', value: subscriptionRequestId });
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: All fields are in parameters
       const parameters = MessageCodec.decodeRequestParameters(reader);
 
@@ -1355,7 +1431,7 @@ export class MessageCodec {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.trackAlias);
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: SUBSCRIBE_OK format - Request ID, Track Alias, Parameters
       // Send empty parameters for minimal interop
       writer.writeVarInt(0);
@@ -1390,7 +1466,7 @@ export class MessageCodec {
     let largestGroupId: number | undefined;
     let largestObjectId: number | undefined;
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: SUBSCRIBE_OK format after trackAlias:
       // 1. Parameters (count + delta-encoded) - includes EXPIRES (key 0x06)
       // 2. Track Extensions (delta-encoded) - includes GROUP_ORDER (key 0x02)
@@ -1491,7 +1567,7 @@ export class MessageCodec {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.errorCode);
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16 (REQUEST_ERROR): trackAlias comes BEFORE reasonPhrase
       writer.writeVarInt(message.trackAlias);
       writer.writeString(message.reasonPhrase);
@@ -1511,7 +1587,7 @@ export class MessageCodec {
     let trackAlias: number;
     let reasonPhrase: string;
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       trackAlias = reader.readVarIntNumber();
       reasonPhrase = reader.readString();
     } else {
@@ -1558,13 +1634,13 @@ export class MessageCodec {
     const requestId = reader.readVarIntNumber();
 
     // Draft-16: PUBLISH_DONE has trackAlias after requestId
-    const trackAlias = IS_DRAFT_16 ? reader.readVarIntNumber() : 0;
+    const trackAlias = isDraft16Active() ? reader.readVarIntNumber() : 0;
 
     const statusCode = reader.readVarIntNumber() as RequestErrorCode;
     const reasonPhrase = reader.readString();
 
     // Draft-16: contentExists might not be present or is in a different format
-    const contentExists = IS_DRAFT_16 ? false : reader.readByte() === 1;
+    const contentExists = isDraft16Active() ? false : reader.readByte() === 1;
 
     const message: PublishDoneMessage = {
       type: MessageType.PUBLISH_DONE,
@@ -1574,7 +1650,7 @@ export class MessageCodec {
       contentExists,
     };
 
-    if (!IS_DRAFT_16 && contentExists) {
+    if (!isDraft16Active() && contentExists) {
       message.finalGroupId = reader.readVarIntNumber();
       message.finalObjectId = reader.readVarIntNumber();
     }
@@ -1585,7 +1661,7 @@ export class MessageCodec {
   }
 
   private static encodePublishPayload(writer: BufferWriter, message: PublishMessage): void {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16 PUBLISH format:
       // Request ID, Full Track Name, Track Alias, Parameters
       // groupOrder, forward, largestLocation are all in Parameters
@@ -1660,7 +1736,7 @@ export class MessageCodec {
   }
 
   private static decodePublishPayload(reader: BufferReader, payloadEndOffset?: number): PublishMessage {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16 PUBLISH format:
       // Request ID, Full Track Name, Track Alias, Parameters, [Track Extensions]
       const requestId = reader.readVarIntNumber();
@@ -1759,7 +1835,7 @@ export class MessageCodec {
   private static encodePublishOkPayload(writer: BufferWriter, message: PublishOkMessage): void {
     writer.writeVarInt(message.requestId);
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: Request ID, Parameters
       const params = new Map<number, Uint8Array>();
 
@@ -1807,7 +1883,7 @@ export class MessageCodec {
     const requestId = reader.readVarIntNumber();
     log.info('PUBLISH_OK field', { field: 'requestId', value: requestId });
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: Request ID, Parameters
       // All fields (forward, subscriberPriority, groupOrder, filterType, etc.) are in parameters
       const parameters = MessageCodec.decodeRequestParameters(reader);
@@ -1932,7 +2008,7 @@ export class MessageCodec {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.errorCode);
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: trackAlias before reasonPhrase (like REQUEST_ERROR)
       writer.writeVarInt(message.trackAlias);
       writer.writeString(message.reasonPhrase);
@@ -1950,7 +2026,7 @@ export class MessageCodec {
     let trackAlias: number;
     let reasonPhrase: string;
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: trackAlias before reasonPhrase
       trackAlias = reader.readVarIntNumber();
       reasonPhrase = reader.readString();
@@ -1975,7 +2051,7 @@ export class MessageCodec {
 
   private static encodePublishNamespacePayload(writer: BufferWriter, message: PublishNamespaceMessage): void {
     // Draft-16 adds Request ID at the beginning
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       writer.writeVarInt(message.requestId ?? 0);
     }
     MessageCodec.encodeNamespace(writer, message.namespace);
@@ -1993,21 +2069,11 @@ export class MessageCodec {
   private static decodePublishNamespacePayload(reader: BufferReader): PublishNamespaceMessage {
     // Draft-16 has Request ID at the beginning
     let requestId: number | undefined;
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       requestId = reader.readVarIntNumber();
     }
     const namespace = MessageCodec.decodeNamespace(reader);
-    const paramCount = reader.readVarIntNumber();
-
-    let parameters: Map<number, Uint8Array> | undefined;
-    if (paramCount > 0) {
-      parameters = new Map();
-      for (let i = 0; i < paramCount; i++) {
-        const key = reader.readVarIntNumber();
-        const length = reader.readVarIntNumber();
-        parameters.set(key, reader.readBytes(length));
-      }
-    }
+    const parameters = MessageCodec.decodeGenericParameters(reader);
 
     return {
       type: MessageType.PUBLISH_NAMESPACE,
@@ -2017,8 +2083,35 @@ export class MessageCodec {
     };
   }
 
+  /**
+   * Decode a `paramCount` + N * (key, length, bytes) parameter map with
+   * bounds enforced so a malicious peer cannot force unbounded allocation.
+   */
+  private static decodeGenericParameters(reader: BufferReader): Map<number, Uint8Array> | undefined {
+    const paramCount = reader.readVarIntNumber();
+    if (paramCount > MessageCodec.MAX_PARAMETER_COUNT) {
+      throw new MessageCodecError(
+        `Parameter count ${paramCount} exceeds max ${MessageCodec.MAX_PARAMETER_COUNT}`
+      );
+    }
+    if (paramCount === 0) return undefined;
+
+    const parameters = new Map<number, Uint8Array>();
+    for (let i = 0; i < paramCount; i++) {
+      const key = reader.readVarIntNumber();
+      const length = reader.readVarIntNumber();
+      if (length > MessageCodec.MAX_STRING_LENGTH) {
+        throw new MessageCodecError(
+          `Parameter value length ${length} exceeds max ${MessageCodec.MAX_STRING_LENGTH}`
+        );
+      }
+      parameters.set(key, reader.readBytes(length));
+    }
+    return parameters;
+  }
+
   private static encodePublishNamespaceOkPayload(writer: BufferWriter, message: PublishNamespaceOkMessage): void {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: REQUEST_OK format (Request ID + Expires)
       writer.writeVarInt(message.requestId ?? 0);
       writer.writeVarInt(message.expires ?? 0);
@@ -2029,7 +2122,7 @@ export class MessageCodec {
   }
 
   private static decodePublishNamespaceOkPayload(reader: BufferReader): PublishNamespaceOkMessage {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: REQUEST_OK format (Request ID + Expires)
       return {
         type: MessageType.PUBLISH_NAMESPACE_OK,
@@ -2090,11 +2183,11 @@ export class MessageCodec {
     writer: BufferWriter,
     message: SubscribeNamespaceMessage
   ): void {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       writer.writeVarInt(message.requestId ?? 0);
     }
     MessageCodec.encodeNamespace(writer, message.namespacePrefix);
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Subscribe Options: 0x00=PUBLISH, 0x01=NAMESPACE, 0x02=BOTH
       writer.writeVarInt(message.subscribeOptions ?? 0x00);
     }
@@ -2112,24 +2205,14 @@ export class MessageCodec {
   private static decodeSubscribeNamespacePayload(reader: BufferReader): SubscribeNamespaceMessage {
     let requestId: number | undefined;
     let subscribeOptions: number | undefined;
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       requestId = reader.readVarIntNumber();
     }
     const namespacePrefix = MessageCodec.decodeNamespace(reader);
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       subscribeOptions = reader.readVarIntNumber();
     }
-    const paramCount = reader.readVarIntNumber();
-
-    let parameters: Map<number, Uint8Array> | undefined;
-    if (paramCount > 0) {
-      parameters = new Map();
-      for (let i = 0; i < paramCount; i++) {
-        const key = reader.readVarIntNumber();
-        const length = reader.readVarIntNumber();
-        parameters.set(key, reader.readBytes(length));
-      }
-    }
+    const parameters = MessageCodec.decodeGenericParameters(reader);
 
     return {
       type: MessageType.SUBSCRIBE_NAMESPACE,
@@ -2144,7 +2227,7 @@ export class MessageCodec {
     writer: BufferWriter,
     message: SubscribeNamespaceOkMessage
   ): void {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       writer.writeVarInt(message.requestId ?? 0);
     } else {
       MessageCodec.encodeNamespace(writer, message.namespacePrefix ?? []);
@@ -2152,7 +2235,7 @@ export class MessageCodec {
   }
 
   private static decodeSubscribeNamespaceOkPayload(reader: BufferReader): SubscribeNamespaceOkMessage {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       return {
         type: MessageType.SUBSCRIBE_NAMESPACE_OK,
         requestId: reader.readVarIntNumber(),
@@ -2169,7 +2252,7 @@ export class MessageCodec {
     writer: BufferWriter,
     message: SubscribeNamespaceErrorMessage
   ): void {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       writer.writeVarInt(message.requestId ?? 0);
     } else {
       MessageCodec.encodeNamespace(writer, message.namespacePrefix ?? []);
@@ -2181,7 +2264,7 @@ export class MessageCodec {
   private static decodeSubscribeNamespaceErrorPayload(
     reader: BufferReader
   ): SubscribeNamespaceErrorMessage {
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       return {
         type: MessageType.SUBSCRIBE_NAMESPACE_ERROR,
         requestId: reader.readVarIntNumber(),
@@ -2231,12 +2314,12 @@ export class MessageCodec {
       endGroup: message.endGroup,
       endObject: message.endObject,
       paramCount: message.parameters?.size ?? 0,
-      isDraft16: IS_DRAFT_16,
+      isDraft16: isDraft16Active(),
     });
 
     writer.writeVarInt(message.requestId);
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-15+: FetchType, then type-specific fields, then parameters
       // Using STANDALONE (0x01) which requires: Full Track Name, Start Location, End Location
       writer.writeVarInt(MessageCodec.FETCH_TYPE_STANDALONE);
@@ -2274,7 +2357,7 @@ export class MessageCodec {
   private static decodeFetchPayload(reader: BufferReader): FetchMessage {
     const requestId = reader.readVarIntNumber();
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-15+: Read fetch type, then type-specific fields
       const fetchType = reader.readVarIntNumber();
       if (fetchType !== MessageCodec.FETCH_TYPE_STANDALONE) {
@@ -2334,7 +2417,7 @@ export class MessageCodec {
 
   private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16 FETCH_OK: requestId | endOfTrack (8) | EndLocation | numParams | [params...] | [extensions...]
       // Track extensions are NOT count-prefixed - they're parsed until message end
       writer.writeByte(message.endOfTrack ? 1 : 0);
@@ -2356,7 +2439,7 @@ export class MessageCodec {
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
     const requestId = reader.readVarIntNumber();
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16 FETCH_OK: requestId | endOfTrack | largestGroup | largestObject | numParams | [params...]
       const endOfTrack = reader.readByte() === 1;
       const largestGroupId = reader.readVarIntNumber();
@@ -2525,7 +2608,7 @@ export class ObjectCodec {
    * @returns Encoded bytes
    */
   static encodeDatagramHeader(header: ObjectHeader): Uint8Array {
-    if (IS_DRAFT_18) {
+    if (isDraft18Active()) {
       const datagram: ObjectDatagramDraft18 = {
         trackAlias: typeof header.trackAlias === 'bigint' ? header.trackAlias : BigInt(header.trackAlias),
         groupId: BigInt(header.groupId),
@@ -2540,7 +2623,7 @@ export class ObjectCodec {
     }
 
     const writer = new BufferWriter();
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Relay wire format: 0x01 | TrackAlias | GroupID | ObjectID |
       // ExtensionHeaders(length-prefixed) | Payload.
       // The relay hardcodes type=0x01 and does not read publisher priority
@@ -2569,7 +2652,7 @@ export class ObjectCodec {
    * @returns Tuple of [decoded header, bytes consumed]
    */
   static decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
-    if (IS_DRAFT_18) {
+    if (isDraft18Active()) {
       const [datagram, bytesRead] = Draft18StreamCodec.decodeObjectDatagram(buffer);
       const header: ObjectHeader = {
         trackAlias: datagram.trackAlias,
@@ -2595,7 +2678,7 @@ export class ObjectCodec {
     let subgroupId = 0;
     let objectId: number;
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Relay wire format: 0x01 | TrackAlias | GroupID | ObjectID |
       // ExtensionHeaders(length-prefixed) | Payload.
       // No publisher priority or status on the wire.
@@ -2696,7 +2779,7 @@ export class ObjectCodec {
    * @returns Tuple of [encoded bytes, hasExtensions flag]
    */
   static encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
-    if (IS_DRAFT_18) {
+    if (isDraft18Active()) {
       const d18Header: SubgroupHeaderDraft18 = {
         trackAlias: typeof header.trackAlias === 'bigint' ? header.trackAlias : BigInt(header.trackAlias),
         groupId: BigInt(header.groupId),
@@ -2733,7 +2816,7 @@ export class ObjectCodec {
    * @returns Tuple of [decoded header, bytes consumed, endOfGroup flag, hasExtensions flag]
    */
   static decodeSubgroupHeader(buffer: Uint8Array): [SubgroupHeader, number, boolean, boolean] {
-    if (IS_DRAFT_18) {
+    if (isDraft18Active()) {
       const [d18Header, bytesRead] = Draft18StreamCodec.decodeSubgroupHeader(buffer);
       const endOfGroup = d18Header.endOfGroup === true;
       const hasProperties = d18Header.hasProperties === true;
@@ -2838,7 +2921,7 @@ export class ObjectCodec {
     hasExtensions = false,
     extensions?: Map<number, number | Uint8Array>
   ): Uint8Array {
-    if (IS_DRAFT_18) {
+    if (isDraft18Active()) {
       // Draft-18: Object ID Delta | [Properties] | Payload Length | [Object Status] | [Payload]
       // Delta encoding: first object delta = objectId, subsequent = objectId - previousObjectId - 1
       const isFirstObject = previousObjectId < 0;
@@ -2868,7 +2951,7 @@ export class ObjectCodec {
 
     const writer = new BufferWriter();
 
-    if (IS_DRAFT_16) {
+    if (isDraft16Active()) {
       // Draft-16: Object ID Delta encoding
       // First object: delta = objectId
       // Subsequent: delta = objectId - previousObjectId - 1
@@ -2971,7 +3054,7 @@ export class ObjectCodec {
     hasExtensions = true,
     previousObjectId = -1
   ): [number, Uint8Array, ObjectStatus, number] {
-    if (IS_DRAFT_18) {
+    if (isDraft18Active()) {
       // Draft-18: Object ID Delta | [Properties] | Payload Length | [Object Status] | [Payload]
       const [objHeader, headerBytesRead] = Draft18StreamCodec.decodeObjectHeader(buffer, offset, hasExtensions);
       const isFirstObject = previousObjectId < 0;

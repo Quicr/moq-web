@@ -15,7 +15,7 @@
  * draft-18 and vice versa.
  */
 
-import { IS_DRAFT_18 } from '../version/constants.js';
+import { DEFAULT_DRAFT } from '../version/constants.js';
 import { Version } from '../messages/types.js';
 import type {
   ControlMessage,
@@ -31,13 +31,18 @@ import type {
   ClientSetupMessageDraft18,
   ServerSetupMessageDraft18,
 } from '../messages/types.js';
-import { MessageCodec, ObjectCodec } from './message-codec.js';
+import { MessageCodec, ObjectCodec, withDraft } from './message-codec.js';
 import type {
   FetchEncoderState,
   FetchDecoderState,
   FetchObjectResult,
 } from './message-codec.js';
 import { Draft18MessageCodec } from './draft18-message-codec.js';
+
+// Module-level singletons — TextEncoder/TextDecoder are safe to reuse and allocating
+// per-call showed up as measurable overhead on the encode/decode hot path.
+const TE = new TextEncoder();
+const TD = new TextDecoder();
 
 /**
  * Capability flags exposed by a codec. Session-layer code can use these to
@@ -145,17 +150,13 @@ export interface IProtocolCodec {
 }
 
 /**
- * Get the protocol codec for the current build configuration.
+ * Get the protocol codec for the current default draft.
  *
- * Today this is driven by the compile-time IS_DRAFT_18 flag. When we move to
- * runtime version negotiation, this becomes a lookup keyed on the negotiated
- * version.
+ * Prefer `getProtocolCodecForVersion(version)` when the draft is known at the
+ * call site (e.g. from a negotiated session).
  */
 export function getProtocolCodec(): IProtocolCodec {
-  if (IS_DRAFT_18) {
-    return Draft18Codec.instance;
-  }
-  return Draft16Codec.instance;
+  return DEFAULT_DRAFT === 'draft-18' ? Draft18Codec.instance : Draft16Codec.instance;
 }
 
 /**
@@ -171,22 +172,6 @@ export function getProtocolCodecForVersion(version: Version): IProtocolCodec {
     default:
       return Draft16Codec.instance;
   }
-}
-
-/**
- * Check if the current build uses MOQT varints (draft-18).
- * @deprecated Prefer `getProtocolCodec().capabilities.usesMoqtVarInt`.
- */
-export function usesMoqtVarInt(): boolean {
-  return IS_DRAFT_18;
-}
-
-/**
- * Check if the current build uses QUIC varints (draft-16/17).
- * @deprecated Prefer `!getProtocolCodec().capabilities.usesMoqtVarInt`.
- */
-export function usesQuicVarInt(): boolean {
-  return !IS_DRAFT_18;
 }
 
 // Import the actual codec implementations
@@ -220,11 +205,11 @@ class Draft16Codec implements IProtocolCodec {
 
   // ---- Control messages ----
   encodeControlMessage(message: ControlMessage): Uint8Array {
-    return MessageCodec.encode(message);
+    return withDraft('draft-16', () => MessageCodec.encode(message));
   }
 
   decodeControlMessage(buffer: Uint8Array, offset = 0): [ControlMessage, number] {
-    return MessageCodec.decode(buffer, offset);
+    return withDraft('draft-16', () => MessageCodec.decode(buffer, offset));
   }
 
   // ---- Setup stream (unsupported on draft-16) ----
@@ -247,11 +232,11 @@ class Draft16Codec implements IProtocolCodec {
 
   // ---- Subgroup streams ----
   encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
-    return ObjectCodec.encodeSubgroupHeader(header, endOfGroup);
+    return withDraft('draft-16', () => ObjectCodec.encodeSubgroupHeader(header, endOfGroup));
   }
 
   decodeSubgroupHeader(buffer: Uint8Array): [SubgroupHeader, number, boolean, boolean] {
-    return ObjectCodec.decodeSubgroupHeader(buffer);
+    return withDraft('draft-16', () => ObjectCodec.decodeSubgroupHeader(buffer));
   }
 
   encodeStreamObject(
@@ -262,13 +247,15 @@ class Draft16Codec implements IProtocolCodec {
     hasExtensions?: boolean,
     extensions?: Map<number, number | Uint8Array>,
   ): Uint8Array {
-    return ObjectCodec.encodeStreamObject(
-      objectId,
-      payload,
-      status,
-      previousObjectId,
-      hasExtensions,
-      extensions,
+    return withDraft('draft-16', () =>
+      ObjectCodec.encodeStreamObject(
+        objectId,
+        payload,
+        status,
+        previousObjectId,
+        hasExtensions,
+        extensions,
+      ),
     );
   }
 
@@ -278,33 +265,35 @@ class Draft16Codec implements IProtocolCodec {
     hasExtensions = true,
     previousObjectId = -1,
   ): [number, Uint8Array, ObjectStatus, number] {
-    return ObjectCodec.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId);
+    return withDraft('draft-16', () =>
+      ObjectCodec.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId),
+    );
   }
 
   // ---- Datagrams ----
   encodeDatagramHeader(header: ObjectHeader): Uint8Array {
-    return ObjectCodec.encodeDatagramHeader(header);
+    return withDraft('draft-16', () => ObjectCodec.encodeDatagramHeader(header));
   }
 
   decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
-    return ObjectCodec.decodeDatagramHeader(buffer);
+    return withDraft('draft-16', () => ObjectCodec.decodeDatagramHeader(buffer));
   }
 
   encodeDatagramObject(object: MOQTObject): Uint8Array {
-    return ObjectCodec.encodeDatagramObject(object);
+    return withDraft('draft-16', () => ObjectCodec.encodeDatagramObject(object));
   }
 
   decodeDatagramObject(buffer: Uint8Array): MOQTObject {
-    return ObjectCodec.decodeDatagramObject(buffer);
+    return withDraft('draft-16', () => ObjectCodec.decodeDatagramObject(buffer));
   }
 
   // ---- Fetch streams ----
   encodeFetchHeader(header: FetchHeader): Uint8Array {
-    return ObjectCodec.encodeFetchHeader(header);
+    return withDraft('draft-16', () => ObjectCodec.encodeFetchHeader(header));
   }
 
   decodeFetchHeader(buffer: Uint8Array): [FetchHeader, number] {
-    return ObjectCodec.decodeFetchHeader(buffer);
+    return withDraft('draft-16', () => ObjectCodec.decodeFetchHeader(buffer));
   }
 
   createFetchEncoderState(): FetchEncoderState {
@@ -323,11 +312,13 @@ class Draft16Codec implements IProtocolCodec {
     state: FetchEncoderState,
     priority = 128,
   ): Uint8Array {
-    return ObjectCodec.encodeFetchObject(groupId, subgroupId, objectId, payload, state, priority);
+    return withDraft('draft-16', () =>
+      ObjectCodec.encodeFetchObject(groupId, subgroupId, objectId, payload, state, priority),
+    );
   }
 
   decodeFetchObject(buffer: Uint8Array, state: FetchDecoderState): FetchObjectResult {
-    return ObjectCodec.decodeFetchObject(buffer, state);
+    return withDraft('draft-16', () => ObjectCodec.decodeFetchObject(buffer, state));
   }
 
   // ---- Primitives ----
@@ -486,14 +477,11 @@ class Draft18Codec implements IProtocolCodec {
 
   // ---- Subgroup streams ----
   encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
-    // ObjectCodec.encodeSubgroupHeader already dispatches to Draft18StreamCodec
-    // when IS_DRAFT_18 is set. Route through it for now — moving the draft-18
-    // body into this method is a follow-up cleanup.
-    return ObjectCodec.encodeSubgroupHeader(header, endOfGroup);
+    return withDraft('draft-18', () => ObjectCodec.encodeSubgroupHeader(header, endOfGroup));
   }
 
   decodeSubgroupHeader(buffer: Uint8Array): [SubgroupHeader, number, boolean, boolean] {
-    return ObjectCodec.decodeSubgroupHeader(buffer);
+    return withDraft('draft-18', () => ObjectCodec.decodeSubgroupHeader(buffer));
   }
 
   encodeStreamObject(
@@ -504,13 +492,15 @@ class Draft18Codec implements IProtocolCodec {
     hasExtensions?: boolean,
     extensions?: Map<number, number | Uint8Array>,
   ): Uint8Array {
-    return ObjectCodec.encodeStreamObject(
-      objectId,
-      payload,
-      status,
-      previousObjectId,
-      hasExtensions,
-      extensions,
+    return withDraft('draft-18', () =>
+      ObjectCodec.encodeStreamObject(
+        objectId,
+        payload,
+        status,
+        previousObjectId,
+        hasExtensions,
+        extensions,
+      ),
     );
   }
 
@@ -520,33 +510,35 @@ class Draft18Codec implements IProtocolCodec {
     hasExtensions = true,
     previousObjectId = -1,
   ): [number, Uint8Array, ObjectStatus, number] {
-    return ObjectCodec.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId);
+    return withDraft('draft-18', () =>
+      ObjectCodec.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId),
+    );
   }
 
   // ---- Datagrams ----
   encodeDatagramHeader(header: ObjectHeader): Uint8Array {
-    return ObjectCodec.encodeDatagramHeader(header);
+    return withDraft('draft-18', () => ObjectCodec.encodeDatagramHeader(header));
   }
 
   decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
-    return ObjectCodec.decodeDatagramHeader(buffer);
+    return withDraft('draft-18', () => ObjectCodec.decodeDatagramHeader(buffer));
   }
 
   encodeDatagramObject(object: MOQTObject): Uint8Array {
-    return ObjectCodec.encodeDatagramObject(object);
+    return withDraft('draft-18', () => ObjectCodec.encodeDatagramObject(object));
   }
 
   decodeDatagramObject(buffer: Uint8Array): MOQTObject {
-    return ObjectCodec.decodeDatagramObject(buffer);
+    return withDraft('draft-18', () => ObjectCodec.decodeDatagramObject(buffer));
   }
 
   // ---- Fetch streams ----
   encodeFetchHeader(header: FetchHeader): Uint8Array {
-    return ObjectCodec.encodeFetchHeader(header);
+    return withDraft('draft-18', () => ObjectCodec.encodeFetchHeader(header));
   }
 
   decodeFetchHeader(buffer: Uint8Array): [FetchHeader, number] {
-    return ObjectCodec.decodeFetchHeader(buffer);
+    return withDraft('draft-18', () => ObjectCodec.decodeFetchHeader(buffer));
   }
 
   createFetchEncoderState(): FetchEncoderState {
@@ -565,11 +557,13 @@ class Draft18Codec implements IProtocolCodec {
     state: FetchEncoderState,
     priority = 128,
   ): Uint8Array {
-    return ObjectCodec.encodeFetchObject(groupId, subgroupId, objectId, payload, state, priority);
+    return withDraft('draft-18', () =>
+      ObjectCodec.encodeFetchObject(groupId, subgroupId, objectId, payload, state, priority),
+    );
   }
 
   decodeFetchObject(buffer: Uint8Array, state: FetchDecoderState): FetchObjectResult {
-    return ObjectCodec.decodeFetchObject(buffer, state);
+    return withDraft('draft-18', () => ObjectCodec.decodeFetchObject(buffer, state));
   }
 
   // ---- Primitives ----
@@ -589,7 +583,7 @@ class Draft18Codec implements IProtocolCodec {
     const writer = new Draft18BufferWriter();
     writer.writeVarInt(namespace.length);
     for (const element of namespace) {
-      const bytes = new TextEncoder().encode(element);
+      const bytes = TE.encode(element);
       writer.writeVarInt(bytes.length);
       writer.writeBytes(bytes);
     }
@@ -603,7 +597,7 @@ class Draft18Codec implements IProtocolCodec {
     for (let i = 0; i < count; i++) {
       const length = reader.readVarIntNumber();
       const bytes = reader.readBytes(length);
-      namespace.push(new TextDecoder().decode(bytes));
+      namespace.push(TD.decode(bytes));
     }
     return [namespace, reader.offset - offset];
   }
@@ -612,11 +606,11 @@ class Draft18Codec implements IProtocolCodec {
     const writer = new Draft18BufferWriter();
     writer.writeVarInt(fullTrackName.namespace.length);
     for (const element of fullTrackName.namespace) {
-      const bytes = new TextEncoder().encode(element);
+      const bytes = TE.encode(element);
       writer.writeVarInt(bytes.length);
       writer.writeBytes(bytes);
     }
-    const trackNameBytes = new TextEncoder().encode(fullTrackName.trackName);
+    const trackNameBytes = TE.encode(fullTrackName.trackName);
     writer.writeVarInt(trackNameBytes.length);
     writer.writeBytes(trackNameBytes);
     return writer.toUint8Array();
@@ -629,11 +623,11 @@ class Draft18Codec implements IProtocolCodec {
     for (let i = 0; i < namespaceCount; i++) {
       const length = reader.readVarIntNumber();
       const bytes = reader.readBytes(length);
-      namespace.push(new TextDecoder().decode(bytes));
+      namespace.push(TD.decode(bytes));
     }
     const trackNameLength = reader.readVarIntNumber();
     const trackNameBytes = reader.readBytes(trackNameLength);
-    const trackName = new TextDecoder().decode(trackNameBytes);
+    const trackName = TD.decode(trackNameBytes);
     return [{ namespace, trackName }, reader.offset - offset];
   }
 
@@ -725,7 +719,7 @@ export class Draft18BufferWriter {
   }
 
   writeString(str: string): void {
-    const bytes = new TextEncoder().encode(str);
+    const bytes = TE.encode(str);
     this.writeVarInt(bytes.length);
     this.writeBytes(bytes);
   }
@@ -800,7 +794,7 @@ export class Draft18BufferReader {
   readString(): string {
     const length = this.readVarIntNumber();
     const bytes = this.readBytes(length);
-    return new TextDecoder().decode(bytes);
+    return TD.decode(bytes);
   }
 
   skip(bytes: number): void {

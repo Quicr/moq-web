@@ -386,8 +386,6 @@ interface SettingsSlice {
   audioDeliveryMode: 'datagram' | 'stream';
   /** Selected experience profile for subscriber-side settings */
   experienceProfile: ExperienceProfileName;
-  /** Use GroupArbiter for group-aware jitter buffering (handles parallel QUIC streams) */
-  useGroupArbiter: boolean;
   /**
    * Policy type for frame release strategy (new PlayoutBuffer architecture)
    * - 'vod': Sequential playback, no skipping (for DVR/recorded content)
@@ -409,8 +407,6 @@ interface SettingsSlice {
   catchUpThreshold: number;
   /** Use latency-only deadline (true=interactive, false=streaming) */
   useLatencyDeadline: boolean;
-  /** Enable GroupArbiter debug logging */
-  arbiterDebug: boolean;
   /** Enable Secure Objects encryption */
   secureObjectsEnabled: boolean;
   /** Secure Objects cipher suite (hex string, e.g., "0x0004") */
@@ -457,7 +453,6 @@ interface SettingsSlice {
   setVadProvider: (provider: VADProvider) => void;
   setVadVisualizationEnabled: (value: boolean) => void;
   setAudioDeliveryMode: (mode: 'datagram' | 'stream') => void;
-  setUseGroupArbiter: (value: boolean) => void;
   setPolicyType: (value: 'vod' | 'live' | 'adaptive') => void;
   setMaxLatency: (value: number) => void;
   setEstimatedGopDuration: (value: number) => void;
@@ -466,7 +461,6 @@ interface SettingsSlice {
   setEnableCatchUp: (value: boolean) => void;
   setCatchUpThreshold: (value: number) => void;
   setUseLatencyDeadline: (value: boolean) => void;
-  setArbiterDebug: (value: boolean) => void;
   setSecureObjectsEnabled: (value: boolean) => void;
   setSecureObjectsCipherSuite: (value: string) => void;
   setSecureObjectsBaseKey: (value: string) => void;
@@ -938,7 +932,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', _dtsAssignment?: SwitchingSetAssignment, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -956,7 +950,6 @@ export const useStore = create<AppStore>()(
           videoResolution,
           enableStats,
           jitterBufferDelay,
-          useGroupArbiter,
           // New PlayoutBuffer architecture - pass isLive from catalog for auto policy selection
           policyType,
           isLive,
@@ -969,7 +962,6 @@ export const useStore = create<AppStore>()(
           enableCatchUp,
           catchUpThreshold,
           useLatencyDeadline,
-          arbiterDebug,
           // Secure Objects encryption settings
           secureObjectsEnabled,
           secureObjectsCipherSuite,
@@ -1007,7 +999,7 @@ export const useStore = create<AppStore>()(
 
       // VOD subscription using FETCH with adaptive buffer management
       startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0, abrOptions?: { abrController: ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrInitialBufferSec, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrInitialBufferSec, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -1094,7 +1086,6 @@ export const useStore = create<AppStore>()(
           catalogFramerate: framerate,
           minBufferFrames,
           estimatedGopDuration: gopDurationMs,
-          arbiterDebug,
           secureObjectsEnabled,
           secureObjectsCipherSuite,
           secureObjectsBaseKey,
@@ -1740,7 +1731,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1755,7 +1746,6 @@ export const useStore = create<AppStore>()(
           videoResolution,
           enableStats,
           jitterBufferDelay,
-          useGroupArbiter,
           // New PlayoutBuffer architecture
           policyType,
           maxLatency,
@@ -1765,7 +1755,6 @@ export const useStore = create<AppStore>()(
           enableCatchUp,
           catchUpThreshold,
           useLatencyDeadline,
-          arbiterDebug,
           // Secure Objects encryption settings
           secureObjectsEnabled,
           secureObjectsCipherSuite,
@@ -1871,7 +1860,6 @@ export const useStore = create<AppStore>()(
       vadVisualizationEnabled: false, // Default viz off for performance
       audioDeliveryMode: 'datagram', // Default to datagram for low latency
       experienceProfile: 'interactive', // Default to interactive profile
-      useGroupArbiter: false, // Legacy - kept for backward compatibility
       policyType: 'adaptive', // Default to auto-detect from catalog or arrival patterns
       maxLatency: 500, // Default 500ms max latency
       estimatedGopDuration: 1000, // Default 1s GOP
@@ -1880,7 +1868,6 @@ export const useStore = create<AppStore>()(
       enableCatchUp: true, // Default: enable catch-up when buffer gets deep
       catchUpThreshold: 5, // Default: trigger catch-up after 5 ready frames
       useLatencyDeadline: true, // Default: use latency-only deadline (interactive mode)
-      arbiterDebug: false, // Default: no debug logging
       secureObjectsEnabled: false, // Default: encryption off
       secureObjectsCipherSuite: '0x0004', // Default: AES_128_GCM_SHA256_128
       secureObjectsBaseKey: '', // Default: empty (user must provide)
@@ -1931,7 +1918,6 @@ export const useStore = create<AppStore>()(
       setVadProvider: (provider) => set({ vadProvider: provider }),
       setVadVisualizationEnabled: (value) => set({ vadVisualizationEnabled: value }),
       setAudioDeliveryMode: (mode) => set({ audioDeliveryMode: mode }),
-      setUseGroupArbiter: (value) => set({ useGroupArbiter: value }),
       setPolicyType: (value) => set({ policyType: value }),
       setMaxLatency: (value) => set({ maxLatency: value }),
       setEstimatedGopDuration: (value) => set({ estimatedGopDuration: value }),
@@ -1940,7 +1926,6 @@ export const useStore = create<AppStore>()(
       setEnableCatchUp: (value) => set({ enableCatchUp: value }),
       setCatchUpThreshold: (value) => set({ catchUpThreshold: value }),
       setUseLatencyDeadline: (value) => set({ useLatencyDeadline: value }),
-      setArbiterDebug: (value) => set({ arbiterDebug: value }),
       setSecureObjectsEnabled: (value) => set({ secureObjectsEnabled: value }),
       setSecureObjectsCipherSuite: (value) => set({ secureObjectsCipherSuite: value }),
       setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
@@ -1966,7 +1951,6 @@ export const useStore = create<AppStore>()(
 
         set({
           experienceProfile: profileName,
-          useGroupArbiter: true, // Enable GroupArbiter when applying a profile
           jitterBufferDelay: profile.settings.jitterBufferDelay,
           useLatencyDeadline: profile.settings.useLatencyDeadline,
           maxLatency: profile.settings.maxLatency,
@@ -2018,7 +2002,6 @@ export const useStore = create<AppStore>()(
         vadVisualizationEnabled: state.vadVisualizationEnabled,
         audioDeliveryMode: state.audioDeliveryMode,
         experienceProfile: state.experienceProfile,
-        useGroupArbiter: state.useGroupArbiter,
         policyType: state.policyType,
         maxLatency: state.maxLatency,
         estimatedGopDuration: state.estimatedGopDuration,
@@ -2027,7 +2010,6 @@ export const useStore = create<AppStore>()(
         enableCatchUp: state.enableCatchUp,
         catchUpThreshold: state.catchUpThreshold,
         useLatencyDeadline: state.useLatencyDeadline,
-        arbiterDebug: state.arbiterDebug,
         secureObjectsEnabled: state.secureObjectsEnabled,
         secureObjectsCipherSuite: state.secureObjectsCipherSuite,
         secureObjectsBaseKey: state.secureObjectsBaseKey,
