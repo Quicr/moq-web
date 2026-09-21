@@ -138,12 +138,50 @@ export const MetricValueSchema = z.discriminatedUnion('type', [
 export type MetricValue = z.infer<typeof MetricValueSchema>;
 
 /**
+ * JSON-wire schema for a MOQT u62 nanosecond timestamp.
+ *
+ * Wave 3 Track J contract (see {@link ../schemas/timeline.ts} file-level
+ * docstring): epoch-nanosecond timestamps exceed `Number.MAX_SAFE_INTEGER`
+ * (2^53-1 ns ≈ 2255-05-15) once we near real-time, so JSON encoders MUST
+ * either emit a `bigint` or a decimal string. This schema accepts any of
+ * `bigint | safe-integer number | decimal string` and yields `bigint` when
+ * the incoming value would overflow Number precision (else preserves the
+ * `number` for wire compat).
+ */
+const CaptureNanosSchema = z
+  .union([
+    z.bigint().nonnegative(),
+    z
+      .number()
+      .int()
+      .nonnegative()
+      .refine((n) => Number.isSafeInteger(n), {
+        message:
+          'captureNanos number must be a safe integer; use bigint or decimal string for values > 2^53 - 1',
+      }),
+    z
+      .string()
+      .regex(/^\d+$/, 'captureNanos string must be a non-negative decimal integer'),
+  ])
+  .transform((v): number | bigint => {
+    if (typeof v === 'bigint') return v;
+    if (typeof v === 'number') return v; // safe integer, keep as number
+    // Decimal string: promote to bigint (JSON strings are the wire form for
+    // values that overflow `Number.MAX_SAFE_INTEGER`).
+    return BigInt(v);
+  });
+
+/**
  * Capture-header object payload (Object ID = 0) per MSF §14.4.
+ *
+ * `captureNanos` is a MOQT u62 nanosecond timestamp. See
+ * {@link CaptureNanosSchema} for the JSON wire contract that keeps
+ * safe-integer values as `number` and promotes overflow values to `bigint`.
  */
 export const MetricsHeaderSchema = z
   .object({
     /** Capture timestamp as Unix epoch NANOSECONDS. */
-    captureNanos: z.union([z.number(), z.string()]),
+    captureNanos: CaptureNanosSchema,
     /** Optional attribute set describing the resource. */
     attributes: z.record(z.string()).optional(),
   })

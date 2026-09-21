@@ -16,14 +16,47 @@ import {
   DataStreamType,
   BufferReader,
   Draft18StreamCodec,
+  Draft18CodecError,
+  Draft18StreamCodecError,
+  NoopMetricsSink,
   StreamResetErrorCodeDraft18,
   normalizeStreamResetErrorCode,
   type DraftVersion,
+  type MetricsSink,
 } from '@moq-web/core';
 import type { FetchDecoderState, FetchObjectDraft18 } from '@moq-web/core';
 import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
+
+/**
+ * High-resolution timestamp for decode-duration histograms. Falls back to
+ * `Date.now()` where `performance` is unavailable (matches the pattern used by
+ * `protocol-codec.ts`).
+ */
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+/**
+ * Classify a decode-time throw into a stable `reason` label for the
+ * `moq.codec.decode.errors` counter. Mirrors the classifier in
+ * `packages/core/src/encoding/protocol-codec.ts` so router-level emissions
+ * agree with codec-level ones on the `bounds-exceeded` tag (B2 SEC).
+ */
+function classifyRouterDecodeError(err: unknown): string {
+  if (err instanceof Draft18CodecError || err instanceof Draft18StreamCodecError) {
+    if (err.code === 'bounds-exceeded') return 'bounds-exceeded';
+    if (err.code) return err.code;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('Incomplete')) return 'truncated';
+  if (msg.includes('Buffer underflow')) return 'truncated';
+  if (msg.includes('Unknown message type')) return 'wrong-type';
+  return 'unknown';
+}
 
 const log = Logger.create('moqt:session:object-router');
 
@@ -163,12 +196,35 @@ export class ObjectRouter {
     return this._draft === 'draft-16' || this._draft === 'draft-17';
   }
 
+  /**
+   * Metrics sink for per-object decode observability (Wave 3 Track I).
+   * Defaults to `NoopMetricsSink` so isolated router tests / callers that
+   * don't wire a session pay no cost. `MOQTSession` passes its own
+   * `InMemoryMetricsSink` in via the 4th constructor arg.
+   *
+   * The label taxonomy matches the codec-level emissions in
+   * `protocol-codec.ts`:
+   *   - `moq.codec.decode.errors{codec,reason}` on throw
+   *   - `moq.codec.decode.duration{codec,messageType}` around each decode
+   *   - `moq.object.<kind>.in` / `moq.object.subgroup.opened` on success
+   */
+  private readonly metrics: MetricsSink;
+  /** Cached codec label so we don't rebuild the attribute record per event. */
+  private readonly codecLabel: string;
+
   constructor(
     private subscriptionManager: SubscriptionManager,
     private onObject?: ObjectCallback,
-    draft: DraftVersion = DEFAULT_DRAFT
+    draft: DraftVersion = DEFAULT_DRAFT,
+    metrics: MetricsSink = new NoopMetricsSink(),
   ) {
     this._draft = draft;
+    this.metrics = metrics;
+    // Router-level metrics use `draft-18` as the umbrella label because the
+    // shared `ObjectCodec` entrypoints delegate to `Draft18StreamCodec` under
+    // draft-18. Legacy drafts still surface here but this is the only label
+    // dimension that carries observability weight downstream.
+    this.codecLabel = draft === 'draft-18' ? 'draft-18' : draft;
   }
 
   /** Register the callback fired when a §8 delivery deadline elapses. */
@@ -228,8 +284,14 @@ export class ObjectRouter {
       }
     }
 
+    const decodeStart = nowMs();
     try {
       const object = ObjectCodec.decodeDatagramObject(data);
+      this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
+        codec: this.codecLabel,
+        messageType: 'object_datagram',
+      });
+      this.metrics.counter('moq.object.datagram.in', 1, { codec: this.codecLabel });
       const { header, payload } = object;
 
       log.trace('Decoded datagram object', {
@@ -252,6 +314,10 @@ export class ObjectRouter {
         });
       }
     } catch (err) {
+      this.metrics.counter('moq.codec.decode.errors', 1, {
+        codec: this.codecLabel,
+        reason: classifyRouterDecodeError(err),
+      });
       log.trace('Error parsing datagram', { error: (err as Error).message });
     }
   }
@@ -336,8 +402,14 @@ export class ObjectRouter {
               return; // FETCH stream handling is complete
             }
 
+            const decodeStart = nowMs();
             try {
               [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = ObjectCodec.decodeSubgroupHeader(bufferView);
+              this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
+                codec: this.codecLabel,
+                messageType: 'subgroup_header',
+              });
+              this.metrics.counter('moq.object.subgroup.opened', 1, { codec: this.codecLabel });
               headerParsed = true;
 
               log.info('Decoded subgroup header', {
@@ -356,6 +428,10 @@ export class ObjectRouter {
 
               bufferOffset += headerBytes;
             } catch (decodeErr) {
+              this.metrics.counter('moq.codec.decode.errors', 1, {
+                codec: this.codecLabel,
+                reason: classifyRouterDecodeError(decodeErr),
+              });
               log.warn('Failed to decode subgroup header', {
                 error: (decodeErr as Error).message,
                 bufferLength: bufferView.length,
@@ -395,8 +471,14 @@ export class ObjectRouter {
               break;
             }
 
+            const decodeStart = nowMs();
             try {
               [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = ObjectCodec.decodeSubgroupHeader(bufferView);
+              this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
+                codec: this.codecLabel,
+                messageType: 'subgroup_header',
+              });
+              this.metrics.counter('moq.object.subgroup.opened', 1, { codec: this.codecLabel });
               headerParsed = true;
 
               log.info('Decoded subgroup header', {
@@ -407,7 +489,11 @@ export class ObjectRouter {
               });
 
               bufferOffset += headerBytes;
-            } catch {
+            } catch (decodeErr) {
+              this.metrics.counter('moq.codec.decode.errors', 1, {
+                codec: this.codecLabel,
+                reason: classifyRouterDecodeError(decodeErr),
+              });
               if (done) break;
               continue;
             }
@@ -436,9 +522,15 @@ export class ObjectRouter {
               try { await reader.cancel('DELIVERY_TIMEOUT'); } catch { /* ignore */ }
               return;
             }
+            const decodeStart = nowMs();
             try {
               const view = buffer.subarray(bufferOffset);
               const [objectId, payload, status, bytesConsumed] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, previousObjectId);
+              this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
+                codec: this.codecLabel,
+                messageType: 'stream_object',
+              });
+              this.metrics.counter('moq.object.stream.in', 1, { codec: this.codecLabel });
               // §8: this object arrived — cancel its per-object timer, then
               // arm the next one before we do delivery.
               this.disarmObjectTimer(subgroupHeader, objectId);
@@ -506,6 +598,10 @@ export class ObjectRouter {
 
               bufferOffset += bytesConsumed;
             } catch (decodeErr) {
+              this.metrics.counter('moq.codec.decode.errors', 1, {
+                codec: this.codecLabel,
+                reason: classifyRouterDecodeError(decodeErr),
+              });
               // Not enough data for complete object - wait for more chunks
               log.info('Object decode pending (need more data)', {
                 bufferOffset,
@@ -782,8 +878,14 @@ export class ObjectRouter {
         continue;
       }
 
+      const decodeStart = nowMs();
       try {
         const result = ObjectCodec.decodeFetchObject(remaining, decoderState);
+        this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
+          codec: this.codecLabel,
+          messageType: 'fetch_object',
+        });
+        this.metrics.counter('moq.object.fetch.in', 1, { codec: this.codecLabel });
         objectCount++;
         bufferOffset += result.bytesConsumed;
 
@@ -800,6 +902,10 @@ export class ObjectRouter {
           this.onFetchObject(requestId, result.payload, result.groupId, result.objectId);
         }
       } catch (err) {
+        this.metrics.counter('moq.codec.decode.errors', 1, {
+          codec: this.codecLabel,
+          reason: classifyRouterDecodeError(err),
+        });
         // May need more data
         if (done) {
           log.warn('Failed to decode FETCH object at end of stream', {

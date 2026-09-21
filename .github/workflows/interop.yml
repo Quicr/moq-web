@@ -7,10 +7,10 @@ name: Interop
 # opposite role. A failure of the scenario fails the workflow so codec
 # regressions surface immediately.
 #
-# NOTE: This job is currently gated behind `if: false` because the scenario
-# harness is a skeleton — see .github/workflows/README.md for the follow-up
-# work required to enable it (pinned commits, build recipes, and the actual
-# publisher/subscriber wiring inside scripts/interop-harness.sh).
+# NOTE: This job is currently gated behind `if: false` because a few final
+# integration checks are pending — see .github/workflows/README.md
+# § "Remaining before flipping gate". Flipping the gate is now a one-line
+# change.
 
 on:
   push:
@@ -21,28 +21,71 @@ on:
 jobs:
   interop:
     name: interop / ${{ matrix.implementation }} / ${{ matrix.role }}
-    # Gate: flip to `if: true` (or remove) once the harness is complete.
-    # See .github/workflows/README.md § "Enabling interop".
+    # Gate: flip to `if: true` (or remove) once the checklist in
+    # .github/workflows/README.md § "Remaining before flipping gate" is
+    # green. Every other piece of the pipeline is already in place.
     if: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        implementation: [moq-rs, libquicr]
-        role: [publisher, subscriber]
+        # Explicit cell list (rather than a `matrix + include` expansion)
+        # so each cell can carry its own port allocation without relying
+        # on GHA's include-merge semantics.
+        #
+        # Peer SHAs pinned below — bump them when we intentionally advance
+        # the interop baseline (e.g. after adopting a new draft). Every
+        # port pair is unique across cells so parallel matrix runners
+        # never collide on 127.0.0.1. If we ever grow past ~8 cells switch
+        # to `(github.run_id % N) + BASE` for isolation.
         include:
-          # Pin the peer implementation to a known-good ref. Update these when
-          # bumping the target draft or when the reference implementation
-          # lands a required fix.
+          # moq-rs @ kixelated/moq main as of 2026-09-21.
+          #   https://github.com/kixelated/moq/commit/863f55ca44f6a19166bb652f02e2eb83730d0786
+          # TODO: update pin when advancing the moq-rs baseline.
           - implementation: moq-rs
-            peer_repo: kixelated/moq-rs
-            peer_ref: main
-            peer_build_cmd: cargo build --release
+            role: publisher
+            peer_repo: kixelated/moq
+            peer_ref: 863f55ca44f6a19166bb652f02e2eb83730d0786
+            peer_build_cmd: |
+              cd rs && cargo build --release -p moq-cli -p moq-relay
+            relay_port: 4443
+            moqweb_port: 4443
+          - implementation: moq-rs
+            role: subscriber
+            peer_repo: kixelated/moq
+            peer_ref: 863f55ca44f6a19166bb652f02e2eb83730d0786
+            peer_build_cmd: |
+              cd rs && cargo build --release -p moq-cli -p moq-relay
+            relay_port: 4444
+            moqweb_port: 4444
+          # libquicr @ Quicr/libquicr main as of 2026-09-21.
+          #   https://github.com/Quicr/libquicr/commit/09d0a30abeae0345667b3f13c390a17e9c572950
+          # libquicr pulls picoquic/mbedtls/timeq via git submodules and
+          # ships a top-level Makefile whose default target matches the
+          # upstream README (BUILD_TESTS=ON, BUILD_EXAMPLES=ON, mbedtls
+          # off — libssl-dev picks up OpenSSL instead). Building via
+          # `make` keeps us in sync with the reference build recipe.
+          # TODO: update pin when the interop draft advances (currently
+          # draft-ietf-moq-transport-16).
           - implementation: libquicr
+            role: publisher
             peer_repo: Quicr/libquicr
-            peer_ref: main
-            peer_build_cmd: cmake -S . -B build && cmake --build build --config Release
+            peer_ref: 09d0a30abeae0345667b3f13c390a17e9c572950
+            peer_build_cmd: |
+              git submodule update --init --recursive
+              make
+            relay_port: 4445
+            moqweb_port: 4445
+          - implementation: libquicr
+            role: subscriber
+            peer_repo: Quicr/libquicr
+            peer_ref: 09d0a30abeae0345667b3f13c390a17e9c572950
+            peer_build_cmd: |
+              git submodule update --init --recursive
+              make
+            relay_port: 4446
+            moqweb_port: 4446
 
     steps:
       - name: Checkout moq-web
@@ -71,15 +114,34 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install libquicr build deps (libquicr only)
+        # Mirrors the "Ubuntu 22.04 Jammy" section of libquicr/README.md
+        # plus ninja + pkg-config. gcc-12/g++-12 are required by the
+        # upstream README; libssl-dev + golang cover the picoquic/timeq
+        # submodule tooling.
         if: matrix.implementation == 'libquicr'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build libssl-dev pkg-config
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            gcc-12 \
+            g++-12 \
+            libssl-dev \
+            pkg-config \
+            golang \
+            clang-tidy-15
+          echo "CC=gcc-12" >> "$GITHUB_ENV"
+          echo "CXX=g++-12" >> "$GITHUB_ENV"
 
       - name: Clone peer implementation
+        # We fetch full history for the SHA pin so `git submodule update`
+        # inside libquicr's build command can resolve pinned submodule
+        # commits.
         run: |
-          git clone --depth 1 --branch "${{ matrix.peer_ref }}" \
-            "https://github.com/${{ matrix.peer_repo }}.git" peer
+          git clone "https://github.com/${{ matrix.peer_repo }}.git" peer
+          cd peer
+          git checkout "${{ matrix.peer_ref }}"
 
       - name: Build peer implementation
         working-directory: peer
@@ -98,6 +160,12 @@ jobs:
           TRACK_NAME: cell-${{ matrix.implementation }}-${{ matrix.role }}
           OBJECT_COUNT: '10'
           DURATION_SECONDS: '5'
+          # Explicit port allocation so parallel matrix cells don't collide
+          # on 127.0.0.1. Ports come from the matrix `include` above so
+          # each cell has a unique pair.
+          MOQ_RELAY_PORT: ${{ matrix.relay_port }}
+          MOQ_WEB_PORT: ${{ matrix.moqweb_port }}
+          PUBLISHER_URL: https://127.0.0.1:${{ matrix.relay_port }}/moq
         run: |
           bash scripts/interop-harness.sh
 

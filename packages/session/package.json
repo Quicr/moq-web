@@ -24,6 +24,9 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "sideEffects": false,
+  "bin": {
+    "moq-web-interop": "./dist/cli/interop-cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -32,6 +35,10 @@
     "./worker": {
       "types": "./dist/workers/transport-worker.d.ts",
       "import": "./dist/workers/transport-worker.js"
+    },
+    "./interop-cli": {
+      "types": "./dist/cli/interop-cli.d.ts",
+      "import": "./dist/cli/interop-cli.js"
     }
   },
   "files": [
@@ -43,7 +50,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/prepend-cli-shebang.mjs",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",

@@ -904,7 +904,7 @@ export class MOQTSession {
         objectId,
         bytes: data.byteLength,
       } as SubscribeStatsEvent);
-    }, this._draft);
+    }, this._draft, this.metrics);
 
     // §8: surface subscriber-side delivery deadline expiries to consumers.
     this.objectRouter.setDeliveryTimeoutCallback((sub, reason, resetCode, detail) => {

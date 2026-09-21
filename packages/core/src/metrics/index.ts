@@ -44,6 +44,14 @@
  *     `moq.session.subscribe.error{code}` and matching publish/fetch
  *     counters at the `UnifiedSession` RPC boundary, plus a
  *     `moq.session.request.duration{op}` histogram wrapping each promise.
+ *   - Object-router per-object decode observability
+ *     (`packages/session/src/object-router.ts`, Wave 3 Track I):
+ *     `moq.codec.decode.duration{codec,messageType}` +
+ *     `moq.codec.decode.errors{codec,reason}` wrapping
+ *     `decodeSubgroupHeader` / `decodeStreamObject` /
+ *     `decodeDatagramObject` / `decodeFetchObject`, plus semantic counters
+ *     `moq.object.subgroup.opened` / `moq.object.stream.in` /
+ *     `moq.object.datagram.in` / `moq.object.fetch.in`.
  *
  * Still TODO (Wave 3):
  *   - `moq.encoding.frame.encoded_bytes` histogram on the encode path.
