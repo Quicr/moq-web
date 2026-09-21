@@ -287,14 +287,15 @@ export class PublicationManager {
    * pause from one subscriber must not stall other tracks this session
    * publishes. Callers should prefer this over `setAllForward`.
    */
-  setForwardByRequestId(requestId: number, forward: number): boolean {
-    const pub = this.publicationsByRequestId.get(requestId);
+  setForwardByRequestId(requestId: bigint | number, forward: number): boolean {
+    const key = requestId.toString();
+    const pub = this.publicationsByRequestId.get(key);
     if (!pub) return false;
     // Resolve any pending waitForForward on this requestId when going active.
     if (forward === 1) {
-      const pending = this.pendingForward.get(requestId);
+      const pending = this.pendingForward.get(key);
       if (pending) {
-        this.pendingForward.delete(requestId);
+        this.pendingForward.delete(key);
         pending.resolve();
       }
     }
