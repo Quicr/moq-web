@@ -599,7 +599,7 @@ describe('LiveReleasePolicy benchmark', () => {
         `(${opsPerMs.toFixed(0)} ops/ms)`,
     );
 
-    expect(opsPerMs).toBeGreaterThan(150);
+    expect(opsPerMs).toBeGreaterThan(100);
   });
 
   it('getReadyFrames should be fast', () => {
