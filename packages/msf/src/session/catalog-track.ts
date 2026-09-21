@@ -110,8 +110,8 @@ export class CatalogSubscriber {
    * Handle SUBSCRIBE_OK - FETCH from largestGroupId to get current catalog
    */
   private async handleSubscribeOk(event: {
-    largestGroupId?: number;
-    largestObjectId?: number;
+    largestGroupId?: bigint;
+    largestObjectId?: bigint;
   }): Promise<void> {
     // Clean up listener - we only need it once
     if (this.subscribeOkCleanup) {
@@ -123,7 +123,7 @@ export class CatalogSubscriber {
     // Workaround: Publisher republishes catalog periodically so late subscribers
     // receive it via normal SUBSCRIBE delivery.
     // TODO: Re-enable when relay supports FETCH forwarding
-    console.log('[CatalogSubscriber] SUBSCRIBE_OK received, largestGroupId:', event.largestGroupId);
+    console.log('[CatalogSubscriber] SUBSCRIBE_OK received, largestGroupId:', event.largestGroupId?.toString());
   }
 
   /**

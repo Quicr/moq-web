@@ -47,6 +47,7 @@
     "clean": "rm -rf dist"
   },
   "devDependencies": {
+    "fast-check": "^4.10.2",
     "vitest": "^4.0.18"
   }
 }

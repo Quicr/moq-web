@@ -1428,7 +1428,7 @@ export class MediaSession {
     subscriptionId: number,
     timeMs: number,
     durationMs = 5000
-  ): Promise<number> {
+  ): Promise<bigint> {
     const subscription = this.subscriptions.get(subscriptionId);
     if (!subscription) {
       throw new Error(`Subscription ${subscriptionId} not found`);
@@ -1497,7 +1497,7 @@ export class MediaSession {
     endGroup: number,
     config: MediaConfig,
     mediaType?: 'video' | 'audio'
-  ): Promise<number> {
+  ): Promise<bigint> {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
@@ -1579,7 +1579,7 @@ export class MediaSession {
    *
    * @param fetchId - Fetch request ID to cancel
    */
-  async cancelFetch(fetchId: number): Promise<void> {
+  async cancelFetch(fetchId: bigint | number): Promise<void> {
     await this.session.cancelFetch(fetchId);
   }
 
@@ -1592,8 +1592,8 @@ export class MediaSession {
    * @returns Track DVR info or undefined if not available
    */
   getTrackDVRInfo(subscriptionId: number): {
-    largestGroupId?: number;
-    largestObjectId?: number;
+    largestGroupId?: bigint;
+    largestObjectId?: bigint;
     estimatedDuration?: number;
   } | undefined {
     const subscription = this.subscriptions.get(subscriptionId);
@@ -1613,9 +1613,10 @@ export class MediaSession {
       return {
         largestGroupId: completedFetch.largestGroupId,
         largestObjectId: completedFetch.largestObjectId,
-        // Estimate duration assuming 1 second per group
+        // Estimate duration assuming 1 second per group.
+        // largestGroupId is a 62-bit varint; multiply in bigint then convert.
         estimatedDuration: completedFetch.largestGroupId !== undefined
-          ? (completedFetch.largestGroupId + 1) * 1000
+          ? Number((completedFetch.largestGroupId + 1n) * 1000n)
           : undefined,
       };
     }

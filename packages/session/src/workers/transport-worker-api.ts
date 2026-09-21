@@ -14,6 +14,7 @@ import type {
   TransportWorkerResponse,
   TransportState,
 } from './transport-worker-types.js';
+import type { MetricsSink } from '@moq-web/core';
 
 export type { TransportWorkerConfig, TransportState };
 
@@ -62,11 +63,29 @@ export class TransportWorkerClient {
   private _state: TransportState = 'disconnected';
   private streamRequestId = 0;
   private pendingStreamCreations = new Map<number, (streamId: number) => void>();
+  /**
+   * Optional metrics sink. When set, `metric` events forwarded from the
+   * worker (bytes / stream open/close / datagram counts) are replayed against
+   * this sink so `session.getDiagnostics().metrics` reflects transport
+   * activity even though the underlying WebTransport runs off the main
+   * thread.
+   */
+  private metrics?: MetricsSink;
 
-  constructor(worker: Worker) {
+  constructor(worker: Worker, metrics?: MetricsSink) {
     this.worker = worker;
+    this.metrics = metrics;
     this.worker.onmessage = this.handleMessage.bind(this);
     this.worker.onerror = this.handleError.bind(this);
+  }
+
+  /**
+   * Late-bind the metrics sink after construction. Used by MOQTSession which
+   * builds the client from a shared worker but wants worker-side counters to
+   * land in the session's `MetricsSink`.
+   */
+  setMetricsSink(metrics: MetricsSink): void {
+    this.metrics = metrics;
   }
 
   /**
@@ -232,6 +251,22 @@ export class TransportWorkerClient {
         this.pendingStreamCreations.delete(response.id);
         resolver(response.streamId);
       }
+    }
+
+    // Replay worker-side metric events into the main-thread sink. Sink errors
+    // are swallowed (per the `MetricsSink` contract) to protect the fast
+    // path.
+    if (response.type === 'metric' && this.metrics) {
+      const { kind, name, value, attrs } = response.metric;
+      try {
+        if (kind === 'counter') this.metrics.counter(name, value, attrs);
+        else if (kind === 'gauge') this.metrics.gauge(name, value, attrs);
+        else this.metrics.histogram(name, value, attrs);
+      } catch {
+        /* sink threw — swallow per contract */
+      }
+      // Metric events are internal plumbing; don't fan out to user handlers.
+      return;
     }
 
     // Emit to handlers

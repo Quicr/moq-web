@@ -1,0 +1,112 @@
+name: Interop
+
+# Wire-format interop matrix for moq-web against reference implementations.
+#
+# Each matrix cell clones and builds a peer implementation, then runs the
+# canned scenario (see scripts/interop-harness.sh) with moq-web in the
+# opposite role. A failure of the scenario fails the workflow so codec
+# regressions surface immediately.
+#
+# NOTE: This job is currently gated behind `if: false` because the scenario
+# harness is a skeleton — see .github/workflows/README.md for the follow-up
+# work required to enable it (pinned commits, build recipes, and the actual
+# publisher/subscriber wiring inside scripts/interop-harness.sh).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  interop:
+    name: interop / ${{ matrix.implementation }} / ${{ matrix.role }}
+    # Gate: flip to `if: true` (or remove) once the harness is complete.
+    # See .github/workflows/README.md § "Enabling interop".
+    if: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation: [moq-rs, libquicr]
+        role: [publisher, subscriber]
+        include:
+          # Pin the peer implementation to a known-good ref. Update these when
+          # bumping the target draft or when the reference implementation
+          # lands a required fix.
+          - implementation: moq-rs
+            peer_repo: kixelated/moq-rs
+            peer_ref: main
+            peer_build_cmd: cargo build --release
+          - implementation: libquicr
+            peer_repo: Quicr/libquicr
+            peer_ref: main
+            peer_build_cmd: cmake -S . -B build && cmake --build build --config Release
+
+    steps:
+      - name: Checkout moq-web
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install moq-web dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build moq-web
+        run: pnpm run build
+
+      # ---- Peer implementation ----
+
+      - name: Install Rust toolchain (moq-rs only)
+        if: matrix.implementation == 'moq-rs'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libquicr build deps (libquicr only)
+        if: matrix.implementation == 'libquicr'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build libssl-dev pkg-config
+
+      - name: Clone peer implementation
+        run: |
+          git clone --depth 1 --branch "${{ matrix.peer_ref }}" \
+            "https://github.com/${{ matrix.peer_repo }}.git" peer
+
+      - name: Build peer implementation
+        working-directory: peer
+        run: ${{ matrix.peer_build_cmd }}
+
+      # ---- Scenario ----
+
+      - name: Run interop scenario
+        env:
+          MOQ_WEB_ROOT: ${{ github.workspace }}
+          PEER_ROOT: ${{ github.workspace }}/peer
+          IMPLEMENTATION: ${{ matrix.implementation }}
+          ROLE: ${{ matrix.role }}
+          # Canned scenario parameters — see scripts/interop-harness.sh
+          TRACK_NAMESPACE: moq-web/interop
+          TRACK_NAME: cell-${{ matrix.implementation }}-${{ matrix.role }}
+          OBJECT_COUNT: '10'
+          DURATION_SECONDS: '5'
+        run: |
+          bash scripts/interop-harness.sh
+
+      - name: Upload interop logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-logs-${{ matrix.implementation }}-${{ matrix.role }}
+          path: |
+            /tmp/interop-*.log
+          retention-days: 7
+          if-no-files-found: ignore

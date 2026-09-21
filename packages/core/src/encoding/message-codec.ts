@@ -681,9 +681,11 @@ export class MessageCodec {
     }
   }
 
-  // Security limits for input validation
-  private static readonly MAX_PARAMETER_COUNT = 100;
-  private static readonly MAX_STRING_LENGTH = 65536;
+  // Security limits for input validation.
+  // Aligned with draft-18 constants (packages/core/src/encoding/draft18-message-codec.ts)
+  // so any legacy-codec path sees the same ceiling as the current draft.
+  private static readonly MAX_PARAMETER_COUNT = 64;
+  private static readonly MAX_STRING_LENGTH = 4096;
   private static readonly MAX_NAMESPACE_TUPLE_COUNT = 32;
 
   /**
@@ -1229,7 +1231,7 @@ export class MessageCodec {
       // Draft-16 SUBSCRIBE format:
       // Subscribe ID, Full Track Name, Parameters
       // All other fields (filterType, subscriberPriority, groupOrder) are in parameters
-      const requestId = reader.readVarIntNumber();
+      const requestId = reader.readVarInt();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
 
       const message: SubscribeMessage = {
@@ -1245,7 +1247,7 @@ export class MessageCodec {
 
       // Extract fields from parameters
       if (message.parameters) {
-        // Subscriber priority (0x20, even)
+        // Subscriber priority (0x20, even) — byte-sized (0-255)
         const priorityParam = message.parameters.get(0x20);
         if (priorityParam && priorityParam.length > 0) {
           const [priority] = VarInt.decodeNumber(priorityParam);
@@ -1256,19 +1258,20 @@ export class MessageCodec {
         const filterParam = message.parameters.get(0x21);
         if (filterParam && filterParam.length > 0) {
           const filterReader = new BufferReader(filterParam);
+          // filterType is a byte-sized discriminator
           message.filterType = filterReader.readVarIntNumber() as FilterType;
 
           if (message.filterType === FilterType.ABSOLUTE_START ||
               message.filterType === FilterType.ABSOLUTE_RANGE) {
-            message.startGroup = filterReader.readVarIntNumber();
-            message.startObject = filterReader.readVarIntNumber();
+            message.startGroup = filterReader.readVarInt();
+            message.startObject = filterReader.readVarInt();
           }
           if (message.filterType === FilterType.ABSOLUTE_RANGE) {
-            message.endGroup = filterReader.readVarIntNumber();
+            message.endGroup = filterReader.readVarInt();
           }
         }
 
-        // Group order (0x22, even)
+        // Group order (0x22, even) — byte-sized enum
         const groupOrderParam = message.parameters.get(0x22);
         if (groupOrderParam && groupOrderParam.length > 0) {
           const [order] = VarInt.decodeNumber(groupOrderParam);
@@ -1282,7 +1285,7 @@ export class MessageCodec {
       // Request ID, Track Namespace, Track Name, Subscriber Priority, Group Order,
       // Forward, Filter Type, [Start Location], [End Group], Parameters
       // NOTE: NO Track Alias in SUBSCRIBE! (Track Alias is assigned by publisher in SUBSCRIBE_OK)
-      const requestId = reader.readVarIntNumber();
+      const requestId = reader.readVarInt();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
       // Draft-14: subscriberPriority, groupOrder, forward are 8-bit fixed fields
       const subscriberPriority = reader.readByte();
@@ -1301,11 +1304,11 @@ export class MessageCodec {
       };
 
       if (filterType === FilterType.ABSOLUTE_START || filterType === FilterType.ABSOLUTE_RANGE) {
-        message.startGroup = reader.readVarIntNumber();
-        message.startObject = reader.readVarIntNumber();
+        message.startGroup = reader.readVarInt();
+        message.startObject = reader.readVarInt();
       }
       if (filterType === FilterType.ABSOLUTE_RANGE) {
-        message.endGroup = reader.readVarIntNumber();
+        message.endGroup = reader.readVarInt();
       }
 
       message.parameters = MessageCodec.decodeRequestParameters(reader);
@@ -1334,14 +1337,14 @@ export class MessageCodec {
       }
 
       const hasSeek =
-        (message.startLocation && (message.startLocation.groupId !== 0 || message.startLocation.objectId !== 0)) ||
-        (message.endGroup !== undefined && message.endGroup !== 0);
+        (message.startLocation && (message.startLocation.groupId !== 0n || message.startLocation.objectId !== 0n)) ||
+        (message.endGroup !== undefined && message.endGroup !== 0n);
       if (hasSeek) {
         const filterWriter = new BufferWriter();
         const locationType = message.endGroup ? 0x02 : 0x01;
         filterWriter.writeVarInt(locationType);
-        filterWriter.writeVarInt(message.startLocation?.groupId ?? 0);
-        filterWriter.writeVarInt(message.startLocation?.objectId ?? 0);
+        filterWriter.writeVarInt(message.startLocation?.groupId ?? 0n);
+        filterWriter.writeVarInt(message.startLocation?.objectId ?? 0n);
         if (message.endGroup) {
           filterWriter.writeVarInt(message.endGroup);
         }
@@ -1361,10 +1364,10 @@ export class MessageCodec {
   }
 
   private static decodeSubscribeUpdatePayload(reader: BufferReader): SubscribeUpdateMessage {
-    const requestId = reader.readVarIntNumber();
-    log.info('SUBSCRIBE_UPDATE field', { field: 'requestId', value: requestId });
-    const subscriptionRequestId = reader.readVarIntNumber();
-    log.info('SUBSCRIBE_UPDATE field', { field: 'subscriptionRequestId', value: subscriptionRequestId });
+    const requestId = reader.readVarInt();
+    log.info('SUBSCRIBE_UPDATE field', { field: 'requestId', value: requestId.toString() });
+    const subscriptionRequestId = reader.readVarInt();
+    log.info('SUBSCRIBE_UPDATE field', { field: 'subscriptionRequestId', value: subscriptionRequestId.toString() });
 
     if (isDraft16Active()) {
       // Draft-16: All fields are in parameters
@@ -1373,11 +1376,11 @@ export class MessageCodec {
       // Extract fields from parameters with defaults
       let forward = 1; // Default: forward enabled
       let subscriberPriority = 128; // Default priority
-      let startLocation = { groupId: 0, objectId: 0 };
-      let endGroup = 0;
+      let startLocation: { groupId: bigint; objectId: bigint } = { groupId: 0n, objectId: 0n };
+      let endGroup = 0n;
 
       if (parameters) {
-        // FORWARD (0x10)
+        // FORWARD (0x10) — 1-byte flag
         const forwardParam = parameters.get(RequestParameter.FORWARD);
         if (forwardParam && forwardParam.length > 0) {
           const [fwd] = VarInt.decodeNumber(forwardParam);
@@ -1385,7 +1388,7 @@ export class MessageCodec {
         }
         log.info('SUBSCRIBE_UPDATE field', { field: 'forward', value: forward });
 
-        // SUBSCRIBER_PRIORITY (0x20)
+        // SUBSCRIBER_PRIORITY (0x20) — byte-sized (0-255)
         const priorityParam = parameters.get(RequestParameter.SUBSCRIBER_PRIORITY);
         if (priorityParam && priorityParam.length > 0) {
           const [priority] = VarInt.decodeNumber(priorityParam);
@@ -1397,16 +1400,22 @@ export class MessageCodec {
         const filterParam = parameters.get(RequestParameter.SUBSCRIPTION_FILTER);
         if (filterParam && filterParam.length > 0) {
           const filterReader = new BufferReader(filterParam);
+          // locationType is a small discriminator byte
           const locationType = filterReader.readVarIntNumber();
           startLocation = {
-            groupId: filterReader.readVarIntNumber(),
-            objectId: filterReader.readVarIntNumber(),
+            groupId: filterReader.readVarInt(),
+            objectId: filterReader.readVarInt(),
           };
           if (locationType === 0x02 && filterReader.remaining > 0) {
-            endGroup = filterReader.readVarIntNumber();
+            endGroup = filterReader.readVarInt();
           }
         }
-        log.info('SUBSCRIBE_UPDATE field', { field: 'startLocation', ...startLocation, endGroup });
+        log.info('SUBSCRIBE_UPDATE field', {
+          field: 'startLocation',
+          groupId: startLocation.groupId.toString(),
+          objectId: startLocation.objectId.toString(),
+          endGroup: endGroup.toString(),
+        });
       }
 
       return {
@@ -1421,11 +1430,15 @@ export class MessageCodec {
     }
 
     // Draft-14: Fixed fields
-    const startGroupId = reader.readVarIntNumber();
-    const startObjectId = reader.readVarIntNumber();
-    log.info('SUBSCRIBE_UPDATE field', { field: 'startLocation', groupId: startGroupId, objectId: startObjectId });
-    const endGroup = reader.readVarIntNumber();
-    log.info('SUBSCRIBE_UPDATE field', { field: 'endGroup', value: endGroup });
+    const startGroupId = reader.readVarInt();
+    const startObjectId = reader.readVarInt();
+    log.info('SUBSCRIBE_UPDATE field', {
+      field: 'startLocation',
+      groupId: startGroupId.toString(),
+      objectId: startObjectId.toString(),
+    });
+    const endGroup = reader.readVarInt();
+    log.info('SUBSCRIBE_UPDATE field', { field: 'endGroup', value: endGroup.toString() });
     // subscriber_priority is 1 byte (uint8)
     const subscriberPriority = reader.readByte();
     log.info('SUBSCRIBE_UPDATE field', { field: 'subscriberPriority', value: subscriberPriority });
@@ -1474,17 +1487,17 @@ export class MessageCodec {
   }
 
   private static decodeSubscribeOkPayload(reader: BufferReader, payloadEndOffset?: number): SubscribeOkMessage {
-    const requestId = reader.readVarIntNumber();
-    log.info('SUBSCRIBE_OK field', { field: 'requestId', value: requestId });
+    const requestId = reader.readVarInt();
+    log.info('SUBSCRIBE_OK field', { field: 'requestId', value: requestId.toString() });
     // trackAlias can be large (62-bit CityHash64), keep as BigInt
     const trackAlias = reader.readVarInt();
     log.info('SUBSCRIBE_OK field', { field: 'trackAlias', value: trackAlias.toString() });
 
-    let expires = 0;
+    let expires = 0n;
     let groupOrder: GroupOrder = GroupOrder.ASCENDING;
     let contentExists: boolean | ObjectExistence = ObjectExistence.UNKNOWN;
-    let largestGroupId: number | undefined;
-    let largestObjectId: number | undefined;
+    let largestGroupId: bigint | undefined;
+    let largestObjectId: bigint | undefined;
 
     if (isDraft16Active()) {
       // Draft-16: SUBSCRIBE_OK format after trackAlias:
@@ -1496,19 +1509,19 @@ export class MessageCodec {
       log.info('SUBSCRIBE_OK params', { paramCount: params?.size ?? 0 });
 
       if (params) {
-        // EXPIRES (0x06)
+        // EXPIRES (0x06) — 62-bit varint
         const expiresParam = params.get(RequestParameter.EXPIRES);
         if (expiresParam) {
           const expiresReader = new BufferReader(expiresParam);
-          expires = expiresReader.readVarIntNumber();
+          expires = expiresReader.readVarInt();
         }
 
         // LARGEST_OBJECT (0x09) - contains largestGroupId and largestObjectId
         const largestObjParam = params.get(RequestParameter.LARGEST_OBJECT);
         if (largestObjParam) {
           const largestObjReader = new BufferReader(largestObjParam);
-          largestGroupId = largestObjReader.readVarIntNumber();
-          largestObjectId = largestObjReader.readVarIntNumber();
+          largestGroupId = largestObjReader.readVarInt();
+          largestObjectId = largestObjReader.readVarInt();
           contentExists = ObjectExistence.EXISTS;
         }
       }
@@ -1518,7 +1531,7 @@ export class MessageCodec {
       log.info('SUBSCRIBE_OK extensions', { extCount: extensions?.size ?? 0 });
 
       if (extensions) {
-        // GROUP_ORDER extension (key 0x02)
+        // GROUP_ORDER extension (key 0x02) — byte-sized enum
         const groupOrderExt = extensions.get(0x02);
         if (groupOrderExt) {
           const groupOrderReader = new BufferReader(groupOrderExt);
@@ -1527,8 +1540,8 @@ export class MessageCodec {
       }
     } else {
       // Draft-14: Direct fields
-      expires = reader.readVarIntNumber();
-      log.info('SUBSCRIBE_OK field', { field: 'expires', value: expires });
+      expires = reader.readVarInt();
+      log.info('SUBSCRIBE_OK field', { field: 'expires', value: expires.toString() });
 
       // GroupOrder is 1 byte (uint8)
       groupOrder = reader.readByte() as GroupOrder;
@@ -1539,8 +1552,8 @@ export class MessageCodec {
       log.info('SUBSCRIBE_OK field', { field: 'contentExists', value: contentExistsByte });
       contentExists = contentExistsByte === 1;
       if (contentExistsByte === 1) {
-        largestGroupId = reader.readVarIntNumber();
-        largestObjectId = reader.readVarIntNumber();
+        largestGroupId = reader.readVarInt();
+        largestObjectId = reader.readVarInt();
       }
       // Read and skip any additional parameters (LAPS sends parameters with SUBSCRIBE_OK)
       MessageCodec.skipParameters(reader);
@@ -1599,20 +1612,20 @@ export class MessageCodec {
   }
 
   private static decodeSubscribeErrorPayload(reader: BufferReader): SubscribeErrorMessage {
-    const requestId = reader.readVarIntNumber();
+    const requestId = reader.readVarInt();
     const errorCode = reader.readVarIntNumber() as RequestErrorCode;
 
     // Draft-16 (REQUEST_ERROR): trackAlias comes BEFORE reasonPhrase
     // Draft-14 (SUBSCRIBE_ERROR): trackAlias comes AFTER reasonPhrase
-    let trackAlias: number;
+    let trackAlias: bigint;
     let reasonPhrase: string;
 
     if (isDraft16Active()) {
-      trackAlias = reader.readVarIntNumber();
+      trackAlias = reader.readVarInt();
       reasonPhrase = reader.readString();
     } else {
       reasonPhrase = reader.readString();
-      trackAlias = reader.hasMore ? reader.readVarIntNumber() : 0;
+      trackAlias = reader.hasMore ? reader.readVarInt() : 0n;
     }
 
     return {
@@ -1631,7 +1644,7 @@ export class MessageCodec {
   private static decodeUnsubscribePayload(reader: BufferReader): UnsubscribeMessage {
     return {
       type: MessageType.UNSUBSCRIBE,
-      requestId: reader.readVarIntNumber(),
+      requestId: reader.readVarInt(),
     };
   }
 
@@ -1651,10 +1664,10 @@ export class MessageCodec {
   }
 
   private static decodePublishDonePayload(reader: BufferReader): PublishDoneMessage {
-    const requestId = reader.readVarIntNumber();
+    const requestId = reader.readVarInt();
 
     // Draft-16: PUBLISH_DONE has trackAlias after requestId
-    const trackAlias = isDraft16Active() ? reader.readVarIntNumber() : 0;
+    const trackAlias = isDraft16Active() ? reader.readVarInt() : 0n;
 
     const statusCode = reader.readVarIntNumber() as RequestErrorCode;
     const reasonPhrase = reader.readString();
@@ -1671,11 +1684,16 @@ export class MessageCodec {
     };
 
     if (!isDraft16Active() && contentExists) {
-      message.finalGroupId = reader.readVarIntNumber();
-      message.finalObjectId = reader.readVarIntNumber();
+      message.finalGroupId = reader.readVarInt();
+      message.finalObjectId = reader.readVarInt();
     }
 
-    log.info('Decoded PUBLISH_DONE', { requestId, trackAlias, statusCode, reasonPhrase });
+    log.info('Decoded PUBLISH_DONE', {
+      requestId: requestId.toString(),
+      trackAlias: trackAlias.toString(),
+      statusCode,
+      reasonPhrase,
+    });
 
     return message;
   }
@@ -1759,9 +1777,9 @@ export class MessageCodec {
     if (isDraft16Active()) {
       // Draft-16 PUBLISH format:
       // Request ID, Full Track Name, Track Alias, Parameters, [Track Extensions]
-      const requestId = reader.readVarIntNumber();
+      const requestId = reader.readVarInt();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
-      const trackAlias = reader.readVarIntNumber();
+      const trackAlias = reader.readVarInt();
       const parameters = MessageCodec.decodeRequestParameters(reader);
 
       // Read track extensions only if there are at least 2 bytes remaining (minimum for valid extension)
@@ -1776,31 +1794,31 @@ export class MessageCodec {
       let groupOrder = GroupOrder.ASCENDING;
       let forward = 1;
       let contentExists = false;
-      let largestLocation: { groupId: number; objectId: number } | undefined;
+      let largestLocation: { groupId: bigint; objectId: bigint } | undefined;
 
       if (parameters) {
-        // GROUP_ORDER (0x22, even)
+        // GROUP_ORDER (0x22, even) — byte-sized enum
         const groupOrderParam = parameters.get(RequestParameter.GROUP_ORDER);
         if (groupOrderParam && groupOrderParam.length > 0) {
           const [order] = VarInt.decodeNumber(groupOrderParam);
           groupOrder = order as GroupOrder;
         }
 
-        // FORWARD (0x10, even)
+        // FORWARD (0x10, even) — 1-byte flag
         const forwardParam = parameters.get(RequestParameter.FORWARD);
         if (forwardParam && forwardParam.length > 0) {
           const [fwd] = VarInt.decodeNumber(forwardParam);
           forward = fwd;
         }
 
-        // LARGEST_OBJECT (0x09, odd)
+        // LARGEST_OBJECT (0x09, odd) — 62-bit varints
         const largestParam = parameters.get(RequestParameter.LARGEST_OBJECT);
         if (largestParam && largestParam.length > 0) {
           contentExists = true;
           const locReader = new BufferReader(largestParam);
           largestLocation = {
-            groupId: locReader.readVarIntNumber(),
-            objectId: locReader.readVarIntNumber(),
+            groupId: locReader.readVarInt(),
+            objectId: locReader.readVarInt(),
           };
         }
       }
@@ -1821,17 +1839,17 @@ export class MessageCodec {
       // Request ID (varint), Track Namespace (tuple), Track Name (string),
       // Track Alias (varint), Group Order (8), Content Exists (8),
       // [Largest Location], Forward (8), Parameters
-      const requestId = reader.readVarIntNumber();
+      const requestId = reader.readVarInt();
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
-      const trackAlias = reader.readVarIntNumber();
+      const trackAlias = reader.readVarInt();
       const groupOrder = reader.readByte() as GroupOrder;
       const contentExists = reader.readByte() === 1;
 
-      let largestLocation: { groupId: number; objectId: number } | undefined;
+      let largestLocation: { groupId: bigint; objectId: bigint } | undefined;
       if (contentExists) {
         largestLocation = {
-          groupId: reader.readVarIntNumber(),
-          objectId: reader.readVarIntNumber(),
+          groupId: reader.readVarInt(),
+          objectId: reader.readVarInt(),
         };
       }
 
@@ -1900,8 +1918,8 @@ export class MessageCodec {
   }
 
   private static decodePublishOkPayload(reader: BufferReader): PublishOkMessage {
-    const requestId = reader.readVarIntNumber();
-    log.info('PUBLISH_OK field', { field: 'requestId', value: requestId });
+    const requestId = reader.readVarInt();
+    log.info('PUBLISH_OK field', { field: 'requestId', value: requestId.toString() });
 
     if (isDraft16Active()) {
       // Draft-16: Request ID, Parameters
@@ -1912,25 +1930,25 @@ export class MessageCodec {
       let subscriberPriority = 128;
       let groupOrder = GroupOrder.ASCENDING;
       let filterType = FilterType.LATEST_GROUP;
-      let startLocation: { groupId: number; objectId: number } | undefined;
-      let endGroup: number | undefined;
+      let startLocation: { groupId: bigint; objectId: bigint } | undefined;
+      let endGroup: bigint | undefined;
 
       if (parameters) {
-        // FORWARD (0x10, even)
+        // FORWARD (0x10, even) — 1-byte flag
         const forwardParam = parameters.get(RequestParameter.FORWARD);
         if (forwardParam && forwardParam.length > 0) {
           const [fwd] = VarInt.decodeNumber(forwardParam);
           forward = fwd;
         }
 
-        // SUBSCRIBER_PRIORITY (0x20, even)
+        // SUBSCRIBER_PRIORITY (0x20, even) — byte-sized (0-255)
         const priorityParam = parameters.get(RequestParameter.SUBSCRIBER_PRIORITY);
         if (priorityParam && priorityParam.length > 0) {
           const [pri] = VarInt.decodeNumber(priorityParam);
           subscriberPriority = pri;
         }
 
-        // GROUP_ORDER (0x22, even)
+        // GROUP_ORDER (0x22, even) — byte-sized enum
         const groupOrderParam = parameters.get(RequestParameter.GROUP_ORDER);
         if (groupOrderParam && groupOrderParam.length > 0) {
           const [order] = VarInt.decodeNumber(groupOrderParam);
@@ -1944,10 +1962,9 @@ export class MessageCodec {
           filterType = filterReader.readVarIntNumber() as FilterType;
 
           if (filterType === FilterType.ABSOLUTE_START || filterType === FilterType.ABSOLUTE_RANGE) {
-            // Use BigInt for location values - relay may send max varint (0x3FFFFFFFFFFFFFFF) as "unknown"
+            // relay may send max varint (0x3FFFFFFFFFFFFFFF) as "unknown"
             const groupIdBig = filterReader.readVarInt();
             const objectIdBig = filterReader.readVarInt();
-            // Max 62-bit varint is sentinel for "unknown" - treat as 0
             const MAX_VARINT = 0x3FFFFFFFFFFFFFFFn;
             if (groupIdBig >= MAX_VARINT) {
               log.info('PUBLISH_OK filter has max varint groupId (unknown)', { value: groupIdBig.toString() });
@@ -1956,8 +1973,8 @@ export class MessageCodec {
               log.info('PUBLISH_OK filter has max varint objectId (unknown)', { value: objectIdBig.toString() });
             }
             startLocation = {
-              groupId: groupIdBig >= MAX_VARINT ? 0 : Number(groupIdBig),
-              objectId: objectIdBig >= MAX_VARINT ? 0 : Number(objectIdBig),
+              groupId: groupIdBig >= MAX_VARINT ? 0n : groupIdBig,
+              objectId: objectIdBig >= MAX_VARINT ? 0n : objectIdBig,
             };
           }
           if (filterType === FilterType.ABSOLUTE_RANGE) {
@@ -1966,7 +1983,7 @@ export class MessageCodec {
             if (endGroupBig >= MAX_VARINT) {
               log.info('PUBLISH_OK filter has max varint endGroup (unknown)', { value: endGroupBig.toString() });
             }
-            endGroup = endGroupBig >= MAX_VARINT ? undefined : Number(endGroupBig);
+            endGroup = endGroupBig >= MAX_VARINT ? undefined : endGroupBig;
           }
         }
       }
@@ -2007,14 +2024,18 @@ export class MessageCodec {
       // Read optional groups based on filter type
       if (filterType === 0x2 || filterType === 0x3 || filterType === 0x4) {
         message.startLocation = {
-          groupId: reader.readVarIntNumber(),
-          objectId: reader.readVarIntNumber(),
+          groupId: reader.readVarInt(),
+          objectId: reader.readVarInt(),
         };
-        log.info('PUBLISH_OK field', { field: 'startLocation', value: message.startLocation });
+        log.info('PUBLISH_OK field', {
+          field: 'startLocation',
+          groupId: message.startLocation.groupId.toString(),
+          objectId: message.startLocation.objectId.toString(),
+        });
       }
       if (filterType === 0x4) {
-        message.endGroup = reader.readVarIntNumber();
-        log.info('PUBLISH_OK field', { field: 'endGroup', value: message.endGroup });
+        message.endGroup = reader.readVarInt();
+        log.info('PUBLISH_OK field', { field: 'endGroup', value: message.endGroup.toString() });
       }
 
       // Skip parameters
@@ -2040,20 +2061,20 @@ export class MessageCodec {
   }
 
   private static decodePublishErrorPayload(reader: BufferReader): PublishErrorMessage {
-    const requestId = reader.readVarIntNumber();
-    const errorCode = reader.readVarIntNumber() as RequestErrorCode;
+    const requestId = reader.readVarInt();
+    const errorCode = reader.readVarIntNumber() as RequestErrorCode; // byte-sized enum
 
-    let trackAlias: number;
+    let trackAlias: bigint;
     let reasonPhrase: string;
 
     if (isDraft16Active()) {
       // Draft-16: trackAlias before reasonPhrase
-      trackAlias = reader.readVarIntNumber();
+      trackAlias = reader.readVarInt();
       reasonPhrase = reader.readString();
     } else {
       // Draft-14: reasonPhrase before trackAlias
       reasonPhrase = reader.readString();
-      trackAlias = reader.readVarIntNumber();
+      trackAlias = reader.readVarInt();
     }
 
     return {
@@ -2088,9 +2109,9 @@ export class MessageCodec {
 
   private static decodePublishNamespacePayload(reader: BufferReader): PublishNamespaceMessage {
     // Draft-16 has Request ID at the beginning
-    let requestId: number | undefined;
+    let requestId: bigint | undefined;
     if (isDraft16Active()) {
-      requestId = reader.readVarIntNumber();
+      requestId = reader.readVarInt();
     }
     const namespace = MessageCodec.decodeNamespace(reader);
     const parameters = MessageCodec.decodeGenericParameters(reader);
@@ -2146,8 +2167,8 @@ export class MessageCodec {
       // Draft-16: REQUEST_OK format (Request ID + Expires)
       return {
         type: MessageType.PUBLISH_NAMESPACE_OK,
-        requestId: reader.readVarIntNumber(),
-        expires: reader.readVarIntNumber(),
+        requestId: reader.readVarInt(),
+        expires: reader.readVarInt(),
       };
     } else {
       // Draft-14: Namespace
@@ -2223,14 +2244,14 @@ export class MessageCodec {
   }
 
   private static decodeSubscribeNamespacePayload(reader: BufferReader): SubscribeNamespaceMessage {
-    let requestId: number | undefined;
+    let requestId: bigint | undefined;
     let subscribeOptions: number | undefined;
     if (isDraft16Active()) {
-      requestId = reader.readVarIntNumber();
+      requestId = reader.readVarInt();
     }
     const namespacePrefix = MessageCodec.decodeNamespace(reader);
     if (isDraft16Active()) {
-      subscribeOptions = reader.readVarIntNumber();
+      subscribeOptions = reader.readVarIntNumber(); // byte-sized enum
     }
     const parameters = MessageCodec.decodeGenericParameters(reader);
 
@@ -2258,7 +2279,7 @@ export class MessageCodec {
     if (isDraft16Active()) {
       return {
         type: MessageType.SUBSCRIBE_NAMESPACE_OK,
-        requestId: reader.readVarIntNumber(),
+        requestId: reader.readVarInt(),
       };
     } else {
       return {
@@ -2287,15 +2308,15 @@ export class MessageCodec {
     if (isDraft16Active()) {
       return {
         type: MessageType.SUBSCRIBE_NAMESPACE_ERROR,
-        requestId: reader.readVarIntNumber(),
-        errorCode: reader.readVarIntNumber(),
+        requestId: reader.readVarInt(),
+        errorCode: reader.readVarIntNumber(), // byte-sized
         reasonPhrase: reader.readString(),
       };
     } else {
       return {
         type: MessageType.SUBSCRIBE_NAMESPACE_ERROR,
         namespacePrefix: MessageCodec.decodeNamespace(reader),
-        errorCode: reader.readVarIntNumber(),
+        errorCode: reader.readVarIntNumber(), // byte-sized
         reasonPhrase: reader.readString(),
       };
     }
@@ -2324,15 +2345,15 @@ export class MessageCodec {
 
   private static encodeFetchPayload(writer: WritableByteBuffer, message: FetchMessage): void {
     log.info('FETCH encode', {
-      requestId: message.requestId,
+      requestId: message.requestId.toString(),
       namespace: message.fullTrackName.namespace.join('/'),
       trackName: message.fullTrackName.trackName,
       subscriberPriority: message.subscriberPriority,
       groupOrder: message.groupOrder,
-      startGroup: message.startGroup,
-      startObject: message.startObject,
-      endGroup: message.endGroup,
-      endObject: message.endObject,
+      startGroup: message.startGroup.toString(),
+      startObject: message.startObject.toString(),
+      endGroup: message.endGroup.toString(),
+      endObject: message.endObject.toString(),
       paramCount: message.parameters?.size ?? 0,
       isDraft16: isDraft16Active(),
     });
@@ -2375,19 +2396,19 @@ export class MessageCodec {
   }
 
   private static decodeFetchPayload(reader: BufferReader): FetchMessage {
-    const requestId = reader.readVarIntNumber();
+    const requestId = reader.readVarInt();
 
     if (isDraft16Active()) {
       // Draft-15+: Read fetch type, then type-specific fields
-      const fetchType = reader.readVarIntNumber();
+      const fetchType = reader.readVarIntNumber(); // byte-sized discriminator
       if (fetchType !== MessageCodec.FETCH_TYPE_STANDALONE) {
         throw new MessageCodecError(`Unsupported fetch type: ${fetchType}`);
       }
       const fullTrackName = MessageCodec.decodeFullTrackName(reader);
-      const startGroup = reader.readVarIntNumber();
-      const startObject = reader.readVarIntNumber();
-      const endGroup = reader.readVarIntNumber();
-      const endObject = reader.readVarIntNumber();
+      const startGroup = reader.readVarInt();
+      const startObject = reader.readVarInt();
+      const endGroup = reader.readVarInt();
+      const endObject = reader.readVarInt();
       const parameters = MessageCodec.decodeRequestParameters(reader);
 
       // Extract priority and group order from parameters, with defaults
@@ -2415,10 +2436,10 @@ export class MessageCodec {
         fullTrackName: MessageCodec.decodeFullTrackName(reader),
         subscriberPriority: reader.readByte(),
         groupOrder: reader.readByte() as GroupOrder,
-        startGroup: reader.readVarIntNumber(),
-        startObject: reader.readVarIntNumber(),
-        endGroup: reader.readVarIntNumber(),
-        endObject: reader.readVarIntNumber(),
+        startGroup: reader.readVarInt(),
+        startObject: reader.readVarInt(),
+        endGroup: reader.readVarInt(),
+        endObject: reader.readVarInt(),
         parameters: MessageCodec.decodeRequestParameters(reader),
       };
     }
@@ -2431,7 +2452,7 @@ export class MessageCodec {
   private static decodeFetchCancelPayload(reader: BufferReader): FetchCancelMessage {
     return {
       type: MessageType.FETCH_CANCEL,
-      requestId: reader.readVarIntNumber(),
+      requestId: reader.readVarInt(),
     };
   }
 
@@ -2457,17 +2478,17 @@ export class MessageCodec {
   }
 
   private static decodeFetchOkPayload(reader: BufferReader): FetchOkMessage {
-    const requestId = reader.readVarIntNumber();
+    const requestId = reader.readVarInt();
 
     if (isDraft16Active()) {
       // Draft-16 FETCH_OK: requestId | endOfTrack | largestGroup | largestObject | numParams | [params...]
       const endOfTrack = reader.readByte() === 1;
-      const largestGroupId = reader.readVarIntNumber();
-      const largestObjectId = reader.readVarIntNumber();
-      const numParams = reader.readVarIntNumber();
+      const largestGroupId = reader.readVarInt();
+      const largestObjectId = reader.readVarInt();
+      const numParams = reader.readVarIntNumber(); // param count, bounded
       for (let i = 0; i < numParams; i++) {
-        reader.readVarIntNumber(); // key
-        const valueLen = reader.readVarIntNumber();
+        reader.readVarIntNumber(); // key (byte)
+        const valueLen = reader.readVarIntNumber(); // length, bounded by MAX_STRING_LENGTH
         reader.readBytes(valueLen); // value
       }
       return {
@@ -2481,10 +2502,10 @@ export class MessageCodec {
     }
 
     // Pre-draft-16: full fields on wire
-    const groupOrder = reader.readVarIntNumber() as GroupOrder;
+    const groupOrder = reader.readVarIntNumber() as GroupOrder; // byte-sized enum
     const endOfTrack = reader.readByte() === 1;
-    const largestGroupId = reader.readVarIntNumber();
-    const largestObjectId = reader.readVarIntNumber();
+    const largestGroupId = reader.readVarInt();
+    const largestObjectId = reader.readVarInt();
 
     return {
       type: MessageType.FETCH_OK,
@@ -2505,8 +2526,8 @@ export class MessageCodec {
   private static decodeFetchErrorPayload(reader: BufferReader): FetchErrorMessage {
     return {
       type: MessageType.FETCH_ERROR,
-      requestId: reader.readVarIntNumber(),
-      errorCode: reader.readVarIntNumber() as RequestErrorCode,
+      requestId: reader.readVarInt(),
+      errorCode: reader.readVarIntNumber() as RequestErrorCode, // byte-sized enum
       reasonPhrase: reader.readString(),
     };
   }
@@ -2534,7 +2555,7 @@ export class MessageCodec {
   private static decodeMaxRequestIdPayload(reader: BufferReader): MaxRequestIdMessage {
     return {
       type: MessageType.MAX_REQUEST_ID,
-      maxRequestId: reader.readVarIntNumber(),
+      maxRequestId: reader.readVarInt(),
     };
   }
 
@@ -2545,7 +2566,7 @@ export class MessageCodec {
   private static decodeRequestsBlockedPayload(reader: BufferReader): RequestsBlockedMessage {
     return {
       type: MessageType.REQUESTS_BLOCKED,
-      blockedRequestId: reader.readVarIntNumber(),
+      blockedRequestId: reader.readVarInt(),
     };
   }
 
@@ -2562,7 +2583,7 @@ export class MessageCodec {
   private static decodeTrackStatusPayload(reader: BufferReader): TrackStatusMessage {
     return {
       type: MessageType.TRACK_STATUS,
-      requestId: reader.readVarIntNumber(),
+      requestId: reader.readVarInt(),
       fullTrackName: MessageCodec.decodeFullTrackName(reader),
       parameters: MessageCodec.decodeRequestParameters(reader),
     };
@@ -2579,8 +2600,8 @@ export class MessageCodec {
   }
 
   private static decodeTrackStatusOkPayload(reader: BufferReader): TrackStatusOkMessage {
-    const requestId = reader.readVarIntNumber();
-    const statusCode = reader.readVarIntNumber() as TrackStatusCode;
+    const requestId = reader.readVarInt();
+    const statusCode = reader.readVarIntNumber() as TrackStatusCode; // byte-sized enum
 
     const message: TrackStatusOkMessage = {
       type: MessageType.TRACK_STATUS_OK,
@@ -2589,8 +2610,8 @@ export class MessageCodec {
     };
 
     if (statusCode === TrackStatusCode.IN_PROGRESS || statusCode === TrackStatusCode.FINISHED) {
-      message.lastGroupId = reader.readVarIntNumber();
-      message.lastObjectId = reader.readVarIntNumber();
+      message.lastGroupId = reader.readVarInt();
+      message.lastObjectId = reader.readVarInt();
     }
 
     return message;
@@ -2605,8 +2626,8 @@ export class MessageCodec {
   private static decodeTrackStatusErrorPayload(reader: BufferReader): TrackStatusErrorMessage {
     return {
       type: MessageType.TRACK_STATUS_ERROR,
-      requestId: reader.readVarIntNumber(),
-      errorCode: reader.readVarIntNumber() as RequestErrorCode,
+      requestId: reader.readVarInt(),
+      errorCode: reader.readVarIntNumber() as RequestErrorCode, // byte-sized enum
       reasonPhrase: reader.readString(),
     };
   }
@@ -2674,6 +2695,7 @@ export class ObjectCodec {
   static decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
     if (isDraft18Active()) {
       const [datagram, bytesRead] = Draft18StreamCodec.decodeObjectDatagram(buffer);
+      // groupId/objectId are bounded numbers (see ObjectHeader note).
       const header: ObjectHeader = {
         trackAlias: datagram.trackAlias,
         groupId: Number(datagram.groupId),
@@ -2689,7 +2711,7 @@ export class ObjectCodec {
     }
 
     const reader = new BufferReader(buffer);
-    const streamType = reader.readVarIntNumber();
+    const streamType = reader.readVarIntNumber(); // byte-sized discriminator
 
     let publisherPriority: number;
     let objectStatus: ObjectStatus;
@@ -2709,9 +2731,10 @@ export class ObjectCodec {
         );
       }
       trackAliasBigInt = reader.readVarInt();
+      // groupId/objectId are bounded numbers — assert wire values fit in Number.
       groupId = reader.readVarIntNumber();
       objectId = reader.readVarIntNumber();
-      const extensionLength = reader.readVarIntNumber();
+      const extensionLength = reader.readVarIntNumber(); // bounded length prefix
       if (extensionLength > 0) {
         reader.readBytes(extensionLength);
       }
@@ -2725,11 +2748,12 @@ export class ObjectCodec {
         );
       }
       trackAliasBigInt = reader.readVarInt();
+      // groupId/subgroupId/objectId are bounded numbers — see ObjectHeader note.
       groupId = reader.readVarIntNumber();
       subgroupId = reader.readVarIntNumber();
       objectId = reader.readVarIntNumber();
       publisherPriority = reader.readByte();
-      objectStatus = reader.readVarIntNumber() as ObjectStatus;
+      objectStatus = reader.readVarIntNumber() as ObjectStatus; // byte-sized enum
     }
 
     const header: ObjectHeader = {
@@ -2744,7 +2768,7 @@ export class ObjectCodec {
     log.trace('Decoded datagram header', {
       trackAlias: trackAliasBigInt.toString(),
       groupId: header.groupId,
-      objectId: header.objectId
+      objectId: header.objectId,
     });
 
     return [header, reader.offset];
@@ -2842,6 +2866,7 @@ export class ObjectCodec {
       const hasProperties = d18Header.hasProperties === true;
       // Priority default (spec §11.4.2 DEFAULT_PRIORITY bit) — surface 128 to legacy callers.
       const priority = d18Header.publisherPriority ?? 128;
+      // groupId/subgroupId are bounded numbers (see SubgroupHeader note).
       const header: SubgroupHeader = {
         trackAlias: d18Header.trackAlias,
         groupId: Number(d18Header.groupId),
@@ -2859,8 +2884,9 @@ export class ObjectCodec {
     //   Bit 3: END_OF_GROUP
     //   Bit 5: DEFAULT_PRIORITY (use 128 when set)
     const reader = new BufferReader(buffer);
-    const headerType = reader.readVarIntNumber();
+    const headerType = reader.readVarIntNumber(); // byte-sized discriminator
     const trackAlias = reader.readVarInt();
+    // groupId is a bounded number — assert wire fits Number (see SubgroupHeader note).
     const groupId = reader.readVarIntNumber();
 
     const hasExtensions = (headerType & 0x01) !== 0;
@@ -2904,7 +2930,7 @@ export class ObjectCodec {
    */
   static decodeFetchHeader(buffer: Uint8Array): [FetchHeader, number] {
     const reader = new BufferReader(buffer);
-    const streamType = reader.readVarIntNumber();
+    const streamType = reader.readVarIntNumber(); // byte-sized discriminator
 
     if (streamType !== DataStreamType.FETCH_HEADER) {
       throw new MessageCodecError(
@@ -2914,7 +2940,7 @@ export class ObjectCodec {
     }
 
     return [{
-      requestId: reader.readVarIntNumber(),
+      requestId: reader.readVarInt(),
     }, reader.offset];
   }
 

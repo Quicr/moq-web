@@ -37,7 +37,40 @@ import type {
   FetchDecoderState,
   FetchObjectResult,
 } from './message-codec.js';
-import { Draft18MessageCodec } from './draft18-message-codec.js';
+import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec.js';
+import { Draft18StreamCodecError } from './draft18-stream-codec.js';
+import { NoopMetricsSink, type MetricsSink } from '../metrics/index.js';
+
+const NOOP_METRICS: MetricsSink = new NoopMetricsSink();
+
+/**
+ * High-resolution timestamp for decode-duration histograms. Falls back to
+ * `Date.now()` in environments (some sandboxed workers) where `performance`
+ * isn't available.
+ */
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+/**
+ * Classify a decode-time throw into a stable `reason` label for the
+ * `moq.codec.decode.errors` counter. `bounds-exceeded` is the load-bearing
+ * label — B1/B2 SEC uses that tag to distinguish attacker-driven DoS attempts
+ * from ordinary truncation. Anything else falls into a coarse bucket so we
+ * can still observe the tail without unbounded label cardinality.
+ */
+function classifyDecodeError(err: unknown): string {
+  if (err instanceof Draft18CodecError || err instanceof Draft18StreamCodecError) {
+    if (err.code === 'bounds-exceeded') return 'bounds-exceeded';
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('Incomplete')) return 'truncated';
+  if (msg.includes('Unknown message type')) return 'wrong-type';
+  if (msg.includes('Buffer underflow')) return 'truncated';
+  return 'other';
+}
 
 // Module-level singletons — TextEncoder/TextDecoder are safe to reuse and allocating
 // per-call showed up as measurable overhead on the encode/decode hot path.
@@ -78,9 +111,19 @@ export interface IProtocolCodec {
 
   // ---- Control messages ----
   encodeControlMessage(message: ControlMessage | ControlMessageDraft18): Uint8Array;
+  /**
+   * Decode a control-message frame.
+   *
+   * @param metrics Optional {@link MetricsSink}. When provided the codec
+   *                emits `moq.codec.decode.duration{codec,messageType}` on
+   *                success and `moq.codec.decode.errors{codec,reason}` on
+   *                failure. Defaults to a shared `NoopMetricsSink` so
+   *                callers that don't care pay no cost.
+   */
   decodeControlMessage(
     buffer: Uint8Array,
     offset?: number,
+    metrics?: MetricsSink,
   ): [ControlMessage | ControlMessageDraft18, number];
 
   // ---- Setup stream (draft-18) ----
@@ -94,7 +137,15 @@ export interface IProtocolCodec {
 
   // ---- Subgroup streams ----
   encodeSubgroupHeader(header: SubgroupHeader, endOfGroup?: boolean): [Uint8Array, boolean];
-  decodeSubgroupHeader(buffer: Uint8Array): [SubgroupHeader, number, boolean, boolean];
+  /**
+   * Decode a subgroup-header frame. Same `metrics` semantics as
+   * {@link decodeControlMessage}; the histogram is emitted under
+   * `messageType=SUBGROUP_HEADER` so callers can slice on it.
+   */
+  decodeSubgroupHeader(
+    buffer: Uint8Array,
+    metrics?: MetricsSink,
+  ): [SubgroupHeader, number, boolean, boolean];
   encodeStreamObject(
     objectId: number,
     payload: Uint8Array,
@@ -108,6 +159,7 @@ export interface IProtocolCodec {
     offset?: number,
     hasExtensions?: boolean,
     previousObjectId?: number,
+    metrics?: MetricsSink,
   ): [number, Uint8Array, ObjectStatus, number];
 
   // ---- Datagrams ----
@@ -208,8 +260,26 @@ class Draft16Codec implements IProtocolCodec {
     return withDraft('draft-16', () => MessageCodec.encode(message));
   }
 
-  decodeControlMessage(buffer: Uint8Array, offset = 0): [ControlMessage, number] {
-    return withDraft('draft-16', () => MessageCodec.decode(buffer, offset));
+  decodeControlMessage(
+    buffer: Uint8Array,
+    offset = 0,
+    metrics: MetricsSink = NOOP_METRICS,
+  ): [ControlMessage, number] {
+    const start = nowMs();
+    try {
+      const result = withDraft('draft-16', () => MessageCodec.decode(buffer, offset));
+      metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
+        codec: 'draft-16',
+        messageType: String(result[0].type),
+      });
+      return result;
+    } catch (err) {
+      metrics.counter('moq.codec.decode.errors', 1, {
+        codec: 'draft-16',
+        reason: classifyDecodeError(err),
+      });
+      throw err;
+    }
   }
 
   // ---- Setup stream (unsupported on draft-16) ----
@@ -235,8 +305,25 @@ class Draft16Codec implements IProtocolCodec {
     return withDraft('draft-16', () => ObjectCodec.encodeSubgroupHeader(header, endOfGroup));
   }
 
-  decodeSubgroupHeader(buffer: Uint8Array): [SubgroupHeader, number, boolean, boolean] {
-    return withDraft('draft-16', () => ObjectCodec.decodeSubgroupHeader(buffer));
+  decodeSubgroupHeader(
+    buffer: Uint8Array,
+    metrics: MetricsSink = NOOP_METRICS,
+  ): [SubgroupHeader, number, boolean, boolean] {
+    const start = nowMs();
+    try {
+      const result = withDraft('draft-16', () => ObjectCodec.decodeSubgroupHeader(buffer));
+      metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
+        codec: 'draft-16',
+        messageType: 'SUBGROUP_HEADER',
+      });
+      return result;
+    } catch (err) {
+      metrics.counter('moq.codec.decode.errors', 1, {
+        codec: 'draft-16',
+        reason: classifyDecodeError(err),
+      });
+      throw err;
+    }
   }
 
   encodeStreamObject(
@@ -264,10 +351,25 @@ class Draft16Codec implements IProtocolCodec {
     offset = 0,
     hasExtensions = true,
     previousObjectId = -1,
+    metrics: MetricsSink = NOOP_METRICS,
   ): [number, Uint8Array, ObjectStatus, number] {
-    return withDraft('draft-16', () =>
-      ObjectCodec.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId),
-    );
+    const start = nowMs();
+    try {
+      const result = withDraft('draft-16', () =>
+        ObjectCodec.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId),
+      );
+      metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
+        codec: 'draft-16',
+        messageType: 'STREAM_OBJECT',
+      });
+      return result;
+    } catch (err) {
+      metrics.counter('moq.codec.decode.errors', 1, {
+        codec: 'draft-16',
+        reason: classifyDecodeError(err),
+      });
+      throw err;
+    }
   }
 
   // ---- Datagrams ----
@@ -454,8 +556,26 @@ class Draft18Codec implements IProtocolCodec {
     return Draft18MessageCodec.encode(message);
   }
 
-  decodeControlMessage(buffer: Uint8Array, offset = 0): [ControlMessageDraft18, number] {
-    return Draft18MessageCodec.decode(buffer, offset);
+  decodeControlMessage(
+    buffer: Uint8Array,
+    offset = 0,
+    metrics: MetricsSink = NOOP_METRICS,
+  ): [ControlMessageDraft18, number] {
+    const start = nowMs();
+    try {
+      const result = Draft18MessageCodec.decode(buffer, offset);
+      metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
+        codec: 'draft-18',
+        messageType: String(result[0].type),
+      });
+      return result;
+    } catch (err) {
+      metrics.counter('moq.codec.decode.errors', 1, {
+        codec: 'draft-18',
+        reason: classifyDecodeError(err),
+      });
+      throw err;
+    }
   }
 
   // ---- Setup stream ----
@@ -480,8 +600,25 @@ class Draft18Codec implements IProtocolCodec {
     return withDraft('draft-18', () => ObjectCodec.encodeSubgroupHeader(header, endOfGroup));
   }
 
-  decodeSubgroupHeader(buffer: Uint8Array): [SubgroupHeader, number, boolean, boolean] {
-    return withDraft('draft-18', () => ObjectCodec.decodeSubgroupHeader(buffer));
+  decodeSubgroupHeader(
+    buffer: Uint8Array,
+    metrics: MetricsSink = NOOP_METRICS,
+  ): [SubgroupHeader, number, boolean, boolean] {
+    const start = nowMs();
+    try {
+      const result = withDraft('draft-18', () => ObjectCodec.decodeSubgroupHeader(buffer));
+      metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
+        codec: 'draft-18',
+        messageType: 'SUBGROUP_HEADER',
+      });
+      return result;
+    } catch (err) {
+      metrics.counter('moq.codec.decode.errors', 1, {
+        codec: 'draft-18',
+        reason: classifyDecodeError(err),
+      });
+      throw err;
+    }
   }
 
   encodeStreamObject(
@@ -509,10 +646,25 @@ class Draft18Codec implements IProtocolCodec {
     offset = 0,
     hasExtensions = true,
     previousObjectId = -1,
+    metrics: MetricsSink = NOOP_METRICS,
   ): [number, Uint8Array, ObjectStatus, number] {
-    return withDraft('draft-18', () =>
-      ObjectCodec.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId),
-    );
+    const start = nowMs();
+    try {
+      const result = withDraft('draft-18', () =>
+        ObjectCodec.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId),
+      );
+      metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
+        codec: 'draft-18',
+        messageType: 'STREAM_OBJECT',
+      });
+      return result;
+    } catch (err) {
+      metrics.counter('moq.codec.decode.errors', 1, {
+        codec: 'draft-18',
+        reason: classifyDecodeError(err),
+      });
+      throw err;
+    }
   }
 
   // ---- Datagrams ----

@@ -787,15 +787,15 @@ export interface FullTrackName {
  */
 export interface SubscribeMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE;
-  /** Request ID (unique per endpoint, clients use even, servers use odd) */
-  requestId: number;
+  /** Request ID (unique per endpoint, clients use even, servers use odd) — 62-bit varint */
+  requestId: bigint;
   /**
-   * Track alias for efficient reference
+   * Track alias for efficient reference — 62-bit varint
    * NOTE: In Draft-14, trackAlias is NOT sent in SUBSCRIBE message.
    * It's assigned by the relay/publisher in SUBSCRIBE_OK response.
    * This field is kept for internal tracking purposes only.
    */
-  trackAlias?: number | bigint;
+  trackAlias?: bigint;
   /** Full track identifier */
   fullTrackName: FullTrackName;
   /** Priority for subscription (0-255) */
@@ -809,12 +809,12 @@ export interface SubscribeMessage extends MOQTMessage {
   forward?: number;
   /** Filter type for object selection */
   filterType: FilterType;
-  /** Start group ID (for ABSOLUTE_START/ABSOLUTE_RANGE) */
-  startGroup?: number;
-  /** Start object ID (for ABSOLUTE_START/ABSOLUTE_RANGE) */
-  startObject?: number;
-  /** End group ID (for ABSOLUTE_RANGE) */
-  endGroup?: number;
+  /** Start group ID (for ABSOLUTE_START/ABSOLUTE_RANGE) — 62-bit varint */
+  startGroup?: bigint;
+  /** Start object ID (for ABSOLUTE_START/ABSOLUTE_RANGE) — 62-bit varint */
+  startObject?: bigint;
+  /** End group ID (for ABSOLUTE_RANGE) — 62-bit varint */
+  endGroup?: bigint;
   /** Optional subscription parameters */
   parameters?: Map<RequestParameter, Uint8Array>;
 }
@@ -827,14 +827,14 @@ export interface SubscribeMessage extends MOQTMessage {
  */
 export interface SubscribeUpdateMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_UPDATE;
-  /** Request ID of this update */
-  requestId: number;
-  /** Request ID of the subscription being updated */
-  subscriptionRequestId: number;
-  /** Start location (group and object) */
-  startLocation: { groupId: number; objectId: number };
-  /** End group ID */
-  endGroup: number;
+  /** Request ID of this update — 62-bit varint */
+  requestId: bigint;
+  /** Request ID of the subscription being updated — 62-bit varint */
+  subscriptionRequestId: bigint;
+  /** Start location (group and object) — 62-bit varints */
+  startLocation: { groupId: bigint; objectId: bigint };
+  /** End group ID — 62-bit varint */
+  endGroup: bigint;
   /** Subscriber priority (0-255) */
   subscriberPriority: number;
   /** Forward flag */
@@ -848,12 +848,12 @@ export interface SubscribeUpdateMessage extends MOQTMessage {
  */
 export interface SubscribeOkMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_OK;
-  /** Request ID from the request */
-  requestId: number;
-  /** Track alias assigned by relay */
-  trackAlias: number | bigint;
-  /** Expiration time in milliseconds */
-  expires: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
+  /** Track alias assigned by relay — 62-bit varint */
+  trackAlias: bigint;
+  /** Expiration time in milliseconds — 62-bit varint */
+  expires: bigint;
   /** Group ordering confirmation */
   groupOrder: GroupOrder;
   /**
@@ -862,10 +862,10 @@ export interface SubscribeOkMessage extends MOQTMessage {
    * Draft-16: ObjectExistence enum (UNKNOWN/EXISTS/DOES_NOT_EXIST)
    */
   contentExists: boolean | ObjectExistence;
-  /** Largest group ID (if content exists) */
-  largestGroupId?: number;
-  /** Largest object ID in largest group (if content exists) */
-  largestObjectId?: number;
+  /** Largest group ID (if content exists) — 62-bit varint */
+  largestGroupId?: bigint;
+  /** Largest object ID in largest group (if content exists) — 62-bit varint */
+  largestObjectId?: bigint;
 }
 
 /**
@@ -873,14 +873,14 @@ export interface SubscribeOkMessage extends MOQTMessage {
  */
 export interface SubscribeErrorMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_ERROR;
-  /** Request ID from the request */
-  requestId: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
   /** Error code */
   errorCode: RequestErrorCode;
   /** Human-readable error reason */
   reasonPhrase: string;
-  /** Track alias for retry */
-  trackAlias: number | bigint;
+  /** Track alias for retry — 62-bit varint */
+  trackAlias: bigint;
 }
 
 /**
@@ -888,8 +888,8 @@ export interface SubscribeErrorMessage extends MOQTMessage {
  */
 export interface UnsubscribeMessage extends MOQTMessage {
   type: MessageType.UNSUBSCRIBE;
-  /** Request ID to cancel */
-  requestId: number;
+  /** Request ID to cancel — 62-bit varint */
+  requestId: bigint;
 }
 
 /**
@@ -900,18 +900,18 @@ export interface UnsubscribeMessage extends MOQTMessage {
  */
 export interface PublishDoneMessage extends MOQTMessage {
   type: MessageType.PUBLISH_DONE;
-  /** Request ID */
-  requestId: number;
+  /** Request ID — 62-bit varint */
+  requestId: bigint;
   /** Status code */
   statusCode: RequestErrorCode;
   /** Status reason */
   reasonPhrase: string;
   /** Whether content was delivered */
   contentExists: boolean;
-  /** Final group ID (if content exists) */
-  finalGroupId?: number;
-  /** Final object ID (if content exists) */
-  finalObjectId?: number;
+  /** Final group ID (if content exists) — 62-bit varint */
+  finalGroupId?: bigint;
+  /** Final object ID (if content exists) — 62-bit varint */
+  finalObjectId?: bigint;
 }
 
 /**
@@ -922,18 +922,18 @@ export interface PublishDoneMessage extends MOQTMessage {
  */
 export interface PublishMessage extends MOQTMessage {
   type: MessageType.PUBLISH;
-  /** Request ID */
-  requestId: number;
+  /** Request ID — 62-bit varint */
+  requestId: bigint;
   /** Full track identifier */
   fullTrackName: FullTrackName;
-  /** Track alias for efficient reference */
-  trackAlias: number | bigint;
+  /** Track alias for efficient reference — 62-bit varint */
+  trackAlias: bigint;
   /** Group order: ASCENDING (0x1) or DESCENDING (0x2) */
   groupOrder: GroupOrder;
   /** Whether content exists (has any objects been published) */
   contentExists: boolean;
-  /** Largest location (if contentExists is true) */
-  largestLocation?: { groupId: number; objectId: number };
+  /** Largest location (if contentExists is true) — 62-bit varints */
+  largestLocation?: { groupId: bigint; objectId: bigint };
   /** Forward flag: 0 = wait, 1 = start immediately */
   forward: number;
   /** Optional parameters */
@@ -945,10 +945,10 @@ export interface PublishMessage extends MOQTMessage {
  */
 export interface PublishOkMessage extends MOQTMessage {
   type: MessageType.PUBLISH_OK;
-  /** Request ID from the request */
-  requestId: number;
-  /** Track alias assigned by relay (may differ from proposed) */
-  trackAlias?: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
+  /** Track alias assigned by relay (may differ from proposed) — 62-bit varint */
+  trackAlias?: bigint;
   /** Forward flag */
   forward: number;
   /** Subscriber priority */
@@ -957,10 +957,10 @@ export interface PublishOkMessage extends MOQTMessage {
   groupOrder: GroupOrder;
   /** Filter type */
   filterType: number;
-  /** Start location (optional, based on filter type) */
-  startLocation?: { groupId: number; objectId: number };
-  /** End group (optional, based on filter type) */
-  endGroup?: number;
+  /** Start location (optional, based on filter type) — 62-bit varints */
+  startLocation?: { groupId: bigint; objectId: bigint };
+  /** End group (optional, based on filter type) — 62-bit varint */
+  endGroup?: bigint;
   /** Parameters (Draft-16) */
   parameters?: Map<RequestParameter, Uint8Array>;
 }
@@ -970,14 +970,14 @@ export interface PublishOkMessage extends MOQTMessage {
  */
 export interface PublishErrorMessage extends MOQTMessage {
   type: MessageType.PUBLISH_ERROR;
-  /** Request ID from the request */
-  requestId: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
   /** Error code */
   errorCode: RequestErrorCode;
   /** Human-readable error reason */
   reasonPhrase: string;
-  /** Track alias for retry */
-  trackAlias: number | bigint;
+  /** Track alias for retry — 62-bit varint */
+  trackAlias: bigint;
 }
 
 /**
@@ -992,8 +992,8 @@ export interface PublishErrorMessage extends MOQTMessage {
  */
 export interface PublishNamespaceMessage extends MOQTMessage {
   type: MessageType.PUBLISH_NAMESPACE;
-  /** Request ID (Draft-16 only) */
-  requestId?: number;
+  /** Request ID (Draft-16 only) — 62-bit varint */
+  requestId?: bigint;
   /** Track namespace being published */
   namespace: TrackNamespace;
   /** Optional authorization info */
@@ -1008,10 +1008,10 @@ export interface PublishNamespaceMessage extends MOQTMessage {
  */
 export interface PublishNamespaceOkMessage extends MOQTMessage {
   type: MessageType.PUBLISH_NAMESPACE_OK;
-  /** Request ID (Draft-16 only) */
-  requestId?: number;
-  /** Expires value (Draft-16 only) */
-  expires?: number;
+  /** Request ID (Draft-16 only) — 62-bit varint */
+  requestId?: bigint;
+  /** Expires value (Draft-16 only) — 62-bit varint */
+  expires?: bigint;
   /** Namespace from the request (Draft-14 only) */
   namespace?: TrackNamespace;
 }
@@ -1072,8 +1072,8 @@ export enum SubscribeNamespaceOptions {
 
 export interface SubscribeNamespaceMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_NAMESPACE;
-  /** Request ID for correlating responses (draft-16 only) */
-  requestId?: number;
+  /** Request ID for correlating responses (draft-16 only) — 62-bit varint */
+  requestId?: bigint;
   /** Namespace prefix to subscribe to */
   namespacePrefix: TrackNamespace;
   /** Subscribe options - what to receive (draft-16 only, default PUBLISH) */
@@ -1087,8 +1087,8 @@ export interface SubscribeNamespaceMessage extends MOQTMessage {
  */
 export interface SubscribeNamespaceOkMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_NAMESPACE_OK;
-  /** Request ID from the SUBSCRIBE_NAMESPACE (draft-16) */
-  requestId?: number;
+  /** Request ID from the SUBSCRIBE_NAMESPACE (draft-16) — 62-bit varint */
+  requestId?: bigint;
   /** Namespace prefix from the request (draft-14) */
   namespacePrefix?: TrackNamespace;
 }
@@ -1098,8 +1098,8 @@ export interface SubscribeNamespaceOkMessage extends MOQTMessage {
  */
 export interface SubscribeNamespaceErrorMessage extends MOQTMessage {
   type: MessageType.SUBSCRIBE_NAMESPACE_ERROR;
-  /** Request ID from the SUBSCRIBE_NAMESPACE (draft-16) */
-  requestId?: number;
+  /** Request ID from the SUBSCRIBE_NAMESPACE (draft-16) — 62-bit varint */
+  requestId?: bigint;
   /** Namespace prefix from the request (draft-14) */
   namespacePrefix?: TrackNamespace;
   /** Error code */
@@ -1126,22 +1126,22 @@ export interface UnsubscribeNamespaceMessage extends MOQTMessage {
  */
 export interface FetchMessage extends MOQTMessage {
   type: MessageType.FETCH;
-  /** Request ID for the fetch */
-  requestId: number;
+  /** Request ID for the fetch — 62-bit varint */
+  requestId: bigint;
   /** Full track identifier */
   fullTrackName: FullTrackName;
   /** Priority for fetch delivery */
   subscriberPriority: number;
   /** Group ordering preference */
   groupOrder: GroupOrder;
-  /** Start group ID */
-  startGroup: number;
-  /** Start object ID */
-  startObject: number;
-  /** End group ID */
-  endGroup: number;
-  /** End object ID (0 = end of group) */
-  endObject: number;
+  /** Start group ID — 62-bit varint */
+  startGroup: bigint;
+  /** Start object ID — 62-bit varint */
+  startObject: bigint;
+  /** End group ID — 62-bit varint */
+  endGroup: bigint;
+  /** End object ID (0 = end of group) — 62-bit varint */
+  endObject: bigint;
   /** Optional parameters */
   parameters?: Map<RequestParameter, Uint8Array>;
 }
@@ -1151,16 +1151,16 @@ export interface FetchMessage extends MOQTMessage {
  */
 export interface FetchOkMessage extends MOQTMessage {
   type: MessageType.FETCH_OK;
-  /** Request ID from the request */
-  requestId: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
   /** Group ordering confirmation */
   groupOrder: GroupOrder;
   /** Whether end of track is known */
   endOfTrack: boolean;
-  /** Largest group ID */
-  largestGroupId: number;
-  /** Largest object ID in largest group */
-  largestObjectId: number;
+  /** Largest group ID — 62-bit varint */
+  largestGroupId: bigint;
+  /** Largest object ID in largest group — 62-bit varint */
+  largestObjectId: bigint;
 }
 
 /**
@@ -1168,8 +1168,8 @@ export interface FetchOkMessage extends MOQTMessage {
  */
 export interface FetchErrorMessage extends MOQTMessage {
   type: MessageType.FETCH_ERROR;
-  /** Request ID from the request */
-  requestId: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
   /** Error code */
   errorCode: RequestErrorCode;
   /** Human-readable error reason */
@@ -1181,8 +1181,8 @@ export interface FetchErrorMessage extends MOQTMessage {
  */
 export interface FetchCancelMessage extends MOQTMessage {
   type: MessageType.FETCH_CANCEL;
-  /** Request ID to cancel */
-  requestId: number;
+  /** Request ID to cancel — 62-bit varint */
+  requestId: bigint;
 }
 
 /**
@@ -1206,8 +1206,8 @@ export interface GoAwayMessage extends MOQTMessage {
  */
 export interface MaxRequestIdMessage extends MOQTMessage {
   type: MessageType.MAX_REQUEST_ID;
-  /** Maximum request ID allowed */
-  maxRequestId: number;
+  /** Maximum request ID allowed — 62-bit varint */
+  maxRequestId: bigint;
 }
 
 /**
@@ -1218,8 +1218,8 @@ export interface MaxRequestIdMessage extends MOQTMessage {
  */
 export interface RequestsBlockedMessage extends MOQTMessage {
   type: MessageType.REQUESTS_BLOCKED;
-  /** The request ID that is blocked */
-  blockedRequestId: number;
+  /** The request ID that is blocked — 62-bit varint */
+  blockedRequestId: bigint;
 }
 
 /**
@@ -1227,8 +1227,8 @@ export interface RequestsBlockedMessage extends MOQTMessage {
  */
 export interface TrackStatusMessage extends MOQTMessage {
   type: MessageType.TRACK_STATUS;
-  /** Request ID */
-  requestId: number;
+  /** Request ID — 62-bit varint */
+  requestId: bigint;
   /** Full track identifier */
   fullTrackName: FullTrackName;
   /** Optional parameters */
@@ -1240,14 +1240,14 @@ export interface TrackStatusMessage extends MOQTMessage {
  */
 export interface TrackStatusOkMessage extends MOQTMessage {
   type: MessageType.TRACK_STATUS_OK;
-  /** Request ID from the request */
-  requestId: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
   /** Track status code */
   statusCode: TrackStatusCode;
-  /** Last group ID (if in progress or finished) */
-  lastGroupId?: number;
-  /** Last object ID (if in progress or finished) */
-  lastObjectId?: number;
+  /** Last group ID (if in progress or finished) — 62-bit varint */
+  lastGroupId?: bigint;
+  /** Last object ID (if in progress or finished) — 62-bit varint */
+  lastObjectId?: bigint;
 }
 
 /**
@@ -1255,8 +1255,8 @@ export interface TrackStatusOkMessage extends MOQTMessage {
  */
 export interface TrackStatusErrorMessage extends MOQTMessage {
   type: MessageType.TRACK_STATUS_ERROR;
-  /** Request ID from the request */
-  requestId: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
   /** Error code */
   errorCode: RequestErrorCode;
   /** Human-readable error reason */
@@ -1276,14 +1276,14 @@ export interface TrackStatusErrorMessage extends MOQTMessage {
  */
 export interface RequestUpdateMessage extends MOQTMessage {
   type: typeof MessageTypeDraft16.REQUEST_UPDATE;
-  /** Request ID of this update */
-  requestId: number;
-  /** Request ID of the subscription being updated */
-  subscriptionRequestId: number;
-  /** Start location (group and object) */
-  startLocation: { groupId: number; objectId: number };
-  /** End group ID */
-  endGroup: number;
+  /** Request ID of this update — 62-bit varint */
+  requestId: bigint;
+  /** Request ID of the subscription being updated — 62-bit varint */
+  subscriptionRequestId: bigint;
+  /** Start location (group and object) — 62-bit varints */
+  startLocation: { groupId: bigint; objectId: bigint };
+  /** End group ID — 62-bit varint */
+  endGroup: bigint;
   /** Subscriber priority (0-255) */
   subscriberPriority: number;
   /** Forward flag */
@@ -1301,8 +1301,8 @@ export interface RequestUpdateMessage extends MOQTMessage {
  */
 export interface RequestOkMessage extends MOQTMessage {
   type: typeof MessageTypeDraft16.REQUEST_OK;
-  /** Request ID from the request */
-  requestId: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
 }
 
 /**
@@ -1314,8 +1314,8 @@ export interface RequestOkMessage extends MOQTMessage {
  */
 export interface RequestErrorMessage extends MOQTMessage {
   type: typeof MessageTypeDraft16.REQUEST_ERROR;
-  /** Request ID from the request */
-  requestId: number;
+  /** Request ID from the request — 62-bit varint */
+  requestId: bigint;
   /** Error code */
   errorCode: RequestErrorCode;
   /** Human-readable error reason */
@@ -1386,15 +1386,25 @@ export interface AuthorizationToken {
  * Contains metadata for a single MOQT object (frame) sent via datagram.
  */
 export interface ObjectHeader {
-  /** Track alias for efficient reference */
-  trackAlias: number | bigint;
-  /** Group ID (typically increments at keyframes) */
+  /** Track alias for efficient reference — 62-bit varint */
+  trackAlias: bigint;
+  /**
+   * Group ID (typically increments at keyframes).
+   *
+   * NOTE: Wire type is a 62-bit varint but this field is kept as `number`
+   * throughout the object plane because the delta-encoded stream/fetch
+   * codecs, media pipeline, and JSON logging paths perform arithmetic in
+   * `number`. Callers producing group IDs above `Number.MAX_SAFE_INTEGER`
+   * (2^53-1) should upgrade to a bigint-safe path; codec sites that read
+   * this field from the wire assert the value fits in `number` via
+   * `readVarIntNumber()`.
+   */
   groupId: number;
-  /** Subgroup ID within the group */
+  /** Subgroup ID within the group (bounded number; see `groupId` note) */
   subgroupId: number;
-  /** Object ID within the subgroup */
+  /** Object ID within the subgroup (bounded number; see `groupId` note) */
   objectId: number;
-  /** Publisher priority for this object */
+  /** Publisher priority for this object (byte 0-255) */
   publisherPriority: number;
   /** Object status */
   objectStatus: ObjectStatus;
@@ -1407,13 +1417,19 @@ export interface ObjectHeader {
  * In Draft 14, subgroups replace track/group-based streaming.
  */
 export interface SubgroupHeader {
-  /** Track alias */
-  trackAlias: number | bigint;
-  /** Group ID */
+  /** Track alias — 62-bit varint */
+  trackAlias: bigint;
+  /**
+   * Group ID.
+   *
+   * NOTE: Wire type is a 62-bit varint but kept as `number` — see the
+   * `ObjectHeader.groupId` note for rationale. Codec sites assert range
+   * via `readVarIntNumber()`.
+   */
   groupId: number;
-  /** Subgroup ID */
+  /** Subgroup ID (bounded number; see `groupId` note) */
   subgroupId: number;
-  /** Publisher priority */
+  /** Publisher priority (byte 0-255) */
   publisherPriority: number;
 }
 
@@ -1421,8 +1437,8 @@ export interface SubgroupHeader {
  * Fetch header for fetch stream (Draft 14)
  */
 export interface FetchHeader {
-  /** Request ID */
-  requestId: number;
+  /** Request ID — 62-bit varint */
+  requestId: bigint;
 }
 
 /**

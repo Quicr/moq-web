@@ -51,8 +51,8 @@ describe('LiveEdgeTracker', () => {
       const session = createMockSession();
       session.requestTrackStatus.mockResolvedValue({
         statusCode: TrackStatusCode.IN_PROGRESS,
-        lastGroupId: 10,
-        lastObjectId: 5,
+        lastGroupId: 10n,
+        lastObjectId: 5n,
       });
 
       const tracker = new LiveEdgeTracker(
@@ -79,8 +79,8 @@ describe('LiveEdgeTracker', () => {
       const session = createMockSession();
       session.requestTrackStatus.mockResolvedValue({
         statusCode: TrackStatusCode.IN_PROGRESS,
-        lastGroupId: 10,
-        lastObjectId: 5,
+        lastGroupId: 10n,
+        lastObjectId: 5n,
       });
 
       const tracker = new LiveEdgeTracker(
@@ -111,8 +111,8 @@ describe('LiveEdgeTracker', () => {
       const session = createMockSession();
       session.requestTrackStatus.mockResolvedValue({
         statusCode: TrackStatusCode.IN_PROGRESS,
-        lastGroupId: 10,
-        lastObjectId: 5,
+        lastGroupId: 10n,
+        lastObjectId: 5n,
       });
 
       const tracker = new LiveEdgeTracker(
@@ -142,8 +142,8 @@ describe('LiveEdgeTracker', () => {
       const session = createMockSession();
       session.requestTrackStatus.mockResolvedValue({
         statusCode: TrackStatusCode.IN_PROGRESS,
-        lastGroupId: 42,
-        lastObjectId: 7,
+        lastGroupId: 42n,
+        lastObjectId: 7n,
       });
 
       const tracker = new LiveEdgeTracker(
@@ -157,8 +157,8 @@ describe('LiveEdgeTracker', () => {
 
       const edge = tracker.getLiveEdge();
       expect(edge).not.toBeNull();
-      expect(edge?.groupId).toBe(42);
-      expect(edge?.objectId).toBe(7);
+      expect(edge?.groupId).toBe(42n);
+      expect(edge?.objectId).toBe(7n);
       expect(edge?.statusCode).toBe(TrackStatusCode.IN_PROGRESS);
 
       tracker.stop();
@@ -168,8 +168,8 @@ describe('LiveEdgeTracker', () => {
       const session = createMockSession();
       session.requestTrackStatus.mockResolvedValue({
         statusCode: TrackStatusCode.IN_PROGRESS,
-        lastGroupId: 10,
-        lastObjectId: 0,
+        lastGroupId: 10n,
+        lastObjectId: 0n,
       });
 
       const tracker = new LiveEdgeTracker(
@@ -178,14 +178,14 @@ describe('LiveEdgeTracker', () => {
         'video'
       );
 
-      const edgeUpdates: Array<{ groupId: number; objectId: number }> = [];
+      const edgeUpdates: Array<{ groupId: bigint; objectId: bigint }> = [];
       tracker.on('edge-update', (info) => edgeUpdates.push(info));
 
       tracker.start();
       await vi.advanceTimersByTimeAsync(0);
 
       expect(edgeUpdates.length).toBe(1);
-      expect(edgeUpdates[0].groupId).toBe(10);
+      expect(edgeUpdates[0].groupId).toBe(10n);
 
       tracker.stop();
     });
@@ -194,8 +194,8 @@ describe('LiveEdgeTracker', () => {
       const session = createMockSession();
       session.requestTrackStatus.mockResolvedValue({
         statusCode: TrackStatusCode.IN_PROGRESS,
-        lastGroupId: 25,
-        lastObjectId: 0,
+        lastGroupId: 25n,
+        lastObjectId: 0n,
       });
 
       const tracker = new LiveEdgeTracker(
@@ -220,8 +220,8 @@ describe('LiveEdgeTracker', () => {
       const session = createMockSession();
       session.requestTrackStatus.mockResolvedValue({
         statusCode: TrackStatusCode.FINISHED,
-        lastGroupId: 100,
-        lastObjectId: 23,
+        lastGroupId: 100n,
+        lastObjectId: 23n,
       });
 
       const tracker = new LiveEdgeTracker(
@@ -270,8 +270,8 @@ describe('LiveEdgeTracker', () => {
       const session = createMockSession();
       session.requestTrackStatus.mockResolvedValue({
         statusCode: TrackStatusCode.IN_PROGRESS,
-        lastGroupId: 10,
-        lastObjectId: 0,
+        lastGroupId: 10n,
+        lastObjectId: 0n,
       });
 
       const tracker = new LiveEdgeTracker(

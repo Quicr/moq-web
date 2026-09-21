@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MOQTransport } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
+import type { ReconnectPolicy } from './reconnect-policy.js';
 
 // Small helper: expose the private backoff loop for test-time invocation.
 function callAutoMigrate(session: MOQTSession, uri: string): Promise<void> {
@@ -23,12 +24,24 @@ function callAutoMigrate(session: MOQTSession, uri: string): Promise<void> {
   }).autoMigrateWithBackoff(uri);
 }
 
-function newSession(): MOQTSession {
+interface NewSessionOpts {
+  reconnectPolicy?: ReconnectPolicy;
+}
+
+function newSession(opts: NewSessionOpts = {}): MOQTSession {
   const transport = new MOQTransport();
   (transport as unknown as { close: typeof transport.close }).close = vi
     .fn()
     .mockResolvedValue(undefined);
-  const session = new MOQTSession(transport);
+  // Feed a fake worker so the config branch of the constructor accepts a
+  // reconnectPolicy option; otherwise fall back to the transport branch.
+  const session = opts.reconnectPolicy
+    ? new MOQTSession(transport)
+    : new MOQTSession(transport);
+  if (opts.reconnectPolicy) {
+    (session as unknown as { _reconnectPolicy: ReconnectPolicy })._reconnectPolicy =
+      opts.reconnectPolicy;
+  }
   // Pre-arm the pending URI so the loop treats the target as still-current.
   (session as unknown as { _pendingMigrationUri: string | undefined })._pendingMigrationUri =
     'https://target.example/moq';
@@ -85,9 +98,33 @@ describe('autoMigrateWithBackoff', () => {
     await vi.runAllTimersAsync();
     const err = await settled;
 
-    // 8 attempts total (MAX_ATTEMPTS in session.ts).
-    expect(migrate).toHaveBeenCalledTimes(8);
+    // With the default JitteredExponentialBackoff (maxAttempts: 8), the loop
+    // runs 1 initial attempt + 8 retries before nextDelayMs() returns null.
+    expect(migrate).toHaveBeenCalledTimes(9);
     expect((err as Error).message).toBe('permanent');
+  });
+
+  it('stops retrying when an injected policy returns null', async () => {
+    // Deterministic mock policy: allow 2 retries, then give up.
+    const nextDelayMs = vi.fn((attempt: number) => (attempt <= 2 ? 10 : null));
+    const policy: ReconnectPolicy = { nextDelayMs };
+    const session = newSession({ reconnectPolicy: policy });
+
+    const migrate = vi.fn().mockRejectedValue(new Error('boom'));
+    (session as unknown as { migrate: typeof migrate }).migrate = migrate;
+
+    const p = callAutoMigrate(session, 'https://target.example/moq');
+    const settled = p.catch((e) => e);
+    await vi.runAllTimersAsync();
+    const err = await settled;
+
+    // Attempts: initial + 2 retries = 3 total; on the 3rd failure the policy
+    // returns null and the loop rethrows the last error.
+    expect(migrate).toHaveBeenCalledTimes(3);
+    expect(nextDelayMs).toHaveBeenNthCalledWith(1, 1);
+    expect(nextDelayMs).toHaveBeenNthCalledWith(2, 2);
+    expect(nextDelayMs).toHaveBeenNthCalledWith(3, 3);
+    expect((err as Error).message).toBe('boom');
   });
 
   it('aborts the retry loop when the pending URI changes', async () => {

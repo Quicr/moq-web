@@ -55,6 +55,23 @@ export type TransportWorkerRequest =
   | { type: 'close-stream'; streamId: number };
 
 /**
+ * A single metric event forwarded from the transport worker to the main
+ * thread. Workers can't share a `MetricsSink` object across the boundary, so
+ * we serialize each `counter/gauge/histogram` call and replay it against the
+ * main-thread sink in `TransportWorkerClient`.
+ *
+ * Wave 2 Track E — introduced so the worker can emit
+ * `moq.transport.stream.*` / `moq.transport.bytes_*` /
+ * `moq.transport.datagram.*` counters against the session's `MetricsSink`.
+ */
+export interface TransportWorkerMetricEvent {
+  kind: 'counter' | 'gauge' | 'histogram';
+  name: string;
+  value: number;
+  attrs?: Record<string, string>;
+}
+
+/**
  * Messages from worker to main thread
  */
 export type TransportWorkerResponse =
@@ -72,6 +89,7 @@ export type TransportWorkerResponse =
   | { type: 'incoming-bidi-stream'; streamId: number }
   | { type: 'stream-data'; streamId: number; data: Uint8Array }
   | { type: 'stream-closed'; streamId: number }
+  | { type: 'metric'; metric: TransportWorkerMetricEvent }
   | { type: 'error'; message: string; code?: number };
 
 /**

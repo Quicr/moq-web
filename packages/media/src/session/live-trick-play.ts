@@ -52,7 +52,7 @@ export interface LiveTrickPlayEvents {
   /** Live edge position updated (passthrough from LiveEdgeTracker) */
   'edge-update': LiveEdgeInfo;
   /** Track has finished (passthrough from LiveEdgeTracker) */
-  'track-finished': { groupId: number; objectId: number };
+  'track-finished': { groupId: bigint; objectId: bigint };
   /** Seek operation started */
   'seek-start': { targetGroup: number; targetObject: number; mode: SeekMode };
   /** Seek operation completed */
@@ -227,13 +227,19 @@ export class LiveTrickPlayController {
 
     const gopDurationMs = this.getGopDurationMs();
     const thresholdGroups = Math.ceil((this.config.subscribeUpdateThresholdSec * 1000) / gopDurationMs);
-    const groupsBehindLive = edge.groupId - groupId;
+    // Trick play arithmetic operates in `number`; edge.groupId is a 62-bit
+    // varint. Narrow with an explicit range check.
+    if (edge.groupId > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`Live edge group ${edge.groupId} exceeds Number.MAX_SAFE_INTEGER`);
+    }
+    const edgeGroupNum = Number(edge.groupId);
+    const groupsBehindLive = edgeGroupNum - groupId;
     const mode = this.determineSeekMode(groupsBehindLive, thresholdGroups);
 
     log.info('Seeking', {
       targetGroup: groupId,
       targetObject: objectId,
-      liveEdgeGroup: edge.groupId,
+      liveEdgeGroup: edgeGroupNum,
       groupsBehindLive,
       thresholdGroups,
       mode,
@@ -245,13 +251,13 @@ export class LiveTrickPlayController {
       if (mode === 'subscribe-update') {
         await this.seekViaSubscribeUpdate(groupId, objectId);
       } else if (mode === 'fetch') {
-        await this.seekViaFetch(groupId, objectId, edge.groupId);
+        await this.seekViaFetch(groupId, objectId, edgeGroupNum);
       } else {
-        await this.seekViaHybrid(groupId, objectId, edge.groupId);
+        await this.seekViaHybrid(groupId, objectId, edgeGroupNum);
       }
 
       this.currentPosition = { groupId, objectId };
-      this.isAtLiveEdge = groupId >= edge.groupId;
+      this.isAtLiveEdge = groupId >= edgeGroupNum;
 
       const result: SeekResult = { success: true, mode, targetGroup: groupId, targetObject: objectId };
       this.emit('seek-complete', result);
@@ -286,25 +292,34 @@ export class LiveTrickPlayController {
       return { success: false, mode: 'subscribe-update', targetGroup: 0, targetObject: 0, error };
     }
 
-    log.info('Jumping to live', { groupId: edge.groupId, objectId: edge.objectId });
+    // Narrow the wire varints for the trick-play plane (number-based math).
+    if (edge.groupId > BigInt(Number.MAX_SAFE_INTEGER) || edge.objectId > BigInt(Number.MAX_SAFE_INTEGER)) {
+      const err = new Error(`Live edge exceeds Number.MAX_SAFE_INTEGER (group=${edge.groupId}, object=${edge.objectId})`);
+      this.emit('error', err);
+      return { success: false, mode: 'subscribe-update', targetGroup: 0, targetObject: 0, error: err };
+    }
+    const edgeGroupNum = Number(edge.groupId);
+    const edgeObjectNum = Number(edge.objectId);
+
+    log.info('Jumping to live', { groupId: edgeGroupNum, objectId: edgeObjectNum });
 
     try {
       await this.session.seekSubscription(
         this.config.subscriptionId,
-        edge.groupId,
-        edge.objectId
+        edgeGroupNum,
+        edgeObjectNum
       );
 
-      this.currentPosition = { groupId: edge.groupId, objectId: edge.objectId };
+      this.currentPosition = { groupId: edgeGroupNum, objectId: edgeObjectNum };
       this.isAtLiveEdge = true;
 
-      this.emit('jump-to-live', { groupId: edge.groupId, objectId: edge.objectId });
-      return { success: true, mode: 'subscribe-update', targetGroup: edge.groupId, targetObject: edge.objectId };
+      this.emit('jump-to-live', { groupId: edgeGroupNum, objectId: edgeObjectNum });
+      return { success: true, mode: 'subscribe-update', targetGroup: edgeGroupNum, targetObject: edgeObjectNum };
     } catch (err) {
       const error = err as Error;
       log.error('Jump to live failed', { error: error.message });
       this.emit('error', error);
-      return { success: false, mode: 'subscribe-update', targetGroup: edge.groupId, targetObject: edge.objectId, error };
+      return { success: false, mode: 'subscribe-update', targetGroup: edgeGroupNum, targetObject: edgeObjectNum, error };
     }
   }
 
@@ -320,11 +335,19 @@ export class LiveTrickPlayController {
 
     const gopDurationMs = this.getGopDurationMs();
     const groupsToSkip = Math.ceil((seconds * 1000) / gopDurationMs);
-    const targetGroup = current.groupId + groupsToSkip;
+    // Trick-play arithmetic operates in `number`; the current position may
+    // come from LiveEdgeInfo (bigint) or currentPosition (number).
+    const currentGroupNum = typeof current.groupId === 'bigint'
+      ? Number(current.groupId)
+      : current.groupId;
+    const targetGroup = currentGroupNum + groupsToSkip;
 
     const edge = this.getLiveEdge();
-    if (edge && targetGroup >= edge.groupId) {
-      return this.jumpToLive();
+    if (edge) {
+      const edgeGroupNum = typeof edge.groupId === 'bigint' ? Number(edge.groupId) : edge.groupId;
+      if (targetGroup >= edgeGroupNum) {
+        return this.jumpToLive();
+      }
     }
 
     return this.seek(targetGroup, 0);
@@ -342,7 +365,10 @@ export class LiveTrickPlayController {
 
     const gopDurationMs = this.getGopDurationMs();
     const groupsToSkip = Math.ceil((seconds * 1000) / gopDurationMs);
-    const targetGroup = Math.max(0, current.groupId - groupsToSkip);
+    const currentGroupNum = typeof current.groupId === 'bigint'
+      ? Number(current.groupId)
+      : current.groupId;
+    const targetGroup = Math.max(0, currentGroupNum - groupsToSkip);
 
     return this.seek(targetGroup, 0);
   }
@@ -396,8 +422,12 @@ export class LiveTrickPlayController {
   private setupEdgeTrackerEvents(): void {
     this.edgeTracker.on('edge-update', (info) => {
       this.emit('edge-update', info);
-      if (this.isAtLiveEdge && this.currentPosition) {
-        this.currentPosition = { groupId: info.groupId, objectId: info.objectId };
+      // Trick-play plane arithmetic is in `number`; narrow with explicit
+      // range check when snapping the internal position to the live edge.
+      if (this.isAtLiveEdge && this.currentPosition &&
+          info.groupId <= BigInt(Number.MAX_SAFE_INTEGER) &&
+          info.objectId <= BigInt(Number.MAX_SAFE_INTEGER)) {
+        this.currentPosition = { groupId: Number(info.groupId), objectId: Number(info.objectId) };
       }
     });
 

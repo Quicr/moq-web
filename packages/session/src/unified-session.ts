@@ -44,6 +44,8 @@ import {
   currentVersionFor,
   GroupOrder as LegacyGroupOrder,
   MOQTransport,
+  NoopMetricsSink,
+  type MetricsSink,
 } from '@moq-web/core';
 import { MOQTSession } from './session.js';
 import type {
@@ -159,8 +161,51 @@ export class UnifiedSession implements ISession {
   /** Unsubscribers for session-level namespace event listeners. */
   private namespaceEventDisposers: Map<number, Array<() => void>> = new Map();
 
+  /**
+   * Metrics sink used at the RPC boundary. We piggy-back on the underlying
+   * MOQTSession's sink when available so `session.getDiagnostics().metrics`
+   * captures both transport-layer and RPC-layer activity in a single
+   * snapshot. Falls back to a shared `NoopMetricsSink` when the caller
+   * disabled metrics on the wrapped session.
+   */
+  private readonly metrics: MetricsSink;
+
   constructor(session: MOQTSession) {
     this.session = session;
+    // Reach into the underlying session's diagnostic surface. `getDiagnostics`
+    // is always callable; if the wrapped session was constructed with a
+    // non-inspectable sink we fall back to Noop so wrapping doesn't throw.
+    const wrappedMetrics = (session as unknown as { metrics?: MetricsSink }).metrics;
+    this.metrics = wrappedMetrics ?? new NoopMetricsSink();
+  }
+
+  /**
+   * Wrap a promise with `moq.session.request.duration{op}` histogram and
+   * `moq.session.<op>.ok` / `.error{code}` counters at the RPC boundary.
+   */
+  private async instrumentRequest<T>(op: string, run: () => Promise<T>): Promise<T> {
+    this.metrics.counter(`moq.session.${op}.request`, 1);
+    const start =
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+    try {
+      const result = await run();
+      this.metrics.counter(`moq.session.${op}.ok`, 1);
+      return result;
+    } catch (err) {
+      const code = (err as { code?: string | number })?.code;
+      this.metrics.counter(`moq.session.${op}.error`, 1, {
+        code: code !== undefined ? String(code) : 'unknown',
+      });
+      throw err;
+    } finally {
+      const end =
+        typeof performance !== 'undefined' && typeof performance.now === 'function'
+          ? performance.now()
+          : Date.now();
+      this.metrics.histogram('moq.session.request.duration', end - start, { op });
+    }
   }
 
   /**
@@ -276,11 +321,13 @@ export class UnifiedSession implements ISession {
     // the internal subscription record BEFORE the SUBSCRIBE message hits
     // the wire, so any object that arrives between SUBSCRIBE and
     // SUBSCRIBE_OK is captured by our buffer above.
-    const subscribePromise = this.session.subscribe(
-      request.trackNamespace,
-      request.trackName,
-      options,
-      onObject
+    const subscribePromise = this.instrumentRequest('subscribe', () =>
+      this.session.subscribe(
+        request.trackNamespace,
+        request.trackName,
+        options,
+        onObject
+      ),
     );
 
     let subscriptionId: number;
@@ -397,7 +444,9 @@ export class UnifiedSession implements ISession {
     };
 
     const trackAlias = await withAbort(
-      this.session.publish(request.trackNamespace, request.trackName, options),
+      this.instrumentRequest('publish', () =>
+        this.session.publish(request.trackNamespace, request.trackName, options),
+      ),
       signal
     );
 
@@ -493,15 +542,17 @@ export class UnifiedSession implements ISession {
     const self = this;
 
     const requestId = await withAbort(
-      this.session.fetch(
-        request.trackNamespace,
-        request.trackName,
-        range,
-        {
-          priority: request.subscriberPriority,
-          groupOrder: groupOrderToLegacy(request.groupOrder),
-        },
-        onObject
+      this.instrumentRequest('fetch', () =>
+        this.session.fetch(
+          request.trackNamespace,
+          request.trackName,
+          range,
+          {
+            priority: request.subscriberPriority,
+            groupOrder: groupOrderToLegacy(request.groupOrder),
+          },
+          onObject
+        ),
       ),
       signal
     );

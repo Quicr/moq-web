@@ -39,20 +39,28 @@ export type ObjectCallback = (
 ) => void;
 
 /**
- * Callback for received FETCH objects
+ * Callback for received FETCH objects.
+ *
+ * NOTE: `requestId` is a 62-bit varint (bigint). `groupId`/`objectId` are
+ * kept as `number` because the delta-encoded fetch stream codec, media
+ * pipeline, and JSON logging paths perform arithmetic in `number`. Codec
+ * sites assert wire values fit in `number` via `readVarIntNumber()`.
  */
 export type FetchObjectCallback = (
-  requestId: number,
+  requestId: bigint,
   data: Uint8Array,
   groupId: number,
   objectId: number
 ) => void;
 
 /**
- * Callback for FETCH stream end-of-group
+ * Callback for FETCH stream end-of-group.
+ *
+ * `requestId` is a 62-bit varint; `groupId` is bounded-number (see the
+ * FetchObjectCallback note above).
  */
 export type FetchEndOfGroupCallback = (
-  requestId: number,
+  requestId: bigint,
   groupId: number
 ) => void;
 
@@ -688,14 +696,14 @@ export class ObjectRouter {
     const buffer = initialBuffer;
     const done = initialDone;
 
-    // Parse FETCH_HEADER: stream type (already consumed) + request ID
+    // Parse FETCH_HEADER: stream type (already consumed) + request ID (62-bit varint)
     const headerReader = new BufferReader(buffer);
     headerReader.skip(1); // Skip stream type byte (0x05)
 
-    let requestId: number;
+    let requestId: bigint;
     let bufferOffset: number;
     try {
-      requestId = headerReader.readVarIntNumber();
+      requestId = headerReader.readVarInt();
       bufferOffset = headerReader.offset;
     } catch {
       log.error('Failed to decode FETCH request ID');
@@ -703,7 +711,7 @@ export class ObjectRouter {
     }
 
     log.info('Handling FETCH stream', {
-      requestId,
+      requestId: requestId.toString(),
       initialBufferSize: buffer.length,
       draft: this.isDraft18 ? 'draft-18' : 'draft-16',
     });
@@ -722,7 +730,7 @@ export class ObjectRouter {
     initialBuffer: Uint8Array,
     initialOffset: number,
     initialDone: boolean,
-    requestId: number,
+    requestId: bigint,
   ): Promise<void> {
     let buffer = initialBuffer;
     let bufferOffset = initialOffset;
@@ -757,7 +765,7 @@ export class ObjectRouter {
       // Check if we have data to process
       if (bufferOffset >= buffer.length) {
         if (done) {
-          log.info('FETCH stream complete', { requestId, objectCount, totalBytesReceived });
+          log.info('FETCH stream complete', { requestId: requestId.toString(), objectCount, totalBytesReceived });
           // Notify end of last group if we received any objects
           if (objectCount > 0 && this.onFetchEndOfGroup && decoderState.previousGroupId >= 0) {
             this.onFetchEndOfGroup(requestId, decoderState.previousGroupId);
@@ -780,7 +788,7 @@ export class ObjectRouter {
         bufferOffset += result.bytesConsumed;
 
         log.info('Decoded FETCH object', {
-          requestId,
+          requestId: requestId.toString(),
           groupId: result.groupId,
           objectId: result.objectId,
           payloadSize: result.payload.length,
@@ -795,7 +803,7 @@ export class ObjectRouter {
         // May need more data
         if (done) {
           log.warn('Failed to decode FETCH object at end of stream', {
-            requestId,
+            requestId: requestId.toString(),
             error: (err as Error).message,
             remainingBytes: remaining.length,
           });
@@ -836,7 +844,7 @@ export class ObjectRouter {
     initialBuffer: Uint8Array,
     initialOffset: number,
     initialDone: boolean,
-    requestId: number,
+    requestId: bigint,
   ): Promise<void> {
     let buffer = initialBuffer;
     let bufferOffset = initialOffset;
@@ -890,7 +898,7 @@ export class ObjectRouter {
       } catch (err) {
         if (done) {
           log.warn('Failed to decode draft-18 FETCH object header at end of stream', {
-            requestId,
+            requestId: requestId.toString(),
             error: (err as Error).message,
             remainingBytes: buffer.length - startOffset,
           });
@@ -905,7 +913,7 @@ export class ObjectRouter {
       if (decoded.endOfRange !== undefined) {
         bufferOffset = startOffset + headerBytes;
         log.info('Draft-18 FETCH end-of-range marker', {
-          requestId,
+          requestId: requestId.toString(),
           kind: decoded.endOfRange === FetchObjectEndOfRange.NON_EXISTENT ? 'non-existent' : 'unknown',
           groupIdDelta: decoded.groupIdDelta?.toString(),
           objectIdDelta: decoded.objectIdDelta?.toString(),
@@ -995,7 +1003,7 @@ export class ObjectRouter {
       while (buffer.length - startOffset < totalObjectBytes) {
         if (done) {
           log.warn('Draft-18 FETCH stream truncated mid-payload', {
-            requestId,
+            requestId: requestId.toString(),
             needed: totalObjectBytes,
             haveRemaining: buffer.length - startOffset,
           });
@@ -1020,7 +1028,7 @@ export class ObjectRouter {
       lastGroupIdEmitted = groupId;
 
       log.info('Decoded draft-18 FETCH object', {
-        requestId,
+        requestId: requestId.toString(),
         groupId: groupIdN,
         subgroupId: subgroupId.toString(),
         objectId: objectIdN,
@@ -1040,7 +1048,7 @@ export class ObjectRouter {
       prevPriority = priority;
     }
 
-    log.info('Draft-18 FETCH stream complete', { requestId, objectCount, totalBytesReceived });
+    log.info('Draft-18 FETCH stream complete', { requestId: requestId.toString(), objectCount, totalBytesReceived });
     if (objectCount > 0 && this.onFetchEndOfGroup && lastGroupIdEmitted !== undefined) {
       this.onFetchEndOfGroup(requestId, Number(lastGroupIdEmitted));
     }

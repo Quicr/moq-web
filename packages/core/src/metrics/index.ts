@@ -17,19 +17,42 @@
  *   for tests, `getDiagnostics()`, and small deployments that don't want an
  *   external metrics pipeline.
  *
- * TODO(post-merge): once Track A/B/C have landed, wire additional
- * instrumentation points that this Wave1 Track D scope intentionally left
- * untouched:
- *   - `moq.transport.stream.opened` / `moq.transport.stream.reset` counters
- *     inside `packages/session/src/workers/transport-worker.ts` (Track B).
- *   - `moq.encoding.frame.encoded_bytes` histogram inside
- *     `packages/core/src/encoding/**` (Tracks A/B).
- *   - `moq.subscribe.gap_detected` counter inside `unified-session.ts`
- *     (Track C).
+ * Wave 2 Track E status — what is wired vs what is still TODO:
+ *
+ * Wired (as of Wave 2 Track E):
+ *   - `moq.session.state_transition` / `moq.session.illegal_state_transition`
+ *   - `moq.session.close` / `moq.session.migrate.attempt` /
+ *     `moq.session.migrate.success` / `moq.session.migrate.failure`
+ *     (all landed in Wave 1 Track D `session.ts`).
+ *   - `moq.session.reconnect.attempt` / `moq.session.reconnect.give_up`
+ *     inside `session.ts` `autoMigrateWithBackoff` now that the shared
+ *     `ReconnectPolicy` from `@moq-web/session` drives the loop.
+ *   - `moq.transport.stream.opened{direction}` /
+ *     `moq.transport.stream.closed{direction}` inside
+ *     `packages/session/src/workers/transport-worker.ts` (forwarded to the
+ *     main thread via a `metric` postMessage since workers can't reach the
+ *     sink directly).
+ *   - `moq.transport.bytes_in` / `moq.transport.bytes_out` on every stream
+ *     data + control chunk.
+ *   - `moq.transport.datagram.in` / `moq.transport.datagram.out` per
+ *     datagram.
+ *   - `moq.codec.decode.errors{codec,reason}` and
+ *     `moq.codec.decode.duration{codec,messageType}` inside
+ *     `Draft18MessageCodec.decode`, `Draft18StreamCodec.decodeSubgroupHeader`
+ *     and the `IProtocolCodec` top-level entrypoints in `protocol-codec.ts`.
+ *   - `moq.session.subscribe.request` / `moq.session.subscribe.ok` /
+ *     `moq.session.subscribe.error{code}` and matching publish/fetch
+ *     counters at the `UnifiedSession` RPC boundary, plus a
+ *     `moq.session.request.duration{op}` histogram wrapping each promise.
+ *
+ * Still TODO (Wave 3):
+ *   - `moq.encoding.frame.encoded_bytes` histogram on the encode path.
+ *   - `moq.subscribe.gap_detected` counter — object-router doesn't yet
+ *     detect gap conditions, so no emit site exists.
  *   - `moq.publish.object_bytes` histogram at `sendObjectViaStream()` /
- *     `sendObjectWithGOP()` — currently emitted only via publish-stats event.
- *   - `moq.session.reconnect.attempts` counter once the shared
- *     `ReconnectPolicy` from `@moq-web/session` is adopted by autoMigrate.
+ *     `sendObjectWithGOP()` — currently emitted only via publish-stats
+ *     event.
+ *   - Per-subscription live-edge lag gauges.
  *
  * @example
  * ```typescript

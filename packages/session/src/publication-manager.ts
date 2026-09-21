@@ -16,8 +16,8 @@ const log = Logger.create('moqt:session:publication-manager');
  * Internal publication state (extends public info)
  */
 export interface InternalPublication extends PublicationInfo {
-  /** Request ID used for PUBLISH message */
-  requestId: number;
+  /** 62-bit varint request ID used for PUBLISH message */
+  requestId: bigint;
   /** Cleanup handlers for event subscriptions */
   cleanupHandlers: Array<() => void>;
   /** Current forward state (0 = paused/no subscribers, 1 = active/can send) */
@@ -43,7 +43,7 @@ export interface InternalPublication extends PublicationInfo {
  * Pending PUBLISH_OK callback
  */
 export interface PendingPublishOk {
-  resolve: (result: { forward: number; trackAlias?: number }) => void;
+  resolve: (result: { forward: number; trackAlias?: bigint }) => void;
   reject: (err: Error) => void;
 }
 
@@ -66,12 +66,12 @@ export type ForwardStateChangeListener = (trackAlias: bigint, forward: number) =
 export class PublicationManager {
   /** Active publications by track alias (as string for bigint compatibility) */
   private publications = new Map<string, InternalPublication>();
-  /** Publications by request ID */
-  private publicationsByRequestId = new Map<number, InternalPublication>();
-  /** Pending PUBLISH_OK callbacks */
-  private pendingPublishOk = new Map<number, PendingPublishOk>();
-  /** Pending forward callbacks */
-  private pendingForward = new Map<number, PendingForward>();
+  /** Publications by request ID (keyed as string to accommodate bigint varints). */
+  private publicationsByRequestId = new Map<string, InternalPublication>();
+  /** Pending PUBLISH_OK callbacks (keyed as string, requestId is 62-bit varint). */
+  private pendingPublishOk = new Map<string, PendingPublishOk>();
+  /** Pending forward callbacks (keyed as string, requestId is 62-bit varint). */
+  private pendingForward = new Map<string, PendingForward>();
   /** Forward state change listeners */
   private forwardStateListeners = new Set<ForwardStateChangeListener>();
 
@@ -81,11 +81,11 @@ export class PublicationManager {
   add(publication: InternalPublication): void {
     const key = publication.trackAlias.toString();
     this.publications.set(key, publication);
-    this.publicationsByRequestId.set(publication.requestId, publication);
+    this.publicationsByRequestId.set(publication.requestId.toString(), publication);
 
     log.debug('Added publication', {
       trackAlias: key,
-      requestId: publication.requestId,
+      requestId: publication.requestId.toString(),
       namespace: publication.namespace.join('/'),
       trackName: publication.trackName,
     });
@@ -99,10 +99,10 @@ export class PublicationManager {
   }
 
   /**
-   * Get publication by request ID
+   * Get publication by request ID (accepts bigint or number).
    */
-  getByRequestId(requestId: number): InternalPublication | undefined {
-    return this.publicationsByRequestId.get(requestId);
+  getByRequestId(requestId: bigint | number): InternalPublication | undefined {
+    return this.publicationsByRequestId.get(requestId.toString());
   }
 
   /**
@@ -116,7 +116,7 @@ export class PublicationManager {
     }
 
     this.publications.delete(key);
-    this.publicationsByRequestId.delete(pub.requestId);
+    this.publicationsByRequestId.delete(pub.requestId.toString());
 
     // Run cleanup handlers
     for (const cleanup of pub.cleanupHandlers) {
@@ -188,14 +188,15 @@ export class PublicationManager {
   /**
    * Wait for PUBLISH_OK message
    */
-  waitForPublishOk(requestId: number, timeout = 10000): Promise<{ forward: number; trackAlias?: number }> {
+  waitForPublishOk(requestId: bigint | number, timeout = 10000): Promise<{ forward: number; trackAlias?: bigint }> {
+    const key = requestId.toString();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pendingPublishOk.delete(requestId);
+        this.pendingPublishOk.delete(key);
         reject(new Error('Timeout waiting for PUBLISH_OK'));
       }, timeout);
 
-      this.pendingPublishOk.set(requestId, {
+      this.pendingPublishOk.set(key, {
         resolve: (result) => {
           clearTimeout(timer);
           resolve(result);
@@ -211,10 +212,11 @@ export class PublicationManager {
   /**
    * Resolve pending PUBLISH_OK
    */
-  resolvePublishOk(requestId: number, result: { forward: number; trackAlias?: number }): boolean {
-    const pending = this.pendingPublishOk.get(requestId);
+  resolvePublishOk(requestId: bigint | number, result: { forward: number; trackAlias?: bigint }): boolean {
+    const key = requestId.toString();
+    const pending = this.pendingPublishOk.get(key);
     if (pending) {
-      this.pendingPublishOk.delete(requestId);
+      this.pendingPublishOk.delete(key);
       pending.resolve(result);
       return true;
     }
@@ -224,10 +226,11 @@ export class PublicationManager {
   /**
    * Reject pending PUBLISH_OK
    */
-  rejectPublishOk(requestId: number, error: Error): boolean {
-    const pending = this.pendingPublishOk.get(requestId);
+  rejectPublishOk(requestId: bigint | number, error: Error): boolean {
+    const key = requestId.toString();
+    const pending = this.pendingPublishOk.get(key);
     if (pending) {
-      this.pendingPublishOk.delete(requestId);
+      this.pendingPublishOk.delete(key);
       pending.reject(error);
       return true;
     }
@@ -237,14 +240,15 @@ export class PublicationManager {
   /**
    * Wait for forward=1 (SUBSCRIBE_UPDATE)
    */
-  waitForForward(requestId: number, timeout = 30000): Promise<void> {
+  waitForForward(requestId: bigint | number, timeout = 30000): Promise<void> {
+    const key = requestId.toString();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pendingForward.delete(requestId);
+        this.pendingForward.delete(key);
         reject(new Error('Timeout waiting for SUBSCRIBE_UPDATE with forward=1'));
       }, timeout);
 
-      this.pendingForward.set(requestId, {
+      this.pendingForward.set(key, {
         resolve: () => {
           clearTimeout(timer);
           resolve();

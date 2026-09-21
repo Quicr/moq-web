@@ -202,13 +202,20 @@ export interface ObjectMetadata {
 export interface ReceivedObjectEvent {
   /** Subscription ID */
   subscriptionId: number;
-  /** Track alias */
+  /** Track alias — 62-bit varint */
   trackAlias: bigint;
   /** Object payload */
   data: Uint8Array;
-  /** Group ID */
+  /**
+   * Group ID (62-bit varint on the wire).
+   *
+   * NOTE: kept as `number` throughout the object plane because the
+   * delta-encoded stream/fetch codecs, media pipeline, and JSON logging paths
+   * perform arithmetic in `number`. The codec asserts the wire value fits in
+   * `number` via `readVarIntNumber()`.
+   */
   groupId: number;
-  /** Object ID */
+  /** Object ID (see note on `groupId` for `number` rationale). */
   objectId: number;
   /** Timestamp (microseconds) */
   timestamp: number;
@@ -219,7 +226,8 @@ export interface ReceivedObjectEvent {
  */
 export interface SubscriptionInfo {
   subscriptionId: number;
-  requestId: number;
+  /** 62-bit varint request ID */
+  requestId: bigint;
   namespace: string[];
   trackName: string;
   trackAlias?: bigint;
@@ -235,7 +243,8 @@ export interface SubscriptionInfo {
  * EXPIRES parameter (§10.2.10).
  */
 export interface TrackStatusResult {
-  requestId: number;
+  /** 62-bit varint request ID */
+  requestId: bigint;
   expiresMs?: number;
   latestGroup?: bigint;
   latestObject?: bigint;
@@ -314,16 +323,16 @@ export interface TrackProperties {
 export interface SubscribeOkEvent {
   /** Subscription ID */
   subscriptionId: number;
-  /** Request ID from the subscribe */
-  requestId: number;
+  /** 62-bit varint request ID from the subscribe */
+  requestId: bigint;
   /** Track alias assigned by relay */
   trackAlias: bigint;
   /** Whether content exists for this track */
   contentExists: boolean;
-  /** Largest group ID available (if content exists) */
-  largestGroupId?: number;
-  /** Largest object ID in largest group (if content exists) */
-  largestObjectId?: number;
+  /** 62-bit varint largest group ID available (if content exists) */
+  largestGroupId?: bigint;
+  /** 62-bit varint largest object ID in largest group (if content exists) */
+  largestObjectId?: bigint;
   /** Draft-18 track properties (§12) — undefined on draft-16 sessions */
   trackProperties?: TrackProperties;
 }
@@ -336,16 +345,16 @@ export interface SubscribeOkEvent {
  * only cleans up the request bookkeeping and continues serving other tracks.
  */
 export interface SubscribeErrorEvent {
-  /** Request ID from the failed SUBSCRIBE (matches subscriptionId on draft-16). */
-  requestId: number;
+  /** 62-bit varint request ID from the failed SUBSCRIBE (matches subscriptionId on draft-16). */
+  requestId: bigint;
   /** Local subscription ID that was cleaned up (if we still tracked it). */
   subscriptionId?: number;
   /** Wire error code from the peer. */
   errorCode: number;
   /** Human-readable reason phrase from the peer. */
   reasonPhrase: string;
-  /** Track alias the peer echoed back (draft-16 only; 0 on draft-18). */
-  trackAlias?: number;
+  /** Track alias the peer echoed back (draft-16 only; 0n on draft-18). 62-bit varint. */
+  trackAlias?: bigint;
 }
 
 /**
@@ -363,8 +372,8 @@ export interface NamespaceErrorEvent {
   errorCode: number;
   /** Reason phrase from the peer. */
   reasonPhrase: string;
-  /** Draft-16 request id, when available. */
-  requestId?: number;
+  /** Draft-16 request id (62-bit varint), when available. */
+  requestId?: bigint;
 }
 
 /**
@@ -374,11 +383,18 @@ export interface NamespaceErrorEvent {
  * from `PublishDoneErrorCodeDraft18`.
  */
 export interface PublishDoneEvent {
-  /** Request ID the publisher was serving */
-  requestId: number;
+  /** 62-bit varint request ID the publisher was serving */
+  requestId: bigint;
   /** Local subscription ID if we still know it */
   subscriptionId?: number;
-  /** §10.11 final Location — last group/object the publisher intends to emit */
+  /**
+   * §10.11 final Location — last group/object the publisher intends to emit.
+   *
+   * NOTE: Wire type is 62-bit varint. Kept as `number` throughout the object
+   * plane because the delta-encoded stream/fetch codecs, media pipeline, and
+   * JSON logging paths perform arithmetic in `number`. Codec asserts the wire
+   * value fits in `number` via `readVarIntNumber()`.
+   */
   finalGroupId: number;
   finalObjectId: number;
   /** Optional `PublishDoneErrorCodeDraft18` status */
@@ -430,10 +446,10 @@ export interface DeliveryTimeoutEvent {
  * means "please cut a new group"; some peers use it as a monotonic counter.
  */
 export interface NewGroupRequestEvent {
-  /** Request ID of the subscription being updated. */
-  requestId: number;
-  /** Raw §10.2.13 parameter value (varint). Non-zero = request active. */
-  value: number;
+  /** 62-bit varint request ID of the subscription being updated. */
+  requestId: bigint;
+  /** Raw §10.2.13 parameter value (62-bit varint). Non-zero = request active. */
+  value: bigint;
   /** Whether forward=1 accompanied the request (resume + new group is common). */
   forwardState: boolean;
 }
@@ -470,8 +486,8 @@ export interface StreamResetEvent {
  * means the responder did not send the parameter.
  */
 export interface RequestOkEvent {
-  /** Request ID from the request stream */
-  requestId: number;
+  /** 62-bit varint request ID from the request stream */
+  requestId: bigint;
   /**
    * Kind of request that was accepted, so consumers can filter without
    * having to correlate requestId ↔ request kind themselves.
@@ -530,8 +546,8 @@ export interface AnnouncedNamespaceInfo {
   namespace: string[];
   /** Namespace as string for display */
   namespaceStr: string;
-  /** Active subscribers to this namespace */
-  subscribers: Map<number, IncomingSubscriber>;
+  /** Active subscribers to this namespace (keyed by 62-bit varint request ID) */
+  subscribers: Map<bigint, IncomingSubscriber>;
   /** Announce options */
   options: AnnounceOptions;
   /** Whether announce was acknowledged by relay */
@@ -542,8 +558,8 @@ export interface AnnouncedNamespaceInfo {
  * Incoming subscriber info (for announce flow)
  */
 export interface IncomingSubscriber {
-  /** Request ID from the subscriber */
-  requestId: number;
+  /** 62-bit varint request ID from the subscriber */
+  requestId: bigint;
   /** Full track name requested */
   fullTrackName: { namespace: string[]; trackName: string };
   /** Track alias assigned by publisher */
@@ -560,8 +576,8 @@ export interface IncomingSubscriber {
  * Event fired when a subscriber requests a track (announce flow)
  */
 export interface IncomingSubscribeEvent {
-  /** Request ID */
-  requestId: number;
+  /** 62-bit varint request ID */
+  requestId: bigint;
   /** Namespace */
   namespace: string[];
   /** Track name */
@@ -592,8 +608,8 @@ export interface SubscribeNamespaceOptions {
 export interface NamespaceSubscriptionInfo {
   /** Subscription ID */
   subscriptionId: number;
-  /** Request ID */
-  requestId: number;
+  /** 62-bit varint request ID */
+  requestId: bigint;
   /** Namespace prefix */
   namespacePrefix: string[];
   /** Tracks discovered under this namespace */
@@ -608,8 +624,8 @@ export interface NamespaceSubscriptionInfo {
  * Incoming publish info (from PUBLISH message)
  */
 export interface IncomingPublishInfo {
-  /** Request ID from publisher */
-  requestId: number;
+  /** 62-bit varint request ID from publisher */
+  requestId: bigint;
   /** Full namespace */
   namespace: string[];
   /** Track name */
@@ -650,8 +666,8 @@ export interface IncomingPublishEvent {
   namespaceSubscriptionId: number;
   /** Internal subscription ID for this track (for object routing) */
   subscriptionId: number;
-  /** Request ID from publisher */
-  requestId: number;
+  /** 62-bit varint request ID from publisher */
+  requestId: bigint;
   /** Namespace */
   namespace: string[];
   /** Track name */
@@ -704,15 +720,21 @@ export interface FetchOptions {
 
 /**
  * Range specification for FETCH request
+ *
+ * NOTE: startGroup/startObject/endGroup/endObject are 62-bit varints on the
+ * wire. Kept as `number` throughout the FETCH plane because the delta-encoded
+ * fetch stream codec, media pipeline, and range comparisons perform arithmetic
+ * in `number`. Codec sites assert wire values fit in `number` via
+ * `readVarIntNumber()`.
  */
 export interface FetchRange {
-  /** Start group ID */
+  /** Start group ID (62-bit varint on wire; bounded to number). */
   startGroup: number;
-  /** Start object ID within start group */
+  /** Start object ID within start group. */
   startObject: number;
-  /** End group ID */
+  /** End group ID. */
   endGroup: number;
-  /** End object ID within end group (0 = end of group) */
+  /** End object ID within end group (0 = end of group). */
   endObject: number;
 }
 
@@ -720,8 +742,8 @@ export interface FetchRange {
  * Active fetch info
  */
 export interface FetchInfo {
-  /** Fetch request ID */
-  requestId: number;
+  /** 62-bit varint fetch request ID */
+  requestId: bigint;
   /** Namespace */
   namespace: string[];
   /** Track name */
@@ -730,10 +752,10 @@ export interface FetchInfo {
   range: FetchRange;
   /** Whether fetch completed */
   completed: boolean;
-  /** Largest group ID available (from FETCH_OK) */
-  largestGroupId?: number;
-  /** Largest object ID in largest group (from FETCH_OK) */
-  largestObjectId?: number;
+  /** 62-bit varint largest group ID available (from FETCH_OK) */
+  largestGroupId?: bigint;
+  /** 62-bit varint largest object ID in largest group (from FETCH_OK) */
+  largestObjectId?: bigint;
   /** Whether end of track is known */
   endOfTrack?: boolean;
 }
@@ -742,13 +764,13 @@ export interface FetchInfo {
  * Event fired when fetch receives objects
  */
 export interface FetchObjectEvent {
-  /** Fetch request ID */
-  requestId: number;
+  /** 62-bit varint fetch request ID */
+  requestId: bigint;
   /** Object payload */
   data: Uint8Array;
-  /** Group ID */
+  /** Group ID (62-bit varint on wire; bounded to number for object plane). */
   groupId: number;
-  /** Object ID */
+  /** Object ID (see FetchRange note on bounded-number rationale). */
   objectId: number;
 }
 
@@ -756,12 +778,12 @@ export interface FetchObjectEvent {
  * Event fired when fetch completes successfully
  */
 export interface FetchCompleteEvent {
-  /** Fetch request ID */
-  requestId: number;
-  /** Largest group ID available */
-  largestGroupId: number;
-  /** Largest object ID in largest group */
-  largestObjectId: number;
+  /** 62-bit varint fetch request ID */
+  requestId: bigint;
+  /** 62-bit varint largest group ID available */
+  largestGroupId: bigint;
+  /** 62-bit varint largest object ID in largest group */
+  largestObjectId: bigint;
   /** Whether this is the end of the track */
   endOfTrack: boolean;
 }
@@ -772,9 +794,9 @@ export interface FetchCompleteEvent {
  * fires on FETCH_OK (before data arrives).
  */
 export interface FetchStreamCompleteEvent {
-  /** Fetch request ID */
-  requestId: number;
-  /** Last group ID received on this stream */
+  /** 62-bit varint fetch request ID */
+  requestId: bigint;
+  /** Last group ID received on this stream (bounded to number; see FetchRange). */
   lastGroupId: number;
 }
 
@@ -782,8 +804,8 @@ export interface FetchStreamCompleteEvent {
  * Event fired when fetch fails
  */
 export interface FetchErrorEvent {
-  /** Fetch request ID */
-  requestId: number;
+  /** 62-bit varint fetch request ID */
+  requestId: bigint;
   /** Error code */
   errorCode: number;
   /** Error reason */
@@ -853,8 +875,8 @@ export interface VODTrackInfo {
  * Event fired when a subscriber sends a FETCH request (VOD publisher receives this)
  */
 export interface IncomingFetchEvent {
-  /** Request ID from the fetch */
-  requestId: number;
+  /** 62-bit varint request ID from the fetch */
+  requestId: bigint;
   /** Namespace */
   namespace: string[];
   /** Track name */
@@ -909,6 +931,6 @@ export type RequestUpdateVariant =
  * subscription rather than a single track.
  */
 export interface NamespaceForwardEvent {
-  /** Request ID of the original SUBSCRIBE_NAMESPACE (§10.9.2) */
-  namespaceRequestId: number;
+  /** 62-bit varint request ID of the original SUBSCRIBE_NAMESPACE (§10.9.2) */
+  namespaceRequestId: bigint;
 }

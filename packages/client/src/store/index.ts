@@ -209,7 +209,7 @@ interface ConnectionSlice {
     startGroup: number,
     endGroup: number,
     onData: (data: Uint8Array, groupId: number, objectId: number) => void
-  ) => Promise<{ requestId: number; cancel: () => Promise<void> }>;
+  ) => Promise<{ requestId: bigint; cancel: () => Promise<void> }>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
@@ -1048,7 +1048,7 @@ export const useStore = create<AppStore>()(
         const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
 
         // Map controller request IDs to session request IDs for fetch cancellation
-        const controllerToSessionRequestId = new Map<number, number>();
+        const controllerToSessionRequestId = new Map<number, bigint>();
 
         // Track minimum valid group after seek - data from groups below this should be discarded
         // This prevents stale in-flight data from cancelled fetches from contaminating the decoder
@@ -1113,15 +1113,22 @@ export const useStore = create<AppStore>()(
         // Listen for FETCH_OK to update totalGroups if relay has fewer groups than catalog claims
         // Only trust largestGroupId when endOfTrack is true (relay confirms end of content)
         const moqtSessionForFetchComplete = session.getMOQTSession();
-        moqtSessionForFetchComplete.on('fetch-complete', (event: { requestId: number; largestGroupId: number; endOfTrack: boolean }) => {
+        moqtSessionForFetchComplete.on('fetch-complete', (event) => {
           // largestGroupId from FETCH_OK indicates the highest group available on the relay
-          // Only update if endOfTrack is true - otherwise relay may just have partial data
-          const actualTotalGroups = event.largestGroupId + 1;
+          // Only update if endOfTrack is true - otherwise relay may just have partial data.
+          // largestGroupId is a 62-bit varint; narrow to number for the totalGroups UI plane.
+          if (event.largestGroupId > BigInt(Number.MAX_SAFE_INTEGER)) {
+            log.warn('fetch-complete largestGroupId exceeds MAX_SAFE_INTEGER; ignoring', {
+              largestGroupId: event.largestGroupId.toString(),
+            });
+            return;
+          }
+          const actualTotalGroups = Number(event.largestGroupId) + 1;
           if (event.endOfTrack && actualTotalGroups < (trackInfo.totalGroups ?? 100)) {
             log.info('VOD content has fewer groups than catalog claimed (endOfTrack confirmed)', {
               catalogTotalGroups: trackInfo.totalGroups,
               actualTotalGroups,
-              largestGroupId: event.largestGroupId,
+              largestGroupId: event.largestGroupId.toString(),
               endOfTrack: event.endOfTrack,
             });
             controller.updateTotalGroups(actualTotalGroups);
@@ -1155,15 +1162,16 @@ export const useStore = create<AppStore>()(
             const fetchGroups = new Set<number>();
             const lastObjectIdByGroup = new Map<number, number>();
 
-            // Variable to store the session's requestId (set after fetch() returns)
-            let sessionRequestId: number | null = null;
+            // Variable to store the session's requestId (set after fetch() returns).
+            // requestId is a 62-bit varint (bigint on the wire).
+            let sessionRequestId: bigint | null = null;
             // Queue to store events that arrive before sessionRequestId is set
-            let pendingEvents: { requestId: number }[] = [];
+            let pendingEvents: { requestId: bigint }[] = [];
             let listenerActive = true;
             // Per-fetch idle timer (not global, so multiple concurrent fetches work)
             let fetchIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
-            const handleFetchStreamComplete = (event: { requestId: number; lastGroupId: number }) => {
+            const handleFetchStreamComplete = (event: { requestId: bigint; lastGroupId: number }) => {
               if (!listenerActive) return;
 
               // If sessionRequestId not yet set, queue the event
@@ -1185,7 +1193,7 @@ export const useStore = create<AppStore>()(
               const fetchDuration = performance.now() - fetchStartTime;
               log.info('VOD fetch stream complete (all data received)', {
                 controllerRequestId,
-                sessionRequestId,
+                sessionRequestId: sessionRequestId.toString(),
                 durationMs: Math.round(fetchDuration),
                 groupsReceived: fetchGroups.size,
                 framesReceived: fetchGroupCounts.get(controllerRequestId)?.framesReceived ?? 0,
@@ -1326,7 +1334,7 @@ export const useStore = create<AppStore>()(
 
             // Process any events that arrived while we were waiting for fetch() to return
             for (const event of pendingEvents) {
-              handleFetchStreamComplete(event as { requestId: number; lastGroupId: number });
+              handleFetchStreamComplete(event as { requestId: bigint; lastGroupId: number });
             }
             pendingEvents = [];
           } catch (err) {
