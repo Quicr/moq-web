@@ -276,6 +276,32 @@ export class PublicationManager {
   }
 
   /**
+   * Set forward state for a single publication identified by requestId.
+   * Returns true if the publication was found and its state changed.
+   *
+   * SUBSCRIBE_UPDATE / REQUEST_UPDATE are scoped to one subscription, so a
+   * pause from one subscriber must not stall other tracks this session
+   * publishes. Callers should prefer this over `setAllForward`.
+   */
+  setForwardByRequestId(requestId: number, forward: number): boolean {
+    const pub = this.publicationsByRequestId.get(requestId);
+    if (!pub) return false;
+    // Resolve any pending waitForForward on this requestId when going active.
+    if (forward === 1) {
+      const pending = this.pendingForward.get(requestId);
+      if (pending) {
+        this.pendingForward.delete(requestId);
+        pending.resolve();
+      }
+    }
+    if (pub.forward !== forward) {
+      pub.forward = forward;
+      this.notifyForwardStateChange(pub.trackAlias, forward);
+    }
+    return true;
+  }
+
+  /**
    * Set forward state for all publications (e.g., when forward=0 received)
    */
   setAllForward(forward: number): void {

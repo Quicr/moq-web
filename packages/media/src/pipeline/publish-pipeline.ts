@@ -163,6 +163,8 @@ export class PublishPipeline {
   private _state: 'idle' | 'running' | 'stopped' = 'idle';
   /** Whether the pipeline is paused (forward=0) */
   private _paused = false;
+  /** Main-thread mode: force the next encoded frame to be a keyframe */
+  private forceNextKeyframe = false;
   /** Video track processor */
   private videoProcessor?: MediaStreamTrackProcessor<VideoFrame>;
   /** Audio track processor */
@@ -449,7 +451,9 @@ export class PublishPipeline {
             this.encodeWorkerClient.encodeVideo(frame);
           } else if (this.videoEncoder) {
             // Main thread mode - encode locally
-            await this.videoEncoder.encode(frame);
+            const force = this.forceNextKeyframe;
+            this.forceNextKeyframe = false;
+            await this.videoEncoder.encode(frame, force);
             frame.close();
           } else {
             frame.close();
@@ -796,13 +800,17 @@ export class PublishPipeline {
   }
 
   /**
-   * Force a video keyframe
+   * Force the next encoded video frame to be a keyframe.
+   *
+   * The encoder starts a new group on every keyframe (videoGroupId++,
+   * objectId=0), so calling this after resume ensures subscribers get a
+   * decodable IDR at the head of a fresh group instead of a mid-GOP P-frame.
    */
-  async forceKeyframe(): Promise<void> {
-    if (this.videoEncoder) {
-      log.debug('Forcing keyframe');
-      // The next encode call will be forced to keyframe
-      // This is handled by tracking in the encoder
+  forceKeyframe(): void {
+    if (this.useWorker && this.encodeWorkerClient) {
+      this.encodeWorkerClient.forceKeyframe();
+    } else {
+      this.forceNextKeyframe = true;
     }
   }
 
@@ -835,6 +843,9 @@ export class PublishPipeline {
   resume(): void {
     if (this._paused) {
       this._paused = false;
+      // Force an IDR on the next frame so subscribers open a fresh decodable
+      // group instead of resuming mid-GOP on a P-frame (black-screen fix).
+      this.forceKeyframe();
       log.info('Publish pipeline resumed (forward=1)');
       this.emit('resumed', undefined);
     }

@@ -24,3 +24,4 @@ Both env vars are optional overrides for what's in the profile JSON.
 Current coverage:
 
 - 01-video-roundtrip — publisher pushes a synthetic canvas through the full media pipeline; subscriber receives decoded VideoFrames from a live relay.
+- 02-pause-resume — pause suppresses delivery; resume forces a fresh keyframe so subscribers open a decodable group without waiting for the next scheduled IDR.

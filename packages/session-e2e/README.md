@@ -29,7 +29,8 @@ Current coverage:
 - 03-publish — PUBLISH ack + track alias assignment
 - 04-subscribe-namespace — SUBSCRIBE_NAMESPACE → incoming-publish fan-out
 - 05-subscribe — pub/sub with byte-exact object verification
-- 06-subscribe-update — REQUEST_UPDATE pause + resume
+- 06-subscribe-update — SUBSCRIBE_UPDATE / REQUEST_UPDATE pause + resume
+- 29-subscribe-update-multi-track — pause on one subscription must not stall other publications in the same session
 - 07-unsubscribe — deliveries stop after unsubscribe
 - 08-track-status — TRACK_STATUS query (draft-18)
 - 09-fetch — FETCH range retrieval with byte-verify

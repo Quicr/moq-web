@@ -6062,9 +6062,21 @@ export class MOQTSession {
       }
     }
 
-    // §10.9.1 — subscription-scoped update (default when kind is unknown).
+    // §10.9.1 — subscription-scoped update. Narrow the forward-state flip to
+    // the publication bound to this requestId so a pause from one subscriber
+    // doesn't stall the session's other tracks. If we don't have a matching
+    // publication (kind === 'unknown'), fall back to the session-wide update
+    // for backward compatibility with peers that don't set up state first.
+    const forward = message.forwardState ? 1 : 0;
+    const matched = this.publicationManager.setForwardByRequestId(requestId, forward);
+    if (!matched) {
+      if (message.forwardState) {
+        this.publicationManager.resolveAllForward();
+      }
+      // No matching publication → nothing to pause on our side; still emit
+      // the event so any bespoke listener can react.
+    }
     if (message.forwardState) {
-      this.publicationManager.resolveAllForward();
       this.emit('forward-resumed', { requestId });
     } else {
       this.emit('forward-paused', { subscriptionRequestId: requestId });
@@ -6517,18 +6529,31 @@ export class MOQTSession {
           startLocation: subscribeUpdate.startLocation,
         });
 
-        // Handle forward state change for all publications
+        // §9.11 SUBSCRIBE_UPDATE is scoped to `subscriptionRequestId` — only
+        // touch the publication bound to that request so a pause from one
+        // subscriber doesn't stall other tracks this session publishes.
         if (subscribeUpdate.forward === 1) {
-          log.info('Forward enabled by relay, resolving all pending publishers', {
-            subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
-            pendingCount: this.publicationManager.pendingForwardCount,
-          });
-          this.publicationManager.resolveAllForward();
+          const matched = this.publicationManager.setForwardByRequestId(
+            subscribeUpdate.subscriptionRequestId,
+            1,
+          );
+          if (!matched) {
+            log.warn('SUBSCRIBE_UPDATE forward=1 for unknown requestId, falling back to resolveAllForward', {
+              subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
+            });
+            this.publicationManager.resolveAllForward();
+          }
         } else if (subscribeUpdate.forward === 0) {
-          log.info('Forward disabled by relay, pausing all publications', {
-            subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
-          });
-          this.publicationManager.setAllForward(0);
+          const matched = this.publicationManager.setForwardByRequestId(
+            subscribeUpdate.subscriptionRequestId,
+            0,
+          );
+          if (!matched) {
+            log.warn('SUBSCRIBE_UPDATE forward=0 for unknown requestId, falling back to setAllForward', {
+              subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
+            });
+            this.publicationManager.setAllForward(0);
+          }
         }
         break;
       }
