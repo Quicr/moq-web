@@ -1,11 +1,31 @@
 {
   "name": "@moq-web/msf",
-  "version": "0.1.0",
-  "description": "MOQT Streaming Format (MSF) - JSON catalogs for LOC-compliant media delivery",
+  "version": "0.2.0",
+  "description": "MOQT Streaming Format (MSF) — JSON catalogs for LOC-compliant Media over QUIC delivery",
+  "keywords": [
+    "moq",
+    "moqt",
+    "msf",
+    "catalog",
+    "loc",
+    "media"
+  ],
+  "license": "BSD-2-Clause",
+  "homepage": "https://github.com/Quicr/moq-web#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Quicr/moq-web.git",
+    "directory": "packages/msf"
+  },
+  "bugs": {
+    "url": "https://github.com/Quicr/moq-web/issues"
+  },
+  "author": "Cisco Systems, Inc.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,8 +37,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
@@ -27,10 +52,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@moq-web/cat": "workspace:*",
-    "@moq-web/core": "workspace:*",
-    "@moq-web/secure-objects": "workspace:*",
-    "@moq-web/session": "workspace:*",
+    "@moq-web/cat": "workspace:^",
+    "@moq-web/core": "workspace:^",
+    "@moq-web/secure-objects": "workspace:^",
+    "@moq-web/session": "workspace:^",
     "zod": "^3.23.0"
   },
   "devDependencies": {

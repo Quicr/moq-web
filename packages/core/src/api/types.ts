@@ -243,8 +243,8 @@ export interface PublishRequest {
   trackName: string;
   /** Track alias (optional, auto-generated if not provided) */
   trackAlias?: bigint;
-  /** Publisher priority */
-  subscriberPriority?: number;
+  /** Publisher priority (0-255, higher = more important) */
+  publisherPriority?: number;
   /** Group ordering */
   groupOrder?: GroupOrder;
   /** Track properties */
@@ -569,17 +569,23 @@ export interface ISession {
   readonly capabilities: CodecCapabilities;
 
   // Track Operations
-  subscribe(request: SubscribeRequest): Promise<Subscription>;
-  publish(request: PublishRequest): Promise<Publication>;
-  fetch(request: FetchRequest): Promise<Fetch>;
+  subscribe(request: SubscribeRequest, signal?: AbortSignal): Promise<Subscription>;
+  publish(request: PublishRequest, signal?: AbortSignal): Promise<Publication>;
+  fetch(request: FetchRequest, signal?: AbortSignal): Promise<Fetch>;
 
   // Namespace Operations
-  subscribeNamespace(request: SubscribeNamespaceRequest): Promise<NamespaceSubscription>;
-  publishNamespace(request: PublishNamespaceRequest): Promise<NamespacePublication>;
+  subscribeNamespace(
+    request: SubscribeNamespaceRequest,
+    signal?: AbortSignal
+  ): Promise<NamespaceSubscription>;
+  publishNamespace(
+    request: PublishNamespaceRequest,
+    signal?: AbortSignal
+  ): Promise<NamespacePublication>;
 
   // Session Lifecycle
   goAway(newSessionUri?: string, timeoutMs?: bigint): Promise<void>;
-  close(): Promise<void>;
+  close(signal?: AbortSignal): Promise<void>;
 
   // Events
   on(event: 'error', handler: SessionErrorHandler): void;

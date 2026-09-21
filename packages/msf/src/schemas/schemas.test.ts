@@ -786,7 +786,9 @@ describe('TimelineSchemas', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.startMediaTime).toBe(0);
-        expect(result.data.startObjectId).toBe(0);
+        // startObjectId is a MOQT u62 varint → bigint after schema parse per
+        // Wave 3 Track J (see packages/msf/src/schemas/timeline.ts docstring).
+        expect(result.data.startObjectId).toBe(0n);
       }
     });
   });

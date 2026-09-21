@@ -110,8 +110,11 @@ export class SubscriptionManager {
 
   /**
    * Find subscription by request ID (control plane lookup for message correlation)
+   *
+   * Accepts either `bigint` (native wire type) or `number` (legacy callers)
+   * because the internal index is keyed by the varint's `.toString()` value.
    */
-  findByRequestId(requestId: number): InternalSubscription | undefined {
+  findByRequestId(requestId: bigint | number): InternalSubscription | undefined {
     return this.subscriptionsByRequestId.get(requestId.toString());
   }
 

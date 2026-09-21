@@ -17,15 +17,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DatagramManager,
-  IS_DRAFT_18,
   MOQTransport,
   MOQTVarInt,
   StreamTypeDraft18,
   DatagramTypeDraft18,
+  DEFAULT_DRAFT,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 
+
+const IS_DRAFT_18 = DEFAULT_DRAFT === 'draft-18';
 type StreamInfoLike = {
   writer?: WritableStreamDefaultWriter<Uint8Array>;
   streamId?: number;

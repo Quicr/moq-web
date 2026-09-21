@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { MessageCodec, ObjectCodec, MessageCodecError } from './message-codec';
-import { IS_DRAFT_18 } from '../version/constants';
+import { DEFAULT_DRAFT } from '../version/constants';
 import { BufferReader } from './varint';
 import {
   MessageType,
@@ -125,27 +125,27 @@ describe('MessageCodec', () => {
       it('roundtrips MAX_REQUEST_ID message', () => {
         const message: MaxRequestIdMessage = {
           type: MessageType.MAX_REQUEST_ID,
-          maxRequestId: 12345,
+          maxRequestId: 12345n,
         };
 
         const encoded = MessageCodec.encode(message);
         const [decoded] = MessageCodec.decode(encoded);
 
         expect(decoded.type).toBe(MessageType.MAX_REQUEST_ID);
-        expect((decoded as MaxRequestIdMessage).maxRequestId).toBe(12345);
+        expect((decoded as MaxRequestIdMessage).maxRequestId).toBe(12345n);
       });
 
       it('roundtrips REQUESTS_BLOCKED message', () => {
         const message: RequestsBlockedMessage = {
           type: MessageType.REQUESTS_BLOCKED,
-          blockedRequestId: 999,
+          blockedRequestId: 999n,
         };
 
         const encoded = MessageCodec.encode(message);
         const [decoded] = MessageCodec.decode(encoded);
 
         expect(decoded.type).toBe(MessageType.REQUESTS_BLOCKED);
-        expect((decoded as RequestsBlockedMessage).blockedRequestId).toBe(999);
+        expect((decoded as RequestsBlockedMessage).blockedRequestId).toBe(999n);
       });
     });
 
@@ -153,7 +153,7 @@ describe('MessageCodec', () => {
       it('roundtrips SUBSCRIBE message with LATEST_GROUP filter', () => {
         const message: SubscribeMessage = {
           type: MessageType.SUBSCRIBE,
-          requestId: 1,
+          requestId: 1n,
           fullTrackName: {
             namespace: ['conference', 'room-1'],
             trackName: 'video',
@@ -168,7 +168,7 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.SUBSCRIBE);
         const decodedSub = decoded as SubscribeMessage;
-        expect(decodedSub.requestId).toBe(1);
+        expect(decodedSub.requestId).toBe(1n);
         expect(decodedSub.fullTrackName.namespace).toEqual(['conference', 'room-1']);
         expect(decodedSub.fullTrackName.trackName).toBe('video');
         expect(decodedSub.subscriberPriority).toBe(128);
@@ -179,10 +179,10 @@ describe('MessageCodec', () => {
       it('roundtrips SUBSCRIBE_UPDATE message', () => {
         const message: SubscribeUpdateMessage = {
           type: MessageType.SUBSCRIBE_UPDATE,
-          requestId: 10,
-          subscriptionRequestId: 1,
-          startLocation: { groupId: 5, objectId: 10 },
-          endGroup: 20,
+          requestId: 10n,
+          subscriptionRequestId: 1n,
+          startLocation: { groupId: 5n, objectId: 10n },
+          endGroup: 20n,
           subscriberPriority: 200,
           forward: 1,
         };
@@ -192,10 +192,10 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.SUBSCRIBE_UPDATE);
         const decodedUpdate = decoded as SubscribeUpdateMessage;
-        expect(decodedUpdate.requestId).toBe(10);
-        expect(decodedUpdate.subscriptionRequestId).toBe(1);
-        expect(decodedUpdate.startLocation).toEqual({ groupId: 5, objectId: 10 });
-        expect(decodedUpdate.endGroup).toBe(20);
+        expect(decodedUpdate.requestId).toBe(10n);
+        expect(decodedUpdate.subscriptionRequestId).toBe(1n);
+        expect(decodedUpdate.startLocation).toEqual({ groupId: 5n, objectId: 10n });
+        expect(decodedUpdate.endGroup).toBe(20n);
         expect(decodedUpdate.subscriberPriority).toBe(200);
         expect(decodedUpdate.forward).toBe(1);
       });
@@ -203,10 +203,10 @@ describe('MessageCodec', () => {
       it('roundtrips SUBSCRIBE_ERROR message', () => {
         const message: SubscribeErrorMessage = {
           type: MessageType.SUBSCRIBE_ERROR,
-          requestId: 1,
+          requestId: 1n,
           errorCode: RequestErrorCode.TRACK_NOT_FOUND,
           reasonPhrase: 'Track does not exist',
-          trackAlias: 0,
+          trackAlias: 0n,
         };
 
         const encoded = MessageCodec.encode(message);
@@ -214,7 +214,7 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.SUBSCRIBE_ERROR);
         const decodedError = decoded as SubscribeErrorMessage;
-        expect(decodedError.requestId).toBe(1);
+        expect(decodedError.requestId).toBe(1n);
         expect(decodedError.errorCode).toBe(RequestErrorCode.TRACK_NOT_FOUND);
         expect(decodedError.reasonPhrase).toBe('Track does not exist');
       });
@@ -222,14 +222,14 @@ describe('MessageCodec', () => {
       it('roundtrips UNSUBSCRIBE message', () => {
         const message: UnsubscribeMessage = {
           type: MessageType.UNSUBSCRIBE,
-          requestId: 5,
+          requestId: 5n,
         };
 
         const encoded = MessageCodec.encode(message);
         const [decoded] = MessageCodec.decode(encoded);
 
         expect(decoded.type).toBe(MessageType.UNSUBSCRIBE);
-        expect((decoded as UnsubscribeMessage).requestId).toBe(5);
+        expect((decoded as UnsubscribeMessage).requestId).toBe(5n);
       });
     });
 
@@ -237,12 +237,12 @@ describe('MessageCodec', () => {
       it('roundtrips PUBLISH message without content', () => {
         const message: PublishMessage = {
           type: MessageType.PUBLISH,
-          requestId: 1,
+          requestId: 1n,
           fullTrackName: {
             namespace: ['conference', 'room-1'],
             trackName: 'video',
           },
-          trackAlias: 100,
+          trackAlias: 100n,
           groupOrder: GroupOrder.ASCENDING,
           contentExists: false,
           forward: 1,
@@ -253,10 +253,10 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.PUBLISH);
         const decodedPub = decoded as PublishMessage;
-        expect(decodedPub.requestId).toBe(1);
+        expect(decodedPub.requestId).toBe(1n);
         expect(decodedPub.fullTrackName.namespace).toEqual(['conference', 'room-1']);
         expect(decodedPub.fullTrackName.trackName).toBe('video');
-        expect(decodedPub.trackAlias).toBe(100);
+        expect(decodedPub.trackAlias).toBe(100n);
         expect(decodedPub.groupOrder).toBe(GroupOrder.ASCENDING);
         expect(decodedPub.contentExists).toBe(false);
       });
@@ -264,15 +264,15 @@ describe('MessageCodec', () => {
       it('roundtrips PUBLISH message with content', () => {
         const message: PublishMessage = {
           type: MessageType.PUBLISH,
-          requestId: 2,
+          requestId: 2n,
           fullTrackName: {
             namespace: ['media'],
             trackName: 'audio',
           },
-          trackAlias: 200,
+          trackAlias: 200n,
           groupOrder: GroupOrder.DESCENDING,
           contentExists: true,
-          largestLocation: { groupId: 50, objectId: 25 },
+          largestLocation: { groupId: 50n, objectId: 25n },
           forward: 0,
         };
 
@@ -282,13 +282,13 @@ describe('MessageCodec', () => {
         expect(decoded.type).toBe(MessageType.PUBLISH);
         const decodedPub = decoded as PublishMessage;
         expect(decodedPub.contentExists).toBe(true);
-        expect(decodedPub.largestLocation).toEqual({ groupId: 50, objectId: 25 });
+        expect(decodedPub.largestLocation).toEqual({ groupId: 50n, objectId: 25n });
       });
 
       it('roundtrips PUBLISH_OK message', () => {
         const message: PublishOkMessage = {
           type: MessageType.PUBLISH_OK,
-          requestId: 1,
+          requestId: 1n,
           forward: 1,
           subscriberPriority: 128,
           groupOrder: GroupOrder.ASCENDING,
@@ -300,7 +300,7 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.PUBLISH_OK);
         const decodedOk = decoded as PublishOkMessage;
-        expect(decodedOk.requestId).toBe(1);
+        expect(decodedOk.requestId).toBe(1n);
         expect(decodedOk.forward).toBe(1);
         expect(decodedOk.subscriberPriority).toBe(128);
         expect(decodedOk.groupOrder).toBe(GroupOrder.ASCENDING);
@@ -310,10 +310,10 @@ describe('MessageCodec', () => {
       it('roundtrips PUBLISH_ERROR message', () => {
         const message: PublishErrorMessage = {
           type: MessageType.PUBLISH_ERROR,
-          requestId: 1,
+          requestId: 1n,
           errorCode: RequestErrorCode.UNAUTHORIZED,
           reasonPhrase: 'Not authorized to publish',
-          trackAlias: 100,
+          trackAlias: 100n,
         };
 
         const encoded = MessageCodec.encode(message);
@@ -321,10 +321,10 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.PUBLISH_ERROR);
         const decodedError = decoded as PublishErrorMessage;
-        expect(decodedError.requestId).toBe(1);
+        expect(decodedError.requestId).toBe(1n);
         expect(decodedError.errorCode).toBe(RequestErrorCode.UNAUTHORIZED);
         expect(decodedError.reasonPhrase).toBe('Not authorized to publish');
-        expect(decodedError.trackAlias).toBe(100);
+        expect(decodedError.trackAlias).toBe(100n);
       });
 
     });
@@ -420,17 +420,17 @@ describe('MessageCodec', () => {
       it('roundtrips FETCH message', () => {
         const message: FetchMessage = {
           type: MessageType.FETCH,
-          requestId: 1,
+          requestId: 1n,
           fullTrackName: {
             namespace: ['conference', 'room-1'],
             trackName: 'video',
           },
           subscriberPriority: 128,
           groupOrder: GroupOrder.ASCENDING,
-          startGroup: 0,
-          startObject: 0,
-          endGroup: 10,
-          endObject: 100,
+          startGroup: 0n,
+          startObject: 0n,
+          endGroup: 10n,
+          endObject: 100n,
         };
 
         const encoded = MessageCodec.encode(message);
@@ -438,15 +438,15 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.FETCH);
         const decodedFetch = decoded as FetchMessage;
-        expect(decodedFetch.requestId).toBe(1);
+        expect(decodedFetch.requestId).toBe(1n);
         expect(decodedFetch.fullTrackName.namespace).toEqual(['conference', 'room-1']);
         expect(decodedFetch.fullTrackName.trackName).toBe('video');
         expect(decodedFetch.subscriberPriority).toBe(128);
         expect(decodedFetch.groupOrder).toBe(GroupOrder.ASCENDING);
-        expect(decodedFetch.startGroup).toBe(0);
-        expect(decodedFetch.startObject).toBe(0);
-        expect(decodedFetch.endGroup).toBe(10);
-        expect(decodedFetch.endObject).toBe(100);
+        expect(decodedFetch.startGroup).toBe(0n);
+        expect(decodedFetch.startObject).toBe(0n);
+        expect(decodedFetch.endGroup).toBe(10n);
+        expect(decodedFetch.endObject).toBe(100n);
       });
 
       it('roundtrips FETCH_OK message', () => {
@@ -454,11 +454,11 @@ describe('MessageCodec', () => {
         // Encode with ASCENDING so the roundtrip is stable across all supported drafts.
         const message: FetchOkMessage = {
           type: MessageType.FETCH_OK,
-          requestId: 1,
+          requestId: 1n,
           groupOrder: GroupOrder.ASCENDING,
           endOfTrack: true,
-          largestGroupId: 50,
-          largestObjectId: 25,
+          largestGroupId: 50n,
+          largestObjectId: 25n,
         };
 
         const encoded = MessageCodec.encode(message);
@@ -466,17 +466,17 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.FETCH_OK);
         const decodedOk = decoded as FetchOkMessage;
-        expect(decodedOk.requestId).toBe(1);
+        expect(decodedOk.requestId).toBe(1n);
         expect(decodedOk.groupOrder).toBe(GroupOrder.ASCENDING);
         expect(decodedOk.endOfTrack).toBe(true);
-        expect(decodedOk.largestGroupId).toBe(50);
-        expect(decodedOk.largestObjectId).toBe(25);
+        expect(decodedOk.largestGroupId).toBe(50n);
+        expect(decodedOk.largestObjectId).toBe(25n);
       });
 
       it('roundtrips FETCH_ERROR message', () => {
         const message: FetchErrorMessage = {
           type: MessageType.FETCH_ERROR,
-          requestId: 1,
+          requestId: 1n,
           errorCode: RequestErrorCode.TRACK_NOT_FOUND,
           reasonPhrase: 'Track not found',
         };
@@ -486,7 +486,7 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.FETCH_ERROR);
         const decodedError = decoded as FetchErrorMessage;
-        expect(decodedError.requestId).toBe(1);
+        expect(decodedError.requestId).toBe(1n);
         expect(decodedError.errorCode).toBe(RequestErrorCode.TRACK_NOT_FOUND);
         expect(decodedError.reasonPhrase).toBe('Track not found');
       });
@@ -494,14 +494,14 @@ describe('MessageCodec', () => {
       it('roundtrips FETCH_CANCEL message', () => {
         const message: FetchCancelMessage = {
           type: MessageType.FETCH_CANCEL,
-          requestId: 5,
+          requestId: 5n,
         };
 
         const encoded = MessageCodec.encode(message);
         const [decoded] = MessageCodec.decode(encoded);
 
         expect(decoded.type).toBe(MessageType.FETCH_CANCEL);
-        expect((decoded as FetchCancelMessage).requestId).toBe(5);
+        expect((decoded as FetchCancelMessage).requestId).toBe(5n);
       });
     });
 
@@ -509,7 +509,7 @@ describe('MessageCodec', () => {
       it('roundtrips TRACK_STATUS message', () => {
         const message: TrackStatusMessage = {
           type: MessageType.TRACK_STATUS,
-          requestId: 1,
+          requestId: 1n,
           fullTrackName: {
             namespace: ['conference'],
             trackName: 'video',
@@ -521,7 +521,7 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.TRACK_STATUS);
         const decodedStatus = decoded as TrackStatusMessage;
-        expect(decodedStatus.requestId).toBe(1);
+        expect(decodedStatus.requestId).toBe(1n);
         expect(decodedStatus.fullTrackName.namespace).toEqual(['conference']);
         expect(decodedStatus.fullTrackName.trackName).toBe('video');
       });
@@ -529,7 +529,7 @@ describe('MessageCodec', () => {
       it('roundtrips TRACK_STATUS_OK message without location', () => {
         const message: TrackStatusOkMessage = {
           type: MessageType.TRACK_STATUS_OK,
-          requestId: 1,
+          requestId: 1n,
           statusCode: TrackStatusCode.NOT_YET_BEGUN,
         };
 
@@ -538,17 +538,17 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.TRACK_STATUS_OK);
         const decodedOk = decoded as TrackStatusOkMessage;
-        expect(decodedOk.requestId).toBe(1);
+        expect(decodedOk.requestId).toBe(1n);
         expect(decodedOk.statusCode).toBe(TrackStatusCode.NOT_YET_BEGUN);
       });
 
       it('roundtrips TRACK_STATUS_OK message with location (IN_PROGRESS)', () => {
         const message: TrackStatusOkMessage = {
           type: MessageType.TRACK_STATUS_OK,
-          requestId: 2,
+          requestId: 2n,
           statusCode: TrackStatusCode.IN_PROGRESS,
-          lastGroupId: 10,
-          lastObjectId: 5,
+          lastGroupId: 10n,
+          lastObjectId: 5n,
         };
 
         const encoded = MessageCodec.encode(message);
@@ -557,17 +557,17 @@ describe('MessageCodec', () => {
         expect(decoded.type).toBe(MessageType.TRACK_STATUS_OK);
         const decodedOk = decoded as TrackStatusOkMessage;
         expect(decodedOk.statusCode).toBe(TrackStatusCode.IN_PROGRESS);
-        expect(decodedOk.lastGroupId).toBe(10);
-        expect(decodedOk.lastObjectId).toBe(5);
+        expect(decodedOk.lastGroupId).toBe(10n);
+        expect(decodedOk.lastObjectId).toBe(5n);
       });
 
       it('roundtrips TRACK_STATUS_OK message with location (FINISHED)', () => {
         const message: TrackStatusOkMessage = {
           type: MessageType.TRACK_STATUS_OK,
-          requestId: 3,
+          requestId: 3n,
           statusCode: TrackStatusCode.FINISHED,
-          lastGroupId: 100,
-          lastObjectId: 50,
+          lastGroupId: 100n,
+          lastObjectId: 50n,
         };
 
         const encoded = MessageCodec.encode(message);
@@ -576,14 +576,14 @@ describe('MessageCodec', () => {
         expect(decoded.type).toBe(MessageType.TRACK_STATUS_OK);
         const decodedOk = decoded as TrackStatusOkMessage;
         expect(decodedOk.statusCode).toBe(TrackStatusCode.FINISHED);
-        expect(decodedOk.lastGroupId).toBe(100);
-        expect(decodedOk.lastObjectId).toBe(50);
+        expect(decodedOk.lastGroupId).toBe(100n);
+        expect(decodedOk.lastObjectId).toBe(50n);
       });
 
       it('roundtrips TRACK_STATUS_ERROR message', () => {
         const message: TrackStatusErrorMessage = {
           type: MessageType.TRACK_STATUS_ERROR,
-          requestId: 1,
+          requestId: 1n,
           errorCode: RequestErrorCode.TRACK_NOT_FOUND,
           reasonPhrase: 'Track does not exist',
         };
@@ -593,7 +593,7 @@ describe('MessageCodec', () => {
 
         expect(decoded.type).toBe(MessageType.TRACK_STATUS_ERROR);
         const decodedError = decoded as TrackStatusErrorMessage;
-        expect(decodedError.requestId).toBe(1);
+        expect(decodedError.requestId).toBe(1n);
         expect(decodedError.errorCode).toBe(RequestErrorCode.TRACK_NOT_FOUND);
         expect(decodedError.reasonPhrase).toBe('Track does not exist');
       });
@@ -604,7 +604,7 @@ describe('MessageCodec', () => {
     it('returns correct bytes consumed for simple message', () => {
       const message: UnsubscribeMessage = {
         type: MessageType.UNSUBSCRIBE,
-        requestId: 42,
+        requestId: 42n,
       };
 
       const encoded = MessageCodec.encode(message);
@@ -616,7 +616,7 @@ describe('MessageCodec', () => {
     it('decodes at specified offset', () => {
       const message: MaxRequestIdMessage = {
         type: MessageType.MAX_REQUEST_ID,
-        maxRequestId: 100,
+        maxRequestId: 100n,
       };
 
       const encoded = MessageCodec.encode(message);
@@ -628,8 +628,81 @@ describe('MessageCodec', () => {
       const [decoded, bytesConsumed] = MessageCodec.decode(withPrefix, 5);
 
       expect(decoded.type).toBe(MessageType.MAX_REQUEST_ID);
-      expect((decoded as MaxRequestIdMessage).maxRequestId).toBe(100);
+      expect((decoded as MaxRequestIdMessage).maxRequestId).toBe(100n);
       expect(bytesConsumed).toBe(encoded.length);
+    });
+  });
+
+  describe('62-bit varint precision (Wave 2 Track F)', () => {
+    // QUIC varints (RFC 9000 §16) can carry up to 2^62 - 1 = 4611686018427387903.
+    // JavaScript Number can only represent integers precisely up to 2^53 - 1
+    // (Number.MAX_SAFE_INTEGER = 9007199254740991), so any request ID above that
+    // MUST survive the round-trip through the codec as a bigint. Losing precision
+    // here would silently corrupt request ID matching on session state.
+    it('roundtrips a SUBSCRIBE request ID above 2^53 without precision loss', () => {
+      // 2^53 + 1 - exactly one greater than Number.MAX_SAFE_INTEGER
+      const largeRequestId = (1n << 53n) + 1n;
+      expect(largeRequestId).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
+
+      const message: SubscribeMessage = {
+        type: MessageType.SUBSCRIBE,
+        requestId: largeRequestId,
+        fullTrackName: {
+          namespace: ['large-request-ids'],
+          trackName: 'video',
+        },
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        filterType: FilterType.LATEST_GROUP,
+      };
+
+      const encoded = MessageCodec.encode(message);
+      const [decoded] = MessageCodec.decode(encoded);
+
+      const decodedSub = decoded as SubscribeMessage;
+      // Exact bigint equality - Number() coercion would drop the low bit
+      expect(decodedSub.requestId).toBe(largeRequestId);
+      // Confirm precision loss detection: forcing through Number would collapse
+      // to the same value as 2^53 (i.e. 9007199254740992).
+      expect(Number(decodedSub.requestId)).not.toBe(Number(largeRequestId + 1n));
+    });
+
+    it('roundtrips a FETCH range with 62-bit group / object IDs', () => {
+      // Near the 62-bit varint ceiling (2^62 - 1).
+      const nearMax = (1n << 62n) - 1n;
+      const message: FetchMessage = {
+        type: MessageType.FETCH,
+        requestId: (1n << 53n) + 42n,
+        fullTrackName: { namespace: ['huge'], trackName: 'video' },
+        subscriberPriority: 128,
+        groupOrder: GroupOrder.ASCENDING,
+        startGroup: nearMax - 10n,
+        startObject: 0n,
+        endGroup: nearMax,
+        endObject: 0n,
+      };
+
+      const encoded = MessageCodec.encode(message);
+      const [decoded] = MessageCodec.decode(encoded);
+      const decodedFetch = decoded as FetchMessage;
+
+      expect(decodedFetch.requestId).toBe(message.requestId);
+      expect(decodedFetch.startGroup).toBe(message.startGroup);
+      expect(decodedFetch.endGroup).toBe(message.endGroup);
+    });
+
+    it('roundtrips MAX_REQUEST_ID above Number.MAX_SAFE_INTEGER', () => {
+      // Chosen to require the full 8-byte varint form.
+      const huge = 1n << 60n;
+      const message: MaxRequestIdMessage = {
+        type: MessageType.MAX_REQUEST_ID,
+        maxRequestId: huge,
+      };
+
+      const encoded = MessageCodec.encode(message);
+      const [decoded] = MessageCodec.decode(encoded);
+
+      expect((decoded as MaxRequestIdMessage).maxRequestId).toBe(huge);
     });
   });
 
@@ -745,7 +818,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it.skipIf(IS_DRAFT_18)('decodes standard MOQT subgroup header (0x04)', () => {
+    it.skipIf(DEFAULT_DRAFT === 'draft-18')('decodes standard MOQT subgroup header (0x04)', () => {
       // Manually construct a standard MOQT subgroup header
       // Standard MOQT format: type(varint) + trackAlias(varint) + groupId(varint) + subgroupId(varint) + publisherPriority(varint)
       const buffer = new Uint8Array([
@@ -769,13 +842,13 @@ describe('ObjectCodec', () => {
   describe('fetch header encoding/decoding', () => {
     it('roundtrips fetch header', () => {
       const header: FetchHeader = {
-        requestId: 12345,
+        requestId: 12345n,
       };
 
       const encoded = ObjectCodec.encodeFetchHeader(header);
       const [decoded, bytesConsumed] = ObjectCodec.decodeFetchHeader(encoded);
 
-      expect(decoded.requestId).toBe(12345);
+      expect(decoded.requestId).toBe(12345n);
       expect(bytesConsumed).toBe(encoded.length);
     });
 

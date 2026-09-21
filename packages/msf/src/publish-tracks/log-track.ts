@@ -130,12 +130,29 @@ export function logGroupIdFromMicros(micros: bigint): bigint {
  * but at minimum a `message` or structured `body` is expected.
  * Extra fields (OpenTelemetry `TraceID`, `SpanID`, `InstrumentationScope`,
  * `Attributes`) are passthrough.
+ *
+ * ## `timestamp` JSON bigint contract (Wave 3J)
+ *
+ * `timestamp` MAY be:
+ *   - a JSON `number` (safe-integer epoch millis/nanos ≤ 2^53-1), or
+ *   - a JSON `string` — either ISO-8601 (`2026-01-01T00:00:00Z`) or a
+ *     decimal integer (nanosecond / high-precision timestamps that would
+ *     overflow `Number.MAX_SAFE_INTEGER`).
+ *
+ * The schema deliberately keeps `string` unchanged so a caller inspecting
+ * a > 2^53 timestamp gets the exact decimal digits and can parse it with
+ * `BigInt(...)` without precision loss. See {@link ../schemas/timeline.ts}
+ * for the wider JSON bigint contract.
  */
 export const LogEntrySchema = z
   .object({
     /** RFC 5424-style severity (0 Emergency … 7 Debug). */
     severity: z.number().int().min(0).max(7).optional(),
-    /** ISO-8601 or epoch-ms capture timestamp. */
+    /**
+     * Capture timestamp. Either ISO-8601 (`string`), epoch millis (`number`),
+     * or a decimal-string encoding for > 2^53 nanosecond timestamps.
+     * See file-level docstring for the bigint round-trip contract.
+     */
     timestamp: z.union([z.string(), z.number()]).optional(),
     /** Origin host. */
     hostname: z.string().optional(),

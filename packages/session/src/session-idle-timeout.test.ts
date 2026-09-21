@@ -22,14 +22,16 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  IS_DRAFT_18,
   MOQTransport,
   SessionErrorCodeDraft18,
+  DEFAULT_DRAFT,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 import type { SessionTerminatedEvent } from './types.js';
 
+
+const IS_DRAFT_18 = DEFAULT_DRAFT === 'draft-18';
 interface IdleTestInternals {
   _state: string;
   lastOutboundActivityMs: number;

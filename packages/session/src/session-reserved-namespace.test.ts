@@ -15,10 +15,15 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { IS_DRAFT_18, MOQTransport } from '@moq-web/core';
+import {
+  MOQTransport,
+  DEFAULT_DRAFT,
+} from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 
+
+const IS_DRAFT_18 = DEFAULT_DRAFT === 'draft-18';
 function makeReadySession(): MOQTSession {
   const transport = new MOQTransport();
   (transport as unknown as { close: typeof transport.close }).close = vi.fn().mockResolvedValue(undefined);

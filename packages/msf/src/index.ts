@@ -13,6 +13,26 @@
  * - URL encoding for track references
  * - Session integration for catalog publication/subscription
  *
+ * ## JSON bigint contract (Wave 3 Track J)
+ *
+ * Wave 2 Track F migrated MOQT 62-bit varints (`groupId`, `objectId`,
+ * subscribe aliases, expiries, capture-nanosecond timestamps, …) from
+ * `number` to `bigint` end-to-end across session/media/core. MSF documents
+ * (§5 catalogs, §11 media timelines, §12 event timelines, §13 moqlog,
+ * §14 moqmetrics) transit as JSON, and JSON has **no bigint type** —
+ * values > `Number.MAX_SAFE_INTEGER` (2^53-1) silently lose precision if
+ * serialized as plain numbers.
+ *
+ * Every u62 wire field in this package therefore accepts a JSON `number`
+ * (values ≤ 2^53-1), a JSON decimal `string` (any u62), or a native
+ * `bigint`, and the schema transforms all forms to `bigint` on parse.
+ * Codec paths (encode/decode/serialize helpers) additionally preserve the
+ * caller-provided form for pre-Wave-3 wire compatibility: small numeric
+ * values stay as JSON `number`, and only values that would overflow are
+ * emitted as JSON strings. See {@link ./schemas/timeline.ts} for the full
+ * contract and {@link ./schemas/bigint-json.test.ts} for the round-trip
+ * verification suite.
+ *
  * @packageDocumentation
  *
  * @example

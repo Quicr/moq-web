@@ -52,13 +52,58 @@ import {
 
 const log = Logger.create('moqt:core:draft18-codec');
 
+// Module-level singletons — TextEncoder/TextDecoder are safe to reuse and
+// allocating per-call showed up as measurable overhead on the encode/decode
+// hot path.
+const TE = new TextEncoder();
+const TD = new TextDecoder();
+
 export class Draft18CodecError extends Error {
   messageType?: MessageTypeDraft18;
+  /**
+   * Machine-readable error tag. Set to `'bounds-exceeded'` when a decoded
+   * length or count exceeds a codec safety bound (B1 SEC). Callers may key on
+   * this to distinguish untrusted-peer DoS attempts from other decode failures
+   * and to terminate the session with PROTOCOL_VIOLATION.
+   */
+  code?: string;
 
-  constructor(message: string, messageType?: MessageTypeDraft18) {
+  constructor(message: string, messageType?: MessageTypeDraft18, code?: string) {
     super(message);
     this.name = 'Draft18CodecError';
     this.messageType = messageType;
+    this.code = code;
+  }
+}
+
+// =============================================================================
+// Codec Safety Bounds (B1 SEC)
+// =============================================================================
+// These bounds cap how much work an attacker can force a decoder to perform
+// with a single control message. They are intentionally generous enough to
+// support real MOQT deployments (draft-18 §10) but small enough to prevent
+// pathological allocations from a malicious peer. Any decoded length or count
+// exceeding a bound triggers a Draft18CodecError tagged with
+// `code: 'bounds-exceeded'` so the session can terminate the peer.
+export const MAX_PARAMETER_COUNT = 64;
+export const MAX_STRING_LENGTH = 4096;
+export const MAX_NAMESPACE_TUPLE_COUNT = 32;
+export const MAX_TRACK_NAME_LENGTH = 4096;
+export const MAX_AUTH_TOKEN_LENGTH = 16384;
+
+function assertBound(
+  actual: number,
+  limit: number,
+  what: string,
+  messageType?: MessageTypeDraft18,
+): void {
+  // Reject NaN/negatives from a corrupt varint decode as well as overflows.
+  if (!Number.isFinite(actual) || actual < 0 || actual > limit) {
+    throw new Draft18CodecError(
+      `${what} ${actual} exceeds safety bound ${limit}`,
+      messageType,
+      'bounds-exceeded',
+    );
   }
 }
 
@@ -285,7 +330,7 @@ export class Draft18MessageCodec {
       options.push({
         key: SetupOptionDraft18.PATH,
         encode: (w) => {
-          const bytes = new TextEncoder().encode(message.path!);
+          const bytes = TE.encode(message.path!);
           w.writeVarInt(BigInt(bytes.length));
           w.writeBytes(bytes);
         },
@@ -312,7 +357,7 @@ export class Draft18MessageCodec {
       options.push({
         key: SetupOptionDraft18.AUTHORITY,
         encode: (w) => {
-          const bytes = new TextEncoder().encode(message.authority!);
+          const bytes = TE.encode(message.authority!);
           w.writeVarInt(BigInt(bytes.length));
           w.writeBytes(bytes);
         },
@@ -322,7 +367,7 @@ export class Draft18MessageCodec {
       options.push({
         key: SetupOptionDraft18.MOQT_IMPLEMENTATION,
         encode: (w) => {
-          const bytes = new TextEncoder().encode(message.moqtImplementation!);
+          const bytes = TE.encode(message.moqtImplementation!);
           w.writeVarInt(BigInt(bytes.length));
           w.writeBytes(bytes);
         },
@@ -400,7 +445,8 @@ export class Draft18MessageCodec {
       switch (key) {
         case SetupOptionDraft18.PATH: {
           const length = reader.readVarIntNumber();
-          path = new TextDecoder().decode(reader.readBytes(length));
+          assertBound(length, MAX_STRING_LENGTH, 'SETUP PATH length', MessageTypeDraft18.SETUP);
+          path = TD.decode(reader.readBytes(length));
           break;
         }
         case SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE:
@@ -408,6 +454,7 @@ export class Draft18MessageCodec {
           break;
         case SetupOptionDraft18.AUTHORIZATION_TOKEN: {
           const length = reader.readVarIntNumber();
+          assertBound(length, MAX_AUTH_TOKEN_LENGTH, 'SETUP AUTHORIZATION_TOKEN length', MessageTypeDraft18.SETUP);
           // Copy so callers can hold onto the token past the decode buffer's
           // lifetime; downstream code decodes via MessageCodec.decodeAuthorizationToken.
           authToken = new Uint8Array(reader.readBytes(length));
@@ -415,12 +462,14 @@ export class Draft18MessageCodec {
         }
         case SetupOptionDraft18.AUTHORITY: {
           const length = reader.readVarIntNumber();
-          authority = new TextDecoder().decode(reader.readBytes(length));
+          assertBound(length, MAX_STRING_LENGTH, 'SETUP AUTHORITY length', MessageTypeDraft18.SETUP);
+          authority = TD.decode(reader.readBytes(length));
           break;
         }
         case SetupOptionDraft18.MOQT_IMPLEMENTATION: {
           const length = reader.readVarIntNumber();
-          moqtImplementation = new TextDecoder().decode(reader.readBytes(length));
+          assertBound(length, MAX_STRING_LENGTH, 'SETUP MOQT_IMPLEMENTATION length', MessageTypeDraft18.SETUP);
+          moqtImplementation = TD.decode(reader.readBytes(length));
           break;
         }
         default:
@@ -432,6 +481,7 @@ export class Draft18MessageCodec {
             extensions.set(key, { varint: reader.readVarInt() });
           } else {
             const length = reader.readVarIntNumber();
+            assertBound(length, MAX_STRING_LENGTH, 'SETUP extension length', MessageTypeDraft18.SETUP);
             const bytes = reader.readBytes(length);
             // Copy so callers can hold on to the slice beyond the decode
             // scratch buffer's lifetime.
@@ -522,10 +572,11 @@ export class Draft18MessageCodec {
 
   private static decodeSubscribe(reader: Draft18BufferReader): SubscribeMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
-    const trackName = Draft18MessageCodec.decodeString(reader);
+    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE);
+    const trackName = Draft18MessageCodec.decodeTrackName(reader, MessageTypeDraft18.SUBSCRIBE);
 
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE numParams', MessageTypeDraft18.SUBSCRIBE);
     let filter = SubscriptionFilterDraft18.NEXT_GROUP_START;
     let startLocation: Location | undefined;
     let endGroupDelta: bigint | undefined;
@@ -539,6 +590,7 @@ export class Draft18MessageCodec {
 
       if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
         const length = reader.readVarIntNumber();
+        assertBound(length, MAX_STRING_LENGTH, 'SUBSCRIBE SUBSCRIPTION_FILTER length', MessageTypeDraft18.SUBSCRIBE);
         const filterBytes = reader.readBytes(length);
         const filterReader = new Draft18BufferReader(filterBytes, 0);
         filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
@@ -603,6 +655,7 @@ export class Draft18MessageCodec {
     const trackAlias = reader.readVarInt();
 
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_OK numParams', MessageTypeDraft18.SUBSCRIBE_OK);
     let largestLocation: Location = { group: 0n, object: 0n };
     let expires: bigint | undefined;
 
@@ -669,12 +722,13 @@ export class Draft18MessageCodec {
 
   private static decodePublish(reader: Draft18BufferReader): PublishMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
-    const trackName = Draft18MessageCodec.decodeString(reader);
+    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH);
+    const trackName = Draft18MessageCodec.decodeTrackName(reader, MessageTypeDraft18.PUBLISH);
     const trackAlias = reader.readVarInt();
 
     // Message Parameters (count-prefixed)
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH numParams', MessageTypeDraft18.PUBLISH);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const delta = reader.readVarIntNumber();
@@ -787,6 +841,7 @@ export class Draft18MessageCodec {
   private static decodeRequestOk(reader: Draft18BufferReader): RequestOkMessageDraft18 {
     // Draft-18 REQUEST_OK: Number of Parameters | Parameters | Track Properties (..)
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'REQUEST_OK numParams', MessageTypeDraft18.REQUEST_OK);
     let expires: bigint | undefined;
     let largestLocation: Location | undefined;
 
@@ -908,8 +963,8 @@ export class Draft18MessageCodec {
     const joiningFlag = fetchType !== FetchTypeDraft18.STANDALONE;
 
     if (fetchType === FetchTypeDraft18.STANDALONE) {
-      trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
-      trackName = Draft18MessageCodec.decodeString(reader);
+      trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.FETCH);
+      trackName = Draft18MessageCodec.decodeTrackName(reader, MessageTypeDraft18.FETCH);
       startLocation = Draft18MessageCodec.decodeLocation(reader);
       endLocation = Draft18MessageCodec.decodeLocation(reader);
     } else {
@@ -920,6 +975,7 @@ export class Draft18MessageCodec {
 
     // Parameters
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'FETCH numParams', MessageTypeDraft18.FETCH);
     let subscriberPriority = 0;
     let groupOrder = GroupOrder.ASCENDING as GroupOrder;
     const parameters = new Map<number, Uint8Array>();
@@ -970,6 +1026,7 @@ export class Draft18MessageCodec {
     const endLocation = Draft18MessageCodec.decodeLocation(reader);
 
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'FETCH_OK numParams', MessageTypeDraft18.FETCH_OK);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const delta = reader.readVarIntNumber();
@@ -1028,9 +1085,10 @@ export class Draft18MessageCodec {
 
   private static decodeTrackStatus(reader: Draft18BufferReader): TrackStatusMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
-    const trackName = Draft18MessageCodec.decodeString(reader);
+    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.TRACK_STATUS);
+    const trackName = Draft18MessageCodec.decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS);
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'TRACK_STATUS numParams', MessageTypeDraft18.TRACK_STATUS);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const delta = reader.readVarIntNumber();
@@ -1110,6 +1168,7 @@ export class Draft18MessageCodec {
   private static decodeRequestUpdate(reader: Draft18BufferReader): RequestUpdateMessageDraft18 {
     const requestId = reader.readVarInt();
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'REQUEST_UPDATE numParams', MessageTypeDraft18.REQUEST_UPDATE);
     let previousType = 0;
     let forwardState = true;
     const parameters = new Map<number, Uint8Array>();
@@ -1146,8 +1205,9 @@ export class Draft18MessageCodec {
 
   private static decodePublishNamespace(reader: Draft18BufferReader): PublishNamespaceMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader);
+    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_NAMESPACE);
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH_NAMESPACE numParams', MessageTypeDraft18.PUBLISH_NAMESPACE);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const delta = reader.readVarIntNumber();
@@ -1176,8 +1236,9 @@ export class Draft18MessageCodec {
 
   private static decodeSubscribeNamespace(reader: Draft18BufferReader): SubscribeNamespaceMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader);
+    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_NAMESPACE numParams', MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const delta = reader.readVarIntNumber();
@@ -1295,9 +1356,10 @@ export class Draft18MessageCodec {
 
   private static decodeSubscribeTracks(reader: Draft18BufferReader): SubscribeTracksMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader);
+    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_TRACKS);
 
     const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_TRACKS numParams', MessageTypeDraft18.SUBSCRIBE_TRACKS);
     let forwardState = true;
     let filter = SubscriptionFilterDraft18.NEXT_GROUP_START;
     let startLocation: Location | undefined;
@@ -1315,6 +1377,7 @@ export class Draft18MessageCodec {
         forwardState = reader.readByte() === 0x01;
       } else if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
         const length = reader.readVarIntNumber();
+        assertBound(length, MAX_STRING_LENGTH, 'SUBSCRIBE_TRACKS SUBSCRIPTION_FILTER length', MessageTypeDraft18.SUBSCRIBE_TRACKS);
         const filterBytes = reader.readBytes(length);
         const filterReader = new Draft18BufferReader(filterBytes, 0);
         filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
@@ -1367,33 +1430,48 @@ export class Draft18MessageCodec {
   private static encodeTrackNamespace(writer: Draft18BufferWriter, namespace: TrackNamespace): void {
     writer.writeVarInt(namespace.length);
     for (const field of namespace) {
-      const bytes = new TextEncoder().encode(field);
+      const bytes = TE.encode(field);
       writer.writeVarInt(bytes.length);
       writer.writeBytes(bytes);
     }
   }
 
-  private static decodeTrackNamespace(reader: Draft18BufferReader): TrackNamespace {
+  private static decodeTrackNamespace(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): TrackNamespace {
     const count = reader.readVarIntNumber();
+    assertBound(count, MAX_NAMESPACE_TUPLE_COUNT, 'TrackNamespace tuple count', messageType);
     const namespace: string[] = [];
     for (let i = 0; i < count; i++) {
       const length = reader.readVarIntNumber();
+      assertBound(length, MAX_STRING_LENGTH, 'TrackNamespace field length', messageType);
       const bytes = reader.readBytes(length);
-      namespace.push(new TextDecoder().decode(bytes));
+      namespace.push(TD.decode(bytes));
     }
     return namespace;
   }
 
   private static encodeString(writer: Draft18BufferWriter, str: string): void {
-    const bytes = new TextEncoder().encode(str);
+    const bytes = TE.encode(str);
     writer.writeVarInt(bytes.length);
     writer.writeBytes(bytes);
   }
 
-  private static decodeString(reader: Draft18BufferReader): string {
+  private static decodeString(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): string {
     const length = reader.readVarIntNumber();
+    assertBound(length, MAX_STRING_LENGTH, 'string length', messageType);
     const bytes = reader.readBytes(length);
-    return new TextDecoder().decode(bytes);
+    return TD.decode(bytes);
+  }
+
+  /**
+   * Decode a Track Name (§10.7) — same wire format as decodeString but caps at
+   * MAX_TRACK_NAME_LENGTH (which happens to equal MAX_STRING_LENGTH today, but
+   * is a distinct semantic bound so we tag errors appropriately).
+   */
+  private static decodeTrackName(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): string {
+    const length = reader.readVarIntNumber();
+    assertBound(length, MAX_TRACK_NAME_LENGTH, 'TrackName length', messageType);
+    const bytes = reader.readBytes(length);
+    return TD.decode(bytes);
   }
 
   private static encodeLocation(writer: Draft18BufferWriter, location: Location): void {
@@ -1454,11 +1532,16 @@ export class Draft18MessageCodec {
         result.set(oBytes, gBytes.length);
         return result;
       }
-      case RequestParameterDraft18.AUTHORIZATION_TOKEN:
+      case RequestParameterDraft18.AUTHORIZATION_TOKEN: {
+        const length = reader.readVarIntNumber();
+        assertBound(length, MAX_AUTH_TOKEN_LENGTH, 'AUTHORIZATION_TOKEN parameter length');
+        return reader.readBytes(length);
+      }
       case RequestParameterDraft18.SUBSCRIPTION_FILTER:
       case RequestParameterDraft18.TRACK_NAMESPACE_PREFIX:
       default: {
         const length = reader.readVarIntNumber();
+        assertBound(length, MAX_STRING_LENGTH, 'parameter value length');
         return reader.readBytes(length);
       }
     }
@@ -1496,6 +1579,7 @@ export class Draft18MessageCodec {
         pairs.set(key, MOQTVarInt.encode(value));
       } else {
         const length = reader.readVarIntNumber();
+        assertBound(length, MAX_STRING_LENGTH, 'KVP value length');
         pairs.set(key, reader.readBytes(length));
       }
     }

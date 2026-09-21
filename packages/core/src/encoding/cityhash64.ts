@@ -18,6 +18,9 @@ const k0 = 0xc3a5c85c97cb3127n;
 const k1 = 0xb492b66fbe98f273n;
 const k2 = 0x9ae16a3b2f90404fn;
 
+// Module-level singleton — TextEncoder is safe to reuse.
+const TE = new TextEncoder();
+
 // Mask for 64-bit operations
 const MASK64 = 0xffffffffffffffffn;
 
@@ -278,7 +281,7 @@ export function computeTrackAlias(namespace: string[], trackName: string): bigin
   // Encode namespace: each element is length-prefixed
   const namespaceBytes: number[] = [];
   for (const ns of namespace) {
-    const encoded = new TextEncoder().encode(ns);
+    const encoded = TE.encode(ns);
     // Write length as varint (simplified - just use 1-2 bytes for common lengths)
     if (encoded.length < 64) {
       namespaceBytes.push(encoded.length);
@@ -296,7 +299,7 @@ export function computeTrackAlias(namespace: string[], trackName: string): bigin
   }
 
   // Encode track name
-  const trackNameBytes = new TextEncoder().encode(trackName);
+  const trackNameBytes = TE.encode(trackName);
 
   // Hash namespace
   const namespaceHash = cityHash64(new Uint8Array(namespaceBytes));

@@ -14,8 +14,9 @@ import type {
   TransportWorkerResponse,
   TransportState,
   StreamInfo,
+  TransportWorkerMetricEvent,
 } from './transport-worker-types.js';
-import { getCurrentALPNProtocol, IS_DRAFT_16, IS_DRAFT_18, MOQTVarInt, StreamTypeDraft18 } from '@moq-web/core';
+import { alpnProtocolFor, DEFAULT_DRAFT, MOQTVarInt, StreamTypeDraft18, type DraftVersion } from '@moq-web/core';
 
 // Worker state
 let transport: WebTransport | null = null;
@@ -25,6 +26,12 @@ let setupWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 let currentState: TransportState = 'disconnected';
 let debug = false;
+/**
+ * Draft version this worker instance is speaking. Set on `connect()` from
+ * `TransportWorkerConfig.draft`; used to select ALPN and setup-stream layout.
+ */
+let workerDraft: DraftVersion = DEFAULT_DRAFT;
+const isDraft18 = () => workerDraft === 'draft-18';
 // True when the local side called disconnect() before `transport.closed` resolved;
 // used to distinguish local vs peer-initiated close in the disconnected event.
 let localDisconnectInitiated = false;
@@ -32,6 +39,17 @@ let localDisconnectInitiated = false;
 // Stream management
 const outgoingStreams = new Map<number, StreamInfo>();
 let nextStreamId = 0;
+
+/**
+ * Pending close promises for per-object streams.
+ *
+ * We fire-and-forget `writer.close()` after the final write so the message
+ * handler doesn't block waiting on stream close roundtrips — this is
+ * especially important for stream-per-object delivery where the caller may
+ * open thousands of streams per second. We track the promises so `cleanup()`
+ * can drain them on disconnect.
+ */
+const pendingCloses = new Set<Promise<void>>();
 
 /**
  * Log helper
@@ -54,6 +72,28 @@ function respond(msg: TransportWorkerResponse, transfer?: Transferable[]): void 
 }
 
 /**
+ * Forward a single metric event to the main thread. Workers are their own
+ * realm and can't reach the session's `MetricsSink` directly, so we ship
+ * every counter/gauge/histogram observation via postMessage and the
+ * `TransportWorkerClient` on the main thread replays it against the sink.
+ *
+ * Kept intentionally small (no attribute allocation on the fast path when
+ * `attrs` is undefined) so the byte-counter that fires per stream chunk
+ * remains cheap.
+ */
+function metric(
+  kind: TransportWorkerMetricEvent['kind'],
+  name: string,
+  value: number,
+  attrs?: Record<string, string>,
+): void {
+  const ev: TransportWorkerMetricEvent = attrs
+    ? { kind, name, value, attrs }
+    : { kind, name, value };
+  respond({ type: 'metric', metric: ev });
+}
+
+/**
  * Update state and notify main thread
  */
 function setState(state: TransportState): void {
@@ -72,26 +112,15 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
   }
 
   debug = config.debug ?? false;
+  workerDraft = config.draft ?? DEFAULT_DRAFT;
   localDisconnectInitiated = false;
-  log('Connecting to', config.url);
+  log('Connecting to', config.url, 'as', workerDraft);
   setState('connecting');
 
   try {
-    // Build WebTransport options
-    // Only set protocols (WT-Available-Protocols) for draft-16+
-    // Draft-14 relays don't support WebTransport protocol negotiation
     const options: WebTransportOptions & { protocols?: string[] } = {};
-    const alpnProtocol = getCurrentALPNProtocol();
-    console.log('[transport-worker] Version check:', {
-      IS_DRAFT_16,
-      IS_DRAFT_18,
-      alpnProtocol,
-      willSetProtocols: IS_DRAFT_16 || IS_DRAFT_18,
-    });
-    if (IS_DRAFT_16 || IS_DRAFT_18) {
-      options.protocols = [alpnProtocol];
-    }
-    console.log('[transport-worker] WebTransport options:', JSON.stringify(options));
+    const alpnProtocol = alpnProtocolFor(workerDraft);
+    options.protocols = [alpnProtocol];
     if (config.serverCertificateHashes?.length) {
       options.serverCertificateHashes = config.serverCertificateHashes.map((hash) => ({
         algorithm: 'sha-256',
@@ -111,7 +140,7 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     await Promise.race([transport.ready, timeoutPromise]);
     log('WebTransport connected');
 
-    if (IS_DRAFT_18) {
+    if (isDraft18()) {
       // Draft-18: Setup uses unidirectional stream with 0x2F00 type prefix
       const setupStream = await transport.createUnidirectionalStream();
       log('Draft-18 setup stream created', { streamId: (setupStream as any).id ?? (setupStream as any).streamId ?? 'unknown' });
@@ -129,7 +158,7 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
     datagramWriter = transport.datagrams.writable.getWriter();
 
     // Start listeners
-    if (!IS_DRAFT_18) {
+    if (!isDraft18()) {
       listenForControlMessages();
     }
     listenForDatagrams();
@@ -196,6 +225,10 @@ function cleanup(): void {
   setupStreamTypeSent = false;
   outgoingStreams.clear();
   nextStreamId = 0;
+  // Discard tracked close promises — the underlying transport is going away
+  // so any still-inflight close() will resolve/reject on its own; we just no
+  // longer need to observe them.
+  pendingCloses.clear();
 }
 
 /**
@@ -213,9 +246,10 @@ async function listenForControlMessages(): Promise<void> {
         break;
       }
 
-      // Transfer buffer to main thread
-      const data = new Uint8Array(value);
-      respond({ type: 'control-message', data }, [data.buffer]);
+      // Zero-copy: WHATWG streams give ownership of the chunk to the reader,
+      // so we can transfer its underlying buffer without copying.
+      metric('counter', 'moq.transport.bytes_in', value.length);
+      respond({ type: 'control-message', data: value }, [value.buffer]);
     }
   } catch (err) {
     if (transport) {
@@ -241,9 +275,10 @@ async function listenForDatagrams(): Promise<void> {
         break;
       }
 
-      // Transfer buffer to main thread
-      const data = new Uint8Array(value);
-      respond({ type: 'datagram', data }, [data.buffer]);
+      // Zero-copy transfer of the chunk buffer to the main thread.
+      metric('counter', 'moq.transport.datagram.in', 1);
+      metric('counter', 'moq.transport.bytes_in', value.length);
+      respond({ type: 'datagram', data: value }, [value.buffer]);
     }
   } catch (err) {
     if (transport) {
@@ -270,7 +305,8 @@ async function listenForIncomingStreams(): Promise<void> {
       }
 
       console.log('[transport-worker] Received incoming unidirectional stream');
-      if (IS_DRAFT_18) {
+      metric('counter', 'moq.transport.stream.opened', 1, { direction: 'inbound' });
+      if (isDraft18()) {
         handleDraft18IncomingStream(stream);
       } else {
         const streamId = nextStreamId++;
@@ -312,15 +348,16 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
       // Setup stream from server — forward remaining bytes + continue reading as setup messages
       const remaining = firstChunk.subarray(bytesRead);
       if (remaining.length > 0) {
-        const data = new Uint8Array(remaining);
-        respond({ type: 'setup-message', data }, [data.buffer]);
+        // Zero-copy transfer: `remaining` shares firstChunk.buffer; the postMessage
+        // transfers the underlying ArrayBuffer, detaching firstChunk (safe — we
+        // extract streamType/bytesRead before this).
+        respond({ type: 'setup-message', data: remaining }, [remaining.buffer]);
       }
       // Continue reading setup stream messages
       while (true) {
         const { value, done: d } = await reader.read();
         if (d) break;
-        const data = new Uint8Array(value);
-        respond({ type: 'setup-message', data }, [data.buffer]);
+        respond({ type: 'setup-message', data: value }, [value.buffer]);
       }
     } else {
       // Data stream (subgroup) — forward full chunk including stream type byte
@@ -329,19 +366,22 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
       console.log('[transport-worker] Incoming DATA stream', { streamId, streamType: `0x${streamTypeNum.toString(16)}`, chunkSize: firstChunk.length });
       respond({ type: 'incoming-stream', streamId });
 
-      // Send full first chunk (stream type byte is part of the subgroup header)
-      const data = new Uint8Array(firstChunk);
-      respond({ type: 'stream-data', streamId, data }, [data.buffer]);
+      // Zero-copy: transfer firstChunk buffer (stream type byte is part of the
+      // subgroup header the main thread parses).
+      const firstLen = firstChunk.length;
+      metric('counter', 'moq.transport.bytes_in', firstLen);
+      respond({ type: 'stream-data', streamId, data: firstChunk }, [firstChunk.buffer]);
       // Continue forwarding data
-      let totalForwarded = firstChunk.length;
+      let totalForwarded = firstLen;
       while (true) {
         const { value, done: d } = await reader.read();
         if (d) break;
         totalForwarded += value.length;
-        const d2 = new Uint8Array(value);
-        respond({ type: 'stream-data', streamId, data: d2 }, [d2.buffer]);
+        metric('counter', 'moq.transport.bytes_in', value.length);
+        respond({ type: 'stream-data', streamId, data: value }, [value.buffer]);
       }
       console.log('[transport-worker] Data stream ended', { streamId, totalForwarded });
+      metric('counter', 'moq.transport.stream.closed', 1, { direction: 'inbound' });
       respond({ type: 'stream-closed', streamId });
     }
   } catch (err) {
@@ -363,13 +403,14 @@ async function handleIncomingStreamData(
       const { value, done } = await reader.read();
       if (done) break;
 
-      // Transfer buffer to main thread
-      const data = new Uint8Array(value);
-      respond({ type: 'stream-data', streamId, data }, [data.buffer]);
+      // Zero-copy transfer to the main thread.
+      metric('counter', 'moq.transport.bytes_in', value.length);
+      respond({ type: 'stream-data', streamId, data: value }, [value.buffer]);
     }
   } catch (err) {
     log('Stream read error', { streamId, error: (err as Error).message });
   } finally {
+    metric('counter', 'moq.transport.stream.closed', 1, { direction: 'inbound' });
     respond({ type: 'stream-closed', streamId });
   }
 }
@@ -395,6 +436,7 @@ async function listenForIncomingBidiStreams(): Promise<void> {
       const writer = stream.writable.getWriter();
       outgoingStreams.set(streamId, { id: streamId, writer });
       log('Incoming bidi stream', { streamId });
+      metric('counter', 'moq.transport.stream.opened', 1, { direction: 'inbound-bidi' });
       respond({ type: 'incoming-bidi-stream', streamId });
 
       // Read from the readable side
@@ -449,7 +491,7 @@ function handleConnectionClosed(): void {
 let setupStreamTypeSent = false;
 
 async function sendControl(data: Uint8Array): Promise<void> {
-  if (IS_DRAFT_18) {
+  if (isDraft18()) {
     if (!setupWriter) {
       respond({ type: 'error', message: 'Setup stream not connected' });
       return;
@@ -470,6 +512,7 @@ async function sendControl(data: Uint8Array): Promise<void> {
         .map(b => b.toString(16).padStart(2, '0')).join(' ');
       log('sendControl (draft-18)', { length: toWrite.length, hex, firstMessage: !setupStreamTypeSent });
       await setupWriter.write(toWrite);
+      metric('counter', 'moq.transport.bytes_out', toWrite.length);
       log('sendControl written successfully');
     } catch (err) {
       log('sendControl error', { error: (err as Error).message });
@@ -482,6 +525,7 @@ async function sendControl(data: Uint8Array): Promise<void> {
     }
     try {
       await controlWriter.write(data);
+      metric('counter', 'moq.transport.bytes_out', data.length);
     } catch (err) {
       respond({ type: 'error', message: (err as Error).message });
     }
@@ -499,6 +543,8 @@ async function sendDatagram(data: Uint8Array): Promise<void> {
 
   try {
     await datagramWriter.write(data);
+    metric('counter', 'moq.transport.datagram.out', 1);
+    metric('counter', 'moq.transport.bytes_out', data.length);
   } catch (err) {
     respond({ type: 'error', message: (err as Error).message });
   }
@@ -521,6 +567,7 @@ async function createStream(requestId: number): Promise<void> {
     outgoingStreams.set(streamId, { id: requestId, writer });
     log('Created stream', { requestId, streamId });
 
+    metric('counter', 'moq.transport.stream.opened', 1, { direction: 'outbound' });
     respond({ type: 'stream-created', id: requestId, streamId });
   } catch (err) {
     respond({ type: 'error', message: (err as Error).message });
@@ -544,6 +591,7 @@ async function createBidiStream(requestId: number): Promise<void> {
     outgoingStreams.set(streamId, { id: requestId, writer });
     log('Created bidi stream', { requestId, streamId });
 
+    metric('counter', 'moq.transport.stream.opened', 1, { direction: 'outbound-bidi' });
     respond({ type: 'bidi-stream-created', id: requestId, streamId });
 
     // Start reading from the readable side
@@ -565,6 +613,7 @@ async function readBidiStream(streamId: number, readable: ReadableStream<Uint8Ar
       const { value, done } = await reader.read();
       if (done) break;
       if (value && value.length > 0) {
+        metric('counter', 'moq.transport.bytes_in', value.length);
         respond({ type: 'bidi-stream-data', streamId, data: value }, [value.buffer]);
       }
     }
@@ -572,6 +621,7 @@ async function readBidiStream(streamId: number, readable: ReadableStream<Uint8Ar
     log('Bidi stream read error', err);
   } finally {
     reader.releaseLock();
+    metric('counter', 'moq.transport.stream.closed', 1, { direction: 'inbound-bidi' });
     respond({ type: 'stream-closed', streamId });
   }
 }
@@ -594,11 +644,31 @@ async function writeStream(
 
   try {
     await streamInfo.writer.write(data);
+    metric('counter', 'moq.transport.bytes_out', data.length);
 
     if (close) {
-      await streamInfo.writer.close();
+      // Fire-and-forget close so the worker's onmessage handler is free to
+      // service the next write-stream immediately. Stream-per-object patterns
+      // otherwise pay a full close() roundtrip between writes, keeping the
+      // underlying transferable buffer pinned longer than needed.
+      const w = streamInfo.writer;
       outgoingStreams.delete(streamId);
+      metric('counter', 'moq.transport.stream.closed', 1, { direction: 'outbound' });
       respond({ type: 'stream-closed', streamId });
+      const closePromise = w.close().catch((err: unknown) => {
+        const closeMsg = (err as Error)?.message ?? '';
+        // STOP_SENDING/RESET_STREAM/aborted are normal races between our close
+        // and a relay-initiated abort. Anything else is worth surfacing.
+        if (
+          !closeMsg.includes('STOP_SENDING') &&
+          !closeMsg.includes('RESET_STREAM') &&
+          !closeMsg.includes('aborted')
+        ) {
+          log('Deferred close failed', { streamId, error: closeMsg });
+        }
+      });
+      pendingCloses.add(closePromise);
+      closePromise.finally(() => pendingCloses.delete(closePromise));
     }
   } catch (err) {
     const message = (err as Error).message;
@@ -607,6 +677,7 @@ async function writeStream(
     if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM') || message.includes('aborted')) {
       log('Stream closed by relay', { streamId, reason: message });
       outgoingStreams.delete(streamId);
+      metric('counter', 'moq.transport.stream.closed', 1, { direction: 'outbound', reason: 'reset' });
       respond({ type: 'stream-closed', streamId });
     } else {
       respond({ type: 'error', message });
@@ -629,12 +700,14 @@ async function closeStream(streamId: number): Promise<void> {
   try {
     await streamInfo.writer.close();
     outgoingStreams.delete(streamId);
+    metric('counter', 'moq.transport.stream.closed', 1, { direction: 'outbound' });
     respond({ type: 'stream-closed', streamId });
   } catch (err) {
     const message = (err as Error).message;
     // STOP_SENDING, RESET_STREAM, and aborted are normal - relay already closed the stream
     if (message.includes('STOP_SENDING') || message.includes('RESET_STREAM') || message.includes('aborted')) {
       outgoingStreams.delete(streamId);
+      metric('counter', 'moq.transport.stream.closed', 1, { direction: 'outbound', reason: 'reset' });
       respond({ type: 'stream-closed', streamId });
     } else {
       respond({ type: 'error', message });

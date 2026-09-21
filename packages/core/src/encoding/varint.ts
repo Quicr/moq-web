@@ -524,6 +524,23 @@ export class BufferReader {
 }
 
 /**
+ * Common surface implemented by both {@link BufferWriter} and
+ * {@link PreallocBufferWriter}.
+ *
+ * Codecs that build MOQT messages accept this interface so callers can pick
+ * the allocation strategy (chunked vs pre-allocated) without duplicating
+ * encoder implementations.
+ */
+export interface WritableByteBuffer {
+  readonly length: number;
+  writeByte(value: number): void;
+  writeBytes(bytes: Uint8Array): void;
+  writeVarInt(value: number | bigint): void;
+  writeString(value: string): void;
+  toUint8Array(): Uint8Array;
+}
+
+/**
  * BufferWriter provides sequential writing of bytes and varints to a buffer
  *
  * @remarks
@@ -539,7 +556,7 @@ export class BufferReader {
  * const message = writer.toUint8Array();
  * ```
  */
-export class BufferWriter {
+export class BufferWriter implements WritableByteBuffer {
   private chunks: Uint8Array[] = [];
   private totalLength = 0;
 
@@ -640,7 +657,7 @@ export class BufferWriter {
  * const copy = writer.toUint8Array();
  * ```
  */
-export class PreallocBufferWriter {
+export class PreallocBufferWriter implements WritableByteBuffer {
   private buffer: Uint8Array;
   private position = 0;
 

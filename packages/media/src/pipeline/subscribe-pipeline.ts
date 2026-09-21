@@ -39,8 +39,12 @@ import { H264Decoder, VideoDecoderConfig } from '../webcodecs/video-decoder.js';
 import { OpusDecoder, AudioDecoderConfig } from '../webcodecs/audio-decoder.js';
 import { AACDecoder } from '../webcodecs/aac-decoder.js';
 import { LOCUnpackager, MediaType } from '../loc/loc-container.js';
-import { JitterBuffer } from './jitter-buffer.js';
-import { GroupArbiter } from './group-arbiter.js';
+import type { PlayoutBuffer } from './playout-buffer.js';
+import {
+  createPlayoutBuffer,
+  createPlayoutBufferFromTrack,
+  type PolicyType,
+} from './playout-buffer-factory.js';
 import { PresentationReorderBuffer } from './presentation-reorder-buffer.js';
 import { CodecDecodeWorkerClient, LatencyStatsSample } from '../workers/codec-decode-worker-api.js';
 import type { DecodeErrorDiagnostics } from '../workers/codec-decode-worker-types.js';
@@ -83,19 +87,17 @@ export interface SubscribePipelineConfig {
   /** Enable jitter stats collection and emission (default: false) */
   enableStats?: boolean;
 
-  // Group-aware jitter buffer options
-  /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
-  useGroupArbiter?: boolean;
-
   /**
-   * Policy type for frame release strategy (new architecture, takes precedence over useGroupArbiter)
+   * Policy type for frame release strategy.
    * - 'vod': Sequential playback, no skipping, wait for all frames (for DVR/recorded content)
    * - 'live': Deadline-based with jitter buffer (for real-time streaming)
    * - 'adaptive': Auto-detect based on arrival patterns
+   * When `isLive` is provided from the catalog, the policy is selected automatically
+   * (vod when isLive=false, live when isLive=true) and this value is ignored.
    */
-  policyType?: 'vod' | 'live' | 'adaptive';
+  policyType?: PolicyType;
 
-  /** Whether content is live (from catalog) - used with policyType to select behavior */
+  /** Whether content is live (from catalog) — when set, drives catalog-based policy selection */
   isLive?: boolean;
   /** Maximum acceptable end-to-end latency in ms (default: 500) */
   maxLatency?: number;
@@ -115,8 +117,6 @@ export interface SubscribePipelineConfig {
   catchUpThreshold?: number;
   /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
   useLatencyDeadline?: boolean;
-  /** Enable GroupArbiter debug logging (default: false) */
-  arbiterDebug?: boolean;
   /** Minimum frames to buffer before starting VOD playback (default: 30) */
   minBufferFrames?: number;
 
@@ -246,26 +246,18 @@ export class SubscribePipeline {
   private audioDecoder?: OpusDecoder | AACDecoder;
   /** LOC unpackager (main thread mode) */
   private unpackager = new LOCUnpackager();
-  /** Video jitter buffer (main thread mode, legacy) */
-  private videoBuffer?: JitterBuffer<Uint8Array>;
-  /** Audio jitter buffer (main thread mode, legacy) */
-  private audioBuffer?: JitterBuffer<Uint8Array>;
-  /** Video group arbiter (main thread mode, group-aware) */
-  private videoArbiter?: GroupArbiter<Uint8Array>;
-  /** Audio group arbiter (main thread mode, group-aware) */
-  private audioArbiter?: GroupArbiter<Uint8Array>;
-  /** Whether using GroupArbiter instead of JitterBuffer */
-  private useGroupArbiter = false;
+  /** Video playout buffer (main thread mode) */
+  private videoPlayout?: PlayoutBuffer<Uint8Array>;
+  /** Audio playout buffer (main thread mode) */
+  private audioPlayout?: PlayoutBuffer<Uint8Array>;
   /** Event handlers */
   private handlers = new Map<SubscribePipelineEvent, Set<(data: unknown) => void>>();
   /** Pipeline state */
   private _state: 'idle' | 'running' | 'stopped' = 'idle';
   /** Render timer */
   private renderTimer?: ReturnType<typeof setInterval>;
-  /** Video sequence counter for timestamp generation */
-  private videoSequence = 0;
-  /** Audio sequence counter for timestamp generation */
-  private audioSequence = 0;
+  /** Video decoded-frame counter (for periodic stats logging) */
+  private videoFramesDecoded = 0;
   /** Whether using worker mode */
   private useWorker = false;
   /** Decode worker client (worker mode) */
@@ -439,16 +431,6 @@ export class SubscribePipeline {
       });
     }
 
-    // Forward arbiter debug logs from worker to main thread logger
-    // Using INFO level so they appear in console (DEBUG often filtered)
-    this.decodeWorkerClient.on('arbiter-debug', (response) => {
-      if (response.data) {
-        log.info(response.message, response.data);
-      } else {
-        log.info(response.message);
-      }
-    });
-
     // Initialize worker channel with decoder configs
     const mediaType = this.config.mediaType;
     await this.decodeWorkerClient.init({
@@ -470,9 +452,7 @@ export class SubscribePipeline {
         : undefined,
       jitterBufferDelay: this.config.jitterBufferDelay ?? 100,
       enableStats: this.enableStats,
-      // GroupArbiter configuration (passed through to worker)
-      useGroupArbiter: this.config.useGroupArbiter,
-      // New PlayoutBuffer architecture options
+      // PlayoutBuffer + ReleasePolicy configuration
       policyType: this.config.policyType,
       isLive: this.config.isLive,
       maxLatency: this.config.maxLatency,
@@ -484,7 +464,6 @@ export class SubscribePipeline {
       enableCatchUp: this.config.enableCatchUp,
       catchUpThreshold: this.config.catchUpThreshold,
       useLatencyDeadline: this.config.useLatencyDeadline,
-      arbiterDebug: this.config.arbiterDebug,
       // QuicR interop mode for LOC unpackaging
       quicrInteropEnabled: this.config.quicrInteropEnabled,
       minBufferFrames: this.config.minBufferFrames,
@@ -498,11 +477,11 @@ export class SubscribePipeline {
    */
   private async startMainThreadMode(): Promise<void> {
     const mediaType = this.config.mediaType;
-    this.useGroupArbiter = this.config.useGroupArbiter ?? false;
     const jitterDelay = this.config.jitterBufferDelay ?? 100;
 
     log.info('Starting main thread mode', {
-      useGroupArbiter: this.useGroupArbiter,
+      policyType: this.config.policyType,
+      isLive: this.config.isLive,
       jitterDelay,
     });
 
@@ -520,25 +499,13 @@ export class SubscribePipeline {
       }
 
       this.videoDecoder = new H264Decoder();
-      log.info('Registering frame handler on video decoder', {
-        decoderInstanceId: this.videoDecoder.id,
-      });
-      const unsubscribe = this.videoDecoder.on('frame', (frame) => {
-        log.trace('Pipeline emitting video-frame event', {
-          decoderInstanceId: this.videoDecoder?.id,
-          width: frame.displayWidth,
-          height: frame.displayHeight,
-        });
+      this.videoDecoder.on('frame', (frame) => {
         // Route through reorder buffer for VOD, direct emit for live
         if (this.reorderBuffer) {
           this.reorderBuffer.push(frame);
         } else {
           this.emit('video-frame', frame);
         }
-      });
-      log.debug('Frame handler registered', {
-        decoderInstanceId: this.videoDecoder.id,
-        unsubscribe: typeof unsubscribe,
       });
       this.videoDecoder.on('error', (error) => {
         log.error('Video decoder error', error);
@@ -547,37 +514,7 @@ export class SubscribePipeline {
 
       await this.videoDecoder.start(this.config.video!);
 
-      // Create buffer based on configuration
-      if (this.useGroupArbiter) {
-        this.videoArbiter = new GroupArbiter<Uint8Array>({
-          jitterDelay,
-          maxLatency: this.config.maxLatency ?? 500,
-          estimatedGopDuration: this.config.estimatedGopDuration ?? 1000,
-          catalogFramerate: this.config.catalogFramerate,
-          catalogTimescale: this.config.catalogTimescale,
-          allowPartialGroupDecode: true,
-          skipOnlyToKeyframe: true,
-          skipToLatestGroup: this.config.skipToLatestGroup ?? false,
-          skipGraceFrames: this.config.skipGraceFrames ?? 3,
-          enableCatchUp: this.config.enableCatchUp ?? true,
-          catchUpThreshold: this.config.catchUpThreshold ?? 5,
-          useLatencyDeadline: this.config.useLatencyDeadline ?? true,
-          debug: this.config.arbiterDebug ?? false,
-        });
-        log.info('Using GroupArbiter for video', {
-          skipToLatestGroup: this.config.skipToLatestGroup,
-          skipGraceFrames: this.config.skipGraceFrames,
-          enableCatchUp: this.config.enableCatchUp,
-          catchUpThreshold: this.config.catchUpThreshold,
-          useLatencyDeadline: this.config.useLatencyDeadline,
-        });
-      } else {
-        this.videoBuffer = new JitterBuffer({
-          targetDelay: jitterDelay,
-          maxDelay: 300,
-          maxFramesPerCall: 5, // Allow more frames per cycle to reduce delay
-        });
-      }
+      this.videoPlayout = this.buildPlayoutBuffer(jitterDelay, 'video');
     }
 
     // Set up audio decoding (only if mediaType is 'audio' or not specified)
@@ -625,30 +562,69 @@ export class SubscribePipeline {
         this.audioDecoder = opusDecoder;
       }
 
-      // Create buffer based on configuration
-      if (this.useGroupArbiter) {
-        this.audioArbiter = new GroupArbiter<Uint8Array>({
-          jitterDelay,
-          maxLatency: this.config.maxLatency ?? 500,
-          estimatedGopDuration: 20, // Audio frames are typically ~20ms
-          allowPartialGroupDecode: true,
-          skipOnlyToKeyframe: false, // Audio doesn't need keyframes (Opus)
-          skipToLatestGroup: this.config.skipToLatestGroup ?? false,
-          skipGraceFrames: this.config.skipGraceFrames ?? 3,
-          enableCatchUp: this.config.enableCatchUp ?? true,
-          catchUpThreshold: this.config.catchUpThreshold ?? 5,
-          useLatencyDeadline: this.config.useLatencyDeadline ?? true,
-          debug: this.config.arbiterDebug ?? false,
-        });
-        log.info('Using GroupArbiter for audio');
-      } else {
-        this.audioBuffer = new JitterBuffer({
-          targetDelay: jitterDelay,
-          maxDelay: 300,
-          maxFramesPerCall: 5, // Allow more frames per cycle to reduce delay
-        });
-      }
+      this.audioPlayout = this.buildPlayoutBuffer(jitterDelay, 'audio');
     }
+  }
+
+  /**
+   * Build a PlayoutBuffer with the appropriate release policy.
+   *
+   * Selection order:
+   *   1. Catalog-driven when `isLive` is set — VOD or live profile from the catalog.
+   *   2. Explicit `policyType` when provided.
+   *   3. Adaptive by default.
+   */
+  private buildPlayoutBuffer(
+    jitterDelay: number,
+    kind: 'video' | 'audio',
+  ): PlayoutBuffer<Uint8Array> {
+    const isAudio = kind === 'audio';
+
+    if (this.config.isLive !== undefined) {
+      return createPlayoutBufferFromTrack<Uint8Array>({
+        isLive: this.config.isLive,
+        framerate: this.config.catalogFramerate,
+        minBufferFrames: this.config.minBufferFrames,
+        profileSettings: {
+          jitterBufferDelay: jitterDelay,
+          maxLatency: this.config.maxLatency,
+          estimatedGopDuration: isAudio ? 20 : this.config.estimatedGopDuration,
+          skipToLatestGroup: this.config.skipToLatestGroup,
+          skipGraceFrames: this.config.skipGraceFrames,
+          enableCatchUp: this.config.enableCatchUp,
+          catchUpThreshold: this.config.catchUpThreshold,
+          useLatencyDeadline: this.config.useLatencyDeadline,
+        },
+      });
+    }
+
+    const policyType: PolicyType = this.config.policyType ?? 'adaptive';
+
+    if (policyType === 'live') {
+      return createPlayoutBuffer<Uint8Array>('live', {
+        jitterDelay,
+        maxLatency: this.config.maxLatency ?? 500,
+        estimatedGopDuration: isAudio ? 20 : this.config.estimatedGopDuration ?? 1000,
+        catalogFramerate: this.config.catalogFramerate,
+        catalogTimescale: this.config.catalogTimescale,
+        allowPartialGroupDecode: true,
+        skipOnlyToKeyframe: !isAudio,
+        skipToLatestGroup: this.config.skipToLatestGroup ?? false,
+        skipGraceFrames: this.config.skipGraceFrames ?? 3,
+        enableCatchUp: this.config.enableCatchUp ?? true,
+        catchUpThreshold: this.config.catchUpThreshold ?? 5,
+        useLatencyDeadline: this.config.useLatencyDeadline ?? true,
+      });
+    }
+
+    if (policyType === 'vod') {
+      return createPlayoutBuffer<Uint8Array>('vod', {
+        minBufferFrames: this.config.minBufferFrames ?? (isAudio ? 1 : 30),
+        waitForCompleteGop: !isAudio,
+      });
+    }
+
+    return createPlayoutBuffer<Uint8Array>('adaptive');
   }
 
   /**
@@ -665,7 +641,7 @@ export class SubscribePipeline {
     objectId: number,
     timestamp: number
   ): void {
-    log.info('Pipeline.push() called', {
+    log.debug('Pipeline.push() called', {
       channelId: this.channelId,
       state: this._state,
       groupId,
@@ -746,9 +722,9 @@ export class SubscribePipeline {
     data: Uint8Array,
     groupId: number,
     objectId: number,
-    timestamp: number
+    _timestamp: number
   ): void {
-    if (!this.videoBuffer && !this.videoArbiter) {
+    if (!this.videoPlayout) {
       // Silently ignore video on audio-only subscriptions
       return;
     }
@@ -756,57 +732,16 @@ export class SubscribePipeline {
     const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false);
     const isKeyframe = frame.header.isKeyframe;
 
-    log.trace('Unpacked video frame', {
-      groupId,
-      objectId,
-      isKeyframe,
-      payloadSize: frame.payload.byteLength,
-      hasCodecDescription: !!frame.codecDescription,
-      mediaType: frame.header.mediaType,
-      quicrInterop: this.config.quicrInteropEnabled,
-    });
-
     // Skip decoder reconfigure with description — encoder uses Annex B format,
     // but codecDescription is avcC. Passing it would switch decoder to AVCC mode.
-    if (isKeyframe && frame.codecDescription) {
-      log.info('Keyframe has codec description (not reconfiguring — Annex B mode)', {
-        descriptionSize: frame.codecDescription.byteLength,
-      });
-    }
 
-    if (this.videoArbiter) {
-      // Use GroupArbiter for group-aware ordering
-      const accepted = this.videoArbiter.addFrame({
-        groupId,
-        objectId,
-        data: frame.payload,
-        isKeyframe,
-        locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
-      });
-
-      log.trace('Pushed to video arbiter', {
-        accepted,
-        activeGroup: this.videoArbiter.getActiveGroupId(),
-        groupCount: this.videoArbiter.getGroupCount(),
-      });
-    } else if (this.videoBuffer) {
-      // Use legacy JitterBuffer
-      const pushed = this.videoBuffer.push({
-        data: frame.payload,
-        timestamp: timestamp / 1000, // Convert to ms
-        sequence: this.videoSequence++,
-        groupId,
-        objectId,
-        isKeyframe,
-        receivedAt: performance.now(),
-      });
-
-      log.trace('Pushed to video buffer', {
-        pushed,
-        bufferSize: this.videoBuffer.size,
-        sequence: this.videoSequence - 1,
-      });
-    }
+    this.videoPlayout.addFrame({
+      groupId,
+      objectId,
+      data: frame.payload,
+      isKeyframe,
+      locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
+    });
   }
 
   /**
@@ -816,9 +751,9 @@ export class SubscribePipeline {
     data: Uint8Array,
     groupId: number,
     objectId: number,
-    timestamp: number
+    _timestamp: number
   ): void {
-    if (!this.audioBuffer && !this.audioArbiter) {
+    if (!this.audioPlayout) {
       // Silently ignore audio on video-only subscriptions
       // This happens when track contains mixed media or multiple tracks share an alias
       return;
@@ -826,51 +761,17 @@ export class SubscribePipeline {
 
     const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false);
 
-    log.trace('Unpacked audio frame', {
+    this.audioPlayout.addFrame({
       groupId,
       objectId,
-      payloadSize: frame.payload.byteLength,
-      mediaType: frame.header.mediaType,
-      hasAudioLevel: !!frame.audioLevel,
-      quicrInterop: this.config.quicrInteropEnabled,
+      data: frame.payload,
+      isKeyframe: true, // Opus/AAC frames are always key
+      locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
     });
-
-    if (this.audioArbiter) {
-      // Use GroupArbiter for group-aware ordering
-      const accepted = this.audioArbiter.addFrame({
-        groupId,
-        objectId,
-        data: frame.payload,
-        isKeyframe: true, // Opus is always key
-        locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
-      });
-
-      log.trace('Pushed to audio arbiter', {
-        accepted,
-        activeGroup: this.audioArbiter.getActiveGroupId(),
-      });
-    } else if (this.audioBuffer) {
-      // Use legacy JitterBuffer
-      const pushed = this.audioBuffer.push({
-        data: frame.payload,
-        timestamp: timestamp / 1000, // Convert to ms
-        sequence: this.audioSequence++,
-        groupId,
-        objectId,
-        isKeyframe: true, // Opus is always key
-        receivedAt: performance.now(),
-      });
-
-      log.trace('Pushed to audio buffer', {
-        pushed,
-        bufferSize: this.audioBuffer.size,
-        sequence: this.audioSequence - 1,
-      });
-    }
   }
 
   /**
-   * Process jitter buffers and decode ready frames
+   * Process playout buffers and decode ready frames
    */
   private processBuffers(): void {
     // Worker mode: poll the worker for decoded frames
@@ -880,104 +781,52 @@ export class SubscribePipeline {
     }
 
     // Main thread mode: process buffers locally
-    // Process video - GroupArbiter path
-    if (this.videoArbiter && this.videoDecoder) {
-      const readyFrames = this.videoArbiter.getReadyFrames(5);
-      if (readyFrames.length > 0) {
-        log.trace('Processing video frames from arbiter', {
-          count: readyFrames.length,
-          activeGroup: this.videoArbiter.getActiveGroupId(),
-        });
-      }
+    if (this.videoPlayout && this.videoDecoder) {
+      this.videoPlayout.tick();
+      const activeGroupId = this.videoPlayout.getActiveGroupId();
+      const readyFrames = this.videoPlayout.getReadyFrames(5);
+
       for (const frame of readyFrames) {
         try {
-          const activeGroupId = this.videoArbiter.getActiveGroupId();
-          log.trace('Decoding video frame from arbiter', {
-            decoderInstanceId: this.videoDecoder.id,
-            groupId: activeGroupId,
-            objectId: frame.objectId,
-            isKeyframe: frame.isKeyframe,
-            dataSize: frame.data.byteLength,
-          });
+          // Prefer LOC-derived presentation timestamp; fall back to arrival time.
+          const timestampUs = frame.locTimestamp !== undefined
+            ? frame.locTimestamp
+            : Math.floor(frame.receivedAt * 1000);
           this.videoDecoder.decode(
             frame.data,
-            frame.isKeyframe ?? false,
-            frame.receivedTick * 1000, // Use receivedTick as timestamp proxy
+            frame.isKeyframe,
+            timestampUs,
             undefined, // duration
-            activeGroupId
+            activeGroupId,
           );
+          this.videoFramesDecoded++;
         } catch (err) {
           log.error('Video decode error', err as Error);
         }
       }
 
-      // Log arbiter stats periodically
-      if (readyFrames.length > 0 && this.videoSequence % 30 === 0) {
-        const stats = this.videoArbiter.getStats();
-        log.debug('Video arbiter stats', {
-          activeGroup: this.videoArbiter.getActiveGroupId(),
-          groupCount: this.videoArbiter.getGroupCount(),
+      if (readyFrames.length > 0 && this.videoFramesDecoded % 30 === 0) {
+        const stats = this.videoPlayout.getCombinedStats();
+        log.debug('Video playout stats', {
+          activeGroup: activeGroupId,
+          groupCount: this.videoPlayout.getGroupCount(),
+          policy: this.videoPlayout.getPolicyName(),
           framesOutput: stats.framesOutput,
           groupsCompleted: stats.groupsCompleted,
           groupsSkipped: stats.groupsSkipped,
         });
       }
-      this.videoSequence += readyFrames.length;
-    }
-    // Process video - JitterBuffer path (legacy)
-    else if (this.videoBuffer && this.videoDecoder) {
-      const videoFrames = this.videoBuffer.getReadyFrames();
-      if (videoFrames.length > 0) {
-        log.trace('Processing video frames from buffer', {
-          count: videoFrames.length,
-          bufferRemaining: this.videoBuffer.size,
-        });
-      }
-      for (const frame of videoFrames) {
-        try {
-          log.trace('Decoding video frame', {
-            decoderInstanceId: this.videoDecoder.id,
-            groupId: frame.groupId,
-            objectId: frame.objectId,
-            isKeyframe: frame.isKeyframe,
-            dataSize: frame.data.byteLength,
-          });
-          this.videoDecoder.decode(
-            frame.data,
-            frame.isKeyframe,
-            frame.timestamp * 1000, // Back to microseconds
-            undefined, // duration
-            frame.groupId
-          );
-        } catch (err) {
-          log.error('Video decode error', err as Error);
-        }
-      }
     }
 
-    // Process audio - GroupArbiter path
-    if (this.audioArbiter && this.audioDecoder) {
-      const readyFrames = this.audioArbiter.getReadyFrames(5);
+    if (this.audioPlayout && this.audioDecoder) {
+      this.audioPlayout.tick();
+      const readyFrames = this.audioPlayout.getReadyFrames(5);
       for (const frame of readyFrames) {
         try {
-          this.audioDecoder.decode(
-            frame.data,
-            frame.receivedTick * 1000 // Use receivedTick as timestamp proxy
-          );
-        } catch (err) {
-          log.error('Audio decode error', err as Error);
-        }
-      }
-    }
-    // Process audio - JitterBuffer path (legacy)
-    else if (this.audioBuffer && this.audioDecoder) {
-      const audioFrames = this.audioBuffer.getReadyFrames();
-      for (const frame of audioFrames) {
-        try {
-          this.audioDecoder.decode(
-            frame.data,
-            frame.timestamp * 1000 // Back to microseconds
-          );
+          const timestampUs = frame.locTimestamp !== undefined
+            ? frame.locTimestamp
+            : Math.floor(frame.receivedAt * 1000);
+          this.audioDecoder.decode(frame.data, timestampUs);
         } catch (err) {
           log.error('Audio decode error', err as Error);
         }
@@ -1032,10 +881,8 @@ export class SubscribePipeline {
     }
 
     // Clear buffers (main thread mode only)
-    this.videoBuffer?.reset();
-    this.audioBuffer?.reset();
-    this.videoArbiter?.reset();
-    this.audioArbiter?.reset();
+    this.videoPlayout?.reset();
+    this.audioPlayout?.reset();
 
     this.emit('stopped', undefined);
     log.info('Subscribe pipeline stopped');
@@ -1054,10 +901,8 @@ export class SubscribePipeline {
     }
 
     // Main thread mode: reset local state
-    this.videoBuffer?.reset();
-    this.audioBuffer?.reset();
-    this.videoArbiter?.reset();
-    this.audioArbiter?.reset();
+    this.videoPlayout?.reset();
+    this.audioPlayout?.reset();
 
     if (this.videoDecoder) {
       await this.videoDecoder.reset();
@@ -1067,8 +912,7 @@ export class SubscribePipeline {
       await this.audioDecoder.reset();
     }
 
-    this.videoSequence = 0;
-    this.audioSequence = 0;
+    this.videoFramesDecoded = 0;
 
     // Reset jitter stats
     this.interArrivalTimes = [];
@@ -1080,7 +924,8 @@ export class SubscribePipeline {
    * @param groupId - The group ID that is complete
    */
   markGroupComplete(groupId: number): void {
-    log.info('Group marked complete (END_OF_GROUP received)', { groupId, channelId: this.channelId });
+    // OPS-hi 1: fires per group (~1/sec) — demoted from .info to .debug.
+    log.debug('Group marked complete (END_OF_GROUP received)', { groupId, channelId: this.channelId });
 
     // Worker mode: send message to worker
     if (this.useWorker && this.decodeWorkerClient) {
@@ -1088,9 +933,9 @@ export class SubscribePipeline {
       return;
     }
 
-    // Main thread mode: signal arbiters directly
-    this.videoArbiter?.markGroupComplete(groupId);
-    this.audioArbiter?.markGroupComplete(groupId);
+    // Main thread mode: signal playout buffers directly
+    this.videoPlayout?.markGroupComplete(groupId);
+    this.audioPlayout?.markGroupComplete(groupId);
   }
 
   /**
@@ -1105,7 +950,8 @@ export class SubscribePipeline {
       return;
     }
 
-    // Main thread mode: not supported (playout buffer is in worker for VOD)
+    this.videoPlayout?.skipGroup(groupId);
+    this.audioPlayout?.skipGroup(groupId);
   }
 
   /**
@@ -1115,12 +961,13 @@ export class SubscribePipeline {
   pause(): void {
     log.info('Pausing pipeline', { channelId: this.channelId });
 
-    // Worker mode: send message to worker (playout buffer is in worker)
     if (this.useWorker && this.decodeWorkerClient) {
       this.decodeWorkerClient.pause();
+      return;
     }
-    // Main thread mode: TODO - would need to add pause to GroupArbiter
-    // For now, pause only works with decode worker
+
+    this.videoPlayout?.getPolicy()?.pause?.();
+    this.audioPlayout?.getPolicy()?.pause?.();
   }
 
   /**
@@ -1129,11 +976,13 @@ export class SubscribePipeline {
   resume(): void {
     log.info('Resuming pipeline', { channelId: this.channelId });
 
-    // Worker mode: send message to worker (playout buffer is in worker)
     if (this.useWorker && this.decodeWorkerClient) {
       this.decodeWorkerClient.resume();
+      return;
     }
-    // Main thread mode: TODO - would need to add resume to GroupArbiter
+
+    this.videoPlayout?.getPolicy()?.resume?.();
+    this.audioPlayout?.getPolicy()?.resume?.();
   }
 
   /**
@@ -1174,19 +1023,17 @@ export class SubscribePipeline {
    */
   getStats(): {
     state: string;
-    video: { buffer?: object; arbiter?: object; decoder?: object };
-    audio: { buffer?: object; arbiter?: object; decoder?: object };
+    video: { playout?: object; decoder?: object };
+    audio: { playout?: object; decoder?: object };
   } {
     return {
       state: this._state,
       video: {
-        buffer: this.videoBuffer?.getStats(),
-        arbiter: this.videoArbiter?.getStats(),
+        playout: this.videoPlayout?.getCombinedStats(),
         decoder: this.videoDecoder?.getStats(),
       },
       audio: {
-        buffer: this.audioBuffer?.getStats(),
-        arbiter: this.audioArbiter?.getStats(),
+        playout: this.audioPlayout?.getCombinedStats(),
         decoder: this.audioDecoder?.getStats(),
       },
     };

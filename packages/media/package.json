@@ -1,11 +1,31 @@
 {
   "name": "@moq-web/media",
-  "version": "0.1.0",
-  "description": "WebCodecs encoding/decoding with LOC container format",
+  "version": "0.2.0",
+  "description": "WebCodecs encoding/decoding with LOC container format for Media over QUIC (MOQT)",
+  "keywords": [
+    "moq",
+    "moqt",
+    "webcodecs",
+    "loc",
+    "media",
+    "webtransport"
+  ],
+  "license": "BSD-2-Clause",
+  "homepage": "https://github.com/Quicr/moq-web#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Quicr/moq-web.git",
+    "directory": "packages/media"
+  },
+  "bugs": {
+    "url": "https://github.com/Quicr/moq-web/issues"
+  },
+  "author": "Cisco Systems, Inc.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -14,10 +34,6 @@
     "./encode-worker": {
       "types": "./dist/workers/encode-worker.d.ts",
       "import": "./dist/workers/encode-worker.js"
-    },
-    "./decode-worker": {
-      "types": "./dist/workers/decode-worker.d.ts",
-      "import": "./dist/workers/decode-worker.js"
     },
     "./codec-encode-worker": {
       "types": "./dist/workers/codec-encode-worker.d.ts",
@@ -29,8 +45,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run --passWithNoTests",
@@ -39,9 +60,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@moq-web/core": "workspace:*",
-    "@moq-web/secure-objects": "workspace:*",
-    "@moq-web/session": "workspace:*"
+    "@moq-web/core": "workspace:^",
+    "@moq-web/secure-objects": "workspace:^",
+    "@moq-web/session": "workspace:^"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

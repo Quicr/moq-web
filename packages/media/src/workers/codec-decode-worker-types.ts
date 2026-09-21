@@ -55,20 +55,16 @@ export interface CodecDecodeWorkerConfig {
   /** Enable latency stats emission */
   enableStats?: boolean;
 
-  // Group-aware jitter buffer options (Phase 4)
-  /** Use GroupArbiter instead of JitterBuffer for group-aware ordering (default: false) */
-  useGroupArbiter?: boolean;
-
   /**
-   * Policy type for frame release strategy (replaces useGroupArbiter)
+   * Policy type for frame release strategy.
    * - 'vod': Sequential playback, no skipping, wait for all frames
-   * - 'live': Deadline-based with jitter buffer (default when useGroupArbiter=true)
-   * - 'adaptive': Auto-detect based on arrival patterns
-   * When set, this takes precedence over useGroupArbiter.
+   * - 'live': Deadline-based with jitter buffer
+   * - 'adaptive': Auto-detect based on arrival patterns (default)
+   * When `isLive` is provided from the catalog, the policy is selected automatically.
    */
   policyType?: 'vod' | 'live' | 'adaptive';
 
-  /** Whether content is live (from catalog) - used with policyType='adaptive' to skip detection */
+  /** Whether content is live (from catalog) - drives catalog-based policy selection */
   isLive?: boolean;
   /** Maximum acceptable end-to-end latency in ms (default: 500) */
   maxLatency?: number;
@@ -88,8 +84,6 @@ export interface CodecDecodeWorkerConfig {
   catchUpThreshold?: number;
   /** Use latency-only deadline (true=interactive, false=streaming, default: true) */
   useLatencyDeadline?: boolean;
-  /** Enable GroupArbiter debug logging (default: false) */
-  arbiterDebug?: boolean;
   /** Enable QuicR-Mac interop mode for LOC unpackaging (default: false) */
   quicrInteropEnabled?: boolean;
   /** Minimum frames to buffer before starting VOD playback (default: 30) */
@@ -219,6 +213,5 @@ export type CodecDecodeWorkerResponse =
   | { type: 'poll-result'; channelId: number; videoFrames: number; audioFrames: number }
   | { type: 'destroyed'; channelId: number }
   | { type: 'error'; channelId?: number; message: string; diagnostics?: DecodeErrorDiagnostics }
-  | { type: 'arbiter-debug'; channelId: number; message: string; data?: Record<string, unknown> }
   | { type: 'sps-info'; channelId: number; maxNumReorderFrames: number; profileIdc: number; levelIdc: number }
   | { type: 'closed' };

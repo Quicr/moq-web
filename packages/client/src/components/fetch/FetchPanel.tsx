@@ -12,7 +12,8 @@ import React, { useState, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 
 interface FetchStats {
-  requestId: number;
+  // requestId is a 62-bit varint on the wire, so it must be bigint.
+  requestId: bigint;
   objectsReceived: number;
   bytesReceived: number;
   groupsReceived: Set<number>;
@@ -39,9 +40,9 @@ export const FetchPanel: React.FC = () => {
   const [endGroup, setEndGroup] = useState(5);
 
   // Fetch state
-  const [activeFetches, setActiveFetches] = useState<Map<number, FetchStats>>(new Map());
+  const [activeFetches, setActiveFetches] = useState<Map<bigint, FetchStats>>(new Map());
   const [results, setResults] = useState<FetchResult[]>([]);
-  const cancelFnRef = useRef<Map<number, () => Promise<void>>>(new Map());
+  const cancelFnRef = useRef<Map<bigint, () => Promise<void>>>(new Map());
 
   // Max results to display
   const maxResults = 100;
@@ -92,7 +93,7 @@ export const FetchPanel: React.FC = () => {
           });
 
           console.log('[FetchPanel] Received object', {
-            requestId,
+            requestId: requestId.toString(),
             groupId,
             objectId,
             size: data.length,
@@ -120,14 +121,14 @@ export const FetchPanel: React.FC = () => {
         return newMap;
       });
 
-      console.log('[FetchPanel] FETCH started', { requestId });
+      console.log('[FetchPanel] FETCH started', { requestId: requestId.toString() });
 
     } catch (err) {
       console.error('[FetchPanel] FETCH error', err);
     }
   }, [session, sessionState, fetchTrack, namespace, trackName, startGroup, endGroup]);
 
-  const handleCancel = useCallback(async (requestId: number) => {
+  const handleCancel = useCallback(async (requestId: bigint) => {
     const cancelFn = cancelFnRef.current.get(requestId);
     if (cancelFn) {
       try {
@@ -239,9 +240,9 @@ export const FetchPanel: React.FC = () => {
           <h3 className="text-lg font-semibold text-white mb-2">Active Fetches</h3>
           <div className="space-y-2">
             {Array.from(activeFetches.entries()).map(([reqId, stats]) => (
-              <div key={reqId} className="p-3 bg-gray-700 rounded">
+              <div key={reqId.toString()} className="p-3 bg-gray-700 rounded">
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-white font-medium">Request #{reqId}</span>
+                  <span className="text-white font-medium">Request #{reqId.toString()}</span>
                   <span className={`text-sm px-2 py-1 rounded ${
                     stats.status === 'fetching' ? 'bg-blue-600' :
                     stats.status === 'complete' ? 'bg-green-600' :

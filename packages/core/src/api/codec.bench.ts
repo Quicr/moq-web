@@ -11,7 +11,7 @@ import {
   errorFromWire,
 } from './codec.js';
 import { SubscriptionFilter, GroupOrder, NamespaceSubscribeMode } from './types.js';
-import { IS_DRAFT_18 } from '../version/constants.js';
+import { DEFAULT_DRAFT } from '../version/constants.js';
 
 describe('Unified Codec Benchmarks', () => {
   describe('subscribeRequestToWire', () => {
@@ -165,7 +165,7 @@ describe('Comparison: Direct vs Unified Codec', () => {
   // Baseline: direct object construction (no codec overhead)
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let baselineWire: unknown;
-  if (!IS_DRAFT_18) {
+  if (DEFAULT_DRAFT !== 'draft-18') {
     bench('direct v14 wire type construction', () => {
       baselineWire = {
         type: 0x03,

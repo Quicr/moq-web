@@ -23,21 +23,21 @@
 declare const __MOQT_VERSION__: string | undefined;
 
 /**
- * Current MOQT version string
- * Set at build time via __MOQT_VERSION__ define
+ * Draft version selector for runtime configuration.
+ *
+ * Callers pass one of these strings to MOQTransport / MOQTSession to
+ * choose which MOQT draft the codec+wire path will use for the session.
  */
-export const MOQT_VERSION: string =
-  typeof __MOQT_VERSION__ !== 'undefined' ? __MOQT_VERSION__ : 'draft-16';
+export type DraftVersion = 'draft-16' | 'draft-17' | 'draft-18';
 
 /**
- * True when building for draft-18
+ * Default draft used when a caller does not specify one.
+ *
+ * Kept at draft-16 to preserve the historical default. Consumers building
+ * against mixed relay fleets should always pass an explicit `draft`.
  */
-export const IS_DRAFT_18: boolean = MOQT_VERSION === 'draft-18';
-
-/**
- * True when building for draft-16 or draft-17
- */
-export const IS_DRAFT_16: boolean = MOQT_VERSION === 'draft-16' || MOQT_VERSION === 'draft-17';
+export const DEFAULT_DRAFT: DraftVersion =
+  typeof __MOQT_VERSION__ !== 'undefined' ? (__MOQT_VERSION__ as DraftVersion) : 'draft-16';
 
 /**
  * Version number constants for wire format
@@ -58,17 +58,40 @@ export const ALPN_PROTOCOL = {
 } as const;
 
 /**
- * Get the current version number for wire format
+ * Convert a draft selector to its numeric wire version. The result is
+ * safe to compare against the `Version` enum (identical values).
  */
-export function getCurrentVersionNumber(): number {
-  if (IS_DRAFT_18) return VERSION_NUMBER.DRAFT_18;
-  return VERSION_NUMBER.DRAFT_16;
+export function versionEnumFor(draft: DraftVersion): number {
+  return versionNumberFor(draft);
 }
 
 /**
- * Get the ALPN protocol string for the current version
+ * Version number for the given draft, used on the wire.
  */
-export function getCurrentALPNProtocol(): string {
-  if (IS_DRAFT_18) return ALPN_PROTOCOL.DRAFT_18;
-  return ALPN_PROTOCOL.DRAFT_16;
+export function versionNumberFor(draft: DraftVersion): number {
+  switch (draft) {
+    case 'draft-18':
+      return VERSION_NUMBER.DRAFT_18;
+    case 'draft-17':
+      return VERSION_NUMBER.DRAFT_17;
+    case 'draft-16':
+    default:
+      return VERSION_NUMBER.DRAFT_16;
+  }
+}
+
+/**
+ * ALPN protocol string for the given draft, used during WebTransport
+ * negotiation.
+ */
+export function alpnProtocolFor(draft: DraftVersion): string {
+  switch (draft) {
+    case 'draft-18':
+      return ALPN_PROTOCOL.DRAFT_18;
+    case 'draft-17':
+      return ALPN_PROTOCOL.DRAFT_17;
+    case 'draft-16':
+    default:
+      return ALPN_PROTOCOL.DRAFT_16;
+  }
 }

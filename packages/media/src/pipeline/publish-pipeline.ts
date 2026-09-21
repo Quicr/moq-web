@@ -239,7 +239,8 @@ export class PublishPipeline {
         priority: result.isKeyframe ? Priority.HIGH : Priority.MEDIUM_HIGH,
       };
 
-      log.info('Video object ready (from worker)', {
+      // OPS-hi 1: per-frame hot-path — demoted from .info to .trace.
+      log.trace('Video object ready (from worker)', {
         groupId: obj.groupId,
         objectId: obj.objectId,
         isKeyframe: obj.isKeyframe,
@@ -436,7 +437,8 @@ export class PublishPipeline {
         if (frame) {
           frameCount++;
           if (frameCount === 1 || frameCount % 30 === 0) {
-            log.info('Processing video frame', {
+            // OPS-hi 1: sampled per-frame log — demoted from .info to .debug.
+            log.debug('Processing video frame', {
               frameCount,
               timestamp: frame.timestamp,
               width: frame.displayWidth,
@@ -504,7 +506,8 @@ export class PublishPipeline {
       priority: frame.isKeyframe ? Priority.HIGH : Priority.MEDIUM_HIGH,
     };
 
-    log.info('Video object ready', {
+    // OPS-hi 1: per-frame hot-path — demoted from .info to .trace.
+    log.trace('Video object ready', {
       groupId: obj.groupId,
       objectId: obj.objectId,
       isKeyframe: obj.isKeyframe,
@@ -650,7 +653,8 @@ export class PublishPipeline {
             }
 
             if (frameCount === 1 || frameCount % 100 === 0) {
-              log.info('Processing audio frame (worker mode)', {
+              // OPS-hi 1: sampled per-frame log — demoted from .info to .debug.
+              log.debug('Processing audio frame (worker mode)', {
                 frameCount,
                 timestamp: audioData.timestamp,
                 numberOfFrames: audioData.numberOfFrames,
@@ -714,7 +718,8 @@ export class PublishPipeline {
           }
 
           if (frameCount === 1 || frameCount % 100 === 0) {
-            log.info('Processing audio frame', {
+            // OPS-hi 1: sampled per-frame log — demoted from .info to .debug.
+            log.debug('Processing audio frame', {
               frameCount,
               timestamp: audioData.timestamp,
               numberOfFrames: audioData.numberOfFrames,
@@ -765,7 +770,8 @@ export class PublishPipeline {
       priority: Priority.MEDIUM_HIGH,
     };
 
-    log.info('Audio object ready', {
+    // OPS-hi 1: per-audio-frame hot-path — demoted from .info to .trace.
+    log.trace('Audio object ready', {
       groupId: obj.groupId,
       objectId: obj.objectId,
       size: obj.data.byteLength,

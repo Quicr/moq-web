@@ -209,7 +209,7 @@ interface ConnectionSlice {
     startGroup: number,
     endGroup: number,
     onData: (data: Uint8Array, groupId: number, objectId: number) => void
-  ) => Promise<{ requestId: number; cancel: () => Promise<void> }>;
+  ) => Promise<{ requestId: bigint; cancel: () => Promise<void> }>;
   stopSubscription: (subscriptionId: number) => Promise<void>;
   pauseSubscription: (subscriptionId: number) => Promise<void>;
   resumeSubscription: (subscriptionId: number) => Promise<void>;
@@ -386,8 +386,6 @@ interface SettingsSlice {
   audioDeliveryMode: 'datagram' | 'stream';
   /** Selected experience profile for subscriber-side settings */
   experienceProfile: ExperienceProfileName;
-  /** Use GroupArbiter for group-aware jitter buffering (handles parallel QUIC streams) */
-  useGroupArbiter: boolean;
   /**
    * Policy type for frame release strategy (new PlayoutBuffer architecture)
    * - 'vod': Sequential playback, no skipping (for DVR/recorded content)
@@ -409,8 +407,6 @@ interface SettingsSlice {
   catchUpThreshold: number;
   /** Use latency-only deadline (true=interactive, false=streaming) */
   useLatencyDeadline: boolean;
-  /** Enable GroupArbiter debug logging */
-  arbiterDebug: boolean;
   /** Enable Secure Objects encryption */
   secureObjectsEnabled: boolean;
   /** Secure Objects cipher suite (hex string, e.g., "0x0004") */
@@ -457,7 +453,6 @@ interface SettingsSlice {
   setVadProvider: (provider: VADProvider) => void;
   setVadVisualizationEnabled: (value: boolean) => void;
   setAudioDeliveryMode: (mode: 'datagram' | 'stream') => void;
-  setUseGroupArbiter: (value: boolean) => void;
   setPolicyType: (value: 'vod' | 'live' | 'adaptive') => void;
   setMaxLatency: (value: number) => void;
   setEstimatedGopDuration: (value: number) => void;
@@ -466,7 +461,6 @@ interface SettingsSlice {
   setEnableCatchUp: (value: boolean) => void;
   setCatchUpThreshold: (value: number) => void;
   setUseLatencyDeadline: (value: boolean) => void;
-  setArbiterDebug: (value: boolean) => void;
   setSecureObjectsEnabled: (value: boolean) => void;
   setSecureObjectsCipherSuite: (value: string) => void;
   setSecureObjectsBaseKey: (value: string) => void;
@@ -938,7 +932,7 @@ export const useStore = create<AppStore>()(
       },
 
       startSubscription: async (namespace: string, trackName: string, mediaType?: 'video' | 'audio', _dtsAssignment?: SwitchingSetAssignment, isLive?: boolean, catalogFramerate?: number, catalogGopDuration?: number, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -956,7 +950,6 @@ export const useStore = create<AppStore>()(
           videoResolution,
           enableStats,
           jitterBufferDelay,
-          useGroupArbiter,
           // New PlayoutBuffer architecture - pass isLive from catalog for auto policy selection
           policyType,
           isLive,
@@ -969,7 +962,6 @@ export const useStore = create<AppStore>()(
           enableCatchUp,
           catchUpThreshold,
           useLatencyDeadline,
-          arbiterDebug,
           // Secure Objects encryption settings
           secureObjectsEnabled,
           secureObjectsCipherSuite,
@@ -1007,7 +999,7 @@ export const useStore = create<AppStore>()(
 
       // VOD subscription using FETCH with adaptive buffer management
       startVodSubscription: async (namespace: string, trackName: string, mediaType: 'video' | 'audio', videoConfig: { codec?: string; width?: number; height?: number } | undefined, trackInfo: { framerate?: number; gopDuration?: number; totalGroups?: number }, bufferConfig?: { initialBufferSec?: number; minBufferSec?: number; fetchBatchSec?: number }, startGroup: number = 0, abrOptions?: { abrController: ABRController; altGroup: number }, audioConfig?: { codec?: string; sampleRate?: number; numberOfChannels?: number; description?: Uint8Array }) => {
-        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrInitialBufferSec, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
+        const { session, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, vodFetchStrategy, sbrInitialBufferSec, sbrTargetBufferSec, sbrLowBufferSec, sbrHighBufferSec, abrSwitchingBufferSec, abrIntermediateBufferSec, abrTopBufferSec } = get();
         if (!session) {
           throw new Error('No session');
         }
@@ -1056,7 +1048,7 @@ export const useStore = create<AppStore>()(
         const fetchGroupCounts = new Map<number, { groupsReceived: Set<number>; framesReceived: number; bytesReceived: number }>();
 
         // Map controller request IDs to session request IDs for fetch cancellation
-        const controllerToSessionRequestId = new Map<number, number>();
+        const controllerToSessionRequestId = new Map<number, bigint>();
 
         // Track minimum valid group after seek - data from groups below this should be discarded
         // This prevents stale in-flight data from cancelled fetches from contaminating the decoder
@@ -1094,7 +1086,6 @@ export const useStore = create<AppStore>()(
           catalogFramerate: framerate,
           minBufferFrames,
           estimatedGopDuration: gopDurationMs,
-          arbiterDebug,
           secureObjectsEnabled,
           secureObjectsCipherSuite,
           secureObjectsBaseKey,
@@ -1122,15 +1113,22 @@ export const useStore = create<AppStore>()(
         // Listen for FETCH_OK to update totalGroups if relay has fewer groups than catalog claims
         // Only trust largestGroupId when endOfTrack is true (relay confirms end of content)
         const moqtSessionForFetchComplete = session.getMOQTSession();
-        moqtSessionForFetchComplete.on('fetch-complete', (event: { requestId: number; largestGroupId: number; endOfTrack: boolean }) => {
+        moqtSessionForFetchComplete.on('fetch-complete', (event) => {
           // largestGroupId from FETCH_OK indicates the highest group available on the relay
-          // Only update if endOfTrack is true - otherwise relay may just have partial data
-          const actualTotalGroups = event.largestGroupId + 1;
+          // Only update if endOfTrack is true - otherwise relay may just have partial data.
+          // largestGroupId is a 62-bit varint; narrow to number for the totalGroups UI plane.
+          if (event.largestGroupId > BigInt(Number.MAX_SAFE_INTEGER)) {
+            log.warn('fetch-complete largestGroupId exceeds MAX_SAFE_INTEGER; ignoring', {
+              largestGroupId: event.largestGroupId.toString(),
+            });
+            return;
+          }
+          const actualTotalGroups = Number(event.largestGroupId) + 1;
           if (event.endOfTrack && actualTotalGroups < (trackInfo.totalGroups ?? 100)) {
             log.info('VOD content has fewer groups than catalog claimed (endOfTrack confirmed)', {
               catalogTotalGroups: trackInfo.totalGroups,
               actualTotalGroups,
-              largestGroupId: event.largestGroupId,
+              largestGroupId: event.largestGroupId.toString(),
               endOfTrack: event.endOfTrack,
             });
             controller.updateTotalGroups(actualTotalGroups);
@@ -1164,15 +1162,16 @@ export const useStore = create<AppStore>()(
             const fetchGroups = new Set<number>();
             const lastObjectIdByGroup = new Map<number, number>();
 
-            // Variable to store the session's requestId (set after fetch() returns)
-            let sessionRequestId: number | null = null;
+            // Variable to store the session's requestId (set after fetch() returns).
+            // requestId is a 62-bit varint (bigint on the wire).
+            let sessionRequestId: bigint | null = null;
             // Queue to store events that arrive before sessionRequestId is set
-            let pendingEvents: { requestId: number }[] = [];
+            let pendingEvents: { requestId: bigint }[] = [];
             let listenerActive = true;
             // Per-fetch idle timer (not global, so multiple concurrent fetches work)
             let fetchIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
-            const handleFetchStreamComplete = (event: { requestId: number; lastGroupId: number }) => {
+            const handleFetchStreamComplete = (event: { requestId: bigint; lastGroupId: number }) => {
               if (!listenerActive) return;
 
               // If sessionRequestId not yet set, queue the event
@@ -1194,7 +1193,7 @@ export const useStore = create<AppStore>()(
               const fetchDuration = performance.now() - fetchStartTime;
               log.info('VOD fetch stream complete (all data received)', {
                 controllerRequestId,
-                sessionRequestId,
+                sessionRequestId: sessionRequestId.toString(),
                 durationMs: Math.round(fetchDuration),
                 groupsReceived: fetchGroups.size,
                 framesReceived: fetchGroupCounts.get(controllerRequestId)?.framesReceived ?? 0,
@@ -1335,7 +1334,7 @@ export const useStore = create<AppStore>()(
 
             // Process any events that arrived while we were waiting for fetch() to return
             for (const event of pendingEvents) {
-              handleFetchStreamComplete(event as { requestId: number; lastGroupId: number });
+              handleFetchStreamComplete(event as { requestId: bigint; lastGroupId: number });
             }
             pendingEvents = [];
           } catch (err) {
@@ -1740,7 +1739,7 @@ export const useStore = create<AppStore>()(
       },
 
       startNamespaceSubscription: async (panelId) => {
-        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, useGroupArbiter, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, arbiterDebug, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
+        const { session, namespaceSubscriptions, videoBitrate, audioBitrate, videoResolution, enableStats, jitterBufferDelay, policyType, maxLatency, estimatedGopDuration, skipToLatestGroup, skipGraceFrames, enableCatchUp, catchUpThreshold, useLatencyDeadline, secureObjectsEnabled, secureObjectsCipherSuite, secureObjectsBaseKey, quicrInteropEnabled } = get();
         if (!session) throw new Error('No session');
 
         const panel = namespaceSubscriptions.find(p => p.id === panelId);
@@ -1755,7 +1754,6 @@ export const useStore = create<AppStore>()(
           videoResolution,
           enableStats,
           jitterBufferDelay,
-          useGroupArbiter,
           // New PlayoutBuffer architecture
           policyType,
           maxLatency,
@@ -1765,7 +1763,6 @@ export const useStore = create<AppStore>()(
           enableCatchUp,
           catchUpThreshold,
           useLatencyDeadline,
-          arbiterDebug,
           // Secure Objects encryption settings
           secureObjectsEnabled,
           secureObjectsCipherSuite,
@@ -1871,7 +1868,6 @@ export const useStore = create<AppStore>()(
       vadVisualizationEnabled: false, // Default viz off for performance
       audioDeliveryMode: 'datagram', // Default to datagram for low latency
       experienceProfile: 'interactive', // Default to interactive profile
-      useGroupArbiter: false, // Legacy - kept for backward compatibility
       policyType: 'adaptive', // Default to auto-detect from catalog or arrival patterns
       maxLatency: 500, // Default 500ms max latency
       estimatedGopDuration: 1000, // Default 1s GOP
@@ -1880,7 +1876,6 @@ export const useStore = create<AppStore>()(
       enableCatchUp: true, // Default: enable catch-up when buffer gets deep
       catchUpThreshold: 5, // Default: trigger catch-up after 5 ready frames
       useLatencyDeadline: true, // Default: use latency-only deadline (interactive mode)
-      arbiterDebug: false, // Default: no debug logging
       secureObjectsEnabled: false, // Default: encryption off
       secureObjectsCipherSuite: '0x0004', // Default: AES_128_GCM_SHA256_128
       secureObjectsBaseKey: '', // Default: empty (user must provide)
@@ -1931,7 +1926,6 @@ export const useStore = create<AppStore>()(
       setVadProvider: (provider) => set({ vadProvider: provider }),
       setVadVisualizationEnabled: (value) => set({ vadVisualizationEnabled: value }),
       setAudioDeliveryMode: (mode) => set({ audioDeliveryMode: mode }),
-      setUseGroupArbiter: (value) => set({ useGroupArbiter: value }),
       setPolicyType: (value) => set({ policyType: value }),
       setMaxLatency: (value) => set({ maxLatency: value }),
       setEstimatedGopDuration: (value) => set({ estimatedGopDuration: value }),
@@ -1940,7 +1934,6 @@ export const useStore = create<AppStore>()(
       setEnableCatchUp: (value) => set({ enableCatchUp: value }),
       setCatchUpThreshold: (value) => set({ catchUpThreshold: value }),
       setUseLatencyDeadline: (value) => set({ useLatencyDeadline: value }),
-      setArbiterDebug: (value) => set({ arbiterDebug: value }),
       setSecureObjectsEnabled: (value) => set({ secureObjectsEnabled: value }),
       setSecureObjectsCipherSuite: (value) => set({ secureObjectsCipherSuite: value }),
       setSecureObjectsBaseKey: (value) => set({ secureObjectsBaseKey: value }),
@@ -1966,7 +1959,6 @@ export const useStore = create<AppStore>()(
 
         set({
           experienceProfile: profileName,
-          useGroupArbiter: true, // Enable GroupArbiter when applying a profile
           jitterBufferDelay: profile.settings.jitterBufferDelay,
           useLatencyDeadline: profile.settings.useLatencyDeadline,
           maxLatency: profile.settings.maxLatency,
@@ -2018,7 +2010,6 @@ export const useStore = create<AppStore>()(
         vadVisualizationEnabled: state.vadVisualizationEnabled,
         audioDeliveryMode: state.audioDeliveryMode,
         experienceProfile: state.experienceProfile,
-        useGroupArbiter: state.useGroupArbiter,
         policyType: state.policyType,
         maxLatency: state.maxLatency,
         estimatedGopDuration: state.estimatedGopDuration,
@@ -2027,7 +2018,6 @@ export const useStore = create<AppStore>()(
         enableCatchUp: state.enableCatchUp,
         catchUpThreshold: state.catchUpThreshold,
         useLatencyDeadline: state.useLatencyDeadline,
-        arbiterDebug: state.arbiterDebug,
         secureObjectsEnabled: state.secureObjectsEnabled,
         secureObjectsCipherSuite: state.secureObjectsCipherSuite,
         secureObjectsBaseKey: state.secureObjectsBaseKey,

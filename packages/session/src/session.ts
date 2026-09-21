@@ -43,10 +43,15 @@ import {
   ObjectExtension,
   BufferWriter,
   Logger,
-  IS_DRAFT_16,
-  IS_DRAFT_18,
-  getCurrentALPNProtocol,
-  getProtocolCodec,
+  ConnectionStateMachine,
+  type ConnectionState,
+  InMemoryMetricsSink,
+  type MetricsSink,
+  alpnProtocolFor,
+  DEFAULT_DRAFT,
+  versionEnumFor,
+  getProtocolCodecForVersion,
+  type DraftVersion,
   DataStreamType,
   type ClientSetupMessage,
   type ServerSetupMessage,
@@ -54,9 +59,13 @@ import {
   type ServerSetupMessageDraft18,
   type PublishMessage,
   type PublishMessageDraft18,
+  type PublishOkMessage,
+  type PublishErrorMessage,
   type SubscribeMessage,
   type SubscribeMessageDraft18,
   type SubscribeOkMessage,
+  type SubscribeErrorMessage,
+  type SubscribeUpdateMessage,
   type SubscribeOkMessageDraft18,
   type RequestErrorMessageDraft18,
   type RequestOkMessageDraft18,
@@ -97,6 +106,10 @@ import { PublicationManager, type InternalPublication } from './publication-mana
 import { ObjectRouter } from './object-router.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 import { TransportWorkerClient } from './workers/index.js';
+import {
+  JitteredExponentialBackoff,
+  type ReconnectPolicy,
+} from './reconnect-policy.js';
 import { parseTrackProperties } from './track-properties.js';
 import { parseSubscriberSchedulingParams, computeSendOrder } from './priority.js';
 import type {
@@ -150,6 +163,22 @@ import type {
 } from './types.js';
 
 const log = Logger.create('moqt:session');
+
+/**
+ * Wave 2 Track F: narrow a wire 62-bit varint (bigint) down to `number` where
+ * downstream state deliberately uses `number` (e.g. FetchRange, object plane
+ * group/object arithmetic). Throws if the value exceeds `2^53-1`; callers must
+ * be sites where the media pipeline arithmetic cannot handle bigint.
+ */
+function narrowBigIntToNumber(value: bigint, field: string): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      `${field}=${value.toString()} exceeds Number.MAX_SAFE_INTEGER; ` +
+      `session cannot represent this value in the bounded-number plane.`
+    );
+  }
+  return Number(value);
+}
 
 /**
  * Draft-18 §10.2 subscriber-side delivery timeouts on SUBSCRIBE/FETCH.
@@ -417,6 +446,12 @@ class Draft18RequestStream {
 export interface MOQTSessionConfig {
   /** Worker instance for transport operations */
   worker: Worker;
+  /**
+   * MOQT draft version this session will speak. Defaults to
+   * `DEFAULT_DRAFT` (draft-16 unless overridden at build time). Pass
+   * explicitly whenever your relay fleet mixes drafts.
+   */
+  draft?: DraftVersion;
   /** Server certificate hashes for self-signed certs */
   serverCertificateHashes?: ArrayBuffer[];
   /** Connection timeout in ms */
@@ -433,6 +468,69 @@ export interface MOQTSessionConfig {
    * the transport lifecycle. Defaults to false.
    */
   autoMigrate?: boolean;
+  /**
+   * Optional metrics sink. When omitted the session uses an
+   * `InMemoryMetricsSink` so `getDiagnostics()` still returns useful
+   * counter totals. Pass `NoopMetricsSink` to disable metrics entirely, or
+   * pass a custom implementation to forward to OpenTelemetry / Prometheus
+   * / etc.
+   */
+  metrics?: MetricsSink;
+  /**
+   * Optional {@link ReconnectPolicy} used by the auto-migrate loop when
+   * `autoMigrate` is enabled. When omitted the session constructs a
+   * `JitteredExponentialBackoff` (500ms base, 2× growth, 30s cap, ±25%
+   * jitter, 8 attempts). Callers can inject a deterministic policy for
+   * tests or a tuned policy for edge deployments.
+   */
+  reconnectPolicy?: ReconnectPolicy;
+  /**
+   * Optional pre-assigned session ID. If omitted the session generates a
+   * random 16-hex-char identifier at construct time. Useful for propagating
+   * a request-scoped correlation ID from an outer application.
+   */
+  sessionId?: string;
+}
+
+/**
+ * Snapshot returned by `session.getDiagnostics()`. Intentionally
+ * JSON-serializable so consumers can post it to a debug endpoint or dump it
+ * into a bug report without further coercion.
+ */
+export interface SessionDiagnostics {
+  /** Per-instance identifier assigned at construct time. */
+  sessionId: string;
+  /** Coarse-grained session state (`none`, `setup`, `ready`, ...). */
+  state: SessionState;
+  /**
+   * `ConnectionStateMachine` state, updated in lockstep with `state`. Split
+   * out because the state machine tracks a slightly different vocabulary
+   * (`connecting`, `setup_sent`, `connected`, ...).
+   */
+  connectionState: ConnectionState;
+  /** Milliseconds since the session was constructed. */
+  uptimeMs: number;
+  /**
+   * Number of successful `migrate()` invocations (proxy for reconnects
+   * until Track B wires the shared `ReconnectPolicy`).
+   */
+  reconnectAttempts: number;
+  /** Counter totals from the `MetricsSink` (empty when a Noop sink is in use). */
+  metrics: Record<string, number>;
+  /**
+   * Reason string from the most recent session close, if any. Cleared on
+   * successful migration/reconnect.
+   */
+  lastCloseReason?: string;
+  /**
+   * Numeric session termination code from the most recent peer close
+   * (undefined for local closes).
+   */
+  lastCloseCode?: number;
+  /** URL currently connected to (worker mode only). */
+  currentUrl?: string;
+  /** URI cached from the most recent GOAWAY, if not yet migrated. */
+  pendingMigrationUri?: string;
 }
 
 /**
@@ -468,6 +566,47 @@ export class MOQTSession {
   private workerConfig?: MOQTSessionConfig;
   /** Whether using worker mode */
   private readonly useWorker: boolean;
+  /**
+   * Per-instance identifier. Bound to every logger created from
+   * `this.sessionLog`, propagated to metrics attributes, and surfaced via
+   * `getDiagnostics()`. Generated at construct time when the caller did not
+   * pass one via `MOQTSessionConfig`.
+   */
+  readonly sessionId: string;
+  /**
+   * Session-scoped logger with `sessionId` bound. Prefer this over the
+   * module-level `log` inside new code paths so operators can correlate
+   * multi-session workloads via a single field.
+   */
+  private readonly sessionLog: Logger;
+  /**
+   * §15.10.1 connection state machine, kept in lockstep with `_state`. Every
+   * transition to a new session state routes through this so illegal state
+   * transitions are caught centrally and counted via
+   * `moq.session.illegal_state_transition`.
+   */
+  private readonly stateMachine = new ConnectionStateMachine();
+  /**
+   * Metrics sink. Defaults to `InMemoryMetricsSink` so
+   * `getDiagnostics().metrics` remains useful without external wiring.
+   * Consumers pass `metrics: new NoopMetricsSink()` to disable.
+   */
+  private readonly metrics: MetricsSink;
+  /**
+   * Reconnect policy consumed by {@link autoMigrateWithBackoff}. Optional;
+   * when unset the auto-migrate loop constructs a
+   * `JitteredExponentialBackoff` with the historical defaults (500 ms base,
+   * 2× growth, 30 s cap, ±25 % jitter, 8 attempts). Wave 2 Track E.
+   */
+  private readonly _reconnectPolicy?: ReconnectPolicy;
+  /** `performance.now()` (or `Date.now()`) at construction, for uptimeMs. */
+  private readonly _createdAtMs: number;
+  /** Number of times `migrate()` completed a full close+setup cycle. */
+  private _reconnectAttempts = 0;
+  /** Reason phrase from the most recent close (peer or local). */
+  private _lastCloseReason?: string;
+  /** Session termination code from the most recent peer close. */
+  private _lastCloseCode?: number;
   /** Current session state */
   private _state: SessionState = 'none';
   /** Event handlers */
@@ -523,13 +662,19 @@ export class MOQTSession {
   /** Offset into controlBuffer where unprocessed data starts */
   private controlBufferOffset = 0;
   /**
+   * MOQT draft version this session is speaking. Derived from the passed
+   * transport (main-thread mode) or explicitly from config (worker mode);
+   * falls back to `DEFAULT_DRAFT`.
+   */
+  private readonly _draft: DraftVersion;
+  /**
    * Next request ID for subscribing/publishing
    * Draft-14: Start at 1, increment by 1
    * Draft-16+: Clients use even IDs (0, 2, 4, ...), servers use odd (1, 3, 5, ...)
    */
-  private nextRequestId = (IS_DRAFT_16 || IS_DRAFT_18) ? 0 : 1;
+  private nextRequestId: number;
   /** Protocol codec for version-specific encoding/decoding */
-  private readonly codec = getProtocolCodec();
+  private readonly codec: IProtocolCodec;
   /** Temporary message handler for setup */
   private onMessage?: (message: MOQTMessage) => void;
   /** Active video GOP streams by track alias (for GOP batching) */
@@ -545,7 +690,7 @@ export class MOQTSession {
   /** Announced namespaces (for announce flow) */
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
   /** Request ID to namespace mapping (for draft-16 PUBLISH_NAMESPACE_OK) */
-  private announceRequestIdToNamespace = new Map<number, string>();
+  private announceRequestIdToNamespace = new Map<bigint, string>();
   /** Next track alias for incoming subscriptions (announce flow) */
   private nextIncomingTrackAlias = BigInt(1000);
   /**
@@ -555,11 +700,13 @@ export class MOQTSession {
    * Populated when we send REQUEST_OK / SUBSCRIBE_OK on the incoming bidi
    * stream; drained when the request ends (unsubscribe, PUBLISH_DONE, etc.).
    */
-  private incomingRequestKinds = new Map<number, RequestUpdateVariant>();
+  /** Peer-supplied request IDs are 62-bit varints; key by bigint to preserve precision. */
+  private incomingRequestKinds = new Map<bigint, RequestUpdateVariant>();
   /** Namespace subscriptions (for subscribe namespace flow) */
   private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
   /** Request ID to namespace subscription mapping */
-  private namespaceSubscriptionByRequestId = new Map<number, number>();
+  /** Maps 62-bit varint request IDs to locally-generated subscription IDs. */
+  private namespaceSubscriptionByRequestId = new Map<bigint, number>();
   /** Stream ID to subscription ID mapping for worker mode bidi streams */
   private namespaceSubscriptionStreams = new Map<number, number>();
   /** Our own namespace prefix for filtering out self-publishes */
@@ -611,20 +758,51 @@ export class MOQTSession {
   private maxAuthTokenCacheSize = 0;
 
   // ============================================================================
+  // B3 SEC: Per-session Resource Limits
+  // ============================================================================
+  // Bound how much state a single peer can force us to hold. Every entry point
+  // that would allocate a new subscription, publication (track), or transport
+  // stream first calls `enforceResourceLimit()`. Excess triggers a
+  // PROTOCOL_VIOLATION session close via the normal `close({...})` pattern —
+  // no new state-machine paths introduced.
+  /** Max concurrent subscriptions (client-initiated + peer-initiated). */
+  private readonly maxSubscriptions = 4096;
+  /** Max concurrent tracks we publish. */
+  private readonly maxTracks = 4096;
+  /**
+   * Max concurrent open transport streams tracked at the session layer
+   * (outbound uni streams we opened for object delivery + active per-request
+   * bidi streams). Approximates "streams a peer can force us to hold open".
+   */
+  private readonly maxOpenStreams = 8192;
+  /**
+   * Running count of streams we've opened via `doCreateStream` that have not
+   * yet been observed as closed/aborted. Peer-initiated inbound streams are
+   * accepted by the transport layer directly and are subject to the QUIC-level
+   * cap (see MAX_STREAMS); we don't double-count them here.
+   */
+  private openStreamCount = 0;
+  /**
+   * Latched once a resource cap has fired so we don't try to close twice or
+   * report the same violation to the app N times.
+   */
+  private resourceCapTripped = false;
+
+  // ============================================================================
   // FETCH / DVR State
   // ============================================================================
 
-  /** Active fetch requests (we are the fetcher/subscriber) */
-  private activeFetches = new Map<number, FetchInfo>();
-  /** Request ID to fetch stream mapping for receiving fetch data */
-  private fetchStreamBuffers = new Map<number, Uint8Array[]>();
+  /** Active fetch requests (we are the fetcher/subscriber). Keyed by 62-bit varint request ID. */
+  private activeFetches = new Map<bigint, FetchInfo>();
+  /** Request ID to fetch stream mapping for receiving fetch data. Keyed by 62-bit varint request ID. */
+  private fetchStreamBuffers = new Map<bigint, Uint8Array[]>();
 
   // ============================================================================
   // Track Status State (for live edge tracking)
   // ============================================================================
 
-  /** Pending TRACK_STATUS request callbacks */
-  private trackStatusCallbacks = new Map<number, {
+  /** Pending TRACK_STATUS request callbacks. Keyed by 62-bit varint request ID. */
+  private trackStatusCallbacks = new Map<bigint, {
     resolve: (status: TrackStatusOkMessage) => void;
     reject: (error: Error) => void;
   }>();
@@ -635,8 +813,8 @@ export class MOQTSession {
 
   /** VOD tracks we are publishing */
   private vodTracks = new Map<string, VODTrackInfo>();
-  /** Pending fetch responses we need to send (VOD publisher serving fetches) */
-  private pendingFetchResponses = new Map<number, {
+  /** Pending fetch responses we need to send (VOD publisher serving fetches). Keyed by 62-bit varint request ID. */
+  private pendingFetchResponses = new Map<bigint, {
     trackAlias: bigint;
     range: FetchRange;
     getObject: (groupId: number, objectId: number) => Promise<Uint8Array | null>;
@@ -659,10 +837,29 @@ export class MOQTSession {
    * ```
    */
   constructor(transportOrConfig: MOQTransport | MOQTSessionConfig) {
+    // Assign identifiers, metrics, and observability plumbing first so any
+    // downstream initialization can already emit against them.
+    const configSessionId =
+      transportOrConfig instanceof MOQTransport ? undefined : transportOrConfig.sessionId;
+    this.sessionId = configSessionId ?? generateSessionId();
+    this.metrics =
+      transportOrConfig instanceof MOQTransport
+        ? new InMemoryMetricsSink()
+        : (transportOrConfig.metrics ?? new InMemoryMetricsSink());
+    this._reconnectPolicy =
+      transportOrConfig instanceof MOQTransport
+        ? undefined
+        : transportOrConfig.reconnectPolicy;
+    this.sessionLog = Logger.create('moqt:session', { sessionId: this.sessionId });
+    this._createdAtMs = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+
     if (transportOrConfig instanceof MOQTransport) {
       // Main thread mode - existing behavior
       this.transport = transportOrConfig;
       this.useWorker = false;
+      this._draft = transportOrConfig.draft;
       // Capture the URL the caller connected the transport to, so migration
       // (§3.6) can surface it as `oldSessionUri` on migration events.
       this._lastConnectUrl = transportOrConfig.url;
@@ -674,11 +871,21 @@ export class MOQTSession {
       });
       this.transportCleanup.push(closedCleanup);
     } else {
-      // Worker mode - transport runs in worker
+      // Worker mode - transport runs in worker. Pass the session's metrics
+      // sink through so worker-side `moq.transport.*` counters land in
+      // `getDiagnostics().metrics`.
       this.workerConfig = transportOrConfig;
-      this.transportWorker = new TransportWorkerClient(transportOrConfig.worker);
+      this.transportWorker = new TransportWorkerClient(transportOrConfig.worker, this.metrics);
       this.useWorker = true;
+      this._draft = transportOrConfig.draft ?? DEFAULT_DRAFT;
     }
+
+    // Bind codec and request-ID scheme to the resolved draft.
+    this.codec = getProtocolCodecForVersion(versionEnumFor(this._draft) as Version);
+    // Draft-14: 1-based. Draft-16+: clients use even IDs starting at 0.
+    this.nextRequestId = this._draft === 'draft-16' || this._draft === 'draft-17' || this._draft === 'draft-18'
+      ? 0
+      : 1;
 
     this.objectRouter = new ObjectRouter(this.subscriptionManager, (sub, data, groupId, objectId, timestamp) => {
       this.emit('object', {
@@ -697,7 +904,7 @@ export class MOQTSession {
         objectId,
         bytes: data.byteLength,
       } as SubscribeStatsEvent);
-    });
+    }, this._draft, this.metrics);
 
     // §8: surface subscriber-side delivery deadline expiries to consumers.
     this.objectRouter.setDeliveryTimeoutCallback((sub, reason, resetCode, detail) => {
@@ -746,7 +953,8 @@ export class MOQTSession {
 
     // Set up FETCH object callback to emit fetch-object events
     this.objectRouter.setFetchObjectCallback((requestId, data, groupId, objectId) => {
-      log.info('FETCH object received', { requestId, groupId, objectId, dataSize: data.length });
+      // OPS-hi 1: per-object hot-path — demoted from .info to .trace.
+      log.trace('FETCH object received', { requestId, groupId, objectId, dataSize: data.length });
       this.emit('fetch-object', {
         requestId,
         data,
@@ -770,8 +978,8 @@ export class MOQTSession {
     });
 
     log.debug('MOQTSession created', {
-      isDraft18: IS_DRAFT_18,
-      isDraft16: IS_DRAFT_16,
+      isDraft18: this.isDraft18,
+      isDraft16: this.isDraft16,
       version: Version[this.codec.version],
       useWorker: this.useWorker,
     });
@@ -836,6 +1044,7 @@ export class MOQTSession {
 
     await this.transportWorker.connect({
       url,
+      draft: this._draft,
       serverCertificateHashes: this.workerConfig.serverCertificateHashes,
       connectionTimeout: this.workerConfig.connectionTimeout,
       debug: this.workerConfig.debug,
@@ -855,7 +1064,7 @@ export class MOQTSession {
    */
   private getNextRequestId(): number {
     const id = this.nextRequestId;
-    this.nextRequestId += (IS_DRAFT_16 || IS_DRAFT_18) ? 2 : 1;
+    this.nextRequestId += (this.isDraft16 || this.isDraft18) ? 2 : 1;
     return id;
   }
 
@@ -902,7 +1111,7 @@ export class MOQTSession {
     publisherPriority: number | undefined,
     groupId: number,
   ): number | undefined {
-    if (!IS_DRAFT_18) return undefined;
+    if (!this.isDraft18) return undefined;
     const pub = this.publicationManager.get(trackAlias);
     const subP = pub?.subscriberPriority ?? 128;
     const go = pub?.subscriberGroupOrder ?? GroupOrder.ASCENDING;
@@ -913,16 +1122,35 @@ export class MOQTSession {
   private async doCreateStream(
     opts?: { sendOrder?: number }
   ): Promise<{ writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }> {
-    if (this.useWorker) {
-      // The worker path does not yet plumb sendOrder — main-thread streams get
-      // §7 priority scheduling today; worker streams inherit the browser default.
-      const streamId = await this.transportWorker!.createStream();
-      return { streamId };
-    } else {
-      const stream = await this.transport!.createUnidirectionalStream(opts);
-      const writer = stream.getWriter();
-      return { writer };
+    // B3 SEC: gate outbound stream creation. Prevents unbounded stream
+    // allocation from a runaway loop (or a peer that induces us to open one
+    // publisher stream per SUBSCRIBE).
+    this.enforceResourceLimit('streams', this.openStreamCount, this.maxOpenStreams);
+    this.openStreamCount++;
+    try {
+      if (this.useWorker) {
+        // The worker path does not yet plumb sendOrder — main-thread streams get
+        // §7 priority scheduling today; worker streams inherit the browser default.
+        const streamId = await this.transportWorker!.createStream();
+        return { streamId };
+      } else {
+        const stream = await this.transport!.createUnidirectionalStream(opts);
+        const writer = stream.getWriter();
+        return { writer };
+      }
+    } catch (err) {
+      // Rollback the counter increment if the underlying transport rejected
+      // the create — we never actually held a stream open.
+      this.openStreamCount = Math.max(0, this.openStreamCount - 1);
+      throw err;
     }
+  }
+
+  /** B3 SEC: decrement the open-stream counter. Called from doCloseStream and
+   * from close paths (video GOP close, publication cleanup) that end a stream
+   * without going through doCloseStream. Idempotent-ish: floors at zero. */
+  private decrementOpenStreamCount(): void {
+    this.openStreamCount = Math.max(0, this.openStreamCount - 1);
   }
 
   /**
@@ -949,10 +1177,15 @@ export class MOQTSession {
   private async doCloseStream(
     streamInfo: { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }
   ): Promise<void> {
-    if (this.useWorker && streamInfo.streamId !== undefined) {
-      this.transportWorker!.closeStream(streamInfo.streamId);
-    } else if (streamInfo.writer) {
-      await streamInfo.writer.close();
+    try {
+      if (this.useWorker && streamInfo.streamId !== undefined) {
+        this.transportWorker!.closeStream(streamInfo.streamId);
+      } else if (streamInfo.writer) {
+        await streamInfo.writer.close();
+      }
+    } finally {
+      // B3 SEC: pair with doCreateStream increment.
+      this.decrementOpenStreamCount();
     }
   }
 
@@ -962,7 +1195,7 @@ export class MOQTSession {
   private setupTransportHandlers(): void {
     if (!this.transport) return;
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Setup messages come on separate setup stream event
       const setupCleanup = this.transport.on('setup-message', (data) => {
         this.handleSetupMessage(data);
@@ -1014,7 +1247,7 @@ export class MOQTSession {
   private setupWorkerHandlers(): void {
     if (!this.transportWorker) return;
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Setup messages come on dedicated setup stream
       this.transportWorker.on('setup-message', ({ data }) => {
         this.handleSetupMessage(data);
@@ -1132,12 +1365,11 @@ export class MOQTSession {
   private incomingBidiControllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
 
   /**
-   * Long-lived per-request bidi stream (draft-18 §3.3, §10.9). Keeps the writer
-   * alive so REQUEST_UPDATE can be sent on the same bidi stream that carried
-   * the original request, and buffers received bytes so successive control
-   * messages can be read from the same stream.
+   * Long-lived per-request bidi stream (draft-18 §3.3, §10.9). Keys are the
+   * 62-bit varint request ID; kept as bigint so peer-supplied values above
+   * `Number.MAX_SAFE_INTEGER` (2^53-1) index correctly.
    */
-  private activeRequestStreams = new Map<number, Draft18RequestStream>();
+  private activeRequestStreams = new Map<bigint, Draft18RequestStream>();
 
   /**
    * Open a new per-request bidi stream, write the initial request bytes, and
@@ -1145,12 +1377,12 @@ export class MOQTSession {
    * and reading successive response messages on the same stream.
    */
   private async openRequestStream(
-    requestId: number,
+    requestId: bigint,
     initialEncoded: Uint8Array
   ): Promise<Draft18RequestStream> {
     const existing = this.activeRequestStreams.get(requestId);
     if (existing) {
-      throw new Error(`Request stream already open for requestId=${requestId}`);
+      throw new Error(`Request stream already open for requestId=${requestId.toString()}`);
     }
 
     let stream: Draft18RequestStream;
@@ -1202,7 +1434,7 @@ export class MOQTSession {
   /**
    * Close and forget a per-request bidi stream.
    */
-  private async closeRequestStream(requestId: number): Promise<void> {
+  private async closeRequestStream(requestId: bigint): Promise<void> {
     const stream = this.activeRequestStreams.get(requestId);
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
@@ -1217,7 +1449,7 @@ export class MOQTSession {
    */
   private async sendRequestAndWaitResponse(
     encoded: Uint8Array,
-    requestId: number
+    requestId: bigint
   ): Promise<ControlMessageDraft18> {
     const stream = await this.openRequestStream(requestId, encoded);
     try {
@@ -1334,7 +1566,7 @@ export class MOQTSession {
     while (consumed < buffer.length) {
       try {
         const view = buffer.subarray(consumed);
-        const [message, bytesRead] = this.codec.decodeControlMessage(view);
+        const [message, bytesRead] = this.codec.decodeControlMessage(view, 0, this.metrics);
         consumed += bytesRead;
 
         const msgTypeName = MessageType[message.type] ?? `unknown(${message.type})`;
@@ -1408,6 +1640,23 @@ export class MOQTSession {
         reader.controller.enqueue(chunk);
       }
     }
+  }
+
+  /**
+   * MOQT draft version this session is speaking.
+   */
+  get draft(): DraftVersion {
+    return this._draft;
+  }
+
+  /** True when this session is speaking draft-18 (per-request bidi streams, MOQT varints, ...). */
+  private get isDraft18(): boolean {
+    return this._draft === 'draft-18';
+  }
+
+  /** True when this session is speaking draft-16 or draft-17. */
+  private get isDraft16(): boolean {
+    return this._draft === 'draft-16' || this._draft === 'draft-17';
   }
 
   /**
@@ -1614,7 +1863,7 @@ export class MOQTSession {
       throw new Error(`Cannot setup: session is ${this._state}`);
     }
 
-    log.info('Setting up MOQT session', { useWorker: this.useWorker, isDraft18: IS_DRAFT_18 });
+    log.info('Setting up MOQT session', { useWorker: this.useWorker, isDraft18: this.isDraft18 });
     this.setState('setup');
 
     // Set up event handlers based on mode
@@ -1624,7 +1873,7 @@ export class MOQTSession {
       this.setupTransportHandlers();
     }
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Single SETUP message with no version/role (negotiated via ALPN)
       // On the setup stream, message type is implicit (stream type = 0x2F00)
       // Wire format: Length (16-bit) | Setup Options
@@ -1655,7 +1904,7 @@ export class MOQTSession {
       log.info('SETUP bytes (draft-18)', {
         length: setupBytes.length,
         hex: hexBytes,
-        alpnProtocol: getCurrentALPNProtocol(),
+        alpnProtocol: alpnProtocolFor(this._draft),
       });
 
       await this.doSendControl(setupBytes);
@@ -1690,13 +1939,13 @@ export class MOQTSession {
       log.info('CLIENT_SETUP bytes', {
         length: setupBytes.length,
         hex: hexBytes,
-        isDraft16: IS_DRAFT_16,
-        alpnProtocol: getCurrentALPNProtocol(),
+        isDraft16: this.isDraft16,
+        alpnProtocol: alpnProtocolFor(this._draft),
       });
 
       await this.doSendControl(setupBytes);
       log.info('Sent CLIENT_SETUP');
-      this.emitMessageSent('CLIENT_SETUP', setupBytes.length, 'draft-16', { isDraft16: IS_DRAFT_16 });
+      this.emitMessageSent('CLIENT_SETUP', setupBytes.length, 'draft-16', { isDraft16: this.isDraft16 });
 
       // Wait for SERVER_SETUP
       await this.waitForServerSetup();
@@ -1715,7 +1964,7 @@ export class MOQTSession {
    * @param timeoutMs Grace period in milliseconds before the sender enforces closure (spec §10.4)
    */
   async goAway(newSessionUri?: string, timeoutMs: bigint = 0n): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       log.warn('goAway only supported in draft-18');
       return;
     }
@@ -1748,7 +1997,7 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
   ): Promise<TrackStatusResult> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('trackStatus() requires draft-18');
     }
     if (!this.isReady) {
@@ -1756,18 +2005,20 @@ export class MOQTSession {
     }
     assertNotReservedNamespace(namespace, 'request TRACK_STATUS');
 
-    const requestId = this.getNextRequestId();
+    // Widen the locally-generated counter to bigint immediately so it flows
+    // through wire encode, state, and response events without truncation.
+    const requestId = BigInt(this.getNextRequestId());
 
     const trackStatusMessage: TrackStatusMessageDraft18 = {
       type: MessageTypeDraft18.TRACK_STATUS,
-      requestId: BigInt(requestId),
+      requestId,
       trackNamespace: namespace,
       trackName,
     };
 
     const encoded = this.codec.encodeControlMessage(trackStatusMessage);
     log.info('Sent TRACK_STATUS (draft-18)', {
-      requestId,
+      requestId: requestId.toString(),
       namespace: namespace.join('/'),
       trackName,
     });
@@ -1794,7 +2045,7 @@ export class MOQTSession {
         latestObject: ok.largestLocation?.object,
       };
       log.info('TRACK_STATUS response received (draft-18)', {
-        requestId,
+        requestId: requestId.toString(),
         expiresMs,
         latestGroup: result.latestGroup?.toString(),
         latestObject: result.latestObject?.toString(),
@@ -1831,7 +2082,7 @@ export class MOQTSession {
       parameters?: Map<number, Uint8Array>;
     }
   ): Promise<number> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('subscribeTracks() requires draft-18');
     }
     if (!this.isReady) {
@@ -1842,7 +2093,9 @@ export class MOQTSession {
       assertNotReservedNamespace(options.namespacePrefixParam, 'SUBSCRIBE_TRACKS under');
     }
 
-    const requestId = this.getNextRequestId();
+    // Local counter is small; widen for wire encode and state.
+    const subscriptionId = this.getNextRequestId();
+    const requestId = BigInt(subscriptionId);
 
     // §10.2.14 TRACK_NAMESPACE_PREFIX — encoded as a namespace tuple (count |
     // per-element length-prefixed UTF-8), then packed as the parameter value.
@@ -1856,7 +2109,7 @@ export class MOQTSession {
 
     const subscribeTracksMessage: SubscribeTracksMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
-      requestId: BigInt(requestId),
+      requestId,
       trackNamespacePrefix: namespacePrefix,
       forwardState: options?.forwardState ?? true,
       filter: options?.filter ?? SubscriptionFilterDraft18.NEXT_GROUP_START,
@@ -1867,7 +2120,7 @@ export class MOQTSession {
 
     const encoded = this.codec.encodeControlMessage(subscribeTracksMessage);
     log.info('Sent SUBSCRIBE_TRACKS (draft-18)', {
-      requestId,
+      requestId: requestId.toString(),
       prefix: namespacePrefix.join('/'),
     });
 
@@ -1880,7 +2133,6 @@ export class MOQTSession {
     }
 
     // Store the namespace subscription for incoming PUBLISH messages
-    const subscriptionId = requestId;
     const subscription: NamespaceSubscriptionInfo = {
       subscriptionId,
       requestId,
@@ -1891,7 +2143,7 @@ export class MOQTSession {
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
 
-    log.info('SUBSCRIBE_TRACKS accepted (draft-18)', { requestId });
+    log.info('SUBSCRIBE_TRACKS accepted (draft-18)', { requestId: requestId.toString() });
     return subscriptionId;
   }
 
@@ -1915,18 +2167,19 @@ export class MOQTSession {
    * cancels — awaiting the ack would hang.
    */
   async sendRequestUpdate(
-    subscriptionRequestId: number,
+    subscriptionRequestId: bigint | number,
     forwardState: boolean,
     options?: { awaitAck?: boolean; newGroupRequest?: boolean | number },
   ): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendRequestUpdate() requires draft-18');
     }
+    const rid = typeof subscriptionRequestId === 'bigint' ? subscriptionRequestId : BigInt(subscriptionRequestId);
 
-    const stream = this.activeRequestStreams.get(subscriptionRequestId);
+    const stream = this.activeRequestStreams.get(rid);
     if (!stream) {
       throw new Error(
-        `sendRequestUpdate: no active request stream for requestId=${subscriptionRequestId}`,
+        `sendRequestUpdate: no active request stream for requestId=${rid.toString()}`,
       );
     }
 
@@ -1940,7 +2193,7 @@ export class MOQTSession {
 
     const updateMessage: RequestUpdateMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_UPDATE,
-      requestId: BigInt(subscriptionRequestId),
+      requestId: rid,
       forwardState,
       parameters: extraParams.size > 0 ? extraParams : undefined,
     };
@@ -1948,7 +2201,7 @@ export class MOQTSession {
     const bytes = this.codec.encodeControlMessage(updateMessage);
     await stream.write(bytes);
     log.info('Sent REQUEST_UPDATE (draft-18)', {
-      subscriptionRequestId,
+      subscriptionRequestId: rid.toString(),
       forwardState,
       newGroupRequest: options?.newGroupRequest ?? false,
     });
@@ -1961,16 +2214,16 @@ export class MOQTSession {
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const err = response as RequestErrorMessageDraft18;
       throw new Error(
-        `REQUEST_UPDATE failed for requestId=${subscriptionRequestId}: ${err.reasonPhrase} (code ${err.errorCode})`,
+        `REQUEST_UPDATE failed for requestId=${rid.toString()}: ${err.reasonPhrase} (code ${err.errorCode})`,
       );
     }
     if (response.type !== MessageTypeDraft18.REQUEST_OK) {
       log.warn('Unexpected response to REQUEST_UPDATE (draft-18)', {
-        subscriptionRequestId,
+        subscriptionRequestId: rid.toString(),
         responseType: response.type,
       });
     } else {
-      log.info('REQUEST_UPDATE acknowledged (draft-18)', { subscriptionRequestId });
+      log.info('REQUEST_UPDATE acknowledged (draft-18)', { subscriptionRequestId: rid.toString() });
     }
   }
 
@@ -1985,19 +2238,19 @@ export class MOQTSession {
    *                    (defaults to TRACK_ENDED when the caller supplies no code)
    */
   async sendPublishDone(
-    requestId: number,
+    requestId: bigint,
     finalGroup: number,
     finalObject: number,
     reasonPhrase?: string,
     statusCode?: PublishDoneErrorCodeDraft18
   ): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendPublishDone() requires draft-18');
     }
 
     const publishDone: PublishDoneMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH_DONE,
-      requestId: BigInt(requestId),
+      requestId,
       finalLocation: { group: BigInt(finalGroup), object: BigInt(finalObject) },
       statusCode: BigInt(statusCode ?? PublishDoneErrorCodeDraft18.TRACK_ENDED),
       reasonPhrase,
@@ -2008,7 +2261,7 @@ export class MOQTSession {
     // PUBLISH_DONE terminates the incoming subscription; drop routing state so
     // any future REQUEST_UPDATE on this id doesn't route as §10.9.1 by default.
     this.incomingRequestKinds.delete(requestId);
-    log.info('Sent PUBLISH_DONE (draft-18)', { requestId, finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
+    log.info('Sent PUBLISH_DONE (draft-18)', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
   }
 
   /**
@@ -2019,7 +2272,7 @@ export class MOQTSession {
    * is expected to raise its stream limit; there is no reply.
    */
   async sendPublishBlocked(trackAlias: bigint | number | string): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendPublishBlocked() requires draft-18');
     }
     const alias = typeof trackAlias === 'bigint' ? trackAlias : BigInt(trackAlias);
@@ -2039,9 +2292,49 @@ export class MOQTSession {
    *                       underlying WebTransport `close({ closeCode })`. Defaults to NO_ERROR.
    * @param options.reason Human-readable reason string, forwarded verbatim.
    */
+  /**
+   * B3 SEC: enforce a per-session resource cap.
+   *
+   * Called from subscribe/publish/stream-open entry points. If `currentCount`
+   * has reached or exceeded `limit`, terminate the session with
+   * PROTOCOL_VIOLATION via the existing `close()` path and throw so the
+   * caller unwinds without allocating additional state. The `code` on the
+   * thrown error is set to `'resource-limit-exceeded'` so callers can
+   * distinguish DoS caps from other failures.
+   *
+   * @internal — this is a security gate, not a public API.
+   */
+  private enforceResourceLimit(
+    what: 'subscriptions' | 'tracks' | 'streams',
+    currentCount: number,
+    limit: number,
+  ): void {
+    if (currentCount < limit) return;
+    if (!this.resourceCapTripped) {
+      this.resourceCapTripped = true;
+      log.error('Per-session resource cap exceeded', { what, currentCount, limit });
+      // Best-effort session termination. `close()` handles the two transport
+      // shapes (main-thread + worker) itself; we don't await here so a caller
+      // holding a lock (e.g. an incoming-stream handler) doesn't deadlock.
+      void this.close({
+        code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
+        reason: `Peer exceeded ${what} limit (${limit})`,
+      }).catch(() => { /* already closing */ });
+    }
+    const err = new Error(`Per-session ${what} limit ${limit} exceeded`) as Error & { code?: string };
+    err.code = 'resource-limit-exceeded';
+    throw err;
+  }
+
   async close(options?: { code?: SessionErrorCodeDraft18; reason?: string }): Promise<void> {
     const code = options?.code ?? SessionErrorCodeDraft18.NO_ERROR;
     const reason = options?.reason ?? 'Normal closure';
+    this._lastCloseReason = reason;
+    this._lastCloseCode = code;
+    this.metrics.counter('moq.session.close', 1, {
+      remote: 'false',
+      code: String(code),
+    });
     log.info('Closing session', { code, reason });
 
     // §13.6.1: cancel the idle/keepalive timer before we tear down the
@@ -2205,6 +2498,10 @@ export class MOQTSession {
         trackAlias,
         error: (err as Error).message,
       });
+    } finally {
+      // B3 SEC: whether abort succeeded or threw, the stream is no longer
+      // ours to hold — release the counter slot.
+      this.decrementOpenStreamCount();
     }
     // Draft-18 §11.4.3 stream-reset — surface the code + context so consumers
     // (UI, metrics) can distinguish TOO_FAR_BEHIND / EXCESSIVE_LOAD from
@@ -2248,7 +2545,7 @@ export class MOQTSession {
    * `bytes`; pass 0 to emit just the type varint.
    */
   async sendPaddingStream(bytes: number): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendPaddingStream requires draft-18');
     }
     if (!Number.isInteger(bytes) || bytes < 0) {
@@ -2268,7 +2565,7 @@ export class MOQTSession {
    * zero-filled bytes. Receivers MUST discard.
    */
   async sendPaddingDatagram(bytes: number): Promise<void> {
-    if (!IS_DRAFT_18) {
+    if (!this.isDraft18) {
       throw new Error('sendPaddingDatagram requires draft-18');
     }
     if (!Number.isInteger(bytes) || bytes < 0) {
@@ -2302,9 +2599,13 @@ export class MOQTSession {
     }
     assertNotReservedNamespace(namespace, 'SUBSCRIBE to');
 
-    const requestId = this.getNextRequestId();
-    const subscriptionId = requestId;
-    const trackAlias = BigInt(requestId);
+    // B3 SEC: reject before allocating any request/subscription state.
+    this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
+
+    // Local counter is small; widen for wire encode and state maps.
+    const subscriptionId = this.getNextRequestId();
+    const requestId = BigInt(subscriptionId);
+    const trackAlias = requestId;
 
     const fullTrackNameForLog = [...namespace, trackName].join('/');
     log.info('Subscribing', {
@@ -2314,7 +2615,7 @@ export class MOQTSession {
       fullTrackName: fullTrackNameForLog,
       subscriptionId,
       trackAlias: trackAlias.toString(),
-      isDraft18: IS_DRAFT_18,
+      isDraft18: this.isDraft18,
     });
 
     // Create subscription
@@ -2332,7 +2633,7 @@ export class MOQTSession {
     };
     this.subscriptionManager.add(subscription);
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Send SUBSCRIBE on a new bidirectional stream
       await this.subscribeDraft18(requestId, namespace, trackName, trackAlias, options);
     } else {
@@ -2358,8 +2659,8 @@ export class MOQTSession {
         subscriberPriority: options?.priority ?? 128,
         groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
         filterType,
-        startGroup: filterType === FilterType.ABSOLUTE_START ? startGroup : undefined,
-        startObject: filterType === FilterType.ABSOLUTE_START ? startObject : undefined,
+        startGroup: filterType === FilterType.ABSOLUTE_START ? BigInt(startGroup) : undefined,
+        startObject: filterType === FilterType.ABSOLUTE_START ? BigInt(startObject) : undefined,
         parameters: new Map(),
       };
 
@@ -2376,12 +2677,12 @@ export class MOQTSession {
 
       await this.doSendControl(subscribeBytes);
       log.info('Sent SUBSCRIBE message', {
-        requestId,
+        requestId: requestId.toString(),
         trackAlias: trackAlias.toString(),
         namespace: namespace.join('/'),
         trackName,
       });
-      this.emitMessageSent('SUBSCRIBE', subscribeBytes.length, `${namespace.join('/')}/${trackName}`, { requestId, trackAlias: trackAlias.toString() });
+      this.emitMessageSent('SUBSCRIBE', subscribeBytes.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
     }
 
     log.info('Subscription started', { subscriptionId });
@@ -2392,7 +2693,7 @@ export class MOQTSession {
    * Draft-18: Subscribe using per-request bidirectional stream
    */
   private async subscribeDraft18(
-    requestId: number,
+    requestId: bigint,
     namespace: string[],
     trackName: string,
     trackAlias: bigint,
@@ -2425,7 +2726,7 @@ export class MOQTSession {
 
     const subscribeMessage: SubscribeMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE,
-      requestId: BigInt(requestId),
+      requestId,
       trackNamespace: namespace,
       trackName,
       forwardState: true,
@@ -2438,14 +2739,14 @@ export class MOQTSession {
     const encoded = this.codec.encodeControlMessage(subscribeMessage);
     const subHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent SUBSCRIBE (draft-18)', {
-      requestId,
+      requestId: requestId.toString(),
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
       hex: subHex,
       length: encoded.length,
     });
-    this.emitMessageSent('SUBSCRIBE', encoded.length, `${namespace.join('/')}/${trackName}`, { requestId, trackAlias: trackAlias.toString() });
+    this.emitMessageSent('SUBSCRIBE', encoded.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
 
     const response = await this.sendRequestAndWaitResponse(encoded, requestId);
 
@@ -2469,9 +2770,9 @@ export class MOQTSession {
         });
       }
       if (sub) {
-        const largestGroup = Number(subscribeOk.largestLocation.group);
-        const largestObject = Number(subscribeOk.largestLocation.object);
-        const contentExists = largestGroup > 0 || largestObject > 0;
+        const largestGroup = subscribeOk.largestLocation.group;
+        const largestObject = subscribeOk.largestLocation.object;
+        const contentExists = largestGroup > 0n || largestObject > 0n;
         this.emit('subscribe-ok', {
           subscriptionId: sub.subscriptionId,
           requestId,
@@ -2498,7 +2799,7 @@ export class MOQTSession {
    * Draft-18: Publish using per-request bidirectional stream
    */
   private async publishDraft18(
-    requestId: number,
+    requestId: bigint,
     namespace: string[],
     trackName: string,
     trackAlias: bigint,
@@ -2514,7 +2815,7 @@ export class MOQTSession {
     });
     const publishMessage: PublishMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH,
-      requestId: BigInt(requestId),
+      requestId,
       trackAlias,
       trackNamespace: namespace,
       trackName,
@@ -2526,7 +2827,7 @@ export class MOQTSession {
     const encoded = this.codec.encodeControlMessage(publishMessage);
     const pubHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent PUBLISH (draft-18)', {
-      requestId,
+      requestId: requestId.toString(),
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
@@ -2539,7 +2840,7 @@ export class MOQTSession {
     if (response.type === MessageTypeDraft18.REQUEST_OK) {
       const ok = response as RequestOkMessageDraft18;
       const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
-      log.info('Received REQUEST_OK for PUBLISH (draft-18)', { requestId, expiresMs });
+      log.info('Received REQUEST_OK for PUBLISH (draft-18)', { requestId: requestId.toString(), expiresMs });
       this.emit('request-ok', { requestId, requestKind: 'publish', expiresMs } as RequestOkEvent);
       if (!options?.skipForwardWait) {
         log.info('PUBLISH accepted, starting immediately (draft-18)');
@@ -2570,7 +2871,7 @@ export class MOQTSession {
 
     log.info('Unsubscribing', { subscriptionId });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Send REQUEST_UPDATE with forwardState=false to unsubscribe.
       // Fire-and-forget: the relay resets the data streams on cancel and
       // may close the bidi without a REQUEST_OK.
@@ -2585,7 +2886,7 @@ export class MOQTSession {
       // Draft-14/16: Send UNSUBSCRIBE message
       const unsubscribeMessage = {
         type: MessageType.UNSUBSCRIBE as const,
-        requestId: subscription.requestId,
+        requestId: BigInt(subscription.requestId),
       };
 
       try {
@@ -2646,13 +2947,17 @@ export class MOQTSession {
     range: FetchRange,
     options?: FetchOptions,
     onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
-  ): Promise<number> {
+  ): Promise<bigint> {
     if (!this.isReady) {
       throw new Error('Session not ready');
     }
     assertNotReservedNamespace(namespace, 'FETCH from');
 
-    const requestId = this.getNextRequestId();
+    // Local counter is a small `number` (starts at 0/1, +2 per draft-16/18 request).
+    // Widen to `bigint` immediately so downstream state, wire encode, and callback
+    // comparisons all operate on the 62-bit varint type — no silent precision loss
+    // for long-lived sessions.
+    const requestId = BigInt(this.getNextRequestId());
     const fullTrackNameStr = [...namespace, trackName].join('/');
 
     log.info('Fetching historical objects', {
@@ -2660,7 +2965,7 @@ export class MOQTSession {
       trackName,
       fullTrackName: fullTrackNameStr,
       range,
-      requestId,
+      requestId: requestId.toString(),
     });
 
     // Create fetch info
@@ -2683,7 +2988,7 @@ export class MOQTSession {
       this.on('fetch-object', handler);
     }
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.fetchDraft18(requestId, namespace, trackName, range, options);
     } else {
       // Draft-16 §7.4 End Location is exclusive on the wire: endObject == 0
@@ -2699,10 +3004,10 @@ export class MOQTSession {
         fullTrackName: { namespace, trackName },
         subscriberPriority: options?.priority ?? 128,
         groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
-        startGroup: range.startGroup,
-        startObject: range.startObject,
-        endGroup: range.endGroup,
-        endObject: wireEndObject,
+        startGroup: BigInt(range.startGroup),
+        startObject: BigInt(range.startObject),
+        endGroup: BigInt(range.endGroup),
+        endObject: BigInt(wireEndObject),
         parameters: new Map(),
       };
 
@@ -2712,12 +3017,12 @@ export class MOQTSession {
 
       await this.doSendControl(fetchBytes);
       log.info('Sent FETCH message', {
-        requestId,
+        requestId: requestId.toString(),
         namespace: namespace.join('/'),
         trackName,
         range,
       });
-      this.emitMessageSent('FETCH', fetchBytes.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId, range });
+      this.emitMessageSent('FETCH', fetchBytes.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId: requestId.toString(), range });
     }
 
     return requestId;
@@ -2732,7 +3037,7 @@ export class MOQTSession {
    * REQUEST_ERROR surfaces failure via the fetch-error event.
    */
   private async fetchDraft18(
-    requestId: number,
+    requestId: bigint,
     namespace: string[],
     trackName: string,
     range: FetchRange,
@@ -2760,7 +3065,7 @@ export class MOQTSession {
     }
     const fetchMessage: FetchMessageDraft18 = {
       type: MessageTypeDraft18.FETCH,
-      requestId: BigInt(requestId),
+      requestId,
       fetchType,
       joiningFlag: isJoining,
       subscribeRequestId: options?.subscribeRequestId,
@@ -2783,21 +3088,21 @@ export class MOQTSession {
     const encoded = this.codec.encodeControlMessage(fetchMessage);
     const fetchHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent FETCH (draft-18)', {
-      requestId,
+      requestId: requestId.toString(),
       namespace: namespace.join('/'),
       trackName,
       range,
       hex: fetchHex,
       length: encoded.length,
     });
-    this.emitMessageSent('FETCH', encoded.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId, range });
+    this.emitMessageSent('FETCH', encoded.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId: requestId.toString(), range });
 
     const response = await this.sendRequestAndWaitResponse(encoded, requestId);
 
     if (response.type === MessageTypeDraft18.FETCH_OK) {
       const fetchOk = response as _FetchOkMessageDraft18;
       log.info('Received FETCH_OK (draft-18)', {
-        requestId,
+        requestId: requestId.toString(),
         endGroup: fetchOk.endLocation.group.toString(),
         endObject: fetchOk.endLocation.object.toString(),
         endOfTrack: fetchOk.endOfTrack,
@@ -2805,26 +3110,26 @@ export class MOQTSession {
       const info = this.activeFetches.get(requestId);
       if (info) {
         info.completed = true;
-        info.largestGroupId = Number(fetchOk.endLocation.group);
-        info.largestObjectId = Number(fetchOk.endLocation.object);
+        info.largestGroupId = fetchOk.endLocation.group;
+        info.largestObjectId = fetchOk.endLocation.object;
         info.endOfTrack = fetchOk.endOfTrack;
       }
       this.emit('fetch-complete', {
         requestId,
-        largestGroupId: Number(fetchOk.endLocation.group),
-        largestObjectId: Number(fetchOk.endLocation.object),
+        largestGroupId: fetchOk.endLocation.group,
+        largestObjectId: fetchOk.endLocation.object,
         endOfTrack: fetchOk.endOfTrack,
       } as FetchCompleteEvent);
     } else if (response.type === MessageTypeDraft18.REQUEST_OK) {
       // Some relays send REQUEST_OK to accept the fetch and later stream data.
       const ok = response as RequestOkMessageDraft18;
       const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
-      log.info('Received REQUEST_OK for FETCH (draft-18)', { requestId, expiresMs });
+      log.info('Received REQUEST_OK for FETCH (draft-18)', { requestId: requestId.toString(), expiresMs });
       this.emit('request-ok', { requestId, requestKind: 'fetch', expiresMs } as RequestOkEvent);
     } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
       log.error('Received REQUEST_ERROR for FETCH (draft-18)', {
-        requestId,
+        requestId: requestId.toString(),
         errorCode: error.errorCode,
         reasonPhrase: error.reasonPhrase,
       });
@@ -2837,7 +3142,7 @@ export class MOQTSession {
       } as FetchErrorEvent);
     } else {
       log.warn('Unexpected response to FETCH (draft-18)', {
-        requestId,
+        requestId: requestId.toString(),
         responseType: response.type,
       });
     }
@@ -2848,53 +3153,55 @@ export class MOQTSession {
    *
    * @param requestId - Fetch request ID to cancel
    */
-  async cancelFetch(requestId: number): Promise<void> {
-    const fetchInfo = this.activeFetches.get(requestId);
+  async cancelFetch(requestId: bigint | number): Promise<void> {
+    const rid = typeof requestId === 'bigint' ? requestId : BigInt(requestId);
+    const fetchInfo = this.activeFetches.get(rid);
     if (!fetchInfo) {
-      log.warn('No fetch found to cancel', { requestId });
+      log.warn('No fetch found to cancel', { requestId: rid.toString() });
       return;
     }
 
-    log.info('Cancelling fetch', { requestId });
+    log.info('Cancelling fetch', { requestId: rid.toString() });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18 has no FETCH_CANCEL message; the equivalent is REQUEST_UPDATE
       // with forwardState=false, which terminates delivery for this requestId.
       // The relay resets the fetch data stream in response; fire-and-forget.
       try {
-        await this.sendRequestUpdate(requestId, false, { awaitAck: false });
-        log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel (draft-18)', { requestId });
+        await this.sendRequestUpdate(rid, false, { awaitAck: false });
+        log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel (draft-18)', { requestId: rid.toString() });
       } catch (err) {
         log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
       }
-      await this.closeRequestStream(requestId);
+      await this.closeRequestStream(rid);
     } else {
       // Draft-14/16 send a dedicated FETCH_CANCEL message.
       const cancelMessage: FetchCancelMessage = {
         type: MessageType.FETCH_CANCEL,
-        requestId,
+        requestId: rid,
       };
 
       try {
         const cancelBytes = this.codec.encodeControlMessage(cancelMessage);
         await this.doSendControl(cancelBytes);
-        log.info('Sent FETCH_CANCEL message', { requestId });
+        log.info('Sent FETCH_CANCEL message', { requestId: rid.toString() });
       } catch (err) {
         log.error('Failed to send FETCH_CANCEL message', { error: (err as Error).message });
       }
     }
 
     // Remove from active fetches
-    this.activeFetches.delete(requestId);
-    this.fetchStreamBuffers.delete(requestId);
-    log.info('Fetch cancelled', { requestId });
+    this.activeFetches.delete(rid);
+    this.fetchStreamBuffers.delete(rid);
+    log.info('Fetch cancelled', { requestId: rid.toString() });
   }
 
   /**
    * Get active fetch info
    */
-  getFetch(requestId: number): FetchInfo | undefined {
-    return this.activeFetches.get(requestId);
+  getFetch(requestId: bigint | number): FetchInfo | undefined {
+    const rid = typeof requestId === 'bigint' ? requestId : BigInt(requestId);
+    return this.activeFetches.get(rid);
   }
 
   /**
@@ -2939,12 +3246,13 @@ export class MOQTSession {
       throw new Error('Session not ready');
     }
 
-    const requestId = this.getNextRequestId();
+    // Local counter is small; widen to bigint for wire varint + state map key.
+    const requestId = BigInt(this.getNextRequestId());
 
     log.info('Requesting track status', {
       namespace: namespace.join('/'),
       trackName,
-      requestId,
+      requestId: requestId.toString(),
     });
 
     // Build TRACK_STATUS message
@@ -2957,13 +3265,13 @@ export class MOQTSession {
     const bytes = this.codec.encodeControlMessage(trackStatusMessage);
     await this.doSendControl(bytes);
 
-    log.info('Sent TRACK_STATUS message', { requestId });
+    log.info('Sent TRACK_STATUS message', { requestId: requestId.toString() });
 
     // Wait for TRACK_STATUS_OK or TRACK_STATUS_ERROR
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.trackStatusCallbacks.delete(requestId);
-        reject(new Error(`TRACK_STATUS request ${requestId} timed out after ${timeoutMs}ms`));
+        reject(new Error(`TRACK_STATUS request ${requestId.toString()} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       this.trackStatusCallbacks.set(requestId, {
@@ -3001,11 +3309,12 @@ export class MOQTSession {
     }
     assertNotReservedNamespace(namespacePrefix, 'SUBSCRIBE_NAMESPACE for');
 
-    const requestId = this.getNextRequestId();
-    const subscriptionId = requestId;
+    // Local counter is small; widen for wire encode and state maps.
+    const subscriptionId = this.getNextRequestId();
+    const requestId = BigInt(subscriptionId);
     const prefixStr = namespacePrefix.join('/');
 
-    log.info('Subscribing to namespace', { namespacePrefix: prefixStr, requestId });
+    log.info('Subscribing to namespace', { namespacePrefix: prefixStr, requestId: requestId.toString() });
 
     // Store namespace subscription
     const subscription: NamespaceSubscriptionInfo = {
@@ -3019,7 +3328,7 @@ export class MOQTSession {
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Send SUBSCRIBE_NAMESPACE on per-request bidi stream
       await this.subscribeNamespaceDraft18(requestId, namespacePrefix, subscriptionId);
     } else {
@@ -3034,13 +3343,13 @@ export class MOQTSession {
       const bytes = this.codec.encodeControlMessage(message);
 
       // Draft-16: SUBSCRIBE_NAMESPACE must be sent on a new bidirectional stream
-      if (IS_DRAFT_16) {
+      if (this.isDraft16) {
         if (this.useWorker && this.transportWorker) {
           const streamId = await this.transportWorker.createBidiStream();
           this.transportWorker.writeStream(streamId, bytes, false);
           this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
-          console.warn('[MOQT-DIAG] Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { prefix: prefixStr, requestId, streamId, subscriptionId });
-          log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { namespacePrefix: prefixStr, requestId, streamId });
+          console.warn('[MOQT-DIAG] Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { prefix: prefixStr, requestId: requestId.toString(), streamId, subscriptionId });
+          log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream (worker)', { namespacePrefix: prefixStr, requestId: requestId.toString(), streamId });
         } else if (this.transport) {
           const bidiStream = await this.transport.createBidirectionalStream();
           const writer = bidiStream.writable.getWriter();
@@ -3049,12 +3358,12 @@ export class MOQTSession {
           this.readNamespaceSubscriptionStream(bidiStream.readable, subscriptionId).catch(err => {
             log.error('Error reading namespace subscription stream', { error: (err as Error).message });
           });
-          log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream', { namespacePrefix: prefixStr, requestId });
+          log.info('Sent SUBSCRIBE_NAMESPACE on bidi stream', { namespacePrefix: prefixStr, requestId: requestId.toString() });
         }
       } else {
         // Draft-14: send on control stream
         await this.doSendControl(bytes);
-        log.info('Sent SUBSCRIBE_NAMESPACE on control stream', { namespacePrefix: prefixStr, requestId });
+        log.info('Sent SUBSCRIBE_NAMESPACE on control stream', { namespacePrefix: prefixStr, requestId: requestId.toString() });
       }
     }
 
@@ -3113,7 +3422,7 @@ export class MOQTSession {
         while (consumed < buffer.length) {
           try {
             const view = buffer.subarray(consumed);
-            const [message, bytesRead] = this.codec.decodeControlMessage(view);
+            const [message, bytesRead] = this.codec.decodeControlMessage(view, 0, this.metrics);
             consumed += bytesRead;
 
             log.info('Received message on namespace subscription stream', {
@@ -3159,7 +3468,7 @@ export class MOQTSession {
    * Draft-18: Subscribe to namespace on per-request bidi stream
    */
   private async subscribeNamespaceDraft18(
-    requestId: number,
+    requestId: bigint,
     namespacePrefix: string[],
     subscriptionId: number
   ): Promise<void> {
@@ -3167,7 +3476,7 @@ export class MOQTSession {
 
     const subscribeNsMessage: SubscribeNamespaceMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
-      requestId: BigInt(requestId),
+      requestId,
       trackNamespacePrefix: namespacePrefix,
     };
 
@@ -3176,7 +3485,7 @@ export class MOQTSession {
     if (this.useWorker && this.transportWorker) {
       const streamId = await this.transportWorker.createBidiStream();
       this.transportWorker.writeStream(streamId, encoded);
-      log.info('Sent SUBSCRIBE_NAMESPACE (draft-18) via worker', { namespacePrefix: prefixStr, requestId, streamId });
+      log.info('Sent SUBSCRIBE_NAMESPACE (draft-18) via worker', { namespacePrefix: prefixStr, requestId: requestId.toString(), streamId });
 
       // Create a ReadableStream for the bidi response
       const readable = new ReadableStream<Uint8Array>({
@@ -3193,7 +3502,7 @@ export class MOQTSession {
       const writer = writable.getWriter();
       await writer.write(encoded);
       writer.releaseLock();
-      log.info('Sent SUBSCRIBE_NAMESPACE (draft-18)', { namespacePrefix: prefixStr, requestId });
+      log.info('Sent SUBSCRIBE_NAMESPACE (draft-18)', { namespacePrefix: prefixStr, requestId: requestId.toString() });
 
       this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
         log.error('Error reading namespace subscription stream (draft-18)', { error: (err as Error).message });
@@ -3249,7 +3558,7 @@ export class MOQTSession {
         while (consumed < buffer.length) {
           try {
             const view = buffer.subarray(consumed);
-            const [message, bytesRead] = this.codec.decodeControlMessage(view);
+            const [message, bytesRead] = this.codec.decodeControlMessage(view, 0, this.metrics);
             consumed += bytesRead;
 
             log.info('Received message on namespace subscription stream (draft-18)', {
@@ -3483,9 +3792,13 @@ export class MOQTSession {
     }
     assertNotReservedNamespace(namespace, 'PUBLISH');
 
-    // Check for existing subscription with same track name to use its alias
-    const requestId = this.getNextRequestId();
-    let trackAlias = BigInt(requestId);
+    // B3 SEC: reject before allocating any request/publication state.
+    this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
+
+    // Check for existing subscription with same track name to use its alias.
+    // Local counter is small; widen to bigint for wire varint and state keys.
+    const requestId = BigInt(this.getNextRequestId());
+    let trackAlias = requestId;
     const fullTrackName = [...namespace, trackName].join('/');
 
     const existingSub = this.subscriptionManager.getByTrackName(namespace, trackName);
@@ -3550,7 +3863,7 @@ export class MOQTSession {
       });
     }
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.publishDraft18(requestId, namespace, trackName, trackAlias, options);
     } else {
       // Send PUBLISH message
@@ -3578,18 +3891,18 @@ export class MOQTSession {
 
       await this.doSendControl(publishBytes);
       log.info('Sent PUBLISH message', {
-        requestId,
+        requestId: requestId.toString(),
         trackAlias: trackAlias.toString(),
         namespace: namespace.join('/'),
         trackName,
       });
-      this.emitMessageSent('PUBLISH', publishBytes.length, `${namespace.join('/')}/${trackName}`, { requestId, trackAlias: trackAlias.toString() });
+      this.emitMessageSent('PUBLISH', publishBytes.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
 
       // Wait for PUBLISH_OK
       const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
-      console.warn('[MOQT-DIAG] PUBLISH_OK received', { requestId, forward: publishOkResult.forward, track: `${namespace.join('/')}/${trackName}` });
+      console.warn('[MOQT-DIAG] PUBLISH_OK received', { requestId: requestId.toString(), forward: publishOkResult.forward, track: `${namespace.join('/')}/${trackName}` });
       log.info('Received PUBLISH_OK', {
-        requestId,
+        requestId: requestId.toString(),
         forward: publishOkResult.forward,
       });
 
@@ -3675,9 +3988,10 @@ export class MOQTSession {
     };
     this.announcedNamespaces.set(namespaceStr, announceInfo);
 
-    const requestId = this.getNextRequestId();
+    // Local counter is small; widen for wire encode + state maps.
+    const requestId = BigInt(this.getNextRequestId());
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       // Draft-18: Send PUBLISH_NAMESPACE on per-request bidi stream
       await this.announceNamespaceDraft18(requestId, namespace, namespaceStr, announceInfo);
     } else {
@@ -3690,12 +4004,12 @@ export class MOQTSession {
 
       const bytes = this.codec.encodeControlMessage(publishNamespaceMessage);
       const hexBytes = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      log.info('PUBLISH_NAMESPACE bytes', { length: bytes.length, hex: hexBytes, namespace: namespaceStr, requestId });
+      log.info('PUBLISH_NAMESPACE bytes', { length: bytes.length, hex: hexBytes, namespace: namespaceStr, requestId: requestId.toString() });
 
       this.announceRequestIdToNamespace.set(requestId, namespaceStr);
 
       await this.doSendControl(bytes);
-      log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId });
+      log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId: requestId.toString() });
 
       // Wait for PUBLISH_NAMESPACE_OK with timeout
       const timeout = 10000;
@@ -3726,21 +4040,21 @@ export class MOQTSession {
    * Draft-18: Announce namespace on per-request bidi stream
    */
   private async announceNamespaceDraft18(
-    requestId: number,
+    requestId: bigint,
     namespace: string[],
     namespaceStr: string,
     announceInfo: AnnouncedNamespaceInfo
   ): Promise<void> {
     const publishNsMessage: PublishNamespaceMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH_NAMESPACE,
-      requestId: BigInt(requestId),
+      requestId,
       trackNamespacePrefix: namespace,
     };
 
     const encoded = this.codec.encodeControlMessage(publishNsMessage);
 
     if ((this.useWorker && this.transportWorker) || this.transport) {
-      log.info('Sent PUBLISH_NAMESPACE (draft-18)', { namespace: namespaceStr, requestId });
+      log.info('Sent PUBLISH_NAMESPACE (draft-18)', { namespace: namespaceStr, requestId: requestId.toString() });
 
       const response = await this.sendRequestAndWaitResponse(encoded, requestId);
       if (response.type === MessageTypeDraft18.REQUEST_OK) {
@@ -3852,6 +4166,16 @@ export class MOQTSession {
       fullTrackName: fullTrackNameStr,
     });
 
+    // B3 SEC: A peer-initiated subscribe creates a publication for this
+    // subscriber; gate it on maxTracks so a malicious peer can't OOM us by
+    // spamming SUBSCRIBE. `enforceResourceLimit` throws when tripped, which
+    // the outer async caller will observe.
+    try {
+      this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
+    } catch {
+      return;
+    }
+
     // Check if this matches any announced namespace
     const announceInfo = this.matchesAnnouncedNamespace(namespace);
 
@@ -3920,6 +4244,14 @@ export class MOQTSession {
     const { namespace, trackName } = message.fullTrackName;
     const fullTrackNameStr = [...namespace, trackName].join('/');
     const namespaceStr = namespace.join('/');
+
+    // B3 SEC: A peer-initiated publish creates a subscription for us to
+    // ingest their track; gate it on maxSubscriptions.
+    try {
+      this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
+    } catch {
+      return;
+    }
 
     console.warn('[MOQT-DIAG] handleIncomingPublish', {
       fullTrackName: fullTrackNameStr,
@@ -4032,7 +4364,7 @@ export class MOQTSession {
   /**
    * Send PUBLISH_OK response
    */
-  private async sendPublishOk(requestId: number, groupOrder: GroupOrder): Promise<void> {
+  private async sendPublishOk(requestId: bigint, groupOrder: GroupOrder): Promise<void> {
     const publishOk = {
       type: MessageType.PUBLISH_OK as const,
       requestId,
@@ -4040,18 +4372,19 @@ export class MOQTSession {
       subscriberPriority: 128,
       groupOrder,
       filterType: FilterType.LATEST_GROUP,
+      expires: 0n,
     };
 
     const bytes = this.codec.encodeControlMessage(publishOk);
     await this.doSendControl(bytes);
-    log.info('Sent PUBLISH_OK', { requestId });
+    log.info('Sent PUBLISH_OK', { requestId: requestId.toString() });
   }
 
   /**
    * Send SUBSCRIBE_OK response
    */
   private async sendSubscribeOk(
-    requestId: number,
+    requestId: bigint,
     trackAlias: bigint,
     groupOrder: GroupOrder
   ): Promise<void> {
@@ -4059,7 +4392,7 @@ export class MOQTSession {
       type: MessageType.SUBSCRIBE_OK,
       requestId,
       trackAlias,
-      expires: 0,
+      expires: 0n,
       groupOrder,
       contentExists: false,
     };
@@ -4068,14 +4401,14 @@ export class MOQTSession {
     const hexBytes = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('SUBSCRIBE_OK bytes', { length: bytes.length, hex: hexBytes });
     await this.doSendControl(bytes);
-    log.info('Sent SUBSCRIBE_OK', { requestId, trackAlias: trackAlias.toString() });
+    log.info('Sent SUBSCRIBE_OK', { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
   }
 
   /**
    * Send SUBSCRIBE_ERROR response
    */
   private async sendSubscribeError(
-    requestId: number,
+    requestId: bigint,
     errorCode: number,
     reasonPhrase: string
   ): Promise<void> {
@@ -4084,12 +4417,12 @@ export class MOQTSession {
       requestId,
       errorCode,
       reasonPhrase,
-      trackAlias: 0,
+      trackAlias: 0n,
     };
 
     const bytes = this.codec.encodeControlMessage(subscribeError as ControlMessage);
     await this.doSendControl(bytes);
-    log.info('Sent SUBSCRIBE_ERROR', { requestId, errorCode, reasonPhrase });
+    log.info('Sent SUBSCRIBE_ERROR', { requestId: requestId.toString(), errorCode, reasonPhrase });
   }
 
   // ============================================================================
@@ -4144,8 +4477,9 @@ export class MOQTSession {
     }
     assertNotReservedNamespace(namespace, 'publish VOD content under');
 
-    const requestId = this.getNextRequestId();
-    const trackAlias = BigInt(requestId);
+    // Local counter is small; widen to bigint for wire varint + state keys.
+    const requestId = BigInt(this.getNextRequestId());
+    const trackAlias = requestId;
     const fullTrackName = [...namespace, trackName].join('/');
 
     log.info('Publishing VOD content', {
@@ -4189,7 +4523,7 @@ export class MOQTSession {
     const publishBytes = this.codec.encodeControlMessage(publishMessage);
     await this.doSendControl(publishBytes);
     log.info('Sent VOD PUBLISH message', {
-      requestId,
+      requestId: requestId.toString(),
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
@@ -4198,7 +4532,7 @@ export class MOQTSession {
     // Wait for PUBLISH_OK
     const publishOkResult = await this.publicationManager.waitForPublishOk(requestId);
     log.info('Received PUBLISH_OK for VOD track', {
-      requestId,
+      requestId: requestId.toString(),
       forward: publishOkResult.forward,
     });
 
@@ -4392,13 +4726,13 @@ export class MOQTSession {
     const vodKey = `${namespace.join('/')}/${trackName}`;
 
     log.info('Received FETCH request', {
-      requestId: message.requestId,
+      requestId: message.requestId.toString(),
       namespace: namespace.join('/'),
       trackName,
-      startGroup: message.startGroup,
-      startObject: message.startObject,
-      endGroup: message.endGroup,
-      endObject: message.endObject,
+      startGroup: message.startGroup.toString(),
+      startObject: message.startObject.toString(),
+      endGroup: message.endGroup.toString(),
+      endObject: message.endObject.toString(),
     });
 
     // Find VOD track by name
@@ -4411,16 +4745,23 @@ export class MOQTSession {
       return;
     }
 
+    // FetchRange is deliberately `number` (see types.ts); range-check-and-narrow
+    // the wire bigints for the emit event and downstream FETCH pipeline.
+    const rangeStartGroup = narrowBigIntToNumber(message.startGroup, 'FETCH.startGroup');
+    const rangeStartObject = narrowBigIntToNumber(message.startObject, 'FETCH.startObject');
+    const rangeEndGroup = narrowBigIntToNumber(message.endGroup, 'FETCH.endGroup');
+    const rangeEndObject = narrowBigIntToNumber(message.endObject, 'FETCH.endObject');
+
     // Emit event for application to handle (optional custom handling)
     this.emit('incoming-fetch', {
       requestId: message.requestId,
       namespace,
       trackName,
       range: {
-        startGroup: message.startGroup,
-        startObject: message.startObject,
-        endGroup: message.endGroup,
-        endObject: message.endObject,
+        startGroup: rangeStartGroup,
+        startObject: rangeStartObject,
+        endGroup: rangeEndGroup,
+        endObject: rangeEndObject,
       },
       priority: message.subscriberPriority,
       groupOrder: message.groupOrder,
@@ -4431,17 +4772,17 @@ export class MOQTSession {
       type: MessageType.FETCH_OK,
       requestId: message.requestId,
       groupOrder: message.groupOrder,
-      endOfTrack: message.endGroup >= vodOptions.metadata.totalGroups - 1,
-      largestGroupId: vodOptions.metadata.totalGroups - 1,
-      largestObjectId: (vodOptions.objectsPerGroup ?? 1) - 1,
+      endOfTrack: rangeEndGroup >= vodOptions.metadata.totalGroups - 1,
+      largestGroupId: BigInt(vodOptions.metadata.totalGroups - 1),
+      largestObjectId: BigInt((vodOptions.objectsPerGroup ?? 1) - 1),
     };
 
     const fetchOkBytes = this.codec.encodeControlMessage(fetchOk);
     await this.doSendControl(fetchOkBytes);
     log.info('Sent FETCH_OK', {
-      requestId: message.requestId,
-      largestGroupId: fetchOk.largestGroupId,
-      largestObjectId: fetchOk.largestObjectId,
+      requestId: message.requestId.toString(),
+      largestGroupId: fetchOk.largestGroupId.toString(),
+      largestObjectId: fetchOk.largestObjectId.toString(),
       encodedLength: fetchOkBytes.length,
     });
 
@@ -4460,11 +4801,15 @@ export class MOQTSession {
     vodOptions: VODPublishOptions
   ): Promise<void> {
     const requestId = fetchMessage.requestId;
-    const { startGroup, startObject, endGroup, endObject } = fetchMessage;
+    // FetchRange arithmetic runs in `number`; narrow with range check.
+    const startGroup = narrowBigIntToNumber(fetchMessage.startGroup, 'FETCH.startGroup');
+    const startObject = narrowBigIntToNumber(fetchMessage.startObject, 'FETCH.startObject');
+    const endGroup = narrowBigIntToNumber(fetchMessage.endGroup, 'FETCH.endGroup');
+    const endObject = narrowBigIntToNumber(fetchMessage.endObject, 'FETCH.endObject');
     const objectsPerGroup = vodOptions.objectsPerGroup ?? 1;
 
     log.info('Sending fetched objects', {
-      requestId,
+      requestId: requestId.toString(),
       startGroup,
       startObject,
       endGroup,
@@ -4473,7 +4818,7 @@ export class MOQTSession {
       objectsPerGroupSource: vodOptions.objectsPerGroup,
     });
     console.log('[FETCH] Sending objects', {
-      requestId,
+      requestId: requestId.toString(),
       range: `group ${startGroup}-${endGroup}, objects 0-${objectsPerGroup - 1}`,
       objectsPerGroup,
     });
@@ -4503,7 +4848,7 @@ export class MOQTSession {
         for (let objectId = objStart; objectId <= objEnd; objectId++) {
           // Check if fetch was cancelled
           if (this.pendingFetchResponses.has(requestId) === false && requestId !== fetchMessage.requestId) {
-            log.info('Fetch cancelled, stopping send', { requestId });
+            log.info('Fetch cancelled, stopping send', { requestId: requestId.toString() });
             await this.doCloseStream(streamInfo);
             return;
           }
@@ -4531,8 +4876,9 @@ export class MOQTSession {
           if (objectId < 3) {
             const bytesHex = Array.from(objectData.slice(0, Math.min(32, objectData.length)))
               .map(b => b.toString(16).padStart(2, '0')).join(' ');
-            log.info('FETCH object encoded', {
-              requestId,
+            // OPS-hi 1: per-object hot-path — demoted from .info to .trace.
+            log.trace('FETCH object encoded', {
+              requestId: requestId.toString(),
               groupId,
               objectId,
               payloadSize: data.byteLength,
@@ -4544,7 +4890,7 @@ export class MOQTSession {
           await this.doWriteStream(streamInfo, objectData);
 
           log.trace('Sent fetched object', {
-            requestId,
+            requestId: requestId.toString(),
             groupId,
             objectId,
             isKeyframe,
@@ -4556,7 +4902,7 @@ export class MOQTSession {
 
       // Close the stream
       await this.doCloseStream(streamInfo);
-      log.info('Fetch stream completed', { requestId });
+      log.info('Fetch stream completed', { requestId: requestId.toString() });
 
     } catch (err) {
       log.error('Error sending fetched objects', {
@@ -4570,7 +4916,7 @@ export class MOQTSession {
    * Send FETCH_ERROR response
    */
   private async sendFetchError(
-    requestId: number,
+    requestId: bigint,
     errorCode: number,
     reasonPhrase: string
   ): Promise<void> {
@@ -4583,7 +4929,7 @@ export class MOQTSession {
 
     const bytes = this.codec.encodeControlMessage(fetchError);
     await this.doSendControl(bytes);
-    log.info('Sent FETCH_ERROR', { requestId, errorCode, reasonPhrase });
+    log.info('Sent FETCH_ERROR', { requestId: requestId.toString(), errorCode, reasonPhrase });
   }
 
   /**
@@ -4623,7 +4969,7 @@ export class MOQTSession {
     await this.closeVideoGOPStream(key);
 
     // Send PUBLISH_DONE to notify the relay/subscribers
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.sendPublishDone(
         publication.requestId,
         0,
@@ -4836,7 +5182,8 @@ export class MOQTSession {
     const aliasKey = trackAlias.toString();
 
     try {
-      log.info('sendObjectWithGOP', {
+      // OPS-hi 1: per-frame hot-path — demoted from .info to .trace.
+      log.trace('sendObjectWithGOP', {
         trackAlias: aliasKey,
         groupId: metadata.groupId,
         objectId: metadata.objectId,
@@ -4855,7 +5202,8 @@ export class MOQTSession {
           this.publisherDeliveryTimeouts.disarm(`pub-sg:${aliasKey}:${existing.groupId}:0`);
           try {
             await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
-            log.info('Closed previous GOP stream', {
+            // OPS-hi 1: fires per group boundary — demoted from .info to .debug.
+        log.debug('Closed previous GOP stream', {
               trackAlias: aliasKey,
               previousGroupId: existing.groupId,
               objectCount: existing.objectCount,
@@ -4916,7 +5264,8 @@ export class MOQTSession {
           maxCacheDuration: metadata.maxCacheDuration, // Store for P-frames
         });
 
-        log.info('Started new GOP stream with keyframe', {
+        // OPS-hi 1: fires per keyframe (~1/sec at 30fps GOP=30) — demoted from .info to .debug.
+        log.debug('Started new GOP stream with keyframe', {
           trackAlias: aliasKey,
           groupId: metadata.groupId,
           objectId: metadata.objectId,
@@ -4928,7 +5277,8 @@ export class MOQTSession {
 
         if (!existing) {
           // No active stream — open one (treat this object as the start of a subgroup)
-          log.info('No active GOP stream, opening new stream for group', {
+          // OPS-hi 1: fires per group start — demoted from .info to .debug.
+          log.debug('No active GOP stream, opening new stream for group', {
             trackAlias: aliasKey,
             groupId: metadata.groupId,
             objectId: metadata.objectId,
@@ -5015,6 +5365,8 @@ export class MOQTSession {
         } catch (writeErr) {
           const errMsg = (writeErr as Error).message;
           if (errMsg.includes('not found') || errMsg.includes('STOP_SENDING')) {
+            // OPS-hi 1: keep at info — genuinely useful on error paths but not per-frame.
+            // (this only fires on write failure, not per successful object)
             log.info('GOP stream closed by relay, reopening for same group', {
               trackAlias: aliasKey,
               groupId: metadata.groupId,
@@ -5081,7 +5433,8 @@ export class MOQTSession {
       this.publisherDeliveryTimeouts.disarm(`pub-sg:${trackAlias}:${existing.groupId}:0`);
       try {
         await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
-        log.info('Closed video GOP stream', {
+        // OPS-hi 1: fires per group boundary — demoted from .info to .debug.
+        log.debug('Closed video GOP stream', {
           trackAlias,
           groupId: existing.groupId,
           objectCount: existing.objectCount,
@@ -5113,16 +5466,16 @@ export class MOQTSession {
 
     log.info('Pausing subscription', { subscriptionId });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.sendRequestUpdate(subscription.requestId, false);
       subscription.paused = true;
     } else {
       const subscribeUpdateMessage = {
         type: MessageType.SUBSCRIBE_UPDATE as const,
-        requestId: this.getNextRequestId(),
+        requestId: BigInt(this.getNextRequestId()),
         subscriptionRequestId: subscription.requestId,
-        startLocation: { groupId: 0, objectId: 0 },
-        endGroup: 0,
+        startLocation: { groupId: 0n, objectId: 0n },
+        endGroup: 0n,
         subscriberPriority: 128,
         forward: 0,
       };
@@ -5131,7 +5484,7 @@ export class MOQTSession {
         const updateBytes = this.codec.encodeControlMessage(subscribeUpdateMessage);
         await this.doSendControl(updateBytes);
         subscription.paused = true;
-        log.info('Sent SUBSCRIBE_UPDATE (pause)', { subscriptionId, requestId: subscribeUpdateMessage.requestId });
+        log.info('Sent SUBSCRIBE_UPDATE (pause)', { subscriptionId, requestId: subscribeUpdateMessage.requestId.toString() });
       } catch (err) {
         log.error('Failed to send SUBSCRIBE_UPDATE (pause)', { error: (err as Error).message });
         throw err;
@@ -5156,16 +5509,16 @@ export class MOQTSession {
 
     log.info('Resuming subscription', { subscriptionId });
 
-    if (IS_DRAFT_18) {
+    if (this.isDraft18) {
       await this.sendRequestUpdate(subscription.requestId, true);
       subscription.paused = false;
     } else {
       const subscribeUpdateMessage = {
         type: MessageType.SUBSCRIBE_UPDATE as const,
-        requestId: this.getNextRequestId(),
+        requestId: BigInt(this.getNextRequestId()),
         subscriptionRequestId: subscription.requestId,
-        startLocation: { groupId: 0, objectId: 0 },
-        endGroup: 0,
+        startLocation: { groupId: 0n, objectId: 0n },
+        endGroup: 0n,
         subscriberPriority: 128,
         forward: 1,
       };
@@ -5174,7 +5527,7 @@ export class MOQTSession {
         const updateBytes = this.codec.encodeControlMessage(subscribeUpdateMessage);
         await this.doSendControl(updateBytes);
         subscription.paused = false;
-        log.info('Sent SUBSCRIBE_UPDATE (resume)', { subscriptionId, requestId: subscribeUpdateMessage.requestId });
+        log.info('Sent SUBSCRIBE_UPDATE (resume)', { subscriptionId, requestId: subscribeUpdateMessage.requestId.toString() });
       } catch (err) {
         log.error('Failed to send SUBSCRIBE_UPDATE (resume)', { error: (err as Error).message });
         throw err;
@@ -5201,10 +5554,10 @@ export class MOQTSession {
 
     const subscribeUpdateMessage = {
       type: MessageType.SUBSCRIBE_UPDATE as const,
-      requestId: this.getNextRequestId(),
+      requestId: BigInt(this.getNextRequestId()),
       subscriptionRequestId: subscription.requestId,
-      startLocation: { groupId, objectId },
-      endGroup: 0,
+      startLocation: { groupId: BigInt(groupId), objectId: BigInt(objectId) },
+      endGroup: 0n,
       subscriberPriority: 128,
       forward: 1,
     };
@@ -5214,7 +5567,7 @@ export class MOQTSession {
       await this.doSendControl(updateBytes);
       log.info('Sent SUBSCRIBE_UPDATE (seek)', {
         subscriptionId,
-        requestId: subscribeUpdateMessage.requestId,
+        requestId: subscribeUpdateMessage.requestId.toString(),
         groupId,
         objectId,
       });
@@ -5524,7 +5877,7 @@ export class MOQTSession {
         }
 
         try {
-          const [decoded] = this.codec.decodeControlMessage(buffer);
+          const [decoded] = this.codec.decodeControlMessage(buffer, 0, this.metrics);
           message = decoded as ControlMessageDraft18;
         } catch (err) {
           if ((err as Error).message?.includes('Incomplete') || (err as Error).message?.includes('buffer')) {
@@ -5615,6 +5968,14 @@ export class MOQTSession {
       trackName,
     });
 
+    // B3 SEC: peer-initiated draft-18 subscribe creates a publication for
+    // this subscriber; gate on maxTracks before accepting.
+    try {
+      this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
+    } catch {
+      return;
+    }
+
     // Check if this matches any announced namespace
     const announceInfo = this.matchesAnnouncedNamespace(namespace);
 
@@ -5649,7 +6010,7 @@ export class MOQTSession {
     writer.releaseLock();
 
     // Remember the kind so a later REQUEST_UPDATE (§10.9.1) routes correctly
-    this.incomingRequestKinds.set(Number(message.requestId), 'subscribe');
+    this.incomingRequestKinds.set(message.requestId, 'subscribe');
 
     // §7 — pull subscriber-side scheduling hints from the SUBSCRIBE parameters
     // (§10.2 SUBSCRIBER_PRIORITY, GROUP_ORDER). Missing values fall back to
@@ -5666,7 +6027,7 @@ export class MOQTSession {
       priority: announceInfo.options.priority ?? 128,
       deliveryMode: announceInfo.options.deliveryMode ?? 'stream',
       audioDeliveryMode: announceInfo.options.audioDeliveryMode ?? 'datagram',
-      requestId: Number(message.requestId),
+      requestId: message.requestId,
       cleanupHandlers: [],
       forward: 1,
       subscriberPriority,
@@ -5674,20 +6035,23 @@ export class MOQTSession {
     };
     this.publicationManager.add(publication);
 
-    // Add to subscribers map
+    // Add to subscribers map. Bounded number cast: subscribers is keyed by
+    // request id in the announce table which is locally scoped, but we must
+    // stringify to keep bigint precision in future migration; today we still
+    // key by number for cheap Map lookup (announcements are short-lived).
     const subscriber: IncomingSubscriber = {
-      requestId: Number(message.requestId),
+      requestId: message.requestId,
       fullTrackName: { namespace, trackName },
       trackAlias,
       subscriberPriority,
       groupOrder: subscriberGroupOrder,
       active: true,
     };
-    announceInfo.subscribers.set(Number(message.requestId), subscriber);
+    announceInfo.subscribers.set(message.requestId, subscriber);
 
     // Emit event
     this.emit('incoming-subscribe', {
-      requestId: Number(message.requestId),
+      requestId: message.requestId,
       namespace,
       trackName,
       trackAlias,
@@ -5707,6 +6071,14 @@ export class MOQTSession {
     const trackName = message.trackName;
     const fullTrackNameStr = [...namespace, trackName].join('/');
     const namespaceStr = namespace.join('/');
+
+    // B3 SEC: peer-initiated draft-18 publish creates a subscription for us
+    // to ingest their track; gate on maxSubscriptions before accepting.
+    try {
+      this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
+    } catch {
+      return;
+    }
 
     log.info('Received PUBLISH (draft-18 bidi)', {
       requestId: message.requestId.toString(),
@@ -5755,13 +6127,13 @@ export class MOQTSession {
     await writer.write(responseBytes);
     writer.releaseLock();
 
-    this.incomingRequestKinds.set(Number(message.requestId), 'publish');
+    this.incomingRequestKinds.set(message.requestId, 'publish');
 
     // Register as subscription for object routing
     const subscriptionId = this.getNextRequestId();
     const subscription: InternalSubscription = {
       subscriptionId,
-      requestId: Number(message.requestId),
+      requestId: message.requestId,
       namespace,
       trackName,
       trackAlias: message.trackAlias,
@@ -5772,7 +6144,7 @@ export class MOQTSession {
 
     // Store track info
     const trackInfo: IncomingPublishInfo = {
-      requestId: Number(message.requestId),
+      requestId: message.requestId,
       namespace,
       trackName,
       trackAlias: message.trackAlias,
@@ -5785,7 +6157,7 @@ export class MOQTSession {
     this.emit('incoming-publish', {
       namespaceSubscriptionId: matchingSubscription.subscriptionId,
       subscriptionId,
-      requestId: Number(message.requestId),
+      requestId: message.requestId,
       namespace,
       trackName,
       trackAlias: message.trackAlias,
@@ -5879,7 +6251,7 @@ export class MOQTSession {
     await writer.write(this.codec.encodeControlMessage(requestOk));
 
     // Remember the kind so a later REQUEST_UPDATE (§10.9.2) routes correctly
-    this.incomingRequestKinds.set(Number(message.requestId), 'subscribe-namespace');
+    this.incomingRequestKinds.set(message.requestId, 'subscribe-namespace');
 
     // Send NAMESPACE messages for matching announced namespaces
     for (const [, announceInfo] of this.announcedNamespaces) {
@@ -5925,7 +6297,7 @@ export class MOQTSession {
     await writer.write(responseBytes);
     writer.releaseLock();
 
-    this.incomingRequestKinds.set(Number(message.requestId), 'publish-namespace');
+    this.incomingRequestKinds.set(message.requestId, 'publish-namespace');
 
     log.info('Accepted PUBLISH_NAMESPACE (draft-18)', { prefix });
   }
@@ -5967,7 +6339,7 @@ export class MOQTSession {
 
     // SUBSCRIBE_TRACKS is a namespace-scoped subscription for track discovery;
     // future REQUEST_UPDATE on this requestId is §10.9.2 namespace-scoped.
-    this.incomingRequestKinds.set(Number(message.requestId), 'subscribe-namespace');
+    this.incomingRequestKinds.set(message.requestId, 'subscribe-namespace');
 
     // Emit incoming-subscribe for each track we publish under this prefix,
     // applying the §10.2.14 narrower prefix filter when supplied.
@@ -5976,7 +6348,7 @@ export class MOQTSession {
       if (!pubNs.startsWith(prefix)) continue;
       if (paramPrefixStr && !pubNs.startsWith(paramPrefixStr)) continue;
       this.emit('incoming-subscribe', {
-        requestId: Number(message.requestId),
+        requestId: message.requestId,
         namespace: pub.namespace,
         trackName: pub.trackName,
         trackAlias: pub.trackAlias,
@@ -6005,7 +6377,7 @@ export class MOQTSession {
    * compatibility with peers that don't set up state before updating.
    */
   private dispatchRequestUpdateDraft18(message: RequestUpdateMessageDraft18): void {
-    const requestId = Number(message.requestId);
+    const requestId = message.requestId;
     const kind = this.incomingRequestKinds.get(requestId) ?? 'unknown';
     log.info('Received REQUEST_UPDATE (draft-18)', {
       requestId: message.requestId.toString(),
@@ -6087,9 +6459,9 @@ export class MOQTSession {
    * Handle incoming PUBLISH_DONE
    */
   private handleIncomingPublishDoneDraft18(message: PublishDoneMessageDraft18): void {
-    const requestId = Number(message.requestId);
+    const requestId = message.requestId;
     log.info('Received PUBLISH_DONE (draft-18)', {
-      requestId: message.requestId.toString(),
+      requestId: requestId.toString(),
       finalGroup: message.finalLocation.group.toString(),
       finalObject: message.finalLocation.object.toString(),
       statusCode: message.statusCode?.toString(),
@@ -6099,11 +6471,13 @@ export class MOQTSession {
 
     // Find and remove the subscription by requestId
     const sub = this.subscriptionManager.findByRequestId(requestId);
+    // Object-plane finalGroup/finalObject remain `number` (see PublishDoneEvent);
+    // narrow with range check.
     this.emit('publish-done', {
       requestId,
       subscriptionId: sub?.subscriptionId,
-      finalGroupId: Number(message.finalLocation.group),
-      finalObjectId: Number(message.finalLocation.object),
+      finalGroupId: narrowBigIntToNumber(message.finalLocation.group, 'PUBLISH_DONE.finalGroup'),
+      finalObjectId: narrowBigIntToNumber(message.finalLocation.object, 'PUBLISH_DONE.finalObject'),
       statusCode: message.statusCode !== undefined ? Number(message.statusCode) : undefined,
       reasonPhrase: message.reasonPhrase,
       streamCount: message.streamCount !== undefined ? Number(message.streamCount) : undefined,
@@ -6152,13 +6526,74 @@ export class MOQTSession {
       // first and can veto by clearing `_pendingMigrationUri` if needed.
       queueMicrotask(() => {
         if (this._pendingMigrationUri === uri) {
-          this.migrate(uri).catch((err) => {
-            log.error('Auto-migrate failed', err as Error);
+          this.autoMigrateWithBackoff(uri).catch((err) => {
+            log.error('Auto-migrate failed after retries', err as Error);
             this.emit('error', err as Error);
           });
         }
       });
     }
+  }
+
+  /**
+   * Reconnect (auto-migrate) driven by the injected {@link ReconnectPolicy}.
+   *
+   * The policy owns the timing math — historically this loop hand-rolled
+   * jittered exponential backoff, but Wave 2 Track E consolidated on the
+   * shared `JitteredExponentialBackoff` so callers can inject deterministic
+   * policies for tests and tune per-deployment retry budgets without
+   * touching session code.
+   *
+   * `nextDelayMs()` returning `null` is the policy's "give up" signal; when
+   * we see it we throw the last observed error (or a synthetic one if the
+   * policy vetoed before any attempt ran) so the caller can surface it via
+   * the session `error` event.
+   */
+  private async autoMigrateWithBackoff(uri: string): Promise<void> {
+    const policy: ReconnectPolicy =
+      this._reconnectPolicy ??
+      new JitteredExponentialBackoff({
+        baseMs: 500,
+        factor: 2,
+        capMs: 30_000,
+        jitter: 0.25,
+        maxAttempts: 8,
+      });
+
+    let attempt = 0;
+    let lastError: unknown;
+    // Loop attempts driven by the policy. Each iteration executes attempt N,
+    // then asks the policy how long to wait before attempt N+1. A `null`
+    // response ends the loop with "give up".
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      // Caller cleared the pending URI (or a subsequent GOAWAY replaced it)
+      // — abandon this retry loop.
+      if (this._pendingMigrationUri !== uri) {
+        return;
+      }
+      try {
+        await this.migrate(uri);
+        return;
+      } catch (err) {
+        lastError = err;
+        attempt++;
+        this.metrics.counter('moq.session.reconnect.attempt', 1);
+        const delay = policy.nextDelayMs(attempt);
+        if (delay === null) {
+          // Policy exhausted its budget — stop retrying, surface the error.
+          this.metrics.counter('moq.session.reconnect.give_up', 1);
+          break;
+        }
+        log.warn('Auto-migrate attempt failed, retrying', {
+          attempt,
+          nextDelayMs: delay,
+          error: (err as Error).message,
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Auto-migrate failed');
   }
 
   /**
@@ -6186,10 +6621,16 @@ export class MOQTSession {
     // §14 grease: normalize unknown Session Termination codes to
     // INTERNAL_ERROR before emitting. Preserve the raw code on the event so
     // callers with newer registry knowledge can still inspect it if needed.
-    const normalizedCode = IS_DRAFT_18
+    const normalizedCode = this.isDraft18
       ? normalizeSessionErrorCode(info.closeCode)
       : info.closeCode;
-    log.info('Peer closed session', { ...info, normalizedCode });
+    this._lastCloseCode = normalizedCode;
+    this._lastCloseReason = info.reason;
+    this.metrics.counter('moq.session.close', 1, {
+      remote: 'true',
+      code: String(normalizedCode),
+    });
+    this.sessionLog.debug('Peer closed session', { ...info, normalizedCode });
     this.emit('session-terminated', {
       code: normalizedCode,
       reason: info.reason,
@@ -6230,7 +6671,8 @@ export class MOQTSession {
     }
 
     const oldSessionUri = this._lastConnectUrl;
-    log.info('Migrating session (draft-18 §3.6)', { from: oldSessionUri, to: target });
+    this.sessionLog.info('Migrating session (draft-18 §3.6)', { from: oldSessionUri, to: target });
+    this.metrics.counter('moq.session.migrate.attempt', 1);
 
     this._migrating = true;
     try {
@@ -6246,8 +6688,15 @@ export class MOQTSession {
       await this.setup();
 
       this._pendingMigrationUri = undefined;
+      this._reconnectAttempts += 1;
+      this._lastCloseReason = undefined;
+      this._lastCloseCode = undefined;
+      this.metrics.counter('moq.session.migrate.success', 1);
       this.emit('session-migrated', { newSessionUri: target, oldSessionUri } as SessionMigrationEvent);
-      log.info('Migration complete');
+      this.sessionLog.info('Migration complete', { reconnectAttempts: this._reconnectAttempts });
+    } catch (err) {
+      this.metrics.counter('moq.session.migrate.failure', 1);
+      throw err;
     } finally {
       this._migrating = false;
     }
@@ -6329,7 +6778,7 @@ export class MOQTSession {
         try {
           // Decode from current offset using subarray (no copy)
           const view = this.controlBuffer.subarray(this.controlBufferOffset);
-          const [message, bytesRead] = this.codec.decodeControlMessage(view);
+          const [message, bytesRead] = this.codec.decodeControlMessage(view, 0, this.metrics);
 
           this.controlBufferOffset += bytesRead;
           messagesDecoded++;
@@ -6392,24 +6841,32 @@ export class MOQTSession {
   private routeMessage(message: ControlMessage): void {
     switch (message.type) {
       case MessageType.PUBLISH_OK: {
-        const publishOk = message as {
-          requestId: number;
-          trackAlias?: number;
-          forward: number;
-          startLocation?: { groupId: number; objectId: number };
-          endGroup?: number;
-        };
+        const publishOk = message as PublishOkMessage;
         log.info('Received PUBLISH_OK in handler', {
-          requestId: publishOk.requestId,
-          trackAlias: publishOk.trackAlias,
+          requestId: publishOk.requestId.toString(),
+          trackAlias: publishOk.trackAlias?.toString(),
           forward: publishOk.forward,
-          startLocation: publishOk.startLocation,
-          endGroup: publishOk.endGroup,
+          startLocation: publishOk.startLocation
+            ? { groupId: publishOk.startLocation.groupId.toString(), objectId: publishOk.startLocation.objectId.toString() }
+            : undefined,
+          endGroup: publishOk.endGroup?.toString(),
         });
         const locationStr = publishOk.startLocation
-          ? ` loc=(${publishOk.startLocation.groupId},${publishOk.startLocation.objectId})`
+          ? ` loc=(${publishOk.startLocation.groupId.toString()},${publishOk.startLocation.objectId.toString()})`
           : '';
-        this.emitMessageReceived('PUBLISH_OK', 0, `trackAlias=${publishOk.trackAlias} forward=${publishOk.forward}${locationStr}`, { requestId: publishOk.requestId, trackAlias: publishOk.trackAlias, forward: publishOk.forward, startLocation: publishOk.startLocation });
+        this.emitMessageReceived(
+          'PUBLISH_OK',
+          0,
+          `trackAlias=${publishOk.trackAlias?.toString()} forward=${publishOk.forward}${locationStr}`,
+          {
+            requestId: publishOk.requestId.toString(),
+            trackAlias: publishOk.trackAlias?.toString(),
+            forward: publishOk.forward,
+            startLocation: publishOk.startLocation
+              ? { groupId: publishOk.startLocation.groupId.toString(), objectId: publishOk.startLocation.objectId.toString() }
+              : undefined,
+          }
+        );
 
         this.publicationManager.resolvePublishOk(publishOk.requestId, {
           forward: publishOk.forward ?? 0,
@@ -6419,9 +6876,9 @@ export class MOQTSession {
       }
 
       case MessageType.PUBLISH_ERROR: {
-        const publishError = message as { requestId: number; errorCode: number; reasonPhrase: string };
+        const publishError = message as PublishErrorMessage;
         log.error('Received PUBLISH_ERROR', {
-          requestId: publishError.requestId,
+          requestId: publishError.requestId.toString(),
           errorCode: publishError.errorCode,
           reasonPhrase: publishError.reasonPhrase,
         });
@@ -6481,19 +6938,14 @@ export class MOQTSession {
       }
 
       case MessageType.SUBSCRIBE_ERROR: {
-        const subscribeError = message as {
-          requestId: number;
-          errorCode: number;
-          reasonPhrase: string;
-          trackAlias: number;
-        };
+        const subscribeError = message as SubscribeErrorMessage;
         log.error('Received SUBSCRIBE_ERROR', {
-          requestId: subscribeError.requestId,
+          requestId: subscribeError.requestId.toString(),
           errorCode: subscribeError.errorCode,
           reasonPhrase: subscribeError.reasonPhrase,
-          trackAlias: subscribeError.trackAlias,
+          trackAlias: subscribeError.trackAlias.toString(),
         });
-        this.emitMessageReceived('SUBSCRIBE_ERROR', 0, `code=${subscribeError.errorCode} "${subscribeError.reasonPhrase}"`, { requestId: subscribeError.requestId, errorCode: subscribeError.errorCode, reasonPhrase: subscribeError.reasonPhrase });
+        this.emitMessageReceived('SUBSCRIBE_ERROR', 0, `code=${subscribeError.errorCode} "${subscribeError.reasonPhrase}"`, { requestId: subscribeError.requestId.toString(), errorCode: subscribeError.errorCode, reasonPhrase: subscribeError.reasonPhrase });
 
         // Find and clean up the failed subscription
         const sub = this.subscriptionManager.findByRequestId(subscribeError.requestId);
@@ -6516,17 +6968,14 @@ export class MOQTSession {
       }
 
       case MessageType.SUBSCRIBE_UPDATE: {
-        const subscribeUpdate = message as {
-          requestId: number;
-          subscriptionRequestId: number;
-          forward: number;
-          startLocation?: { groupId: number; objectId: number };
-        };
+        const subscribeUpdate = message as SubscribeUpdateMessage;
         log.info('Received SUBSCRIBE_UPDATE', {
-          requestId: subscribeUpdate.requestId,
-          subscriptionRequestId: subscribeUpdate.subscriptionRequestId,
+          requestId: subscribeUpdate.requestId.toString(),
+          subscriptionRequestId: subscribeUpdate.subscriptionRequestId.toString(),
           forward: subscribeUpdate.forward,
-          startLocation: subscribeUpdate.startLocation,
+          startLocation: subscribeUpdate.startLocation
+            ? { groupId: subscribeUpdate.startLocation.groupId.toString(), objectId: subscribeUpdate.startLocation.objectId.toString() }
+            : undefined,
         });
 
         // §9.11 SUBSCRIBE_UPDATE is scoped to `subscriptionRequestId` — only
@@ -6604,7 +7053,7 @@ export class MOQTSession {
         let namespaceStr: string;
         let namespace: string[];
 
-        if (IS_DRAFT_16 && publishNamespaceOk.requestId !== undefined) {
+        if (this.isDraft16 && publishNamespaceOk.requestId !== undefined) {
           // Draft-16: Look up namespace by requestId
           namespaceStr = this.announceRequestIdToNamespace.get(publishNamespaceOk.requestId) ?? '';
           namespace = namespaceStr ? namespaceStr.split('/') : [];
@@ -6665,7 +7114,7 @@ export class MOQTSession {
         });
         let subscriptionId: number | undefined;
 
-        if (IS_DRAFT_16 && subscribeNamespaceOk.requestId !== undefined) {
+        if (this.isDraft16 && subscribeNamespaceOk.requestId !== undefined) {
           // Draft-16: Use requestId to find subscription
           subscriptionId = this.namespaceSubscriptionByRequestId.get(subscribeNamespaceOk.requestId);
         } else if (subscribeNamespaceOk.namespacePrefix) {
@@ -6700,7 +7149,7 @@ export class MOQTSession {
         const subscribeNamespaceError = message as SubscribeNamespaceErrorMessage;
         let subscriptionId: number | undefined;
 
-        if (IS_DRAFT_16 && subscribeNamespaceError.requestId !== undefined) {
+        if (this.isDraft16 && subscribeNamespaceError.requestId !== undefined) {
           subscriptionId = this.namespaceSubscriptionByRequestId.get(subscribeNamespaceError.requestId);
         } else if (subscribeNamespaceError.namespacePrefix) {
           const prefixStr = subscribeNamespaceError.namespacePrefix.join('/');
@@ -6847,14 +7296,34 @@ export class MOQTSession {
   }
 
   /**
-   * Update session state
+   * Update session state.
+   *
+   * Every transition is mirrored into the `ConnectionStateMachine` so illegal
+   * transitions are caught centrally and surfaced via metrics
+   * (`moq.session.illegal_state_transition`). The high-level `SessionState`
+   * vocabulary (`none`/`setup`/`ready`/`closing`/`error`) is mapped onto the
+   * spec-tracking `ConnectionState` values so downstream tools that read
+   * either surface stay consistent.
    */
   private setState(state: SessionState): void {
     if (this._state === state) return;
     const prev = this._state;
     this._state = state;
-    log.info('Session state changed', { from: prev, to: state });
+    // Demoted from .info to .debug (OPS-hi 1): state changes fire on every
+    // subscribe / publish and were dominating hot-path log volume.
+    this.sessionLog.debug('Session state changed', { from: prev, to: state });
     this.emit('state-change', state);
+
+    // Route through the ConnectionStateMachine so any illegal transition is
+    // caught and counted centrally. `forceState` is used when the FSM
+    // rejects the transition — the session's public state has already
+    // moved on, so we don't want to leave the FSM stuck.
+    this.driveStateMachine(prev, state);
+
+    this.metrics.counter('moq.session.state_transition', 1, {
+      from: prev,
+      to: state,
+    });
 
     // §13.6.1: arm the idle/keepalive timer once we've completed SETUP and
     // disarm on any leave. Configuration may have been set before setup(),
@@ -6864,6 +7333,69 @@ export class MOQTSession {
     } else {
       this.stopIdleTimer();
     }
+  }
+
+  /**
+   * Drive the ConnectionStateMachine from a coarse SessionState transition.
+   * Maps the session's 5-state vocabulary onto the spec-tracking state
+   * machine and counts any transition the FSM refuses.
+   */
+  private driveStateMachine(from: SessionState, to: SessionState): void {
+    const target = sessionStateToConnectionState(to);
+    if (target === undefined) return;
+
+    // Special handling: 'setup' represents "we've sent CLIENT_SETUP", which
+    // the FSM expresses as `connecting → setup_sent`. Feed both steps when
+    // arriving from a state that hasn't yet crossed `connecting`.
+    if (target === 'setup_sent' && this.stateMachine.state === 'disconnected') {
+      if (!this.stateMachine.transition('connecting', `session:${from}->${to}`)) {
+        this.metrics.counter('moq.session.illegal_state_transition', 1, {
+          from: this.stateMachine.state,
+          to: 'connecting',
+        });
+        this.stateMachine.forceState('connecting', `session:${from}->${to}`);
+      }
+    }
+
+    if (this.stateMachine.state === target) return;
+
+    if (!this.stateMachine.transition(target, `session:${from}->${to}`)) {
+      this.metrics.counter('moq.session.illegal_state_transition', 1, {
+        from: this.stateMachine.state,
+        to: target,
+      });
+      // Force the state so downstream reads of `stateMachine.state` remain
+      // consistent with `_state`. The metric is the durable signal for
+      // "this transition wasn't valid".
+      this.stateMachine.forceState(target, `illegal:${from}->${to}`);
+    }
+  }
+
+  /**
+   * Public diagnostics snapshot for debugging and support telemetry. Safe to
+   * call in any state; returned object is a fresh copy and JSON-serializable.
+   */
+  getDiagnostics(): SessionDiagnostics {
+    const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+    let counterTotals: Record<string, number> = {};
+    if (this.metrics instanceof InMemoryMetricsSink) {
+      counterTotals = this.metrics.counterTotals();
+    }
+    const diag: SessionDiagnostics = {
+      sessionId: this.sessionId,
+      state: this._state,
+      connectionState: this.stateMachine.state,
+      uptimeMs: Math.max(0, now - this._createdAtMs),
+      reconnectAttempts: this._reconnectAttempts,
+      metrics: counterTotals,
+    };
+    if (this._lastCloseReason !== undefined) diag.lastCloseReason = this._lastCloseReason;
+    if (this._lastCloseCode !== undefined) diag.lastCloseCode = this._lastCloseCode;
+    if (this._lastConnectUrl !== undefined) diag.currentUrl = this._lastConnectUrl;
+    if (this._pendingMigrationUri !== undefined) diag.pendingMigrationUri = this._pendingMigrationUri;
+    return diag;
   }
 
   /**
@@ -6915,6 +7447,52 @@ export class MOQTSession {
       }
     }
   }
+}
+
+/**
+ * Map the session-scoped `SessionState` to the spec-tracking
+ * `ConnectionState` used by `ConnectionStateMachine`. Returns `undefined`
+ * when no direct mapping applies (caller should skip).
+ */
+function sessionStateToConnectionState(state: SessionState): ConnectionState | undefined {
+  switch (state) {
+    case 'none':
+      return 'disconnected';
+    case 'setup':
+      return 'setup_sent';
+    case 'ready':
+      return 'connected';
+    case 'closing':
+      return 'closing';
+    case 'error':
+      return 'error';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Generate a random 16-char hex session identifier. Prefers
+ * `crypto.randomUUID()` when available (browsers, Node 20+) and falls back
+ * to `Math.random()` in stripped-down environments (some old worker hosts).
+ */
+function generateSessionId(): string {
+  if (typeof crypto !== 'undefined') {
+    const c: unknown = crypto;
+    if (typeof (c as { randomUUID?: () => string }).randomUUID === 'function') {
+      return (c as { randomUUID: () => string }).randomUUID().replace(/-/g, '').slice(0, 16);
+    }
+    if (typeof (c as { getRandomValues?: (arr: Uint8Array) => Uint8Array }).getRandomValues === 'function') {
+      const bytes = new Uint8Array(8);
+      (c as { getRandomValues: (arr: Uint8Array) => Uint8Array }).getRandomValues(bytes);
+      let out = '';
+      for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+      return out;
+    }
+  }
+  let out = '';
+  for (let i = 0; i < 16; i++) out += Math.floor(Math.random() * 16).toString(16);
+  return out;
 }
 
 /**

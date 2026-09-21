@@ -17,10 +17,10 @@ const log = Logger.create('moqt:media:live-edge-tracker');
  * Live edge position info
  */
 export interface LiveEdgeInfo {
-  /** Last known group ID at the live edge */
-  groupId: number;
-  /** Last known object ID at the live edge */
-  objectId: number;
+  /** Last known group ID at the live edge (62-bit varint on wire) */
+  groupId: bigint;
+  /** Last known object ID at the live edge (62-bit varint on wire) */
+  objectId: bigint;
   /** Timestamp when this info was last updated */
   updatedAt: number;
   /** Track status code */
@@ -34,7 +34,7 @@ export interface LiveEdgeTrackerEvents {
   /** Live edge position updated */
   'edge-update': LiveEdgeInfo;
   /** Track status indicates track has finished */
-  'track-finished': { groupId: number; objectId: number };
+  'track-finished': { groupId: bigint; objectId: bigint };
   /** Error occurred during polling */
   'error': Error;
 }
@@ -146,7 +146,9 @@ export class LiveEdgeTracker {
    */
   getLiveEdgeTimeMs(): number | null {
     if (!this.lastEdge) return null;
-    return this.lastEdge.groupId * this.config.gopDurationMs;
+    // groupId is a 62-bit varint; multiply in bigint then convert to number
+    // for the millisecond return type (safe as long as duration fits in Number).
+    return Number(this.lastEdge.groupId * BigInt(this.config.gopDurationMs));
   }
 
   /**
@@ -195,8 +197,8 @@ export class LiveEdgeTracker {
       const status = await this.session.requestTrackStatus(this.namespace, this.trackName);
 
       const newEdge: LiveEdgeInfo = {
-        groupId: status.lastGroupId ?? 0,
-        objectId: status.lastObjectId ?? 0,
+        groupId: status.lastGroupId ?? 0n,
+        objectId: status.lastObjectId ?? 0n,
         updatedAt: Date.now(),
         statusCode: status.statusCode,
       };

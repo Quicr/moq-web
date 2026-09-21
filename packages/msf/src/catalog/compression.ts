@@ -50,14 +50,30 @@ export async function compressBytes(
 }
 
 /**
+ * Maximum decompressed catalog size, in bytes. Guards against decompression
+ * bombs (a small compressed payload expanding to gigabytes).
+ */
+export const MAX_DECOMPRESSED_CATALOG_BYTES = 8 * 1024 * 1024;
+
+/**
  * Decompress a byte payload with the requested algorithm.
+ *
+ * Rejects with `CompressionError` if the decompressed output exceeds
+ * {@link MAX_DECOMPRESSED_CATALOG_BYTES}.
  */
 export async function decompressBytes(
   data: Uint8Array,
   algorithm: CompressionAlgorithm
 ): Promise<Uint8Array> {
-  if (algorithm === 'identity') return data;
-  return runStream(data, new DecompressionStream(streamFormat(algorithm)));
+  if (algorithm === 'identity') {
+    if (data.length > MAX_DECOMPRESSED_CATALOG_BYTES) {
+      throw new CompressionError(
+        `Catalog payload ${data.length}B exceeds max ${MAX_DECOMPRESSED_CATALOG_BYTES}B`
+      );
+    }
+    return data;
+  }
+  return runStream(data, new DecompressionStream(streamFormat(algorithm)), MAX_DECOMPRESSED_CATALOG_BYTES);
 }
 
 function streamFormat(algorithm: CompressionAlgorithm): 'gzip' | 'deflate' {
@@ -68,7 +84,8 @@ function streamFormat(algorithm: CompressionAlgorithm): 'gzip' | 'deflate' {
 
 async function runStream(
   input: Uint8Array,
-  stream: CompressionStream | DecompressionStream
+  stream: CompressionStream | DecompressionStream,
+  maxOutputBytes?: number
 ): Promise<Uint8Array> {
   if (typeof CompressionStream === 'undefined') {
     throw new CompressionError(
@@ -83,13 +100,21 @@ async function runStream(
 
   const reader = stream.readable.getReader();
   const chunks: Uint8Array[] = [];
+  let total = 0;
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
-    if (value) chunks.push(value as Uint8Array);
+    if (value) {
+      total += value.length;
+      if (maxOutputBytes !== undefined && total > maxOutputBytes) {
+        await reader.cancel();
+        throw new CompressionError(
+          `Decompressed size ${total}B exceeds max ${maxOutputBytes}B (possible decompression bomb)`
+        );
+      }
+      chunks.push(value as Uint8Array);
+    }
   }
-  let total = 0;
-  for (const c of chunks) total += c.length;
   const out = new Uint8Array(total);
   let offset = 0;
   for (const c of chunks) {

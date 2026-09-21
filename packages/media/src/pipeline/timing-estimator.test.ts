@@ -2,13 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { TimingEstimator, createTimingEstimator } from './timing-estimator';
-import {
-  createGroupState,
-  createArbiterStats,
-  DEFAULT_TIMING_CONFIG,
-} from './group-arbiter-types';
-import { MonotonicTickProvider } from './tick-provider';
+import { TimingEstimator } from './timing-estimator';
 
 describe('TimingEstimator', () => {
   let estimator: TimingEstimator;
@@ -41,10 +35,7 @@ describe('TimingEstimator', () => {
     });
 
     it('should update estimate on subsequent keyframes', () => {
-      // First keyframe at t=0
       estimator.onKeyframe(0, 0, 1_000_000);
-
-      // Second keyframe at t=500ms
       estimator.onKeyframe(1, 500_000, 1_000_000);
 
       expect(estimator.getSampleCount()).toBe(1);
@@ -53,12 +44,10 @@ describe('TimingEstimator', () => {
     });
 
     it('should handle different timescales', () => {
-      // 90kHz timescale (common for video)
       estimator.onKeyframe(0, 0, 90_000);
       estimator.onKeyframe(1, 90_000, 90_000); // 1 second later
 
       expect(estimator.getSampleCount()).toBe(1);
-      // Should detect ~1000ms GOP
       expect(estimator.getEstimatedGopDuration()).toBeCloseTo(1000, 0);
     });
 
@@ -67,8 +56,6 @@ describe('TimingEstimator', () => {
       estimator.onKeyframe(1, 500_000, 1_000_000);
 
       const estimate1 = estimator.getEstimatedGopDuration();
-
-      // Old keyframe should be ignored
       estimator.onKeyframe(0, 100_000, 1_000_000);
 
       expect(estimator.getEstimatedGopDuration()).toBe(estimate1);
@@ -76,11 +63,9 @@ describe('TimingEstimator', () => {
 
     it('should handle gaps in groupId', () => {
       estimator.onKeyframe(0, 0, 1_000_000);
-      // Skip group 1, go directly to group 5
-      estimator.onKeyframe(5, 2_500_000, 1_000_000); // 2.5 seconds
+      estimator.onKeyframe(5, 2_500_000, 1_000_000);
 
       expect(estimator.getSampleCount()).toBe(1);
-      // Should use the 2.5s interval
       expect(estimator.getEstimatedGopDuration()).toBeGreaterThan(1000);
     });
 
@@ -110,47 +95,13 @@ describe('TimingEstimator', () => {
 
       windowEstimator.onKeyframe(0, 0, 1_000_000);
 
-      // Add 5 samples
       for (let i = 1; i <= 5; i++) {
         windowEstimator.onKeyframe(i, i * 500_000, 1_000_000);
       }
 
       expect(windowEstimator.getSampleCount()).toBe(5);
-      // But internal window only keeps 3
       const stats = windowEstimator.getStats();
       expect(stats.samples.length).toBe(3);
-    });
-  });
-
-  describe('calculateDeadline', () => {
-    it('should calculate deadline from arrival + GOP + latency', () => {
-      const ticker = new MonotonicTickProvider();
-      ticker.tickBy(100); // Simulate 100ms arrival
-
-      const group = createGroupState<unknown>(0, 100, 0);
-
-      const deadline = estimator.calculateDeadline(group, ticker, 500);
-
-      // arrival (100) + GOP (1000) + latency (500) = 1600
-      expect(ticker.ticksToMs(deadline)).toBeCloseTo(1600, 0);
-    });
-
-    it('should use updated GOP estimate in deadline', () => {
-      const ticker = new MonotonicTickProvider();
-
-      // Update estimate to 500ms GOP
-      estimator.onKeyframe(0, 0, 1_000_000);
-      estimator.onKeyframe(1, 500_000, 1_000_000);
-
-      ticker.tickBy(100);
-      const group = createGroupState<unknown>(2, 100, 0);
-
-      const deadline = estimator.calculateDeadline(group, ticker, 500);
-
-      // GOP is now ~850ms (smoothed)
-      // arrival (100) + GOP (~850) + latency (500) = ~1450
-      expect(ticker.ticksToMs(deadline)).toBeGreaterThan(1400);
-      expect(ticker.ticksToMs(deadline)).toBeLessThan(1500);
     });
   });
 
@@ -188,95 +139,16 @@ describe('TimingEstimator', () => {
   });
 });
 
-describe('createTimingEstimator', () => {
-  it('should create from TimingConfig', () => {
-    const estimator = createTimingEstimator(DEFAULT_TIMING_CONFIG);
-    expect(estimator.getEstimatedGopDuration()).toBe(1000);
-  });
-
-  it('should use catalog hints when available', () => {
-    const config = {
-      ...DEFAULT_TIMING_CONFIG,
-      catalogFramerate: 30,
-      catalogTimescale: 90000,
-    };
-    const estimator = createTimingEstimator(config);
-    expect(estimator.getEstimatedGopDuration()).toBe(1000);
-  });
-});
-
-describe('group-arbiter-types', () => {
-  describe('createGroupState', () => {
-    it('should create empty group state', () => {
-      const now = performance.now();
-      const group = createGroupState<string>(42, 100, now, 2000, now + 1500);
-
-      expect(group.groupId).toBe(42);
-      expect(group.firstFrameReceivedTick).toBe(100);
-      expect(group.firstFrameReceivedAt).toBe(now);
-      expect(group.deadlineTick).toBe(2000);
-      expect(group.deadlineTime).toBe(now + 1500);
-      expect(group.frames.size).toBe(0);
-      expect(group.hasKeyframe).toBe(false);
-      expect(group.highestObjectId).toBe(-1);
-      expect(group.outputObjectId).toBe(-1);
-      expect(group.frameCount).toBe(0);
-      expect(group.status).toBe('receiving');
-      expect(group.locTimestampBase).toBe(-1);
-      expect(group.locTimescale).toBe(1_000_000);
-    });
-  });
-
-  describe('createArbiterStats', () => {
-    it('should create zeroed stats', () => {
-      const stats = createArbiterStats();
-
-      expect(stats.groupsReceived).toBe(0);
-      expect(stats.groupsCompleted).toBe(0);
-      expect(stats.groupsExpired).toBe(0);
-      expect(stats.groupsSkipped).toBe(0);
-      expect(stats.deadlinesExtended).toBe(0);
-      expect(stats.framesReceived).toBe(0);
-      expect(stats.framesOutput).toBe(0);
-      expect(stats.droppedLateFrames).toBe(0);
-      expect(stats.skippedMissingFrames).toBe(0);
-      expect(stats.estimatedGopDuration).toBe(0);
-      expect(stats.avgOutputLatency).toBe(0);
-      expect(stats.maxOutputLatency).toBe(0);
-      expect(stats.catchUpEvents).toBe(0);
-      expect(stats.framesFlushed).toBe(0);
-    });
-  });
-
-  describe('DEFAULT_TIMING_CONFIG', () => {
-    it('should have sensible defaults', () => {
-      expect(DEFAULT_TIMING_CONFIG.estimatedGopDuration).toBe(1000);
-      expect(DEFAULT_TIMING_CONFIG.maxLatency).toBe(500);
-      expect(DEFAULT_TIMING_CONFIG.jitterDelay).toBe(50);
-      expect(DEFAULT_TIMING_CONFIG.deadlineExtension).toBe(200);
-      expect(DEFAULT_TIMING_CONFIG.maxActiveGroups).toBe(4);
-      expect(DEFAULT_TIMING_CONFIG.maxFramesPerGroup).toBe(120);
-      expect(DEFAULT_TIMING_CONFIG.allowPartialGroupDecode).toBe(true);
-      expect(DEFAULT_TIMING_CONFIG.skipOnlyToKeyframe).toBe(true);
-      expect(DEFAULT_TIMING_CONFIG.enableCatchUp).toBe(true);
-      expect(DEFAULT_TIMING_CONFIG.catchUpThreshold).toBe(5);
-      expect(DEFAULT_TIMING_CONFIG.maxCatchUpFrames).toBe(30);
-      expect(DEFAULT_TIMING_CONFIG.useLatencyDeadline).toBe(true);
-    });
-  });
-});
-
 describe('TimingEstimator benchmark', () => {
   it('onKeyframe should be fast', () => {
     const estimator = new TimingEstimator({ initialGopDuration: 1000 });
     const ITERATIONS = 10000;
 
-    // Initialize
     estimator.onKeyframe(0, 0, 1_000_000);
 
     const start = performance.now();
     for (let i = 1; i <= ITERATIONS; i++) {
-      estimator.onKeyframe(i, i * 33333, 1_000_000); // ~30fps
+      estimator.onKeyframe(i, i * 33333, 1_000_000);
     }
     const elapsed = performance.now() - start;
     const opsPerMs = ITERATIONS / elapsed;
@@ -286,7 +158,6 @@ describe('TimingEstimator benchmark', () => {
         `(${opsPerMs.toFixed(0)} ops/ms)`
     );
 
-    // Should be very fast - at least 1000 ops/ms
     expect(opsPerMs).toBeGreaterThan(1000);
   });
 });

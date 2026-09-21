@@ -98,18 +98,8 @@ export type {
   VADData,
 } from './loc/loc-container.js';
 
-// Jitter buffer
-export { JitterBuffer } from './pipeline/jitter-buffer.js';
-export type {
-  BufferedFrame,
-  JitterBufferConfig,
-  JitterBufferStats,
-} from './pipeline/jitter-buffer.js';
-
-// Group-aware jitter buffer (deadline-based ordering) - LEGACY
-// Note: GroupArbiter is being replaced by PlayoutBuffer + ReleasePolicy
-export { GroupArbiter } from './pipeline/group-arbiter.js';
-export { TimingEstimator, createTimingEstimator } from './pipeline/timing-estimator.js';
+// Timing helpers used internally by release policies (exported for advanced tuning)
+export { TimingEstimator } from './pipeline/timing-estimator.js';
 export { MonotonicTickProvider, WallClockTickProvider } from './pipeline/tick-provider.js';
 export type { TickProvider, TickProviderConfig } from './pipeline/tick-provider.js';
 export type { TimingEstimatorConfig } from './pipeline/timing-estimator.js';
@@ -124,19 +114,6 @@ export type {
   ClockSkewEstimate,
   ClockSkewEstimatorConfig,
 } from './pipeline/clock-skew-estimator.js';
-export type {
-  GroupState as LegacyGroupState,
-  GroupStatus as LegacyGroupStatus,
-  FrameEntry as LegacyFrameEntry,
-  ArbiterStats,
-  TimingConfig,
-  ArbiterFrameInput,
-} from './pipeline/group-arbiter-types.js';
-export {
-  DEFAULT_TIMING_CONFIG,
-  createGroupState,
-  createArbiterStats,
-} from './pipeline/group-arbiter-types.js';
 
 // PlayoutBuffer - New architecture for frame buffering
 // Separates storage (PlayoutBuffer) from release logic (ReleasePolicy)
@@ -183,7 +160,6 @@ export {
   createVodPlayoutBuffer,
   createLivePlayoutBuffer,
   createAdaptivePlayoutBuffer,
-  createFromArbiterConfig,
   POLICY_PRESETS,
 } from './pipeline/playout-buffer-factory.js';
 export type { TrackPolicyInfo, PolicyType, PolicyConfig } from './pipeline/playout-buffer-factory.js';
@@ -225,12 +201,10 @@ export type {
 } from './session/index.js';
 export { getResolutionConfig } from './session/index.js';
 
-// Web Workers - LOC-only (existing)
+// Web Workers - LOC-only encode (kept for main-thread encoding pipelines)
 export {
   EncodeWorkerClient,
-  DecodeWorkerClient,
   createEncodeWorker,
-  createDecodeWorker,
   prepareForTransfer,
   prepareMultipleForTransfer,
 } from './workers/index.js';
@@ -238,12 +212,9 @@ export type {
   EncodeWorkerRequest,
   EncodeWorkerResponse,
   EncodeWorkerConfig,
-  DecodeWorkerRequest,
-  DecodeWorkerResponse,
-  DecodeWorkerConfig,
 } from './workers/index.js';
 
-// Web Workers - Codec + LOC (new - WebCodecs in worker)
+// Web Workers - Codec + LOC (WebCodecs in worker)
 export {
   CodecEncodeWorkerClient,
   CodecDecodeWorkerClient,
@@ -293,7 +264,7 @@ export { VODLoader } from './vod/vod-loader.js';
 export type { VODLoadProgress, VODLoaderOptions, VODPreloadMetadata, VODAudioMetadata } from './vod/vod-loader.js';
 
 // VOD Fetch Controller - Adaptive buffer-aware fetching for smooth VOD playback
-export { VodFetchController, LegacyFetchStrategy, createVodFetchController } from './vod/vod-fetch-controller.js';
+export { VodFetchController, createVodFetchController } from './vod/vod-fetch-controller.js';
 export type { VodFetchConfig, VodFetchEvents } from './vod/vod-fetch-controller.js';
 
 // VOD Fetch Strategies
