@@ -264,7 +264,7 @@ export { VODLoader } from './vod/vod-loader.js';
 export type { VODLoadProgress, VODLoaderOptions, VODPreloadMetadata, VODAudioMetadata } from './vod/vod-loader.js';
 
 // VOD Fetch Controller - Adaptive buffer-aware fetching for smooth VOD playback
-export { VodFetchController, LegacyFetchStrategy, createVodFetchController } from './vod/vod-fetch-controller.js';
+export { VodFetchController, createVodFetchController } from './vod/vod-fetch-controller.js';
 export type { VodFetchConfig, VodFetchEvents } from './vod/vod-fetch-controller.js';
 
 // VOD Fetch Strategies

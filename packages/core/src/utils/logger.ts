@@ -57,6 +57,13 @@ export interface LogEntry {
   data?: unknown;
   /** Optional error object */
   error?: Error;
+  /**
+   * Static bindings attached to the logger (via `Logger.create(ns, bindings)`
+   * or `logger.bind(...)`). These are e.g. `sessionId` / `subscriptionId`
+   * fields that identify the emitting context; handlers receive them so log
+   * shipping backends can filter/index.
+   */
+  bindings?: Record<string, unknown>;
 }
 
 /**
@@ -190,31 +197,44 @@ function formatTimestamp(timestamp: number): string {
  */
 export class Logger {
   private readonly namespace: string;
+  /**
+   * Static context bound to this logger. Merged into every emitted
+   * `LogEntry.bindings` field and — when `data` is a plain object — into
+   * the console output so operators see the context inline.
+   */
+  private readonly bindings?: Record<string, unknown>;
 
   /**
    * Create a new Logger instance
    *
    * @param namespace - Logger namespace for filtering and identification
+   * @param bindings  - Optional static context (e.g. `{ sessionId }`)
    * @private Use Logger.create() instead
    */
-  private constructor(namespace: string) {
+  private constructor(namespace: string, bindings?: Record<string, unknown>) {
     this.namespace = namespace;
+    this.bindings = bindings;
   }
 
   /**
-   * Create a new logger instance for a specific namespace
+   * Create a new logger instance for a specific namespace.
    *
    * @param namespace - Hierarchical namespace (e.g., 'moqt:transport:stream')
+   * @param bindings  - Optional static context merged into every log entry.
+   *                    Handy for propagating identifiers like `sessionId` /
+   *                    `subscriptionId` without threading them through every
+   *                    log call site.
    * @returns New Logger instance
    *
    * @example
    * ```typescript
    * const log = Logger.create('moqt:transport');
    * const childLog = Logger.create('moqt:transport:stream');
+   * const boundLog = Logger.create('moqt:session', { sessionId: 'abc123' });
    * ```
    */
-  static create(namespace: string): Logger {
-    return new Logger(namespace);
+  static create(namespace: string, bindings?: Record<string, unknown>): Logger {
+    return new Logger(namespace, bindings);
   }
 
   /**
@@ -308,7 +328,22 @@ export class Logger {
    * ```
    */
   child(suffix: string): Logger {
-    return new Logger(`${this.namespace}:${suffix}`);
+    return new Logger(`${this.namespace}:${suffix}`, this.bindings);
+  }
+
+  /**
+   * Return a new logger that merges the given bindings on top of this
+   * logger's existing bindings. Later keys override earlier ones. Useful for
+   * fanning out per-request loggers from a shared session-scoped logger:
+   *
+   * ```typescript
+   * const sessionLog = Logger.create('moqt:session', { sessionId });
+   * const requestLog = sessionLog.bind({ requestId });
+   * ```
+   */
+  bind(bindings: Record<string, unknown>): Logger {
+    const merged = { ...(this.bindings ?? {}), ...bindings };
+    return new Logger(this.namespace, merged);
   }
 
   /**
@@ -383,6 +418,7 @@ export class Logger {
       message,
       data: data instanceof Error ? undefined : data,
       error: data instanceof Error ? data : undefined,
+      bindings: this.bindings,
     };
 
     // Call custom handler if set
@@ -400,7 +436,20 @@ export class Logger {
    * @param entry - Log entry to output
    */
   private consoleOutput(entry: LogEntry): void {
-    const { level, message, data, error } = entry;
+    const { level, message, error, bindings } = entry;
+    // Merge static bindings into `data` for object payloads so operators
+    // reading the console see e.g. `sessionId` alongside the call-site
+    // context. When `data` is a scalar/array/Error we keep it untouched
+    // and instead surface bindings as an extra argument.
+    let data = entry.data;
+    let inlineBindings: Record<string, unknown> | undefined;
+    if (bindings && Object.keys(bindings).length > 0) {
+      if (data && typeof data === 'object' && !Array.isArray(data) && !(data instanceof Error)) {
+        data = { ...bindings, ...(data as Record<string, unknown>) };
+      } else {
+        inlineBindings = bindings;
+      }
+    }
     const label = levelLabels[level];
 
     // Build prefix parts
@@ -425,19 +474,25 @@ export class Logger {
       const style = `color: ${color}; font-weight: bold`;
 
       if (error) {
-        consoleFn(`%c${prefix}`, style, message, error);
+        if (inlineBindings) consoleFn(`%c${prefix}`, style, message, error, inlineBindings);
+        else consoleFn(`%c${prefix}`, style, message, error);
       } else if (data !== undefined) {
-        consoleFn(`%c${prefix}`, style, message, data);
+        if (inlineBindings) consoleFn(`%c${prefix}`, style, message, data, inlineBindings);
+        else consoleFn(`%c${prefix}`, style, message, data);
       } else {
-        consoleFn(`%c${prefix}`, style, message);
+        if (inlineBindings) consoleFn(`%c${prefix}`, style, message, inlineBindings);
+        else consoleFn(`%c${prefix}`, style, message);
       }
     } else {
       if (error) {
-        consoleFn(prefix, message, error);
+        if (inlineBindings) consoleFn(prefix, message, error, inlineBindings);
+        else consoleFn(prefix, message, error);
       } else if (data !== undefined) {
-        consoleFn(prefix, message, data);
+        if (inlineBindings) consoleFn(prefix, message, data, inlineBindings);
+        else consoleFn(prefix, message, data);
       } else {
-        consoleFn(prefix, message);
+        if (inlineBindings) consoleFn(prefix, message, inlineBindings);
+        else consoleFn(prefix, message);
       }
     }
   }

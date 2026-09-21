@@ -79,9 +79,38 @@ export const SubgroupIdMode = {
 } as const;
 
 export class Draft18StreamCodecError extends Error {
-  constructor(message: string) {
+  /**
+   * Machine-readable error tag. Set to `'bounds-exceeded'` when a decoded
+   * length or count exceeds a codec safety bound (B2 SEC). Callers may key on
+   * this to distinguish untrusted-peer DoS attempts from other decode failures
+   * and to terminate the session with PROTOCOL_VIOLATION.
+   */
+  code?: string;
+
+  constructor(message: string, code?: string) {
     super(message);
     this.name = 'Draft18StreamCodecError';
+    this.code = code;
+  }
+}
+
+// =============================================================================
+// Stream Codec Safety Bounds (B2 SEC)
+// =============================================================================
+// Data-stream object headers, datagrams, and fetch objects carry small metadata
+// blocks (properties, KVPs). None of these should legitimately exceed a few KiB
+// on the wire. Any decoded length beyond MAX_PROPERTIES_LENGTH is treated as a
+// malicious peer and rejected before we allocate a buffer or copy bytes.
+export const MAX_PROPERTIES_LENGTH = 4096;
+export const MAX_PROPERTY_VALUE_LENGTH = 4096;
+
+function assertStreamBound(actual: number, limit: number, what: string): void {
+  // Reject NaN/negatives from a corrupt varint decode as well as overflows.
+  if (!Number.isFinite(actual) || actual < 0 || actual > limit) {
+    throw new Draft18StreamCodecError(
+      `${what} ${actual} exceeds safety bound ${limit}`,
+      'bounds-exceeded',
+    );
   }
 }
 
@@ -263,6 +292,7 @@ export class Draft18StreamCodec {
     let objectProperties: Map<number, Uint8Array> | undefined;
     if (hasProperties) {
       const propsLength = reader.readVarIntNumber();
+      assertStreamBound(propsLength, MAX_PROPERTIES_LENGTH, 'ObjectHeader propsLength');
       if (propsLength > 0) {
         const propsEnd = reader.offset + propsLength;
         objectProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
@@ -393,6 +423,7 @@ export class Draft18StreamCodec {
           'PROPERTIES bit set with Properties Length == 0 (spec §11.3.1 PROTOCOL_VIOLATION)',
         );
       }
+      assertStreamBound(propsLength, MAX_PROPERTIES_LENGTH, 'ObjectDatagram propsLength');
       const propsEnd = reader.offset + propsLength;
       objectProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
     }
@@ -549,6 +580,7 @@ export class Draft18StreamCodec {
       if (propsLength === 0) {
         throw new Draft18StreamCodecError('PROPERTIES flag set with zero-length properties (spec §11.4.4)');
       }
+      assertStreamBound(propsLength, MAX_PROPERTIES_LENGTH, 'FetchObject propsLength');
       const propsEnd = reader.offset + propsLength;
       objectProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
     }
@@ -627,6 +659,7 @@ export class Draft18StreamCodec {
       } else {
         // Odd key: length + bytes
         const length = reader.readVarIntNumber();
+        assertStreamBound(length, MAX_PROPERTY_VALUE_LENGTH, 'property value length');
         props.set(key, reader.readBytes(length));
       }
     }

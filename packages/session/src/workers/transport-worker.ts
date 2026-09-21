@@ -40,6 +40,17 @@ const outgoingStreams = new Map<number, StreamInfo>();
 let nextStreamId = 0;
 
 /**
+ * Pending close promises for per-object streams.
+ *
+ * We fire-and-forget `writer.close()` after the final write so the message
+ * handler doesn't block waiting on stream close roundtrips — this is
+ * especially important for stream-per-object delivery where the caller may
+ * open thousands of streams per second. We track the promises so `cleanup()`
+ * can drain them on disconnect.
+ */
+const pendingCloses = new Set<Promise<void>>();
+
+/**
  * Log helper
  */
 function log(...args: unknown[]): void {
@@ -191,6 +202,10 @@ function cleanup(): void {
   setupStreamTypeSent = false;
   outgoingStreams.clear();
   nextStreamId = 0;
+  // Discard tracked close promises — the underlying transport is going away
+  // so any still-inflight close() will resolve/reject on its own; we just no
+  // longer need to observe them.
+  pendingCloses.clear();
 }
 
 /**
@@ -208,9 +223,9 @@ async function listenForControlMessages(): Promise<void> {
         break;
       }
 
-      // Transfer buffer to main thread
-      const data = new Uint8Array(value);
-      respond({ type: 'control-message', data }, [data.buffer]);
+      // Zero-copy: WHATWG streams give ownership of the chunk to the reader,
+      // so we can transfer its underlying buffer without copying.
+      respond({ type: 'control-message', data: value }, [value.buffer]);
     }
   } catch (err) {
     if (transport) {
@@ -236,9 +251,8 @@ async function listenForDatagrams(): Promise<void> {
         break;
       }
 
-      // Transfer buffer to main thread
-      const data = new Uint8Array(value);
-      respond({ type: 'datagram', data }, [data.buffer]);
+      // Zero-copy transfer of the chunk buffer to the main thread.
+      respond({ type: 'datagram', data: value }, [value.buffer]);
     }
   } catch (err) {
     if (transport) {
@@ -307,15 +321,16 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
       // Setup stream from server — forward remaining bytes + continue reading as setup messages
       const remaining = firstChunk.subarray(bytesRead);
       if (remaining.length > 0) {
-        const data = new Uint8Array(remaining);
-        respond({ type: 'setup-message', data }, [data.buffer]);
+        // Zero-copy transfer: `remaining` shares firstChunk.buffer; the postMessage
+        // transfers the underlying ArrayBuffer, detaching firstChunk (safe — we
+        // extract streamType/bytesRead before this).
+        respond({ type: 'setup-message', data: remaining }, [remaining.buffer]);
       }
       // Continue reading setup stream messages
       while (true) {
         const { value, done: d } = await reader.read();
         if (d) break;
-        const data = new Uint8Array(value);
-        respond({ type: 'setup-message', data }, [data.buffer]);
+        respond({ type: 'setup-message', data: value }, [value.buffer]);
       }
     } else {
       // Data stream (subgroup) — forward full chunk including stream type byte
@@ -324,17 +339,17 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
       console.log('[transport-worker] Incoming DATA stream', { streamId, streamType: `0x${streamTypeNum.toString(16)}`, chunkSize: firstChunk.length });
       respond({ type: 'incoming-stream', streamId });
 
-      // Send full first chunk (stream type byte is part of the subgroup header)
-      const data = new Uint8Array(firstChunk);
-      respond({ type: 'stream-data', streamId, data }, [data.buffer]);
+      // Zero-copy: transfer firstChunk buffer (stream type byte is part of the
+      // subgroup header the main thread parses).
+      const firstLen = firstChunk.length;
+      respond({ type: 'stream-data', streamId, data: firstChunk }, [firstChunk.buffer]);
       // Continue forwarding data
-      let totalForwarded = firstChunk.length;
+      let totalForwarded = firstLen;
       while (true) {
         const { value, done: d } = await reader.read();
         if (d) break;
         totalForwarded += value.length;
-        const d2 = new Uint8Array(value);
-        respond({ type: 'stream-data', streamId, data: d2 }, [d2.buffer]);
+        respond({ type: 'stream-data', streamId, data: value }, [value.buffer]);
       }
       console.log('[transport-worker] Data stream ended', { streamId, totalForwarded });
       respond({ type: 'stream-closed', streamId });
@@ -358,9 +373,8 @@ async function handleIncomingStreamData(
       const { value, done } = await reader.read();
       if (done) break;
 
-      // Transfer buffer to main thread
-      const data = new Uint8Array(value);
-      respond({ type: 'stream-data', streamId, data }, [data.buffer]);
+      // Zero-copy transfer to the main thread.
+      respond({ type: 'stream-data', streamId, data: value }, [value.buffer]);
     }
   } catch (err) {
     log('Stream read error', { streamId, error: (err as Error).message });
@@ -591,9 +605,27 @@ async function writeStream(
     await streamInfo.writer.write(data);
 
     if (close) {
-      await streamInfo.writer.close();
+      // Fire-and-forget close so the worker's onmessage handler is free to
+      // service the next write-stream immediately. Stream-per-object patterns
+      // otherwise pay a full close() roundtrip between writes, keeping the
+      // underlying transferable buffer pinned longer than needed.
+      const w = streamInfo.writer;
       outgoingStreams.delete(streamId);
       respond({ type: 'stream-closed', streamId });
+      const closePromise = w.close().catch((err: unknown) => {
+        const closeMsg = (err as Error)?.message ?? '';
+        // STOP_SENDING/RESET_STREAM/aborted are normal races between our close
+        // and a relay-initiated abort. Anything else is worth surfacing.
+        if (
+          !closeMsg.includes('STOP_SENDING') &&
+          !closeMsg.includes('RESET_STREAM') &&
+          !closeMsg.includes('aborted')
+        ) {
+          log('Deferred close failed', { streamId, error: closeMsg });
+        }
+      });
+      pendingCloses.add(closePromise);
+      closePromise.finally(() => pendingCloses.delete(closePromise));
     }
   } catch (err) {
     const message = (err as Error).message;

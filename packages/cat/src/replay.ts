@@ -44,8 +44,17 @@ export class MemoryReplayStore implements ReplayStore {
   }
 
   private evictOne(): void {
-    const first = this.entries.keys().next();
-    if (!first.done) this.entries.delete(first.value);
+    // Evict the entry closest to expiry, not the oldest inserted. FIFO eviction lets an attacker
+    // fill the store with fresh tokens and push out a still-valid old jti so it can be replayed.
+    let victimKey: string | undefined;
+    let victimExpiresAt = Number.POSITIVE_INFINITY;
+    for (const [key, expiresAt] of this.entries) {
+      if (expiresAt < victimExpiresAt) {
+        victimExpiresAt = expiresAt;
+        victimKey = key;
+      }
+    }
+    if (victimKey !== undefined) this.entries.delete(victimKey);
   }
 }
 

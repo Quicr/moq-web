@@ -33,7 +33,7 @@
  */
 
 import { Logger } from '../utils/logger.js';
-import { BufferReader, BufferWriter, VarInt } from './varint.js';
+import { BufferReader, BufferWriter, PreallocBufferWriter, VarInt, type WritableByteBuffer } from './varint.js';
 import { DEFAULT_DRAFT, type DraftVersion } from '../version/constants.js';
 import { Draft18StreamCodec } from './draft18-stream-codec.js';
 
@@ -198,11 +198,24 @@ export class MessageCodec {
    * const bytes = MessageCodec.encode(subscribe);
    * ```
    */
+  /**
+   * Initial capacity hint for the top-level encode buffer.
+   *
+   * Most control messages fit comfortably under 256 bytes on the wire (SETUP,
+   * SUBSCRIBE, PUBLISH, and their _OK/_ERROR variants); AUTHORIZATION_TOKEN or
+   * multi-tuple namespaces occasionally push higher. The PreallocBufferWriter
+   * doubles on overflow, so this is only a lower bound — larger messages grow
+   * once or twice and then reuse the sized buffer.
+   */
+  private static readonly ENCODE_INITIAL_CAPACITY = 512;
+
   static encode(message: ControlMessage): Uint8Array {
     log.debug('Encoding message', { type: MessageType[message.type] });
 
-    // First, encode the payload (message-specific fields)
-    const payloadWriter = new BufferWriter();
+    // Pre-allocate a buffer for the encoded payload. PreallocBufferWriter
+    // grows on demand (doubling) so this avoids the chunked allocations that
+    // BufferWriter otherwise makes for each writeByte / writeVarInt call.
+    const payloadWriter = new PreallocBufferWriter(MessageCodec.ENCODE_INITIAL_CAPACITY);
 
     switch (message.type) {
       // Session messages
@@ -317,16 +330,23 @@ export class MessageCodec {
         );
     }
 
-    const payload = payloadWriter.toUint8Array();
+    // Zero-copy view of the payload (still backed by payloadWriter). We only
+    // read it into the outer buffer via `writeBytes`, so there's no need to
+    // materialize a fresh copy.
+    const payload = payloadWriter.getWrittenView();
 
     // MOQT spec: Message Type (varint) + Message Length (16-bit) + Message Payload
-    const writer = new BufferWriter();
-    writer.writeVarInt(message.type);
-    writer.writeByte((payload.length >> 8) & 0xff);
-    writer.writeByte(payload.length & 0xff);
-    writer.writeBytes(payload);
+    // Size the outer writer so the common case doesn't reallocate: worst-case
+    // message-type varint = 8 bytes, plus 2-byte length, plus payload.
+    const outerWriter = new PreallocBufferWriter(payload.length + 10);
+    outerWriter.writeVarInt(message.type);
+    outerWriter.writeByte((payload.length >> 8) & 0xff);
+    outerWriter.writeByte(payload.length & 0xff);
+    outerWriter.writeBytes(payload);
 
-    const result = writer.toUint8Array();
+    // Return a sliced copy so callers own their buffer independent of the
+    // scratch PreallocBufferWriter (which we let go out of scope).
+    const result = outerWriter.toUint8Array();
     log.trace('Encoded message', { type: MessageType[message.type], bytes: result.length });
     return result;
   }
@@ -502,7 +522,7 @@ export class MessageCodec {
   /**
    * Encode a track namespace tuple
    */
-  private static encodeNamespace(writer: BufferWriter, namespace: TrackNamespace): void {
+  private static encodeNamespace(writer: WritableByteBuffer, namespace: TrackNamespace): void {
     writer.writeVarInt(namespace.length);
     for (const element of namespace) {
       writer.writeString(element);
@@ -536,7 +556,7 @@ export class MessageCodec {
    * Encode a full track name
    * Draft-14 format: Track Namespace (tuple) + Track Name (string) separately
    */
-  private static encodeFullTrackName(writer: BufferWriter, fullTrackName: FullTrackName): void {
+  private static encodeFullTrackName(writer: WritableByteBuffer, fullTrackName: FullTrackName): void {
     log.info('Encoding full track name - START', {
       namespace: fullTrackName.namespace,
       namespaceLength: fullTrackName.namespace.length,
@@ -603,7 +623,7 @@ export class MessageCodec {
    * odd keys use length + bytes format.
    */
   private static encodeSetupParameters(
-    writer: BufferWriter,
+    writer: WritableByteBuffer,
     parameters: Map<SetupParameter, number | string | Uint8Array>
   ): void {
     writer.writeVarInt(parameters.size);
@@ -827,7 +847,7 @@ export class MessageCodec {
    * odd keys use length + bytes format. Keys are delta encoded.
    */
   private static encodeRequestParameters(
-    writer: BufferWriter,
+    writer: WritableByteBuffer,
     parameters?: Map<RequestParameter, Uint8Array>
   ): void {
     const count = parameters?.size ?? 0;
@@ -871,7 +891,7 @@ export class MessageCodec {
    */
   // @ts-expect-error - temporarily unused during debugging
   private static encodeTrackExtensions(
-    writer: BufferWriter,
+    writer: WritableByteBuffer,
     extensions?: Map<number, Uint8Array>
   ): void {
     if (!extensions || extensions.size === 0) return;
@@ -1045,7 +1065,7 @@ export class MessageCodec {
   // ============================================================================
 
   /** Get hex string of bytes written since startPos */
-  private static hexBytes(writer: BufferWriter, startPos: number): string {
+  private static hexBytes(writer: WritableByteBuffer, startPos: number): string {
     const bytes = writer.toUint8Array().subarray(startPos);
     return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
   }
@@ -1054,7 +1074,7 @@ export class MessageCodec {
   // Setup Message Encoding/Decoding
   // ============================================================================
 
-  private static encodeClientSetupPayload(writer: BufferWriter, message: ClientSetupMessage): void {
+  private static encodeClientSetupPayload(writer: WritableByteBuffer, message: ClientSetupMessage): void {
     if (isDraft16Active()) {
       // Draft-16: No version list (negotiated via ALPN)
       // Format: Num Params + Params[]
@@ -1096,7 +1116,7 @@ export class MessageCodec {
     }
   }
 
-  private static encodeServerSetupPayload(writer: BufferWriter, message: ServerSetupMessage): void {
+  private static encodeServerSetupPayload(writer: WritableByteBuffer, message: ServerSetupMessage): void {
     if (isDraft16Active()) {
       // Draft-16: No selected version (determined by ALPN)
       // Format: Num Params + Params[]
@@ -1135,7 +1155,7 @@ export class MessageCodec {
   // Subscribe Message Encoding/Decoding
   // ============================================================================
 
-  private static encodeSubscribePayload(writer: BufferWriter, message: SubscribeMessage): void {
+  private static encodeSubscribePayload(writer: WritableByteBuffer, message: SubscribeMessage): void {
     if (isDraft16Active()) {
       // Draft-16 SUBSCRIBE format:
       // Subscribe ID, Full Track Name, Parameters
@@ -1293,7 +1313,7 @@ export class MessageCodec {
     }
   }
 
-  private static encodeSubscribeUpdatePayload(writer: BufferWriter, message: SubscribeUpdateMessage): void {
+  private static encodeSubscribeUpdatePayload(writer: WritableByteBuffer, message: SubscribeUpdateMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.subscriptionRequestId);
 
@@ -1427,7 +1447,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodeSubscribeOkPayload(writer: BufferWriter, message: SubscribeOkMessage): void {
+  private static encodeSubscribeOkPayload(writer: WritableByteBuffer, message: SubscribeOkMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.trackAlias);
 
@@ -1563,7 +1583,7 @@ export class MessageCodec {
     }
   }
 
-  private static encodeSubscribeErrorPayload(writer: BufferWriter, message: SubscribeErrorMessage): void {
+  private static encodeSubscribeErrorPayload(writer: WritableByteBuffer, message: SubscribeErrorMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.errorCode);
 
@@ -1604,7 +1624,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodeUnsubscribePayload(writer: BufferWriter, message: UnsubscribeMessage): void {
+  private static encodeUnsubscribePayload(writer: WritableByteBuffer, message: UnsubscribeMessage): void {
     writer.writeVarInt(message.requestId);
   }
 
@@ -1619,7 +1639,7 @@ export class MessageCodec {
   // Publish Message Encoding/Decoding (Draft 14)
   // ============================================================================
 
-  private static encodePublishDonePayload(writer: BufferWriter, message: PublishDoneMessage): void {
+  private static encodePublishDonePayload(writer: WritableByteBuffer, message: PublishDoneMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.statusCode);
     writer.writeString(message.reasonPhrase);
@@ -1660,7 +1680,7 @@ export class MessageCodec {
     return message;
   }
 
-  private static encodePublishPayload(writer: BufferWriter, message: PublishMessage): void {
+  private static encodePublishPayload(writer: WritableByteBuffer, message: PublishMessage): void {
     if (isDraft16Active()) {
       // Draft-16 PUBLISH format:
       // Request ID, Full Track Name, Track Alias, Parameters
@@ -1832,7 +1852,7 @@ export class MessageCodec {
     }
   }
 
-  private static encodePublishOkPayload(writer: BufferWriter, message: PublishOkMessage): void {
+  private static encodePublishOkPayload(writer: WritableByteBuffer, message: PublishOkMessage): void {
     writer.writeVarInt(message.requestId);
 
     if (isDraft16Active()) {
@@ -2004,7 +2024,7 @@ export class MessageCodec {
     }
   }
 
-  private static encodePublishErrorPayload(writer: BufferWriter, message: PublishErrorMessage): void {
+  private static encodePublishErrorPayload(writer: WritableByteBuffer, message: PublishErrorMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.errorCode);
 
@@ -2049,7 +2069,7 @@ export class MessageCodec {
   // Namespace Publishing Encoding/Decoding (Draft 14/16)
   // ============================================================================
 
-  private static encodePublishNamespacePayload(writer: BufferWriter, message: PublishNamespaceMessage): void {
+  private static encodePublishNamespacePayload(writer: WritableByteBuffer, message: PublishNamespaceMessage): void {
     // Draft-16 adds Request ID at the beginning
     if (isDraft16Active()) {
       writer.writeVarInt(message.requestId ?? 0);
@@ -2110,7 +2130,7 @@ export class MessageCodec {
     return parameters;
   }
 
-  private static encodePublishNamespaceOkPayload(writer: BufferWriter, message: PublishNamespaceOkMessage): void {
+  private static encodePublishNamespaceOkPayload(writer: WritableByteBuffer, message: PublishNamespaceOkMessage): void {
     if (isDraft16Active()) {
       // Draft-16: REQUEST_OK format (Request ID + Expires)
       writer.writeVarInt(message.requestId ?? 0);
@@ -2138,7 +2158,7 @@ export class MessageCodec {
     }
   }
 
-  private static encodePublishNamespaceErrorPayload(writer: BufferWriter, message: PublishNamespaceErrorMessage): void {
+  private static encodePublishNamespaceErrorPayload(writer: WritableByteBuffer, message: PublishNamespaceErrorMessage): void {
     MessageCodec.encodeNamespace(writer, message.namespace);
     writer.writeVarInt(message.errorCode);
     writer.writeString(message.reasonPhrase);
@@ -2153,7 +2173,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodePublishNamespaceDonePayload(writer: BufferWriter, message: PublishNamespaceDoneMessage): void {
+  private static encodePublishNamespaceDonePayload(writer: WritableByteBuffer, message: PublishNamespaceDoneMessage): void {
     MessageCodec.encodeNamespace(writer, message.namespace);
   }
 
@@ -2164,7 +2184,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodePublishNamespaceCancelPayload(writer: BufferWriter, message: PublishNamespaceCancelMessage): void {
+  private static encodePublishNamespaceCancelPayload(writer: WritableByteBuffer, message: PublishNamespaceCancelMessage): void {
     MessageCodec.encodeNamespace(writer, message.namespace);
   }
 
@@ -2180,7 +2200,7 @@ export class MessageCodec {
   // ============================================================================
 
   private static encodeSubscribeNamespacePayload(
-    writer: BufferWriter,
+    writer: WritableByteBuffer,
     message: SubscribeNamespaceMessage
   ): void {
     if (isDraft16Active()) {
@@ -2224,7 +2244,7 @@ export class MessageCodec {
   }
 
   private static encodeSubscribeNamespaceOkPayload(
-    writer: BufferWriter,
+    writer: WritableByteBuffer,
     message: SubscribeNamespaceOkMessage
   ): void {
     if (isDraft16Active()) {
@@ -2249,7 +2269,7 @@ export class MessageCodec {
   }
 
   private static encodeSubscribeNamespaceErrorPayload(
-    writer: BufferWriter,
+    writer: WritableByteBuffer,
     message: SubscribeNamespaceErrorMessage
   ): void {
     if (isDraft16Active()) {
@@ -2282,7 +2302,7 @@ export class MessageCodec {
   }
 
   private static encodeUnsubscribeNamespacePayload(
-    writer: BufferWriter,
+    writer: WritableByteBuffer,
     message: UnsubscribeNamespaceMessage
   ): void {
     MessageCodec.encodeNamespace(writer, message.namespacePrefix);
@@ -2302,7 +2322,7 @@ export class MessageCodec {
   // FetchType values for draft-15+
   private static readonly FETCH_TYPE_STANDALONE = 0x01;
 
-  private static encodeFetchPayload(writer: BufferWriter, message: FetchMessage): void {
+  private static encodeFetchPayload(writer: WritableByteBuffer, message: FetchMessage): void {
     log.info('FETCH encode', {
       requestId: message.requestId,
       namespace: message.fullTrackName.namespace.join('/'),
@@ -2404,7 +2424,7 @@ export class MessageCodec {
     }
   }
 
-  private static encodeFetchCancelPayload(writer: BufferWriter, message: FetchCancelMessage): void {
+  private static encodeFetchCancelPayload(writer: WritableByteBuffer, message: FetchCancelMessage): void {
     writer.writeVarInt(message.requestId);
   }
 
@@ -2415,7 +2435,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodeFetchOkPayload(writer: BufferWriter, message: FetchOkMessage): void {
+  private static encodeFetchOkPayload(writer: WritableByteBuffer, message: FetchOkMessage): void {
     writer.writeVarInt(message.requestId);
     if (isDraft16Active()) {
       // Draft-16 FETCH_OK: requestId | endOfTrack (8) | EndLocation | numParams | [params...] | [extensions...]
@@ -2476,7 +2496,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodeFetchErrorPayload(writer: BufferWriter, message: FetchErrorMessage): void {
+  private static encodeFetchErrorPayload(writer: WritableByteBuffer, message: FetchErrorMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.errorCode);
     writer.writeString(message.reasonPhrase);
@@ -2495,7 +2515,7 @@ export class MessageCodec {
   // Session Message Encoding/Decoding (Draft 14)
   // ============================================================================
 
-  private static encodeGoAwayPayload(writer: BufferWriter, message: GoAwayMessage): void {
+  private static encodeGoAwayPayload(writer: WritableByteBuffer, message: GoAwayMessage): void {
     writer.writeString(message.newSessionUri ?? '');
   }
 
@@ -2507,7 +2527,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodeMaxRequestIdPayload(writer: BufferWriter, message: MaxRequestIdMessage): void {
+  private static encodeMaxRequestIdPayload(writer: WritableByteBuffer, message: MaxRequestIdMessage): void {
     writer.writeVarInt(message.maxRequestId);
   }
 
@@ -2518,7 +2538,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodeRequestsBlockedPayload(writer: BufferWriter, message: RequestsBlockedMessage): void {
+  private static encodeRequestsBlockedPayload(writer: WritableByteBuffer, message: RequestsBlockedMessage): void {
     writer.writeVarInt(message.blockedRequestId);
   }
 
@@ -2533,7 +2553,7 @@ export class MessageCodec {
   // Track Status Encoding/Decoding (Draft 14)
   // ============================================================================
 
-  private static encodeTrackStatusPayload(writer: BufferWriter, message: TrackStatusMessage): void {
+  private static encodeTrackStatusPayload(writer: WritableByteBuffer, message: TrackStatusMessage): void {
     writer.writeVarInt(message.requestId);
     MessageCodec.encodeFullTrackName(writer, message.fullTrackName);
     MessageCodec.encodeRequestParameters(writer, message.parameters);
@@ -2548,7 +2568,7 @@ export class MessageCodec {
     };
   }
 
-  private static encodeTrackStatusOkPayload(writer: BufferWriter, message: TrackStatusOkMessage): void {
+  private static encodeTrackStatusOkPayload(writer: WritableByteBuffer, message: TrackStatusOkMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.statusCode);
     if (message.statusCode === TrackStatusCode.IN_PROGRESS ||
@@ -2576,7 +2596,7 @@ export class MessageCodec {
     return message;
   }
 
-  private static encodeTrackStatusErrorPayload(writer: BufferWriter, message: TrackStatusErrorMessage): void {
+  private static encodeTrackStatusErrorPayload(writer: WritableByteBuffer, message: TrackStatusErrorMessage): void {
     writer.writeVarInt(message.requestId);
     writer.writeVarInt(message.errorCode);
     writer.writeString(message.reasonPhrase);

@@ -75,21 +75,24 @@ export class PresentationReorderBuffer {
   }
 
   /**
-   * Add a decoded frame to the buffer
+   * Add a decoded frame to the buffer.
+   *
+   * The buffer is kept sorted by presentation timestamp using a binary-search
+   * insert (O(log n) compare + O(n) memmove), replacing a previous full sort
+   * (O(n log n)) on every push. For the typical 4-8 frame reorder window this
+   * is a hot path — VideoDecoder invokes the output callback at frame rate.
    */
   push(frame: VideoFrame): void {
     const timestamp = frame.timestamp;
     const now = performance.now();
 
-    // Add to buffer
-    this.buffer.push({
-      frame,
-      timestamp,
-      receivedAt: now,
-    });
-
-    // Sort by presentation timestamp
-    this.buffer.sort((a, b) => a.timestamp - b.timestamp);
+    const entry: BufferedFrame = { frame, timestamp, receivedAt: now };
+    const insertAt = this.findInsertionIndex(timestamp);
+    if (insertAt === this.buffer.length) {
+      this.buffer.push(entry);
+    } else {
+      this.buffer.splice(insertAt, 0, entry);
+    }
 
     if (this.config.debug) {
       console.log('[ReorderBuffer] push', {
@@ -101,6 +104,27 @@ export class PresentationReorderBuffer {
 
     // Release frames that are ready
     this.releaseReadyFrames(now);
+  }
+
+  /**
+   * Binary search for the first index whose timestamp is greater than the
+   * given value. Ties keep insertion FIFO (equal timestamps preserve arrival
+   * order), matching the previous stable-sort behaviour for
+   * equal-PTS frames.
+   */
+  private findInsertionIndex(timestamp: number): number {
+    let lo = 0;
+    let hi = this.buffer.length;
+    while (lo < hi) {
+      // Unsigned shift avoids overflow for large arrays.
+      const mid = (lo + hi) >>> 1;
+      if (this.buffer[mid].timestamp <= timestamp) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
   }
 
   /**
@@ -161,9 +185,7 @@ export class PresentationReorderBuffer {
       console.log('[ReorderBuffer] flush', { count: this.buffer.length });
     }
 
-    // Sort and release all
-    this.buffer.sort((a, b) => a.timestamp - b.timestamp);
-
+    // Buffer is maintained in sorted order on push(), so we can release in place.
     for (const { frame } of this.buffer) {
       this.onFrame(frame);
     }

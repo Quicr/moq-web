@@ -924,7 +924,8 @@ export class SubscribePipeline {
    * @param groupId - The group ID that is complete
    */
   markGroupComplete(groupId: number): void {
-    log.info('Group marked complete (END_OF_GROUP received)', { groupId, channelId: this.channelId });
+    // OPS-hi 1: fires per group (~1/sec) — demoted from .info to .debug.
+    log.debug('Group marked complete (END_OF_GROUP received)', { groupId, channelId: this.channelId });
 
     // Worker mode: send message to worker
     if (this.useWorker && this.decodeWorkerClient) {

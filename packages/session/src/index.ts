@@ -44,14 +44,26 @@
 
 // Main session class
 export { MOQTSession } from './session.js';
-export type { MOQTSessionConfig } from './session.js';
+export type { MOQTSessionConfig, SessionDiagnostics } from './session.js';
+
+// Reconnect / backoff policy (B10 Ops)
+export {
+  JitteredExponentialBackoff,
+} from './reconnect-policy.js';
+export type {
+  ReconnectPolicy,
+  JitteredExponentialBackoffOptions,
+} from './reconnect-policy.js';
+
+// Re-export metrics types so consumers can wire a MetricsSink through the
+// session without adding a direct `@moq-web/core` dependency.
+export type { MetricsSink, MetricAttributes } from '@moq-web/core';
 
 // Managers (for advanced use cases)
 export { SubscriptionManager } from './subscription-manager.js';
-export type { InternalSubscription } from './subscription-manager.js';
 
 export { PublicationManager } from './publication-manager.js';
-export type { InternalPublication, PendingPublishOk, PendingForward } from './publication-manager.js';
+export type { PendingPublishOk, PendingForward } from './publication-manager.js';
 
 export { ObjectRouter } from './object-router.js';
 export type { ObjectCallback } from './object-router.js';

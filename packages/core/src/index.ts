@@ -62,6 +62,18 @@
  */
 
 // ============================================================================
+// Error hierarchy
+// ============================================================================
+
+export {
+  MoqError,
+  MoqCodecError,
+  MoqSessionError,
+  MoqTimeoutError,
+  MoqAbortError,
+} from './errors.js';
+
+// ============================================================================
 // Unified Public API (recommended)
 // ============================================================================
 
@@ -393,6 +405,18 @@ export {
 export { Logger, createLogger, LogLevel } from './utils/logger.js';
 
 export type { LogEntry, LogHandler, LoggerConfig } from './utils/logger.js';
+
+// Metrics (B9 Ops)
+export {
+  NoopMetricsSink,
+  InMemoryMetricsSink,
+} from './metrics/index.js';
+
+export type {
+  MetricsSink,
+  MetricAttributes,
+  MetricsSnapshot,
+} from './metrics/index.js';
 
 // Track alias hashing (for LAPS compatibility)
 export {

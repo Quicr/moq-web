@@ -43,6 +43,10 @@ import {
   ObjectExtension,
   BufferWriter,
   Logger,
+  ConnectionStateMachine,
+  type ConnectionState,
+  InMemoryMetricsSink,
+  type MetricsSink,
   alpnProtocolFor,
   DEFAULT_DRAFT,
   versionEnumFor,
@@ -440,6 +444,61 @@ export interface MOQTSessionConfig {
    * the transport lifecycle. Defaults to false.
    */
   autoMigrate?: boolean;
+  /**
+   * Optional metrics sink. When omitted the session uses an
+   * `InMemoryMetricsSink` so `getDiagnostics()` still returns useful
+   * counter totals. Pass `NoopMetricsSink` to disable metrics entirely, or
+   * pass a custom implementation to forward to OpenTelemetry / Prometheus
+   * / etc.
+   */
+  metrics?: MetricsSink;
+  /**
+   * Optional pre-assigned session ID. If omitted the session generates a
+   * random 16-hex-char identifier at construct time. Useful for propagating
+   * a request-scoped correlation ID from an outer application.
+   */
+  sessionId?: string;
+}
+
+/**
+ * Snapshot returned by `session.getDiagnostics()`. Intentionally
+ * JSON-serializable so consumers can post it to a debug endpoint or dump it
+ * into a bug report without further coercion.
+ */
+export interface SessionDiagnostics {
+  /** Per-instance identifier assigned at construct time. */
+  sessionId: string;
+  /** Coarse-grained session state (`none`, `setup`, `ready`, ...). */
+  state: SessionState;
+  /**
+   * `ConnectionStateMachine` state, updated in lockstep with `state`. Split
+   * out because the state machine tracks a slightly different vocabulary
+   * (`connecting`, `setup_sent`, `connected`, ...).
+   */
+  connectionState: ConnectionState;
+  /** Milliseconds since the session was constructed. */
+  uptimeMs: number;
+  /**
+   * Number of successful `migrate()` invocations (proxy for reconnects
+   * until Track B wires the shared `ReconnectPolicy`).
+   */
+  reconnectAttempts: number;
+  /** Counter totals from the `MetricsSink` (empty when a Noop sink is in use). */
+  metrics: Record<string, number>;
+  /**
+   * Reason string from the most recent session close, if any. Cleared on
+   * successful migration/reconnect.
+   */
+  lastCloseReason?: string;
+  /**
+   * Numeric session termination code from the most recent peer close
+   * (undefined for local closes).
+   */
+  lastCloseCode?: number;
+  /** URL currently connected to (worker mode only). */
+  currentUrl?: string;
+  /** URI cached from the most recent GOAWAY, if not yet migrated. */
+  pendingMigrationUri?: string;
 }
 
 /**
@@ -475,6 +534,40 @@ export class MOQTSession {
   private workerConfig?: MOQTSessionConfig;
   /** Whether using worker mode */
   private readonly useWorker: boolean;
+  /**
+   * Per-instance identifier. Bound to every logger created from
+   * `this.sessionLog`, propagated to metrics attributes, and surfaced via
+   * `getDiagnostics()`. Generated at construct time when the caller did not
+   * pass one via `MOQTSessionConfig`.
+   */
+  readonly sessionId: string;
+  /**
+   * Session-scoped logger with `sessionId` bound. Prefer this over the
+   * module-level `log` inside new code paths so operators can correlate
+   * multi-session workloads via a single field.
+   */
+  private readonly sessionLog: Logger;
+  /**
+   * §15.10.1 connection state machine, kept in lockstep with `_state`. Every
+   * transition to a new session state routes through this so illegal state
+   * transitions are caught centrally and counted via
+   * `moq.session.illegal_state_transition`.
+   */
+  private readonly stateMachine = new ConnectionStateMachine();
+  /**
+   * Metrics sink. Defaults to `InMemoryMetricsSink` so
+   * `getDiagnostics().metrics` remains useful without external wiring.
+   * Consumers pass `metrics: new NoopMetricsSink()` to disable.
+   */
+  private readonly metrics: MetricsSink;
+  /** `performance.now()` (or `Date.now()`) at construction, for uptimeMs. */
+  private readonly _createdAtMs: number;
+  /** Number of times `migrate()` completed a full close+setup cycle. */
+  private _reconnectAttempts = 0;
+  /** Reason phrase from the most recent close (peer or local). */
+  private _lastCloseReason?: string;
+  /** Session termination code from the most recent peer close. */
+  private _lastCloseCode?: number;
   /** Current session state */
   private _state: SessionState = 'none';
   /** Event handlers */
@@ -624,6 +717,37 @@ export class MOQTSession {
   private maxAuthTokenCacheSize = 0;
 
   // ============================================================================
+  // B3 SEC: Per-session Resource Limits
+  // ============================================================================
+  // Bound how much state a single peer can force us to hold. Every entry point
+  // that would allocate a new subscription, publication (track), or transport
+  // stream first calls `enforceResourceLimit()`. Excess triggers a
+  // PROTOCOL_VIOLATION session close via the normal `close({...})` pattern —
+  // no new state-machine paths introduced.
+  /** Max concurrent subscriptions (client-initiated + peer-initiated). */
+  private readonly maxSubscriptions = 4096;
+  /** Max concurrent tracks we publish. */
+  private readonly maxTracks = 4096;
+  /**
+   * Max concurrent open transport streams tracked at the session layer
+   * (outbound uni streams we opened for object delivery + active per-request
+   * bidi streams). Approximates "streams a peer can force us to hold open".
+   */
+  private readonly maxOpenStreams = 8192;
+  /**
+   * Running count of streams we've opened via `doCreateStream` that have not
+   * yet been observed as closed/aborted. Peer-initiated inbound streams are
+   * accepted by the transport layer directly and are subject to the QUIC-level
+   * cap (see MAX_STREAMS); we don't double-count them here.
+   */
+  private openStreamCount = 0;
+  /**
+   * Latched once a resource cap has fired so we don't try to close twice or
+   * report the same violation to the app N times.
+   */
+  private resourceCapTripped = false;
+
+  // ============================================================================
   // FETCH / DVR State
   // ============================================================================
 
@@ -672,6 +796,20 @@ export class MOQTSession {
    * ```
    */
   constructor(transportOrConfig: MOQTransport | MOQTSessionConfig) {
+    // Assign identifiers, metrics, and observability plumbing first so any
+    // downstream initialization can already emit against them.
+    const configSessionId =
+      transportOrConfig instanceof MOQTransport ? undefined : transportOrConfig.sessionId;
+    this.sessionId = configSessionId ?? generateSessionId();
+    this.metrics =
+      transportOrConfig instanceof MOQTransport
+        ? new InMemoryMetricsSink()
+        : (transportOrConfig.metrics ?? new InMemoryMetricsSink());
+    this.sessionLog = Logger.create('moqt:session', { sessionId: this.sessionId });
+    this._createdAtMs = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+
     if (transportOrConfig instanceof MOQTransport) {
       // Main thread mode - existing behavior
       this.transport = transportOrConfig;
@@ -768,7 +906,8 @@ export class MOQTSession {
 
     // Set up FETCH object callback to emit fetch-object events
     this.objectRouter.setFetchObjectCallback((requestId, data, groupId, objectId) => {
-      log.info('FETCH object received', { requestId, groupId, objectId, dataSize: data.length });
+      // OPS-hi 1: per-object hot-path — demoted from .info to .trace.
+      log.trace('FETCH object received', { requestId, groupId, objectId, dataSize: data.length });
       this.emit('fetch-object', {
         requestId,
         data,
@@ -936,16 +1075,35 @@ export class MOQTSession {
   private async doCreateStream(
     opts?: { sendOrder?: number }
   ): Promise<{ writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }> {
-    if (this.useWorker) {
-      // The worker path does not yet plumb sendOrder — main-thread streams get
-      // §7 priority scheduling today; worker streams inherit the browser default.
-      const streamId = await this.transportWorker!.createStream();
-      return { streamId };
-    } else {
-      const stream = await this.transport!.createUnidirectionalStream(opts);
-      const writer = stream.getWriter();
-      return { writer };
+    // B3 SEC: gate outbound stream creation. Prevents unbounded stream
+    // allocation from a runaway loop (or a peer that induces us to open one
+    // publisher stream per SUBSCRIBE).
+    this.enforceResourceLimit('streams', this.openStreamCount, this.maxOpenStreams);
+    this.openStreamCount++;
+    try {
+      if (this.useWorker) {
+        // The worker path does not yet plumb sendOrder — main-thread streams get
+        // §7 priority scheduling today; worker streams inherit the browser default.
+        const streamId = await this.transportWorker!.createStream();
+        return { streamId };
+      } else {
+        const stream = await this.transport!.createUnidirectionalStream(opts);
+        const writer = stream.getWriter();
+        return { writer };
+      }
+    } catch (err) {
+      // Rollback the counter increment if the underlying transport rejected
+      // the create — we never actually held a stream open.
+      this.openStreamCount = Math.max(0, this.openStreamCount - 1);
+      throw err;
     }
+  }
+
+  /** B3 SEC: decrement the open-stream counter. Called from doCloseStream and
+   * from close paths (video GOP close, publication cleanup) that end a stream
+   * without going through doCloseStream. Idempotent-ish: floors at zero. */
+  private decrementOpenStreamCount(): void {
+    this.openStreamCount = Math.max(0, this.openStreamCount - 1);
   }
 
   /**
@@ -972,10 +1130,15 @@ export class MOQTSession {
   private async doCloseStream(
     streamInfo: { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }
   ): Promise<void> {
-    if (this.useWorker && streamInfo.streamId !== undefined) {
-      this.transportWorker!.closeStream(streamInfo.streamId);
-    } else if (streamInfo.writer) {
-      await streamInfo.writer.close();
+    try {
+      if (this.useWorker && streamInfo.streamId !== undefined) {
+        this.transportWorker!.closeStream(streamInfo.streamId);
+      } else if (streamInfo.writer) {
+        await streamInfo.writer.close();
+      }
+    } finally {
+      // B3 SEC: pair with doCreateStream increment.
+      this.decrementOpenStreamCount();
     }
   }
 
@@ -2079,9 +2242,49 @@ export class MOQTSession {
    *                       underlying WebTransport `close({ closeCode })`. Defaults to NO_ERROR.
    * @param options.reason Human-readable reason string, forwarded verbatim.
    */
+  /**
+   * B3 SEC: enforce a per-session resource cap.
+   *
+   * Called from subscribe/publish/stream-open entry points. If `currentCount`
+   * has reached or exceeded `limit`, terminate the session with
+   * PROTOCOL_VIOLATION via the existing `close()` path and throw so the
+   * caller unwinds without allocating additional state. The `code` on the
+   * thrown error is set to `'resource-limit-exceeded'` so callers can
+   * distinguish DoS caps from other failures.
+   *
+   * @internal — this is a security gate, not a public API.
+   */
+  private enforceResourceLimit(
+    what: 'subscriptions' | 'tracks' | 'streams',
+    currentCount: number,
+    limit: number,
+  ): void {
+    if (currentCount < limit) return;
+    if (!this.resourceCapTripped) {
+      this.resourceCapTripped = true;
+      log.error('Per-session resource cap exceeded', { what, currentCount, limit });
+      // Best-effort session termination. `close()` handles the two transport
+      // shapes (main-thread + worker) itself; we don't await here so a caller
+      // holding a lock (e.g. an incoming-stream handler) doesn't deadlock.
+      void this.close({
+        code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
+        reason: `Peer exceeded ${what} limit (${limit})`,
+      }).catch(() => { /* already closing */ });
+    }
+    const err = new Error(`Per-session ${what} limit ${limit} exceeded`) as Error & { code?: string };
+    err.code = 'resource-limit-exceeded';
+    throw err;
+  }
+
   async close(options?: { code?: SessionErrorCodeDraft18; reason?: string }): Promise<void> {
     const code = options?.code ?? SessionErrorCodeDraft18.NO_ERROR;
     const reason = options?.reason ?? 'Normal closure';
+    this._lastCloseReason = reason;
+    this._lastCloseCode = code;
+    this.metrics.counter('moq.session.close', 1, {
+      remote: 'false',
+      code: String(code),
+    });
     log.info('Closing session', { code, reason });
 
     // §13.6.1: cancel the idle/keepalive timer before we tear down the
@@ -2245,6 +2448,10 @@ export class MOQTSession {
         trackAlias,
         error: (err as Error).message,
       });
+    } finally {
+      // B3 SEC: whether abort succeeded or threw, the stream is no longer
+      // ours to hold — release the counter slot.
+      this.decrementOpenStreamCount();
     }
     // Draft-18 §11.4.3 stream-reset — surface the code + context so consumers
     // (UI, metrics) can distinguish TOO_FAR_BEHIND / EXCESSIVE_LOAD from
@@ -2341,6 +2548,9 @@ export class MOQTSession {
       throw new Error('Session not ready');
     }
     assertNotReservedNamespace(namespace, 'SUBSCRIBE to');
+
+    // B3 SEC: reject before allocating any request/subscription state.
+    this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
 
     const requestId = this.getNextRequestId();
     const subscriptionId = requestId;
@@ -3523,6 +3733,9 @@ export class MOQTSession {
     }
     assertNotReservedNamespace(namespace, 'PUBLISH');
 
+    // B3 SEC: reject before allocating any request/publication state.
+    this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
+
     // Check for existing subscription with same track name to use its alias
     const requestId = this.getNextRequestId();
     let trackAlias = BigInt(requestId);
@@ -3892,6 +4105,16 @@ export class MOQTSession {
       fullTrackName: fullTrackNameStr,
     });
 
+    // B3 SEC: A peer-initiated subscribe creates a publication for this
+    // subscriber; gate it on maxTracks so a malicious peer can't OOM us by
+    // spamming SUBSCRIBE. `enforceResourceLimit` throws when tripped, which
+    // the outer async caller will observe.
+    try {
+      this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
+    } catch {
+      return;
+    }
+
     // Check if this matches any announced namespace
     const announceInfo = this.matchesAnnouncedNamespace(namespace);
 
@@ -3960,6 +4183,14 @@ export class MOQTSession {
     const { namespace, trackName } = message.fullTrackName;
     const fullTrackNameStr = [...namespace, trackName].join('/');
     const namespaceStr = namespace.join('/');
+
+    // B3 SEC: A peer-initiated publish creates a subscription for us to
+    // ingest their track; gate it on maxSubscriptions.
+    try {
+      this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
+    } catch {
+      return;
+    }
 
     console.warn('[MOQT-DIAG] handleIncomingPublish', {
       fullTrackName: fullTrackNameStr,
@@ -4571,7 +4802,8 @@ export class MOQTSession {
           if (objectId < 3) {
             const bytesHex = Array.from(objectData.slice(0, Math.min(32, objectData.length)))
               .map(b => b.toString(16).padStart(2, '0')).join(' ');
-            log.info('FETCH object encoded', {
+            // OPS-hi 1: per-object hot-path — demoted from .info to .trace.
+            log.trace('FETCH object encoded', {
               requestId,
               groupId,
               objectId,
@@ -4876,7 +5108,8 @@ export class MOQTSession {
     const aliasKey = trackAlias.toString();
 
     try {
-      log.info('sendObjectWithGOP', {
+      // OPS-hi 1: per-frame hot-path — demoted from .info to .trace.
+      log.trace('sendObjectWithGOP', {
         trackAlias: aliasKey,
         groupId: metadata.groupId,
         objectId: metadata.objectId,
@@ -4895,7 +5128,8 @@ export class MOQTSession {
           this.publisherDeliveryTimeouts.disarm(`pub-sg:${aliasKey}:${existing.groupId}:0`);
           try {
             await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
-            log.info('Closed previous GOP stream', {
+            // OPS-hi 1: fires per group boundary — demoted from .info to .debug.
+        log.debug('Closed previous GOP stream', {
               trackAlias: aliasKey,
               previousGroupId: existing.groupId,
               objectCount: existing.objectCount,
@@ -4956,7 +5190,8 @@ export class MOQTSession {
           maxCacheDuration: metadata.maxCacheDuration, // Store for P-frames
         });
 
-        log.info('Started new GOP stream with keyframe', {
+        // OPS-hi 1: fires per keyframe (~1/sec at 30fps GOP=30) — demoted from .info to .debug.
+        log.debug('Started new GOP stream with keyframe', {
           trackAlias: aliasKey,
           groupId: metadata.groupId,
           objectId: metadata.objectId,
@@ -4968,7 +5203,8 @@ export class MOQTSession {
 
         if (!existing) {
           // No active stream — open one (treat this object as the start of a subgroup)
-          log.info('No active GOP stream, opening new stream for group', {
+          // OPS-hi 1: fires per group start — demoted from .info to .debug.
+          log.debug('No active GOP stream, opening new stream for group', {
             trackAlias: aliasKey,
             groupId: metadata.groupId,
             objectId: metadata.objectId,
@@ -5055,6 +5291,8 @@ export class MOQTSession {
         } catch (writeErr) {
           const errMsg = (writeErr as Error).message;
           if (errMsg.includes('not found') || errMsg.includes('STOP_SENDING')) {
+            // OPS-hi 1: keep at info — genuinely useful on error paths but not per-frame.
+            // (this only fires on write failure, not per successful object)
             log.info('GOP stream closed by relay, reopening for same group', {
               trackAlias: aliasKey,
               groupId: metadata.groupId,
@@ -5121,7 +5359,8 @@ export class MOQTSession {
       this.publisherDeliveryTimeouts.disarm(`pub-sg:${trackAlias}:${existing.groupId}:0`);
       try {
         await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
-        log.info('Closed video GOP stream', {
+        // OPS-hi 1: fires per group boundary — demoted from .info to .debug.
+        log.debug('Closed video GOP stream', {
           trackAlias,
           groupId: existing.groupId,
           objectCount: existing.objectCount,
@@ -5655,6 +5894,14 @@ export class MOQTSession {
       trackName,
     });
 
+    // B3 SEC: peer-initiated draft-18 subscribe creates a publication for
+    // this subscriber; gate on maxTracks before accepting.
+    try {
+      this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
+    } catch {
+      return;
+    }
+
     // Check if this matches any announced namespace
     const announceInfo = this.matchesAnnouncedNamespace(namespace);
 
@@ -5747,6 +5994,14 @@ export class MOQTSession {
     const trackName = message.trackName;
     const fullTrackNameStr = [...namespace, trackName].join('/');
     const namespaceStr = namespace.join('/');
+
+    // B3 SEC: peer-initiated draft-18 publish creates a subscription for us
+    // to ingest their track; gate on maxSubscriptions before accepting.
+    try {
+      this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
+    } catch {
+      return;
+    }
 
     log.info('Received PUBLISH (draft-18 bidi)', {
       requestId: message.requestId.toString(),
@@ -6180,13 +6435,64 @@ export class MOQTSession {
       // first and can veto by clearing `_pendingMigrationUri` if needed.
       queueMicrotask(() => {
         if (this._pendingMigrationUri === uri) {
-          this.migrate(uri).catch((err) => {
-            log.error('Auto-migrate failed', err as Error);
+          // TODO: replace with core/reconnect-policy when Track D merges
+          this.autoMigrateWithBackoff(uri).catch((err) => {
+            log.error('Auto-migrate failed after retries', err as Error);
             this.emit('error', err as Error);
           });
         }
       });
     }
+  }
+
+  /**
+   * Reconnect (auto-migrate) with jittered exponential backoff.
+   *
+   * Retries `migrate()` while the pending URI is still valid, doubling the
+   * wait after each failure (starting at 500 ms, capped at 30 s) and adding
+   * ±25% jitter to avoid thundering-herd retry storms when many clients
+   * observe the same GOAWAY at once.
+   *
+   * TODO: replace with core/reconnect-policy when Track D merges
+   */
+  private async autoMigrateWithBackoff(uri: string): Promise<void> {
+    const BASE_MS = 500;
+    const FACTOR = 2;
+    const CAP_MS = 30_000;
+    const MAX_ATTEMPTS = 8; // 500ms → 30s cap; total ~1 min budget
+    const JITTER = 0.25;
+
+    let attempt = 0;
+    let lastError: unknown;
+    while (attempt < MAX_ATTEMPTS) {
+      // Caller cleared the pending URI (or a subsequent GOAWAY replaced it)
+      // — abandon this retry loop.
+      if (this._pendingMigrationUri !== uri) {
+        return;
+      }
+      try {
+        await this.migrate(uri);
+        return;
+      } catch (err) {
+        lastError = err;
+        attempt++;
+        if (attempt >= MAX_ATTEMPTS) break;
+
+        const backoff = Math.min(BASE_MS * Math.pow(FACTOR, attempt - 1), CAP_MS);
+        // ±25% uniform jitter: multiplier in [0.75, 1.25). We then re-cap the
+        // final delay at CAP_MS so a lucky jitter draw can't push us past the
+        // documented ceiling (still floors at 0).
+        const jitterMul = 1 + (Math.random() * 2 - 1) * JITTER;
+        const delay = Math.max(0, Math.min(CAP_MS, Math.floor(backoff * jitterMul)));
+        log.warn('Auto-migrate attempt failed, retrying', {
+          attempt,
+          nextDelayMs: delay,
+          error: (err as Error).message,
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Auto-migrate failed');
   }
 
   /**
@@ -6217,7 +6523,13 @@ export class MOQTSession {
     const normalizedCode = this.isDraft18
       ? normalizeSessionErrorCode(info.closeCode)
       : info.closeCode;
-    log.info('Peer closed session', { ...info, normalizedCode });
+    this._lastCloseCode = normalizedCode;
+    this._lastCloseReason = info.reason;
+    this.metrics.counter('moq.session.close', 1, {
+      remote: 'true',
+      code: String(normalizedCode),
+    });
+    this.sessionLog.debug('Peer closed session', { ...info, normalizedCode });
     this.emit('session-terminated', {
       code: normalizedCode,
       reason: info.reason,
@@ -6258,7 +6570,8 @@ export class MOQTSession {
     }
 
     const oldSessionUri = this._lastConnectUrl;
-    log.info('Migrating session (draft-18 §3.6)', { from: oldSessionUri, to: target });
+    this.sessionLog.info('Migrating session (draft-18 §3.6)', { from: oldSessionUri, to: target });
+    this.metrics.counter('moq.session.migrate.attempt', 1);
 
     this._migrating = true;
     try {
@@ -6274,8 +6587,15 @@ export class MOQTSession {
       await this.setup();
 
       this._pendingMigrationUri = undefined;
+      this._reconnectAttempts += 1;
+      this._lastCloseReason = undefined;
+      this._lastCloseCode = undefined;
+      this.metrics.counter('moq.session.migrate.success', 1);
       this.emit('session-migrated', { newSessionUri: target, oldSessionUri } as SessionMigrationEvent);
-      log.info('Migration complete');
+      this.sessionLog.info('Migration complete', { reconnectAttempts: this._reconnectAttempts });
+    } catch (err) {
+      this.metrics.counter('moq.session.migrate.failure', 1);
+      throw err;
     } finally {
       this._migrating = false;
     }
@@ -6862,14 +7182,34 @@ export class MOQTSession {
   }
 
   /**
-   * Update session state
+   * Update session state.
+   *
+   * Every transition is mirrored into the `ConnectionStateMachine` so illegal
+   * transitions are caught centrally and surfaced via metrics
+   * (`moq.session.illegal_state_transition`). The high-level `SessionState`
+   * vocabulary (`none`/`setup`/`ready`/`closing`/`error`) is mapped onto the
+   * spec-tracking `ConnectionState` values so downstream tools that read
+   * either surface stay consistent.
    */
   private setState(state: SessionState): void {
     if (this._state === state) return;
     const prev = this._state;
     this._state = state;
-    log.info('Session state changed', { from: prev, to: state });
+    // Demoted from .info to .debug (OPS-hi 1): state changes fire on every
+    // subscribe / publish and were dominating hot-path log volume.
+    this.sessionLog.debug('Session state changed', { from: prev, to: state });
     this.emit('state-change', state);
+
+    // Route through the ConnectionStateMachine so any illegal transition is
+    // caught and counted centrally. `forceState` is used when the FSM
+    // rejects the transition — the session's public state has already
+    // moved on, so we don't want to leave the FSM stuck.
+    this.driveStateMachine(prev, state);
+
+    this.metrics.counter('moq.session.state_transition', 1, {
+      from: prev,
+      to: state,
+    });
 
     // §13.6.1: arm the idle/keepalive timer once we've completed SETUP and
     // disarm on any leave. Configuration may have been set before setup(),
@@ -6879,6 +7219,69 @@ export class MOQTSession {
     } else {
       this.stopIdleTimer();
     }
+  }
+
+  /**
+   * Drive the ConnectionStateMachine from a coarse SessionState transition.
+   * Maps the session's 5-state vocabulary onto the spec-tracking state
+   * machine and counts any transition the FSM refuses.
+   */
+  private driveStateMachine(from: SessionState, to: SessionState): void {
+    const target = sessionStateToConnectionState(to);
+    if (target === undefined) return;
+
+    // Special handling: 'setup' represents "we've sent CLIENT_SETUP", which
+    // the FSM expresses as `connecting → setup_sent`. Feed both steps when
+    // arriving from a state that hasn't yet crossed `connecting`.
+    if (target === 'setup_sent' && this.stateMachine.state === 'disconnected') {
+      if (!this.stateMachine.transition('connecting', `session:${from}->${to}`)) {
+        this.metrics.counter('moq.session.illegal_state_transition', 1, {
+          from: this.stateMachine.state,
+          to: 'connecting',
+        });
+        this.stateMachine.forceState('connecting', `session:${from}->${to}`);
+      }
+    }
+
+    if (this.stateMachine.state === target) return;
+
+    if (!this.stateMachine.transition(target, `session:${from}->${to}`)) {
+      this.metrics.counter('moq.session.illegal_state_transition', 1, {
+        from: this.stateMachine.state,
+        to: target,
+      });
+      // Force the state so downstream reads of `stateMachine.state` remain
+      // consistent with `_state`. The metric is the durable signal for
+      // "this transition wasn't valid".
+      this.stateMachine.forceState(target, `illegal:${from}->${to}`);
+    }
+  }
+
+  /**
+   * Public diagnostics snapshot for debugging and support telemetry. Safe to
+   * call in any state; returned object is a fresh copy and JSON-serializable.
+   */
+  getDiagnostics(): SessionDiagnostics {
+    const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+    let counterTotals: Record<string, number> = {};
+    if (this.metrics instanceof InMemoryMetricsSink) {
+      counterTotals = this.metrics.counterTotals();
+    }
+    const diag: SessionDiagnostics = {
+      sessionId: this.sessionId,
+      state: this._state,
+      connectionState: this.stateMachine.state,
+      uptimeMs: Math.max(0, now - this._createdAtMs),
+      reconnectAttempts: this._reconnectAttempts,
+      metrics: counterTotals,
+    };
+    if (this._lastCloseReason !== undefined) diag.lastCloseReason = this._lastCloseReason;
+    if (this._lastCloseCode !== undefined) diag.lastCloseCode = this._lastCloseCode;
+    if (this._lastConnectUrl !== undefined) diag.currentUrl = this._lastConnectUrl;
+    if (this._pendingMigrationUri !== undefined) diag.pendingMigrationUri = this._pendingMigrationUri;
+    return diag;
   }
 
   /**
@@ -6930,6 +7333,52 @@ export class MOQTSession {
       }
     }
   }
+}
+
+/**
+ * Map the session-scoped `SessionState` to the spec-tracking
+ * `ConnectionState` used by `ConnectionStateMachine`. Returns `undefined`
+ * when no direct mapping applies (caller should skip).
+ */
+function sessionStateToConnectionState(state: SessionState): ConnectionState | undefined {
+  switch (state) {
+    case 'none':
+      return 'disconnected';
+    case 'setup':
+      return 'setup_sent';
+    case 'ready':
+      return 'connected';
+    case 'closing':
+      return 'closing';
+    case 'error':
+      return 'error';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Generate a random 16-char hex session identifier. Prefers
+ * `crypto.randomUUID()` when available (browsers, Node 20+) and falls back
+ * to `Math.random()` in stripped-down environments (some old worker hosts).
+ */
+function generateSessionId(): string {
+  if (typeof crypto !== 'undefined') {
+    const c: unknown = crypto;
+    if (typeof (c as { randomUUID?: () => string }).randomUUID === 'function') {
+      return (c as { randomUUID: () => string }).randomUUID().replace(/-/g, '').slice(0, 16);
+    }
+    if (typeof (c as { getRandomValues?: (arr: Uint8Array) => Uint8Array }).getRandomValues === 'function') {
+      const bytes = new Uint8Array(8);
+      (c as { getRandomValues: (arr: Uint8Array) => Uint8Array }).getRandomValues(bytes);
+      let out = '';
+      for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+      return out;
+    }
+  }
+  let out = '';
+  for (let i = 0; i < 16; i++) out += Math.floor(Math.random() * 16).toString(16);
+  return out;
 }
 
 /**
