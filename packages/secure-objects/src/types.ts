@@ -51,13 +51,16 @@ export interface CipherSuiteParams {
 }
 
 /**
- * Track identifier for key derivation.
+ * Track identifier for key derivation.  Fields are `readonly` at the type
+ * level; {@link SecureObjectsContext.create} also freezes the stored copy at
+ * runtime so callers cannot desync AAD binding by mutating the descriptor
+ * after context creation.
  */
 export interface TrackIdentifier {
   /** Track namespace as tuple of strings */
-  namespace: string[];
+  readonly namespace: readonly string[];
   /** Track name */
-  trackName: string;
+  readonly trackName: string;
 }
 
 /**
@@ -89,17 +92,20 @@ export interface EncryptionContext {
 }
 
 /**
- * Configuration for creating an encryption context.
+ * Configuration for creating an encryption context.  All fields are
+ * `readonly`.  {@link SecureObjectsContext.create} defensively copies the
+ * `trackBaseKey` and freezes the `track` descriptor, so post-create mutation
+ * of the config by the caller cannot compromise derived state.
  */
 export interface EncryptionConfig {
   /** Track base key (secret key material) */
-  trackBaseKey: Uint8Array;
+  readonly trackBaseKey: Uint8Array;
   /** Key ID (default: 0) */
-  keyId?: bigint;
+  readonly keyId?: bigint;
   /** Cipher suite (default: AES_128_GCM_SHA256_128) */
-  cipherSuite?: CipherSuite;
+  readonly cipherSuite?: CipherSuite;
   /** Track identifier */
-  track: TrackIdentifier;
+  readonly track: TrackIdentifier;
 }
 
 /**

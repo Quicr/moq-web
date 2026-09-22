@@ -5,10 +5,9 @@ import { describe, it, expect } from 'vitest';
 import {
   SecureObjectsContext,
   CipherSuite,
-  constructNonce,
-  constructAAD,
   Limits,
 } from '../index.js';
+import { constructNonce, constructAAD } from '../crypto.js';
 
 function randomBytes(len: number): Uint8Array {
   const buf = new Uint8Array(len);

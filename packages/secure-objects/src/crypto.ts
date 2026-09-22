@@ -17,9 +17,18 @@ import {
   type DecryptedObject,
   type ObjectIdentifier,
   type AADComponents,
+  type TrackIdentifier,
 } from './types.js';
 import { getCipherSuiteParams, DEFAULT_CIPHER_SUITE } from './cipher-suites.js';
 import { deriveKeys } from './key-derivation.js';
+import {
+  AuthenticationError,
+  DisposedError,
+  EncryptionLimitError,
+  InvalidFramingError,
+  NonceReuseError,
+  SecureObjectsError,
+} from './errors.js';
 
 /**
  * Text encoder for AAD construction.
@@ -48,10 +57,10 @@ export function constructNonce(
 ): Uint8Array {
   // Validate limits
   if (objectId.groupId > Limits.MAX_GROUP_ID) {
-    throw new Error('Group ID exceeds maximum value (2^64 - 1)');
+    throw new InvalidFramingError('Group ID exceeds maximum value (2^64 - 1)');
   }
   if (objectId.objectId > Limits.MAX_OBJECT_ID) {
-    throw new Error('Object ID exceeds maximum value (2^32 - 1)');
+    throw new InvalidFramingError('Object ID exceeds maximum value (2^32 - 1)');
   }
 
   // Construct CTR: groupId (8 bytes BE) || objectId (4 bytes BE)
@@ -175,6 +184,15 @@ export class SecureObjectsContext {
 
   private context: EncryptionContext | undefined;
   private readonly params;
+  /**
+   * Pre-encoded AAD head (varint keyId) — invariant for the context lifetime.
+   */
+  private readonly aadHead: Uint8Array;
+  /**
+   * Pre-encoded AAD tail: namespace tuples || trackName || immutable key-id
+   * property.  Also invariant for the context lifetime.
+   */
+  private readonly aadTail: Uint8Array;
   private readonly recentNonces = new Set<string>();
   private readonly recentNonceOrder: string[] = [];
   private encryptionCount = 0;
@@ -183,11 +201,14 @@ export class SecureObjectsContext {
   private constructor(context: EncryptionContext) {
     this.context = context;
     this.params = getCipherSuiteParams(context.cipherSuite);
+    const { head, tail } = buildAADInvariantParts(context.keyId, context.track);
+    this.aadHead = head;
+    this.aadTail = tail;
   }
 
   private requireLive(): EncryptionContext {
     if (this.disposed || !this.context) {
-      throw new Error('SecureObjectsContext has been disposed');
+      throw new DisposedError('SecureObjectsContext has been disposed');
     }
     return this.context;
   }
@@ -226,19 +247,38 @@ export class SecureObjectsContext {
     const cipherSuite = config.cipherSuite ?? DEFAULT_CIPHER_SUITE;
     const keyId = config.keyId ?? 0n;
 
-    const { encryptionKey, salt, hmacKey } = await deriveKeys(
-      config.trackBaseKey,
-      config.track,
-      cipherSuite,
-      keyId
-    );
+    // Defensive copy: prevent post-create caller mutation from affecting
+    // derived key material.  Zeroised as soon as HKDF completes.
+    const baseKeyCopy = new Uint8Array(config.trackBaseKey.length);
+    baseKeyCopy.set(config.trackBaseKey);
+
+    // Freeze the track descriptor so its `namespace`/`trackName` cannot
+    // drift after we've bound them into AAD.
+    const track: TrackIdentifier = Object.freeze({
+      namespace: Object.freeze([...config.track.namespace]) as unknown as string[],
+      trackName: config.track.trackName,
+    });
+
+    let encryptionKey: CryptoKey;
+    let salt: Uint8Array;
+    let hmacKey: CryptoKey | undefined;
+    try {
+      ({ encryptionKey, salt, hmacKey } = await deriveKeys(
+        baseKeyCopy,
+        track,
+        cipherSuite,
+        keyId
+      ));
+    } finally {
+      baseKeyCopy.fill(0);
+    }
 
     const context: EncryptionContext = {
       cipherSuite,
       keyId,
       key: encryptionKey,
       salt,
-      track: config.track,
+      track,
       hmacKey,
     };
 
@@ -283,6 +323,14 @@ export class SecureObjectsContext {
   }
 
   /**
+   * Alias of {@link dispose} for the TC39 explicit-resource-management
+   * proposal (`using ctx = ...`).  Purely additive — no functional change.
+   */
+  [Symbol.dispose](): void {
+    this.dispose();
+  }
+
+  /**
    * Encrypt a plaintext object.
    *
    * @param plaintext - The data to encrypt
@@ -297,24 +345,21 @@ export class SecureObjectsContext {
   ): Promise<EncryptedObject> {
     const ctx = this.requireLive();
     if (this.encryptionCount >= SecureObjectsContext.MAX_INVOCATIONS) {
-      throw new Error('Encryption limit reached: this context has exceeded 2^32 invocations and must be rotated');
+      throw new EncryptionLimitError(
+        'Encryption limit reached: this context has exceeded 2^32 invocations and must be rotated'
+      );
     }
     this.encryptionCount++;
 
     const nonceKey = `${objectId.groupId}:${objectId.objectId}`;
     if (this.trackNonce(nonceKey)) {
-      throw new Error('Nonce reuse detected: this (groupId, objectId) pair has been used within the recent-use window');
+      throw new NonceReuseError(
+        'Nonce reuse detected: this (groupId, objectId) pair has been used within the recent-use window'
+      );
     }
 
     const nonce = constructNonce(ctx.salt, objectId);
-
-    const aad = constructAAD({
-      keyId: ctx.keyId,
-      groupId: objectId.groupId,
-      objectId: objectId.objectId,
-      namespace: ctx.track.namespace,
-      trackName: ctx.track.trackName,
-    });
+    const aad = this.buildAADForObject(objectId);
 
     // Format: varint(payload_length) || payload || [encrypted_properties]
     // Single pre-sized allocation avoids a second Uint8Array copy.
@@ -364,27 +409,27 @@ export class SecureObjectsContext {
   ): Promise<DecryptedObject> {
     const ctx = this.requireLive();
     const nonce = constructNonce(ctx.salt, objectId);
-
-    const aad = constructAAD({
-      keyId: ctx.keyId,
-      groupId: objectId.groupId,
-      objectId: objectId.objectId,
-      namespace: ctx.track.namespace,
-      trackName: ctx.track.trackName,
-    });
+    const aad = this.buildAADForObject(objectId);
 
     let framed: Uint8Array;
     if (this.params.aeadAlgorithm === 'AES-GCM') {
-      const decrypted = await crypto.subtle.decrypt(
-        {
-          name: 'AES-GCM',
-          iv: toArrayBuffer(nonce),
-          additionalData: toArrayBuffer(aad),
-          tagLength: this.params.tagLength * 8,
-        },
-        ctx.key,
-        toArrayBuffer(ciphertext)
-      );
+      let decrypted: ArrayBuffer;
+      try {
+        decrypted = await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: toArrayBuffer(nonce),
+            additionalData: toArrayBuffer(aad),
+            tagLength: this.params.tagLength * 8,
+          },
+          ctx.key,
+          toArrayBuffer(ciphertext)
+        );
+      } catch (cause) {
+        // WebCrypto throws OperationError on any AEAD failure — surface as
+        // structured AuthenticationError so callers can branch on type.
+        throw new AuthenticationError('AEAD authentication failed');
+      }
       framed = new Uint8Array(decrypted);
     } else {
       framed = await this.decryptCtrHmac(ctx, ciphertext, nonce, aad);
@@ -394,7 +439,7 @@ export class SecureObjectsContext {
     const { value: payloadLength, bytesRead } = this.readVarInt(framed);
     const payloadEnd = bytesRead + payloadLength;
     if (payloadEnd > framed.length) {
-      throw new Error('Decrypted payload length exceeds available data');
+      throw new InvalidFramingError('Decrypted payload length exceeds available data');
     }
 
     // Zero-copy views into the framed buffer. The buffer is not aliased by
@@ -446,11 +491,11 @@ export class SecureObjectsContext {
     aad: Uint8Array
   ): Promise<Uint8Array> {
     if (!ctx.hmacKey) {
-      throw new Error('HMAC key not available for CTR-HMAC cipher suite');
+      throw new SecureObjectsError('HMAC key not available for CTR-HMAC cipher suite');
     }
 
     if (plaintext.length > SecureObjectsContext.MAX_CTR_PLAINTEXT_LENGTH) {
-      throw new Error('Plaintext exceeds maximum AES-CTR length (counter would wrap)');
+      throw new InvalidFramingError('Plaintext exceeds maximum AES-CTR length (counter would wrap)');
     }
 
     const counter = new Uint8Array(16);
@@ -492,13 +537,13 @@ export class SecureObjectsContext {
     aad: Uint8Array
   ): Promise<Uint8Array> {
     if (!ctx.hmacKey) {
-      throw new Error('HMAC key not available for CTR-HMAC cipher suite');
+      throw new SecureObjectsError('HMAC key not available for CTR-HMAC cipher suite');
     }
 
     const tagLen = this.params.tagLength;
     const encryptedLength = ciphertext.length - tagLen;
     if (encryptedLength < 0) {
-      throw new Error('Ciphertext too short');
+      throw new InvalidFramingError('Ciphertext too short');
     }
 
     // Views into the caller's buffer — no copies. We only read.
@@ -513,7 +558,7 @@ export class SecureObjectsContext {
     const expectedTag = new Uint8Array(hmacFull, 0, tagLen);
 
     if (!this.constantTimeEqual(receivedTag, expectedTag)) {
-      throw new Error('Authentication failed: HMAC verification failed');
+      throw new AuthenticationError('Authentication failed: HMAC verification failed');
     }
 
     const counter = new Uint8Array(16);
@@ -546,7 +591,7 @@ export class SecureObjectsContext {
    */
   private readVarInt(buffer: Uint8Array): { value: number; bytesRead: number } {
     if (buffer.length === 0) {
-      throw new Error('Buffer too short for varint');
+      throw new InvalidFramingError('Buffer too short for varint');
     }
 
     const firstByte = buffer[0];
@@ -555,16 +600,16 @@ export class SecureObjectsContext {
     if (prefix === 0) {
       return { value: firstByte & 0x3f, bytesRead: 1 };
     } else if (prefix === 1) {
-      if (buffer.length < 2) throw new Error('Buffer too short');
+      if (buffer.length < 2) throw new InvalidFramingError('Buffer too short');
       return { value: ((firstByte & 0x3f) << 8) | buffer[1], bytesRead: 2 };
     } else if (prefix === 2) {
-      if (buffer.length < 4) throw new Error('Buffer too short');
+      if (buffer.length < 4) throw new InvalidFramingError('Buffer too short');
       return {
         value: ((firstByte & 0x3f) << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3],
         bytesRead: 4,
       };
     } else {
-      if (buffer.length < 8) throw new Error('Buffer too short');
+      if (buffer.length < 8) throw new InvalidFramingError('Buffer too short');
       const n =
         (BigInt(firstByte & 0x3f) << 56n) |
         (BigInt(buffer[1]) << 48n) |
@@ -575,9 +620,71 @@ export class SecureObjectsContext {
         (BigInt(buffer[6]) << 8n) |
         BigInt(buffer[7]);
       if (n > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error('Varint value exceeds safe integer range for payload length');
+        throw new InvalidFramingError('Varint value exceeds safe integer range for payload length');
       }
       return { value: Number(n), bytesRead: 8 };
     }
   }
+
+  /**
+   * Compose the per-encrypt AAD by splicing `varint(groupId) || varint(objectId)`
+   * between the cached head (keyId) and tail (namespace / trackName / immutable
+   * properties).  Layout matches the legacy `constructAAD()` byte-for-byte.
+   */
+  private buildAADForObject(objectId: ObjectIdentifier): Uint8Array {
+    if (objectId.groupId > Limits.MAX_GROUP_ID) {
+      throw new InvalidFramingError('Group ID exceeds maximum value (2^64 - 1)');
+    }
+    if (objectId.objectId > Limits.MAX_OBJECT_ID) {
+      throw new InvalidFramingError('Object ID exceeds maximum value (2^32 - 1)');
+    }
+    const groupIdVI = encodeVarInt(objectId.groupId);
+    const objectIdVI = encodeVarInt(objectId.objectId);
+    const out = new Uint8Array(
+      this.aadHead.length + groupIdVI.length + objectIdVI.length + this.aadTail.length
+    );
+    let off = 0;
+    out.set(this.aadHead, off); off += this.aadHead.length;
+    out.set(groupIdVI, off); off += groupIdVI.length;
+    out.set(objectIdVI, off); off += objectIdVI.length;
+    out.set(this.aadTail, off);
+    return out;
+  }
+}
+
+/**
+ * Precompute the invariant head + tail of the AAD so `encrypt`/`decrypt`
+ * only pay the varint cost of `groupId` and `objectId` on each call.
+ */
+function buildAADInvariantParts(
+  keyId: bigint,
+  track: TrackIdentifier
+): { head: Uint8Array; tail: Uint8Array } {
+  const head = encodeVarInt(keyId);
+
+  const tailParts: Uint8Array[] = [];
+  tailParts.push(encodeVarInt(track.namespace.length));
+  for (const tuple of track.namespace) {
+    const tupleBytes = textEncoder.encode(tuple);
+    tailParts.push(encodeVarInt(tupleBytes.length));
+    tailParts.push(tupleBytes);
+  }
+  const trackNameBytes = textEncoder.encode(track.trackName);
+  tailParts.push(encodeVarInt(trackNameBytes.length));
+  tailParts.push(trackNameBytes);
+
+  // Immutable KEY_ID property (type 0x02, length-prefixed value).
+  const keyIdBytes = encodeVarInt(keyId);
+  tailParts.push(encodeVarInt(0x02));
+  tailParts.push(encodeVarInt(keyIdBytes.length));
+  tailParts.push(keyIdBytes);
+
+  const tailLen = tailParts.reduce((s, p) => s + p.length, 0);
+  const tail = new Uint8Array(tailLen);
+  let off = 0;
+  for (const p of tailParts) {
+    tail.set(p, off);
+    off += p.length;
+  }
+  return { head, tail };
 }

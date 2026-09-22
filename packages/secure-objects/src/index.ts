@@ -63,8 +63,20 @@ export {
 } from './key-derivation.js';
 
 // Crypto operations
+export { SecureObjectsContext } from './crypto.js';
+
+// Structured error classes — callers should branch on these instead of
+// parsing message strings.
 export {
-  SecureObjectsContext,
-  constructNonce,
-  constructAAD,
-} from './crypto.js';
+  SecureObjectsError,
+  AuthenticationError,
+  NonceReuseError,
+  DisposedError,
+  InvalidFramingError,
+  EncryptionLimitError,
+} from './errors.js';
+
+// NOTE: `constructNonce` and `constructAAD` are intentionally NOT re-exported
+// from the public entry point.  They are internal crypto primitives — exposing
+// them lets callers assemble AAD out-of-band and skew from the encrypt path
+// (weak API contract).  Tests import them from `./crypto.js` directly.

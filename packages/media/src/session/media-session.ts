@@ -389,6 +389,14 @@ export class MediaSession {
   }
 
   /**
+   * Alias of {@link close} for the TC39 explicit-resource-management
+   * proposal (`await using sess = ...`).  Purely additive.
+   */
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
+  }
+
+  /**
    * Start publishing a track
    *
    * @param namespace - Track namespace

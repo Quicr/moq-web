@@ -5,10 +5,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   SecureObjectsContext,
   CipherSuite,
-  constructNonce,
-  constructAAD,
   Limits,
 } from '../index.js';
+// Internal crypto primitives — not re-exported from the package entry point;
+// tests import them directly.
+import { constructNonce, constructAAD } from '../crypto.js';
 
 describe('SecureObjectsContext', () => {
   const testTrack = {

@@ -2149,6 +2149,15 @@ export class MOQTSession {
   }
 
   /**
+   * Alias of {@link close} for the TC39 explicit-resource-management
+   * proposal (`await using session = ...`).  Purely additive — closes with
+   * `NO_ERROR` / "Normal closure".
+   */
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
+  }
+
+  /**
    * Reset an outgoing subgroup or fetch stream with a draft-18 §15.10.4 Stream Reset Code.
    *
    * This is the low-level primitive publishers use when they want to signal to the

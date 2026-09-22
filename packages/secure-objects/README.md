@@ -165,7 +165,20 @@ Frame processing time is well under 1ms for typical video frame sizes.
 - **Nonce Reuse Protection**: The context maintains a bounded sliding window of recent (groupId, objectId) pairs and throws on reuse within the window. Applications MUST NOT rely on the window as a substitute for correct sequencing; it is a safety net, not a source of truth.
 - **Invocation Limit**: Contexts enforce a 2^32 encryption limit per key; rotate keys before exhaustion
 - **Constant Time**: HMAC verification uses constant-time comparison
-- **Key Zeroization**: Intermediate key material is zeroed after import. Call `SecureObjectsContext#dispose()` when finished with a context to drop `CryptoKey` handles; subsequent encrypt/decrypt calls will throw.
+- **Key Zeroization**: `create()` takes a defensive copy of `trackBaseKey`; the copy is zero-filled once HKDF derivation completes. WebCrypto derives non-extractable `CryptoKey` handles, so the raw material never re-enters JS memory after derivation. Call `SecureObjectsContext#dispose()` (or use `using ctx = ...` via `Symbol.dispose`) when finished to drop `CryptoKey` references; subsequent encrypt/decrypt calls will throw a `DisposedError`.
+- **Immutable Config**: `EncryptionConfig` fields are `readonly`, and `create()` deep-freezes the stored `track` descriptor. Caller-side mutation of the config or track object after `create()` cannot compromise derived state or AAD binding.
+
+### Structured Errors
+
+Callers should branch on `instanceof` rather than parsing message strings. All errors inherit from `SecureObjectsError`:
+
+| Class | Meaning |
+|---|---|
+| `AuthenticationError` | AEAD tag / HMAC verification failed. |
+| `NonceReuseError` | `(groupId, objectId)` reused within the sliding window. |
+| `DisposedError` | Operation attempted on a disposed context. |
+| `InvalidFramingError` | Ciphertext framing is malformed (truncated, bad varint, length overrun, out-of-range identifier). |
+| `EncryptionLimitError` | 2^32 encryption cap reached; rotate keys. |
 
 ## License
 
