@@ -98,17 +98,19 @@ import {
   type TrackStatusOkMessage,
   type TrackStatusErrorMessage,
 } from '@moq-web/core';
-import { base64urlDecode, C4M_TOKEN_TYPE } from '@moq-web/cat';
+import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
   Draft18RequestStream,
   addDeliveryTimeoutParams,
   assertNotReservedNamespace,
   buildTrackProperties,
   decodeTrackNamespaceBytes,
-  dotTokenToCoseSign1Bytes,
+  encodeRequestAuthTokenBytes,
+  encodeTokenBytes,
   encodeTrackNamespaceBytes,
   generateSessionId,
   mapSubscribeFilter,
+  namespacePrefixMatches,
   narrowBigIntToNumber,
   sessionStateToConnectionState,
 } from './session-helpers.js';
@@ -154,7 +156,6 @@ import type {
   IncomingPublishEvent,
   NamespaceAnnouncedEvent,
   NamespaceDoneEvent,
-  RequestAuthToken,
   FetchOptions,
   FetchRange,
   FetchInfo,
@@ -744,35 +745,6 @@ export class MOQTSession {
   setAuthToken(token: string, tokenType?: number): void {
     this.authToken = token;
     if (tokenType !== undefined) this.authTokenType = tokenType;
-  }
-
-  /**
-   * Encode a token string to raw bytes based on token type.
-   * Handles C4M (base64url COSE_Sign1 or legacy dot-separated), other base64url types, and raw strings.
-   */
-  private encodeTokenBytes(token: string, tokenType: number): Uint8Array {
-    if (tokenType === C4M_TOKEN_TYPE) {
-      if (token.includes('.')) {
-        return dotTokenToCoseSign1Bytes(token);
-      }
-      return base64urlDecode(token);
-    }
-    if (tokenType === 0x0002 || tokenType === 0xda7a) {
-      return base64urlDecode(token);
-    }
-    return new TextEncoder().encode(token);
-  }
-
-  /**
-   * Encode a per-request auth token for SUBSCRIBE/PUBLISH/FETCH parameters.
-   */
-  private encodeRequestAuthToken(authToken: RequestAuthToken): Uint8Array {
-    const tokenType = authToken.tokenType ?? C4M_TOKEN_TYPE;
-    return MessageCodec.encodeAuthorizationToken({
-      aliasType: 3, // USE_VALUE
-      tokenType,
-      tokenValue: authToken.tokenBytes,
-    });
   }
 
   /**
@@ -1644,7 +1616,7 @@ export class MOQTSession {
       // Wire format: Length (16-bit) | Setup Options
       let setupAuthToken: Uint8Array | undefined;
       if (this.authToken) {
-        const tokenBytes = this.encodeTokenBytes(this.authToken, this.authTokenType);
+        const tokenBytes = encodeTokenBytes(this.authToken, this.authTokenType);
         setupAuthToken = MessageCodec.encodeAuthorizationToken({
           aliasType: 3, // USE_VALUE — inline, no caching
           tokenType: this.authTokenType,
@@ -1683,7 +1655,7 @@ export class MOQTSession {
       const setupParams = new Map<SetupParameter, number | string | Uint8Array>();
       setupParams.set(SetupParameter.MAX_REQUEST_ID, this.maxRequestId);
       if (this.authToken) {
-        const tokenBytes = this.encodeTokenBytes(this.authToken, this.authTokenType);
+        const tokenBytes = encodeTokenBytes(this.authToken, this.authTokenType);
         const authTokenData = MessageCodec.encodeAuthorizationToken({
           aliasType: 3, // USE_VALUE — inline token, no caching
           tokenType: this.authTokenType,
@@ -2440,7 +2412,7 @@ export class MOQTSession {
 
       // Add per-request auth token if provided
       if (options?.authToken) {
-        const authData = this.encodeRequestAuthToken(options.authToken);
+        const authData = encodeRequestAuthTokenBytes(options.authToken);
         subscribeMessage.parameters!.set(RequestParameter.AUTHORIZATION_TOKEN, authData);
       }
 
@@ -2478,7 +2450,7 @@ export class MOQTSession {
     if (options?.authToken) {
       parameters.set(
         RequestParameterDraft18.AUTHORIZATION_TOKEN,
-        this.encodeRequestAuthToken(options.authToken),
+        encodeRequestAuthTokenBytes(options.authToken),
       );
     }
     // §7 / §10.2 — advertise subscriber-side scheduling hints when the caller
@@ -2834,7 +2806,7 @@ export class MOQTSession {
     if (options?.authToken) {
       parameters.set(
         RequestParameterDraft18.AUTHORIZATION_TOKEN,
-        this.encodeRequestAuthToken(options.authToken),
+        encodeRequestAuthTokenBytes(options.authToken),
       );
     }
     const fetchMessage: FetchMessageDraft18 = {
@@ -3611,7 +3583,7 @@ export class MOQTSession {
 
     // Add per-request auth token if provided
     if (options?.authToken) {
-      const authData = this.encodeRequestAuthToken(options.authToken);
+      const authData = encodeRequestAuthTokenBytes(options.authToken);
       parameters.set(RequestParameter.AUTHORIZATION_TOKEN, authData);
     }
 
@@ -3907,20 +3879,9 @@ export class MOQTSession {
    * Check if namespace prefix matches an announced namespace
    */
   private matchesAnnouncedNamespace(subscribeNamespace: string[]): AnnouncedNamespaceInfo | undefined {
-    // Check for exact match or prefix match
     for (const [, info] of this.announcedNamespaces) {
-      // Check if announced namespace is a prefix of subscribe namespace
-      if (subscribeNamespace.length >= info.namespace.length) {
-        let matches = true;
-        for (let i = 0; i < info.namespace.length; i++) {
-          if (subscribeNamespace[i] !== info.namespace[i]) {
-            matches = false;
-            break;
-          }
-        }
-        if (matches) {
-          return info;
-        }
+      if (namespacePrefixMatches(info.namespace, subscribeNamespace)) {
+        return info;
       }
     }
     return undefined;

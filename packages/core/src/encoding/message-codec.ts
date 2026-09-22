@@ -2775,17 +2775,46 @@ export class ObjectCodec {
   }
 
   /**
-   * Encode a complete object for datagram delivery (Draft 14)
+   * Encode a complete object for datagram delivery. Draft-18 delegates
+   * to `Draft18StreamCodec.encodeObjectDatagram`, which builds the full
+   * wire frame (header + payload) in a single writer — no header/payload
+   * copy split at this layer. Older drafts encode via BufferWriter, which
+   * appends the payload as a chunk and materializes the result exactly
+   * once in `toUint8Array()`.
    *
    * @param object - Object to encode
    * @returns Encoded bytes including header and payload
    */
   static encodeDatagramObject(object: MOQTObject): Uint8Array {
-    const headerBytes = ObjectCodec.encodeDatagramHeader(object.header);
-    const result = new Uint8Array(headerBytes.length + object.payload.length);
-    result.set(headerBytes);
-    result.set(object.payload, headerBytes.length);
-    return result;
+    const { header, payload } = object;
+    if (isDraft18Active()) {
+      return Draft18StreamCodec.encodeObjectDatagram({
+        trackAlias: typeof header.trackAlias === 'bigint' ? header.trackAlias : BigInt(header.trackAlias),
+        groupId: BigInt(header.groupId),
+        objectId: BigInt(header.objectId),
+        publisherPriority: header.publisherPriority,
+        payload,
+      });
+    }
+
+    const writer = new BufferWriter();
+    if (isDraft16Active()) {
+      writer.writeVarInt(0x01);
+      writer.writeVarInt(header.trackAlias);
+      writer.writeVarInt(header.groupId);
+      writer.writeVarInt(header.objectId);
+      writer.writeVarInt(0);
+    } else {
+      writer.writeVarInt(DataStreamType.OBJECT_DATAGRAM);
+      writer.writeVarInt(header.trackAlias);
+      writer.writeVarInt(header.groupId);
+      writer.writeVarInt(header.subgroupId);
+      writer.writeVarInt(header.objectId);
+      writer.writeByte(header.publisherPriority);
+      writer.writeVarInt(header.objectStatus);
+    }
+    writer.writeBytes(payload);
+    return writer.toUint8Array();
   }
 
   /**

@@ -12,6 +12,7 @@
 import {
   BufferWriter,
   ConnectionStateMachine as _ConnectionStateMachine,
+  MessageCodec,
   MOQTVarInt,
   RequestParameterDraft18,
   SubscriptionFilterDraft18,
@@ -20,8 +21,8 @@ import {
   type ControlMessageDraft18,
   type IProtocolCodec,
 } from '@moq-web/core';
-import { base64urlDecode, coseSign1Encode } from '@moq-web/cat';
-import type { SessionState } from './types.js';
+import { base64urlDecode, C4M_TOKEN_TYPE, coseSign1Encode } from '@moq-web/cat';
+import type { RequestAuthToken, SessionState } from './types.js';
 
 /** Draft-18 subscription filter shape used by the SUBSCRIBE builder. */
 export type Location = { group: bigint; object: bigint };
@@ -280,6 +281,55 @@ export function dotTokenToCoseSign1Bytes(token: string): Uint8Array {
     payload,
     signature,
   });
+}
+
+/**
+ * Encode an auth token string into the wire bytes expected for the given
+ * MOQT token type.
+ *
+ * - C4M (§CAT): dot-separated JWT-shape → COSE_Sign1 CBOR; otherwise
+ *   base64url-decoded raw bytes.
+ * - 0x0002 / 0xda7a: base64url-decoded raw bytes.
+ * - Anything else: raw UTF-8 of the string.
+ */
+export function encodeTokenBytes(token: string, tokenType: number): Uint8Array {
+  if (tokenType === C4M_TOKEN_TYPE) {
+    if (token.includes('.')) {
+      return dotTokenToCoseSign1Bytes(token);
+    }
+    return base64urlDecode(token);
+  }
+  if (tokenType === 0x0002 || tokenType === 0xda7a) {
+    return base64urlDecode(token);
+  }
+  return new TextEncoder().encode(token);
+}
+
+/**
+ * Encode a per-request authorization token (SUBSCRIBE / PUBLISH / FETCH
+ * parameter payload) using `aliasType = 3` (USE_VALUE) and the caller's
+ * `tokenType` (defaulting to C4M).
+ */
+export function encodeRequestAuthTokenBytes(authToken: RequestAuthToken): Uint8Array {
+  const tokenType = authToken.tokenType ?? C4M_TOKEN_TYPE;
+  return MessageCodec.encodeAuthorizationToken({
+    aliasType: 3,
+    tokenType,
+    tokenValue: authToken.tokenBytes,
+  });
+}
+
+/**
+ * Draft-18 §7.1 namespace prefix match. Returns true when `prefix` is a
+ * proper (or equal) prefix of `candidate` under tuple-equality. Callers use
+ * this to route incoming SUBSCRIBEs against locally announced namespaces.
+ */
+export function namespacePrefixMatches(prefix: string[], candidate: string[]): boolean {
+  if (candidate.length < prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) {
+    if (candidate[i] !== prefix[i]) return false;
+  }
+  return true;
 }
 
 /**
