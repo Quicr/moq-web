@@ -116,4 +116,34 @@ describe('PresentationReorderBuffer', () => {
     const ratio = tLarge / tSmall;
     expect(ratio).toBeLessThan(12);
   });
+
+  it('enforces the maxBufferedFrames hard cap and closes evicted frames', () => {
+    const releasedTs: number[] = [];
+    const closed: number[] = [];
+    const cap = 8;
+    const b = new PresentationReorderBuffer(
+      (f) => releasedTs.push(f.timestamp),
+      { bufferDepth: 1000, maxHoldTimeMs: 10_000, maxBufferedFrames: cap, debug: false },
+    );
+
+    // Push descending timestamps so nothing meets the release condition
+    // (buffer never exceeds bufferDepth=1000 in the "ready" sense). Each
+    // push whose result would grow past `cap` must force-drop the oldest.
+    for (let i = 50; i >= 0; i--) {
+      const frame = {
+        timestamp: i,
+        close() { closed.push(this.timestamp); },
+      } as unknown as VideoFrame;
+      b.push(frame);
+    }
+
+    expect(b.size).toBeLessThanOrEqual(cap);
+    // Nothing should have been released via the ready-frame path because we
+    // set bufferDepth well above cap; any released frames are cap-evictions
+    // + the buffer tail after flush... but we haven't flushed. So no
+    // releases yet.
+    expect(releasedTs.length).toBe(0);
+    // We pushed 51 frames, cap=8 → 51-8=43 evictions, each closed once.
+    expect(closed.length).toBe(43);
+  });
 });

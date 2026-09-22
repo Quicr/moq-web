@@ -158,17 +158,54 @@ export function constructAAD(components: AADComponents): Uint8Array {
  *
  * Provides a high-performance, zero-copy-where-possible API for
  * encrypting and decrypting MOQT objects.
+ *
+ * Security properties enforced at runtime:
+ * - Invocation cap at 2^32 (spec-mandated for AES-GCM/CTR nonce hygiene).
+ * - Bounded recent-nonce tracking: catches near-duplicate (groupId, objectId)
+ *   reuse within a sliding window without unbounded memory growth. The
+ *   application MUST NOT reuse (groupId, objectId) pairs — this window is a
+ *   safety net, not a substitute for correct sequencing.
+ * - Constant-time tag comparison for CTR-HMAC decryption.
+ * - Explicit {@link dispose} to drop CryptoKey references after use.
  */
 export class SecureObjectsContext {
   private static readonly MAX_INVOCATIONS = 2 ** 32;
-  private readonly context: EncryptionContext;
+  /** Sliding window of recently-used nonce keys. Bounded to avoid leaks. */
+  private static readonly RECENT_NONCE_CAPACITY = 65536;
+
+  private context: EncryptionContext | undefined;
   private readonly params;
-  private readonly usedNonces = new Set<string>();
+  private readonly recentNonces = new Set<string>();
+  private readonly recentNonceOrder: string[] = [];
   private encryptionCount = 0;
+  private disposed = false;
 
   private constructor(context: EncryptionContext) {
     this.context = context;
     this.params = getCipherSuiteParams(context.cipherSuite);
+  }
+
+  private requireLive(): EncryptionContext {
+    if (this.disposed || !this.context) {
+      throw new Error('SecureObjectsContext has been disposed');
+    }
+    return this.context;
+  }
+
+  /**
+   * Record a nonce as used, evicting the oldest tracked entry once the
+   * sliding-window cap is hit. Returns `true` if the nonce was already in the
+   * recent-use set (i.e. detected reuse within the window).
+   */
+  private trackNonce(key: string): boolean {
+    if (this.recentNonces.has(key)) return true;
+    this.recentNonces.add(key);
+    this.recentNonceOrder.push(key);
+    if (this.recentNonceOrder.length > SecureObjectsContext.RECENT_NONCE_CAPACITY) {
+      const evicted = this.recentNonceOrder.shift();
+      if (evicted !== undefined) this.recentNonces.delete(evicted);
+    }
+    return false;
   }
 
   /**
@@ -212,14 +249,37 @@ export class SecureObjectsContext {
    * Get the key ID for this context.
    */
   get keyId(): bigint {
-    return this.context.keyId;
+    return this.requireLive().keyId;
   }
 
   /**
    * Get the cipher suite for this context.
    */
   get cipherSuite(): CipherSuite {
-    return this.context.cipherSuite;
+    return this.requireLive().cipherSuite;
+  }
+
+  /**
+   * Whether this context has been disposed.
+   */
+  get isDisposed(): boolean {
+    return this.disposed;
+  }
+
+  /**
+   * Drop references to the underlying {@link CryptoKey}s and clear
+   * recent-nonce state. Further encrypt/decrypt calls will throw.
+   *
+   * `CryptoKey` handles are non-extractable in WebCrypto, so we cannot
+   * zeroise the raw key material ourselves — but releasing the reference
+   * allows the platform's implementation to zero it on GC/handle-release.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.context = undefined;
+    this.recentNonces.clear();
+    this.recentNonceOrder.length = 0;
   }
 
   /**
@@ -235,76 +295,59 @@ export class SecureObjectsContext {
     objectId: ObjectIdentifier,
     encryptedProperties?: Uint8Array
   ): Promise<EncryptedObject> {
+    const ctx = this.requireLive();
     if (this.encryptionCount >= SecureObjectsContext.MAX_INVOCATIONS) {
       throw new Error('Encryption limit reached: this context has exceeded 2^32 invocations and must be rotated');
     }
     this.encryptionCount++;
 
     const nonceKey = `${objectId.groupId}:${objectId.objectId}`;
-    if (this.usedNonces.has(nonceKey)) {
-      throw new Error('Nonce reuse detected: this (groupId, objectId) pair has already been used for encryption with this context');
+    if (this.trackNonce(nonceKey)) {
+      throw new Error('Nonce reuse detected: this (groupId, objectId) pair has been used within the recent-use window');
     }
-    this.usedNonces.add(nonceKey);
 
-    const nonce = constructNonce(this.context.salt, objectId);
+    const nonce = constructNonce(ctx.salt, objectId);
 
     const aad = constructAAD({
-      keyId: this.context.keyId,
+      keyId: ctx.keyId,
       groupId: objectId.groupId,
       objectId: objectId.objectId,
-      namespace: this.context.track.namespace,
-      trackName: this.context.track.trackName,
+      namespace: ctx.track.namespace,
+      trackName: ctx.track.trackName,
     });
 
-    // Construct plaintext with optional encrypted properties
-    // Format: payload_length (varint) + payload + [encrypted_properties]
-    let plaintextWithProperties: Uint8Array;
-
-    if (encryptedProperties && encryptedProperties.length > 0) {
-      const lengthBytes = encodeVarInt(plaintext.length);
-      plaintextWithProperties = new Uint8Array(
-        lengthBytes.length + plaintext.length + encryptedProperties.length
-      );
-      plaintextWithProperties.set(lengthBytes, 0);
-      plaintextWithProperties.set(plaintext, lengthBytes.length);
-      plaintextWithProperties.set(encryptedProperties, lengthBytes.length + plaintext.length);
-    } else {
-      // No encrypted properties - just the payload with length prefix
-      const lengthBytes = encodeVarInt(plaintext.length);
-      plaintextWithProperties = new Uint8Array(lengthBytes.length + plaintext.length);
-      plaintextWithProperties.set(lengthBytes, 0);
-      plaintextWithProperties.set(plaintext, lengthBytes.length);
+    // Format: varint(payload_length) || payload || [encrypted_properties]
+    // Single pre-sized allocation avoids a second Uint8Array copy.
+    const lengthBytes = encodeVarInt(plaintext.length);
+    const propsLength = encryptedProperties?.length ?? 0;
+    const framed = new Uint8Array(lengthBytes.length + plaintext.length + propsLength);
+    framed.set(lengthBytes, 0);
+    framed.set(plaintext, lengthBytes.length);
+    if (propsLength > 0) {
+      framed.set(encryptedProperties!, lengthBytes.length + plaintext.length);
     }
 
     let ciphertext: Uint8Array;
-
-    // Convert to ArrayBuffer for WebCrypto API
-    const nonceBuffer = toArrayBuffer(nonce);
-    const aadBuffer = toArrayBuffer(aad);
-    const plaintextBuffer = toArrayBuffer(plaintextWithProperties);
-
     if (this.params.aeadAlgorithm === 'AES-GCM') {
-      // AES-GCM encryption
       const encrypted = await crypto.subtle.encrypt(
         {
           name: 'AES-GCM',
-          iv: nonceBuffer,
-          additionalData: aadBuffer,
-          tagLength: this.params.tagLength * 8, // bits
+          iv: toArrayBuffer(nonce),
+          additionalData: toArrayBuffer(aad),
+          tagLength: this.params.tagLength * 8,
         },
-        this.context.key,
-        plaintextBuffer
+        ctx.key,
+        toArrayBuffer(framed)
       );
       ciphertext = new Uint8Array(encrypted);
     } else {
-      // AES-CTR-HMAC encryption (encrypt-then-MAC)
-      ciphertext = await this.encryptCtrHmac(plaintextWithProperties, nonce, aad);
+      ciphertext = await this.encryptCtrHmac(ctx, framed, nonce, aad);
     }
 
     return {
       ciphertext,
-      keyId: this.context.keyId,
-      cipherSuite: this.context.cipherSuite,
+      keyId: ctx.keyId,
+      cipherSuite: ctx.cipherSuite,
     };
   }
 
@@ -319,72 +362,68 @@ export class SecureObjectsContext {
     ciphertext: Uint8Array,
     objectId: ObjectIdentifier
   ): Promise<DecryptedObject> {
-    const nonce = constructNonce(this.context.salt, objectId);
+    const ctx = this.requireLive();
+    const nonce = constructNonce(ctx.salt, objectId);
 
     const aad = constructAAD({
-      keyId: this.context.keyId,
+      keyId: ctx.keyId,
       groupId: objectId.groupId,
       objectId: objectId.objectId,
-      namespace: this.context.track.namespace,
-      trackName: this.context.track.trackName,
+      namespace: ctx.track.namespace,
+      trackName: ctx.track.trackName,
     });
 
-    // Convert to ArrayBuffer for WebCrypto API
-    const nonceBuffer = toArrayBuffer(nonce);
-    const aadBuffer = toArrayBuffer(aad);
-    const ciphertextBuffer = toArrayBuffer(ciphertext);
-
-    let decryptedWithProperties: Uint8Array;
-
+    let framed: Uint8Array;
     if (this.params.aeadAlgorithm === 'AES-GCM') {
-      // AES-GCM decryption
       const decrypted = await crypto.subtle.decrypt(
         {
           name: 'AES-GCM',
-          iv: nonceBuffer,
-          additionalData: aadBuffer,
+          iv: toArrayBuffer(nonce),
+          additionalData: toArrayBuffer(aad),
           tagLength: this.params.tagLength * 8,
         },
-        this.context.key,
-        ciphertextBuffer
+        ctx.key,
+        toArrayBuffer(ciphertext)
       );
-      decryptedWithProperties = new Uint8Array(decrypted);
+      framed = new Uint8Array(decrypted);
     } else {
-      // AES-CTR-HMAC decryption
-      decryptedWithProperties = await this.decryptCtrHmac(ciphertext, nonce, aad);
+      framed = await this.decryptCtrHmac(ctx, ciphertext, nonce, aad);
     }
 
-    // Parse decrypted data: payload_length (varint) + payload + [encrypted_properties]
-    const { value: payloadLength, bytesRead } = this.readVarInt(decryptedWithProperties);
-
-    if (bytesRead + payloadLength > decryptedWithProperties.length) {
+    // Parse: varint(payload_length) || payload || [encrypted_properties]
+    const { value: payloadLength, bytesRead } = this.readVarInt(framed);
+    const payloadEnd = bytesRead + payloadLength;
+    if (payloadEnd > framed.length) {
       throw new Error('Decrypted payload length exceeds available data');
     }
 
-    const plaintext = decryptedWithProperties.slice(bytesRead, bytesRead + payloadLength);
-
-    let encryptedProperties: Uint8Array | undefined;
-    if (bytesRead + payloadLength < decryptedWithProperties.length) {
-      encryptedProperties = decryptedWithProperties.slice(bytesRead + payloadLength);
-    }
+    // Zero-copy views into the framed buffer. The buffer is not aliased by
+    // any caller — we own it — so returning subarrays is safe.
+    const plaintext = framed.subarray(bytesRead, payloadEnd);
+    const encryptedProperties = payloadEnd < framed.length
+      ? framed.subarray(payloadEnd)
+      : undefined;
 
     return { plaintext, encryptedProperties };
   }
 
   /**
-   * Verify AAD without decrypting.
-   * Useful for checking authentication before full decryption.
+   * Attempt authentication of an encrypted object.
+   *
+   * Note: for AEAD ciphers there is no cheap "verify only" primitive — this
+   * currently runs a full decrypt and discards the plaintext. Prefer calling
+   * {@link decrypt} directly and handling failures with try/catch when you
+   * intend to use the plaintext anyway.
    *
    * @param ciphertext - The encrypted data
    * @param objectId - The object identifier
-   * @returns Promise resolving to true if AAD verification passes
+   * @returns Promise resolving to true if authentication passes
    */
   async verifyAAD(
     ciphertext: Uint8Array,
     objectId: ObjectIdentifier
   ): Promise<boolean> {
     try {
-      // Attempt decryption - will throw if AAD verification fails
       await this.decrypt(ciphertext, objectId);
       return true;
     } catch {
@@ -396,13 +435,17 @@ export class SecureObjectsContext {
 
   /**
    * AES-CTR-HMAC encryption (encrypt-then-MAC).
+   *
+   * Layout: counter = nonce(12) || u32(1). HMAC is computed over
+   * `aad || ciphertext`. Truncated tag length is defined per cipher suite.
    */
   private async encryptCtrHmac(
+    ctx: EncryptionContext,
     plaintext: Uint8Array,
     nonce: Uint8Array,
     aad: Uint8Array
   ): Promise<Uint8Array> {
-    if (!this.context.hmacKey) {
+    if (!ctx.hmacKey) {
       throw new Error('HMAC key not available for CTR-HMAC cipher suite');
     }
 
@@ -410,40 +453,31 @@ export class SecureObjectsContext {
       throw new Error('Plaintext exceeds maximum AES-CTR length (counter would wrap)');
     }
 
-    // AES-CTR encryption
-    // Counter block: nonce (12 bytes) + counter (4 bytes, starts at 1)
     const counter = new Uint8Array(16);
     counter.set(nonce, 0);
-    counter[15] = 1; // Start counter at 1
-
-    // Convert to ArrayBuffer for WebCrypto API
-    const counterBuffer = toArrayBuffer(counter);
-    const plaintextBuffer = toArrayBuffer(plaintext);
+    counter[15] = 1;
 
     const encrypted = await crypto.subtle.encrypt(
-      {
-        name: 'AES-CTR',
-        counter: counterBuffer,
-        length: 32, // Counter bits
-      },
-      this.context.key,
-      plaintextBuffer
+      { name: 'AES-CTR', counter: toArrayBuffer(counter), length: 32 },
+      ctx.key,
+      toArrayBuffer(plaintext)
     );
 
-    const encryptedBytes = new Uint8Array(encrypted);
+    const tagLen = this.params.tagLength;
+    const ctLen = encrypted.byteLength;
 
-    // Compute HMAC over AAD || ciphertext
-    const hmacInput = new Uint8Array(aad.length + encryptedBytes.length);
+    // Compose result as [ciphertext || tag]. Compute HMAC directly into
+    // the tail of the result buffer to avoid a separate tag copy.
+    const result = new Uint8Array(ctLen + tagLen);
+    result.set(new Uint8Array(encrypted), 0);
+
+    // Single pre-sized HMAC input: aad || ciphertext.
+    const hmacInput = new Uint8Array(aad.length + ctLen);
     hmacInput.set(aad, 0);
-    hmacInput.set(encryptedBytes, aad.length);
+    hmacInput.set(result.subarray(0, ctLen), aad.length);
 
-    const hmacFull = await crypto.subtle.sign('HMAC', this.context.hmacKey, toArrayBuffer(hmacInput));
-    const tag = new Uint8Array(hmacFull, 0, this.params.tagLength);
-
-    // Return ciphertext || tag
-    const result = new Uint8Array(encryptedBytes.length + this.params.tagLength);
-    result.set(encryptedBytes, 0);
-    result.set(tag, encryptedBytes.length);
+    const hmacFull = await crypto.subtle.sign('HMAC', ctx.hmacKey, toArrayBuffer(hmacInput));
+    result.set(new Uint8Array(hmacFull, 0, tagLen), ctLen);
 
     return result;
   }
@@ -452,53 +486,44 @@ export class SecureObjectsContext {
    * AES-CTR-HMAC decryption (verify-then-decrypt).
    */
   private async decryptCtrHmac(
+    ctx: EncryptionContext,
     ciphertext: Uint8Array,
     nonce: Uint8Array,
     aad: Uint8Array
   ): Promise<Uint8Array> {
-    if (!this.context.hmacKey) {
+    if (!ctx.hmacKey) {
       throw new Error('HMAC key not available for CTR-HMAC cipher suite');
     }
 
-    // Split ciphertext and tag
-    const encryptedLength = ciphertext.length - this.params.tagLength;
+    const tagLen = this.params.tagLength;
+    const encryptedLength = ciphertext.length - tagLen;
     if (encryptedLength < 0) {
       throw new Error('Ciphertext too short');
     }
 
-    const encryptedBytes = ciphertext.slice(0, encryptedLength);
-    const receivedTag = ciphertext.slice(encryptedLength);
+    // Views into the caller's buffer — no copies. We only read.
+    const encryptedBytes = ciphertext.subarray(0, encryptedLength);
+    const receivedTag = ciphertext.subarray(encryptedLength);
 
-    // Verify HMAC
-    const hmacInput = new Uint8Array(aad.length + encryptedBytes.length);
+    const hmacInput = new Uint8Array(aad.length + encryptedLength);
     hmacInput.set(aad, 0);
     hmacInput.set(encryptedBytes, aad.length);
 
-    const hmacFull = await crypto.subtle.sign('HMAC', this.context.hmacKey, toArrayBuffer(hmacInput));
-    const expectedTag = new Uint8Array(hmacFull, 0, this.params.tagLength);
+    const hmacFull = await crypto.subtle.sign('HMAC', ctx.hmacKey, toArrayBuffer(hmacInput));
+    const expectedTag = new Uint8Array(hmacFull, 0, tagLen);
 
-    // Constant-time comparison
     if (!this.constantTimeEqual(receivedTag, expectedTag)) {
       throw new Error('Authentication failed: HMAC verification failed');
     }
 
-    // AES-CTR decryption
     const counter = new Uint8Array(16);
     counter.set(nonce, 0);
     counter[15] = 1;
 
-    // Convert to ArrayBuffer for WebCrypto API
-    const counterBuffer = toArrayBuffer(counter);
-    const encryptedBuffer = toArrayBuffer(encryptedBytes);
-
     const decrypted = await crypto.subtle.decrypt(
-      {
-        name: 'AES-CTR',
-        counter: counterBuffer,
-        length: 32,
-      },
-      this.context.key,
-      encryptedBuffer
+      { name: 'AES-CTR', counter: toArrayBuffer(counter), length: 32 },
+      ctx.key,
+      toArrayBuffer(encryptedBytes)
     );
 
     return new Uint8Array(decrypted);

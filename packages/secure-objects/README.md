@@ -162,10 +162,10 @@ Frame processing time is well under 1ms for typical video frame sizes.
 - **Key Management**: Track base keys must be distributed securely out-of-band
 - **Minimum Key Length**: Track base keys must be at least 16 bytes (128 bits)
 - **Key Rotation**: Use different `keyId` values for key rotation epochs
-- **Nonce Reuse Protection**: The context tracks used (groupId, objectId) pairs and throws on reuse
+- **Nonce Reuse Protection**: The context maintains a bounded sliding window of recent (groupId, objectId) pairs and throws on reuse within the window. Applications MUST NOT rely on the window as a substitute for correct sequencing; it is a safety net, not a source of truth.
 - **Invocation Limit**: Contexts enforce a 2^32 encryption limit per key; rotate keys before exhaustion
 - **Constant Time**: HMAC verification uses constant-time comparison
-- **Key Zeroization**: Intermediate key material is zeroed after import
+- **Key Zeroization**: Intermediate key material is zeroed after import. Call `SecureObjectsContext#dispose()` when finished with a context to drop `CryptoKey` handles; subsequent encrypt/decrypt calls will throw.
 
 ## License
 

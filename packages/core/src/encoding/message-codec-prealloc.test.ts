@@ -24,11 +24,18 @@ import {
   type ClientSetupMessage,
   type PublishNamespaceMessage,
 } from '../messages/types.js';
+import { DEFAULT_DRAFT } from '../version/constants.js';
+
+// This suite hard-codes draft-14 message shapes; skip it when the build
+// target is a newer draft (the same MessageCodec entry point routes to a
+// codec that expects different fields, and re-serialising a draft-14 shape
+// would be meaningless).
+const IS_LEGACY_DRAFT = DEFAULT_DRAFT === 'draft-14' || DEFAULT_DRAFT === 'draft-16';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only shim
 const asAny = (m: unknown) => m as any;
 
-describe('MessageCodec.encode / PreallocBufferWriter', () => {
+describe.skipIf(!IS_LEGACY_DRAFT)('MessageCodec.encode / PreallocBufferWriter', () => {
   it('returns a fully-owned buffer (mutation isolation)', () => {
     const msg: ClientSetupMessage = {
       type: MessageType.CLIENT_SETUP,

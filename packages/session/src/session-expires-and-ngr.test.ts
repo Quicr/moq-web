@@ -148,8 +148,8 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
         requestId: 7n,
       } as ControlMessageDraft18),
     };
-    (session as unknown as { activeRequestStreams: Map<number, typeof fakeStream> })
-      .activeRequestStreams.set(7, fakeStream);
+    (session as unknown as { activeRequestStreams: Map<bigint, typeof fakeStream> })
+      .activeRequestStreams.set(7n, fakeStream);
 
     await session.sendRequestUpdate(7, true, { newGroupRequest: true });
 
@@ -176,10 +176,10 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
         requestId: 9n,
       } as ControlMessageDraft18),
     };
-    (session as unknown as { activeRequestStreams: Map<number, typeof fakeStream> })
-      .activeRequestStreams.set(9, fakeStream);
+    (session as unknown as { activeRequestStreams: Map<bigint, typeof fakeStream> })
+      .activeRequestStreams.set(9n, fakeStream);
 
-    await session.sendRequestUpdate(9, true, { newGroupRequest: 42 });
+    await session.sendRequestUpdate(9n, true, { newGroupRequest: 42 });
 
     const [decoded] = Draft18MessageCodec.decode(chunks[0]);
     const update = decoded as RequestUpdateMessageDraft18;
@@ -198,11 +198,11 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
         requestId: 11n,
       } as ControlMessageDraft18),
     };
-    (session as unknown as { activeRequestStreams: Map<number, typeof fakeStream> })
-      .activeRequestStreams.set(11, fakeStream);
+    (session as unknown as { activeRequestStreams: Map<bigint, typeof fakeStream> })
+      .activeRequestStreams.set(11n, fakeStream);
 
-    await session.sendRequestUpdate(11, false);
-    await session.sendRequestUpdate(11, true, { newGroupRequest: false });
+    await session.sendRequestUpdate(11n, false);
+    await session.sendRequestUpdate(11n, true, { newGroupRequest: false });
 
     expect(chunks.length).toBe(2);
     for (const c of chunks) {
@@ -238,7 +238,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     }).dispatchRequestUpdateDraft18(incoming);
 
     expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({ requestId: 21, value: 1, forwardState: true });
+    expect(events[0]).toEqual({ requestId: 21n, value: 1n, forwardState: true });
   });
 
   it('does not emit new-group-request when parameter value is zero', async () => {

@@ -302,6 +302,58 @@ describe('SecureObjectsContext', () => {
   });
 });
 
+describe('SecureObjectsContext hardening', () => {
+  const track = { namespace: ['harden'], trackName: 'video' };
+  const key = new Uint8Array(32);
+  crypto.getRandomValues(key);
+
+  describe('dispose()', () => {
+    it('makes further encrypt/decrypt throw and reports isDisposed', async () => {
+      const ctx = await SecureObjectsContext.create({ trackBaseKey: key, track });
+      const enc = await ctx.encrypt(new Uint8Array([1, 2, 3]), { groupId: 0n, objectId: 0 });
+
+      expect(ctx.isDisposed).toBe(false);
+      ctx.dispose();
+      expect(ctx.isDisposed).toBe(true);
+
+      await expect(
+        ctx.encrypt(new Uint8Array([4]), { groupId: 0n, objectId: 1 })
+      ).rejects.toThrow('disposed');
+      await expect(ctx.decrypt(enc.ciphertext, { groupId: 0n, objectId: 0 })).rejects.toThrow('disposed');
+      expect(() => ctx.keyId).toThrow('disposed');
+    });
+
+    it('is idempotent', async () => {
+      const ctx = await SecureObjectsContext.create({ trackBaseKey: key, track });
+      ctx.dispose();
+      ctx.dispose();
+      expect(ctx.isDisposed).toBe(true);
+    });
+  });
+
+  describe('nonce reuse detection', () => {
+    it('rejects reuse of the same (groupId, objectId) pair within the window', async () => {
+      const ctx = await SecureObjectsContext.create({ trackBaseKey: key, track });
+      const oid = { groupId: 7n, objectId: 3 };
+      await ctx.encrypt(new Uint8Array([1]), oid);
+      await expect(ctx.encrypt(new Uint8Array([2]), oid)).rejects.toThrow('Nonce reuse');
+    });
+
+    it('allows a fresh (groupId, objectId) pair', async () => {
+      const ctx = await SecureObjectsContext.create({ trackBaseKey: key, track });
+      await ctx.encrypt(new Uint8Array([1]), { groupId: 0n, objectId: 0 });
+      // Different objectId — fine.
+      await expect(
+        ctx.encrypt(new Uint8Array([2]), { groupId: 0n, objectId: 1 })
+      ).resolves.toBeDefined();
+      // Different groupId — fine.
+      await expect(
+        ctx.encrypt(new Uint8Array([2]), { groupId: 1n, objectId: 0 })
+      ).resolves.toBeDefined();
+    });
+  });
+});
+
 describe('constructNonce', () => {
   it('XORs salt with CTR correctly', () => {
     const salt = new Uint8Array(12).fill(0xff);

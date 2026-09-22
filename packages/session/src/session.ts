@@ -36,7 +36,6 @@ import {
   normalizeSessionErrorCode,
   StreamTypeDraft18,
   DatagramTypeDraft18,
-  TrackPropertyDraft18,
   MOQTVarInt,
   SetupParameter,
   SubscriptionFilterDraft18,
@@ -89,7 +88,6 @@ import {
   type MOQTMessage,
   type ControlMessage,
   type ControlMessageDraft18,
-  type Location,
   type ObjectHeader,
   type IProtocolCodec,
   type FetchMessage,
@@ -100,7 +98,20 @@ import {
   type TrackStatusOkMessage,
   type TrackStatusErrorMessage,
 } from '@moq-web/core';
-import { base64urlDecode, coseSign1Encode, C4M_TOKEN_TYPE } from '@moq-web/cat';
+import { base64urlDecode, C4M_TOKEN_TYPE } from '@moq-web/cat';
+import {
+  Draft18RequestStream,
+  addDeliveryTimeoutParams,
+  assertNotReservedNamespace,
+  buildTrackProperties,
+  decodeTrackNamespaceBytes,
+  dotTokenToCoseSign1Bytes,
+  encodeTrackNamespaceBytes,
+  generateSessionId,
+  mapSubscribeFilter,
+  narrowBigIntToNumber,
+  sessionStateToConnectionState,
+} from './session-helpers.js';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
 import { ObjectRouter } from './object-router.js';
@@ -164,281 +175,6 @@ import type {
 
 const log = Logger.create('moqt:session');
 
-/**
- * Wave 2 Track F: narrow a wire 62-bit varint (bigint) down to `number` where
- * downstream state deliberately uses `number` (e.g. FetchRange, object plane
- * group/object arithmetic). Throws if the value exceeds `2^53-1`; callers must
- * be sites where the media pipeline arithmetic cannot handle bigint.
- */
-function narrowBigIntToNumber(value: bigint, field: string): number {
-  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error(
-      `${field}=${value.toString()} exceeds Number.MAX_SAFE_INTEGER; ` +
-      `session cannot represent this value in the bounded-number plane.`
-    );
-  }
-  return Number(value);
-}
-
-/**
- * Draft-18 §10.2 subscriber-side delivery timeouts on SUBSCRIBE/FETCH.
- * Each is an even-key MOQT varint; a value of 0 or undefined omits it.
- */
-function addDeliveryTimeoutParams(
-  parameters: Map<number, Uint8Array>,
-  options?: {
-    subgroupDeliveryTimeout?: number;
-    objectDeliveryTimeout?: number;
-    fillTimeout?: number;
-    rendezvousTimeout?: number;
-  },
-): void {
-  if (!options) return;
-  const set = (key: number, ms: number | undefined) => {
-    if (!ms || ms <= 0) return;
-    parameters.set(key, MOQTVarInt.encode(BigInt(ms)));
-  };
-  set(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
-  set(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
-  set(RequestParameterDraft18.FILL_TIMEOUT, options.fillTimeout);
-  set(RequestParameterDraft18.RENDEZVOUS_TIMEOUT, options.rendezvousTimeout);
-}
-
-/**
- * Draft-18 §10.2.9 SUBSCRIPTION_FILTER mapping.
- *
- * Translates the string-form `SubscribeOptions.filterType` (plus its start/end
- * hints) into a `SubscriptionFilterDraft18` variant with the ranges the
- * SUBSCRIBE codec expects. Unknown / omitted values default to
- * `NEXT_GROUP_START`, matching draft-18's default filter and the pre-change
- * session behaviour.
- *
- * `endGroup` is captured in `SubscribeOptions` as an absolute group ID and
- * translated to `endGroupDelta` here — the delta is how the wire carries the
- * range terminator (draft-18 §10.2.9).
- */
-function mapSubscribeFilter(options: {
-  filterType?: 'latest' | 'absolute' | 'next-group' | 'largest-object' | 'absolute-start' | 'absolute-range';
-  startGroup?: number;
-  startObject?: number;
-  endGroup?: number;
-} | undefined): {
-  filter: SubscriptionFilterDraft18;
-  startLocation?: Location;
-  endGroupDelta?: bigint;
-} {
-  const startGroup = BigInt(options?.startGroup ?? 0);
-  const startObject = BigInt(options?.startObject ?? 0);
-  const kind = options?.filterType;
-
-  switch (kind) {
-    case 'largest-object':
-      return { filter: SubscriptionFilterDraft18.LARGEST_OBJECT };
-    case 'absolute':
-    case 'absolute-start':
-      return {
-        filter: SubscriptionFilterDraft18.ABSOLUTE_START,
-        startLocation: { group: startGroup, object: startObject },
-      };
-    case 'absolute-range': {
-      const endGroup = BigInt(options?.endGroup ?? options?.startGroup ?? 0);
-      const delta = endGroup >= startGroup ? endGroup - startGroup : 0n;
-      return {
-        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
-        startLocation: { group: startGroup, object: startObject },
-        endGroupDelta: delta,
-      };
-    }
-    case 'latest':
-    case 'next-group':
-    case undefined:
-    default:
-      return { filter: SubscriptionFilterDraft18.NEXT_GROUP_START };
-  }
-}
-
-/**
- * Draft-18 §3.2.1 — a Track Namespace whose first tuple field begins with
- * '.' (0x2e) is reserved. The single-period namespace (`["."]`) is a hard
- * reject; other reserved namespaces are pass-through to the application but
- * MUST NOT be originated by this endpoint without an IANA-registered
- * definition, so this client refuses to send outbound requests under any of
- * them by default.
- *
- * Throws if `namespace` (or namespace prefix) starts with a '.'-prefixed
- * field. Called from every outbound namespace-bearing API.
- */
-function assertNotReservedNamespace(namespace: string[], action: string): void {
-  const first = namespace[0];
-  if (first === undefined || first.length === 0 || first.charCodeAt(0) !== 0x2e) return;
-  throw new Error(
-    `Draft-18 §3.2.1: refusing to ${action} under reserved namespace ` +
-      `starting with '.': ${JSON.stringify(namespace)}`,
-  );
-}
-
-/**
- * Draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX serializer.
- *
- * Encodes a namespace tuple `["a","b"]` the same way the wire codec does —
- * varint tuple-length, then each element as a length-prefixed UTF-8 string —
- * so a peer that decodes the parameter value can reconstruct the tuple.
- */
-function encodeTrackNamespaceBytes(namespace: string[]): Uint8Array {
-  const writer = new BufferWriter();
-  writer.writeVarInt(BigInt(namespace.length));
-  const encoder = new TextEncoder();
-  for (const field of namespace) {
-    const bytes = encoder.encode(field);
-    writer.writeVarInt(BigInt(bytes.length));
-    writer.writeBytes(bytes);
-  }
-  return writer.toUint8Array();
-}
-
-/**
- * Draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX parser — inverse of
- * `encodeTrackNamespaceBytes()`. Returns the decoded tuple or `undefined`
- * if the bytes cannot be parsed (malformed parameter is best-effort ignored).
- */
-function decodeTrackNamespaceBytes(bytes: Uint8Array): string[] | undefined {
-  try {
-    const [count, offset0] = MOQTVarInt.decode(bytes);
-    let offset = offset0;
-    const out: string[] = [];
-    const decoder = new TextDecoder();
-    for (let i = 0; i < Number(count); i++) {
-      const [len, next] = MOQTVarInt.decode(bytes.subarray(offset));
-      offset += next;
-      const l = Number(len);
-      out.push(decoder.decode(bytes.subarray(offset, offset + l)));
-      offset += l;
-    }
-    return out;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Draft-18 §12 publisher-side track properties advertised on PUBLISH.
- * Each key is an even-key MOQT varint; 0/undefined omits it.
- */
-function buildTrackProperties(options?: {
-  subgroupDeliveryTimeout?: number;
-  objectDeliveryTimeout?: number;
-  maxCacheDuration?: number;
-  priority?: number;
-  groupOrder?: number;
-  priorGroupIdGap?: number;
-  priorObjectIdGap?: number;
-}): Map<number, Uint8Array> | undefined {
-  if (!options) return undefined;
-  const props = new Map<number, Uint8Array>();
-  const setMs = (key: number, ms: number | undefined) => {
-    if (!ms || ms <= 0) return;
-    props.set(key, MOQTVarInt.encode(BigInt(ms)));
-  };
-  const setNonNegative = (key: number, n: number | undefined) => {
-    if (n === undefined || n < 0) return;
-    props.set(key, MOQTVarInt.encode(BigInt(Math.floor(n))));
-  };
-  setMs(TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
-  setMs(TrackPropertyDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
-  setMs(TrackPropertyDraft18.MAX_CACHE_DURATION, options.maxCacheDuration);
-  if (options.priority !== undefined) {
-    props.set(TrackPropertyDraft18.DEFAULT_PUBLISHER_PRIORITY, MOQTVarInt.encode(BigInt(options.priority)));
-  }
-  if (options.groupOrder !== undefined) {
-    props.set(TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER, MOQTVarInt.encode(BigInt(options.groupOrder)));
-  }
-  setNonNegative(TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, options.priorGroupIdGap);
-  setNonNegative(TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP, options.priorObjectIdGap);
-  return props.size > 0 ? props : undefined;
-}
-
-/**
- * Long-lived per-request bidi stream (draft-18 §3.3, §10.9).
- *
- * Each MOQT request (SUBSCRIBE, PUBLISH, FETCH, TRACK_STATUS, SUBSCRIBE_TRACKS,
- * PUBLISH_NAMESPACE, SUBSCRIBE_NAMESPACE, ...) travels on its own bidirectional
- * stream. The initiating peer sends the request as the first message; the
- * responder replies with REQUEST_OK/REQUEST_ERROR (or the request-specific
- * response). Follow-up REQUEST_UPDATE messages MUST be sent on the same stream
- * (§10.9), so the writer stays open for the lifetime of the request.
- */
-class Draft18RequestStream {
-  private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
-  private readonly writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>;
-  private readonly closeFn: () => void | Promise<void>;
-  private readonly codec: IProtocolCodec;
-  private pending: Uint8Array = new Uint8Array(0);
-  private eof = false;
-
-  constructor(
-    codec: IProtocolCodec,
-    readable: ReadableStream<Uint8Array>,
-    writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>,
-    closeFn: () => void | Promise<void>,
-  ) {
-    this.codec = codec;
-    this.reader = readable.getReader();
-    this.writeFn = writeFn;
-    this.closeFn = closeFn;
-  }
-
-  async write(data: Uint8Array): Promise<void> {
-    await this.writeFn(data, false);
-  }
-
-  /**
-   * Read the next complete control message from this stream. Buffers any
-   * bytes that arrive after the message so subsequent reads see them.
-   */
-  async readMessage(): Promise<ControlMessageDraft18> {
-    for (;;) {
-      // Try decoding what we already buffered first.
-      if (this.pending.length > 0) {
-        try {
-          const [message, bytesRead] = this.codec.decodeControlMessage(this.pending);
-          this.pending = this.pending.subarray(bytesRead);
-          return message as ControlMessageDraft18;
-        } catch (err) {
-          const msg = (err as Error).message ?? '';
-          if (!msg.includes('Incomplete') && !msg.includes('buffer')) {
-            throw err;
-          }
-          // fall through and read more
-        }
-      }
-
-      if (this.eof) {
-        throw new Error('Request stream closed before a full control message was received');
-      }
-
-      const { value, done } = await this.reader.read();
-      if (done) {
-        this.eof = true;
-        continue;
-      }
-      if (value && value.length > 0) {
-        if (this.pending.length === 0) {
-          this.pending = value;
-        } else {
-          const merged = new Uint8Array(this.pending.length + value.length);
-          merged.set(this.pending, 0);
-          merged.set(value, this.pending.length);
-          this.pending = merged;
-        }
-      }
-    }
-  }
-
-  async close(): Promise<void> {
-    try { this.reader.releaseLock(); } catch { /* ignore */ }
-    try { await this.closeFn(); } catch { /* ignore */ }
-  }
-}
 
 /**
  * Configuration for MOQTSession when using worker mode
@@ -490,6 +226,13 @@ export interface MOQTSessionConfig {
    * a request-scoped correlation ID from an outer application.
    */
   sessionId?: string;
+  /**
+   * Draft-16 / draft-18 §6.3 MAX_REQUEST_ID advertised in SETUP. Also acts
+   * as a client-side hard cap on how many outbound requests the session
+   * will originate before it refuses to allocate a new request ID.
+   * Defaults to 1000.
+   */
+  maxRequestId?: number;
 }
 
 /**
@@ -673,6 +416,12 @@ export class MOQTSession {
    * Draft-16+: Clients use even IDs (0, 2, 4, ...), servers use odd (1, 3, 5, ...)
    */
   private nextRequestId: number;
+  /**
+   * Advertised MAX_REQUEST_ID (SETUP §6.3) and client-side hard cap.
+   * Also enforced by {@link getNextRequestId} so runaway callers surface as
+   * a typed error rather than silently overflowing.
+   */
+  private readonly maxRequestId: number;
   /** Protocol codec for version-specific encoding/decoding */
   private readonly codec: IProtocolCodec;
   /** Temporary message handler for setup */
@@ -886,6 +635,9 @@ export class MOQTSession {
     this.nextRequestId = this._draft === 'draft-16' || this._draft === 'draft-17' || this._draft === 'draft-18'
       ? 0
       : 1;
+    const configuredMax =
+      transportOrConfig instanceof MOQTransport ? undefined : transportOrConfig.maxRequestId;
+    this.maxRequestId = configuredMax !== undefined && configuredMax > 0 ? configuredMax : 1000;
 
     this.objectRouter = new ObjectRouter(this.subscriptionManager, (sub, data, groupId, objectId, timestamp) => {
       this.emit('object', {
@@ -1064,8 +816,21 @@ export class MOQTSession {
    */
   private getNextRequestId(): number {
     const id = this.nextRequestId;
+    if (id >= this.maxRequestId) {
+      throw new Error(
+        `Session request-id cap reached (${this.maxRequestId}); peer has not raised MAX_REQUEST_ID`,
+      );
+    }
     this.nextRequestId += (this.isDraft16 || this.isDraft18) ? 2 : 1;
     return id;
+  }
+
+  /**
+   * Advertised MAX_REQUEST_ID (draft-16 / draft-18 §6.3). Callers can read
+   * this to size their own request queues.
+   */
+  get maxAdvertisedRequestId(): number {
+    return this.maxRequestId;
   }
 
   // ===== Transport Abstraction Methods =====
@@ -1916,7 +1681,7 @@ export class MOQTSession {
     } else {
       // Draft-14/16: Use MessageCodec and send on control stream
       const setupParams = new Map<SetupParameter, number | string | Uint8Array>();
-      setupParams.set(SetupParameter.MAX_REQUEST_ID, 1000);
+      setupParams.set(SetupParameter.MAX_REQUEST_ID, this.maxRequestId);
       if (this.authToken) {
         const tokenBytes = this.encodeTokenBytes(this.authToken, this.authTokenType);
         const authTokenData = MessageCodec.encodeAuthorizationToken({
@@ -6390,13 +6155,13 @@ export class MOQTSession {
     // together (typical: resume forwarding *and* rebase on a keyframe).
     const ngrBytes = message.parameters?.get(RequestParameterDraft18.NEW_GROUP_REQUEST);
     if (ngrBytes && ngrBytes.length > 0) {
-      let value: number;
+      let value: bigint;
       try {
-        value = Number(MOQTVarInt.decode(ngrBytes)[0]);
+        value = MOQTVarInt.decode(ngrBytes)[0];
       } catch {
-        value = ngrBytes[0] ?? 0;
+        value = BigInt(ngrBytes[0] ?? 0);
       }
-      if (value !== 0) {
+      if (value !== 0n) {
         this.emit('new-group-request', {
           requestId,
           value,
@@ -7449,69 +7214,3 @@ export class MOQTSession {
   }
 }
 
-/**
- * Map the session-scoped `SessionState` to the spec-tracking
- * `ConnectionState` used by `ConnectionStateMachine`. Returns `undefined`
- * when no direct mapping applies (caller should skip).
- */
-function sessionStateToConnectionState(state: SessionState): ConnectionState | undefined {
-  switch (state) {
-    case 'none':
-      return 'disconnected';
-    case 'setup':
-      return 'setup_sent';
-    case 'ready':
-      return 'connected';
-    case 'closing':
-      return 'closing';
-    case 'error':
-      return 'error';
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Generate a random 16-char hex session identifier. Prefers
- * `crypto.randomUUID()` when available (browsers, Node 20+) and falls back
- * to `Math.random()` in stripped-down environments (some old worker hosts).
- */
-function generateSessionId(): string {
-  if (typeof crypto !== 'undefined') {
-    const c: unknown = crypto;
-    if (typeof (c as { randomUUID?: () => string }).randomUUID === 'function') {
-      return (c as { randomUUID: () => string }).randomUUID().replace(/-/g, '').slice(0, 16);
-    }
-    if (typeof (c as { getRandomValues?: (arr: Uint8Array) => Uint8Array }).getRandomValues === 'function') {
-      const bytes = new Uint8Array(8);
-      (c as { getRandomValues: (arr: Uint8Array) => Uint8Array }).getRandomValues(bytes);
-      let out = '';
-      for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
-      return out;
-    }
-  }
-  let out = '';
-  for (let i = 0; i < 16; i++) out += Math.floor(Math.random() * 16).toString(16);
-  return out;
-}
-
-/**
- * Convert a legacy dot-separated token to COSE_Sign1 CBOR bytes.
- * Format: base64url(protectedHeader).base64url(payload).base64url(signature)
- */
-function dotTokenToCoseSign1Bytes(token: string): Uint8Array {
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    return new TextEncoder().encode(token);
-  }
-  const protectedHeader = base64urlDecode(parts[0]);
-  const payload = base64urlDecode(parts[1]);
-  const signature = base64urlDecode(parts[2]);
-
-  return coseSign1Encode({
-    protectedHeader,
-    unprotectedHeader: new Map(),
-    payload,
-    signature,
-  });
-}

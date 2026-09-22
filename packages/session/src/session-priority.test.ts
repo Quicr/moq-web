@@ -114,13 +114,13 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §7 SUBSCRIBE parameters land on publica
       makeWritable(),
     );
 
-    const pub = priv.publicationManager.getByRequestId(1);
+    const pub = priv.publicationManager.getByRequestId(1n);
     expect(pub?.subscriberPriority).toBe(32);
     expect(pub?.subscriberGroupOrder).toBe(GroupOrder.DESCENDING);
 
     // Also mirrored onto the announced-subscribers map.
     const info = priv.announcedNamespaces.get('room');
-    const sub = info?.subscribers.get(1);
+    const sub = info?.subscribers.get(1n);
     expect(sub?.subscriberPriority).toBe(32);
     expect(sub?.groupOrder).toBe(GroupOrder.DESCENDING);
   });

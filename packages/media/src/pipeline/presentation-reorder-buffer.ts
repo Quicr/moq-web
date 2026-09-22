@@ -33,6 +33,16 @@ export interface PresentationReorderBufferConfig {
   maxHoldTimeMs: number;
 
   /**
+   * Hard cap on total buffered frames. Guards against pathological reorder
+   * patterns or slow consumers that would otherwise let the buffer grow
+   * without bound (and pin decoded `VideoFrame` objects — a large memory
+   * cost).  When the cap is hit on `push()`, the oldest buffered frame is
+   * force-released as a drop (its handle is closed).
+   * Default: 128
+   */
+  maxBufferedFrames: number;
+
+  /**
    * Enable debug logging
    */
   debug: boolean;
@@ -41,6 +51,7 @@ export interface PresentationReorderBufferConfig {
 const DEFAULT_CONFIG: PresentationReorderBufferConfig = {
   bufferDepth: 4,
   maxHoldTimeMs: 200,
+  maxBufferedFrames: 128,
   debug: false,
 };
 
@@ -94,6 +105,24 @@ export class PresentationReorderBuffer {
       this.buffer.splice(insertAt, 0, entry);
     }
 
+    // Hard cap: force-drop the oldest frame if we exceed the hard bound.
+    // Buffer is sorted, so index 0 is the smallest-PTS frame — releasing it
+    // could violate strict ordering, so we close and drop instead.
+    while (this.buffer.length > this.config.maxBufferedFrames) {
+      const dropped = this.buffer.shift()!;
+      try {
+        dropped.frame.close();
+      } catch {
+        /* frame may already be closed */
+      }
+      if (this.config.debug) {
+        console.warn('[ReorderBuffer] hard-cap drop', {
+          ts: dropped.timestamp,
+          cap: this.config.maxBufferedFrames,
+        });
+      }
+    }
+
     if (this.config.debug) {
       console.log('[ReorderBuffer] push', {
         ts: timestamp,
@@ -102,7 +131,6 @@ export class PresentationReorderBuffer {
       });
     }
 
-    // Release frames that are ready
     this.releaseReadyFrames(now);
   }
 
