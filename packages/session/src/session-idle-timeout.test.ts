@@ -32,14 +32,18 @@ import type { SessionTerminatedEvent } from './types.js';
 
 
 const IS_DRAFT_18 = DEFAULT_DRAFT === 'draft-18';
+interface IdleTrackerInternals {
+  lastOutboundMs: number;
+  lastInboundMs: number;
+  timer?: ReturnType<typeof setInterval>;
+  closePending: boolean;
+  markInbound: () => void;
+  markOutbound: () => void;
+  stop: () => void;
+}
 interface IdleTestInternals {
   _state: string;
-  lastOutboundActivityMs: number;
-  lastInboundActivityMs: number;
-  idleTimer?: ReturnType<typeof setInterval>;
-  idleClosePending: boolean;
-  markInboundActivity: () => void;
-  markOutboundActivity: () => void;
+  idleTracker: IdleTrackerInternals;
   sendPaddingDatagram: (bytes: number) => Promise<void>;
   doSendControl: (data: Uint8Array) => Promise<void>;
   doSendDatagram: (data: Uint8Array) => Promise<void>;
@@ -71,9 +75,9 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.6.1 idle-connection subsystem', () 
   it('does nothing when neither idleTimeoutMs nor keepaliveIntervalMs is set', () => {
     const { internals } = makeReadySession();
     // No configureIdle() call — timer must not be running.
-    expect(internals.idleTimer).toBeUndefined();
+    expect(internals.idleTracker.timer).toBeUndefined();
     vi.advanceTimersByTime(60_000);
-    expect(internals.idleClosePending).toBe(false);
+    expect(internals.idleTracker.closePending).toBe(false);
   });
 
   it('emits a padding datagram when outbound is silent past keepaliveIntervalMs', () => {
@@ -101,7 +105,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.6.1 idle-connection subsystem', () 
     // markOutboundActivity is covered separately below.
     for (let i = 0; i < 5; i++) {
       vi.advanceTimersByTime(400);
-      internals.markOutboundActivity();
+      internals.idleTracker.markOutbound();
     }
     expect(sentDatagrams.length).toBe(0);
   });
@@ -121,16 +125,16 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.6.1 idle-connection subsystem', () 
 
     session.configureIdle({ idleTimeoutMs: 60_000 });
 
-    const before = internals.lastOutboundActivityMs;
+    const before = internals.idleTracker.lastOutboundMs;
     // Advance a bit so a subsequent activity mark is measurably later.
     vi.advanceTimersByTime(50);
     await internals.doSendControl(new Uint8Array([0]));
-    expect(internals.lastOutboundActivityMs).toBeGreaterThan(before);
+    expect(internals.idleTracker.lastOutboundMs).toBeGreaterThan(before);
 
-    const after1 = internals.lastOutboundActivityMs;
+    const after1 = internals.idleTracker.lastOutboundMs;
     vi.advanceTimersByTime(50);
     await internals.doSendDatagram(new Uint8Array([0]));
-    expect(internals.lastOutboundActivityMs).toBeGreaterThan(after1);
+    expect(internals.idleTracker.lastOutboundMs).toBeGreaterThan(after1);
   });
 
   it('closes the session and emits session-terminated when idleTimeoutMs elapses with no activity', () => {
@@ -148,7 +152,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.6.1 idle-connection subsystem', () 
 
     // Trip it.
     vi.advanceTimersByTime(300);
-    expect(internals.idleClosePending).toBe(true);
+    expect(internals.idleTracker.closePending).toBe(true);
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(closeSpy).toHaveBeenCalledWith({
       code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
@@ -170,7 +174,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.6.1 idle-connection subsystem', () 
     // Every 300ms mark inbound activity — should never fire the timeout.
     for (let i = 0; i < 10; i++) {
       vi.advanceTimersByTime(300);
-      internals.markInboundActivity();
+      internals.idleTracker.markInbound();
     }
     expect(closeSpy).not.toHaveBeenCalled();
   });
@@ -200,26 +204,23 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.6.1 idle-connection subsystem', () 
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('cancels the timer when close() runs', async () => {
+  it('cancels the timer when close() runs', () => {
     const { session, internals } = makeReadySession();
     session.configureIdle({ idleTimeoutMs: 5_000, keepaliveIntervalMs: 5_000 });
-    expect(internals.idleTimer).toBeDefined();
+    expect(internals.idleTracker.timer).toBeDefined();
 
-    // Restore the real close() (spies on the class prototype interfere with
-    // stopIdleTimer). We just need the internal call.
-    internals.stopIdleTimer?.();
-    // If stopIdleTimer is exposed, use it directly; otherwise close().
-    // Either way, after close the timer must be gone.
-    (internals as unknown as { idleTimer?: unknown }).idleTimer = undefined;
-    expect(internals.idleTimer).toBeUndefined();
+    // Direct stop to verify tracker exposes idempotent teardown; the full
+    // close() path is exercised by the idle-timeout trip test above.
+    internals.idleTracker.stop();
+    expect(internals.idleTracker.timer).toBeUndefined();
   });
 
   it.skipIf(!IS_DRAFT_18)('a leaving state disarms the timer via setState()', () => {
     const { session, internals } = makeReadySession();
     session.configureIdle({ idleTimeoutMs: 500 });
-    expect(internals.idleTimer).toBeDefined();
+    expect(internals.idleTracker.timer).toBeDefined();
 
     (session as unknown as { setState: (s: string) => void }).setState('closing');
-    expect(internals.idleTimer).toBeUndefined();
+    expect(internals.idleTracker.timer).toBeUndefined();
   });
 });

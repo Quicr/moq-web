@@ -118,6 +118,7 @@ import { SubscriptionManager, type InternalSubscription } from './subscription-m
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
 import { ObjectRouter } from './object-router.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
+import { IdleActivityTracker } from './idle-activity-tracker.js';
 import { TransportWorkerClient } from './workers/index.js';
 import {
   JitteredExponentialBackoff,
@@ -390,17 +391,11 @@ export class MOQTSession {
    * `idleTimeoutMs`.
    *
    * Both cadences are opt-in via `configureIdle()`. When disabled the
-   * whole subsystem is dormant (no interval timer running).
+   * whole subsystem is dormant (no interval timer running). The tracker
+   * owns all timer state and calls back into the session for the two side
+   * effects it can't perform locally (send padding datagram / close).
    */
-  private idleConfig: { idleTimeoutMs?: number; keepaliveIntervalMs?: number } = {};
-  /** Monotonic ms of the last outbound send (control or datagram). */
-  private lastOutboundActivityMs = 0;
-  /** Monotonic ms of the last inbound frame (control or datagram). */
-  private lastInboundActivityMs = 0;
-  /** Interval handle for the idle/keepalive tick. */
-  private idleTimer?: ReturnType<typeof setInterval>;
-  /** Test-only hook so unit tests can observe the idle-close path. */
-  private idleClosePending = false;
+  private readonly idleTracker: IdleActivityTracker;
   /** Message buffer for incomplete control messages */
   private controlBuffer = new Uint8Array(0);
   /** Offset into controlBuffer where unprocessed data starts */
@@ -604,6 +599,35 @@ export class MOQTSession {
     this._createdAtMs = typeof performance !== 'undefined' && typeof performance.now === 'function'
       ? performance.now()
       : Date.now();
+
+    // Draft-18 §13.6.1 idle / §11.5 keepalive tracker. Owns all timer state;
+    // the callbacks below expose the two side effects it can't do locally
+    // (send a padding datagram, close the session).
+    this.idleTracker = new IdleActivityTracker({
+      isReady: () => this._state === 'ready',
+      sendPaddingDatagram: (bytes) => this.sendPaddingDatagram(bytes),
+      onIdleTimeout: (sinceMs) => {
+        log.warn('Draft-18 §13.6.1 idle timeout — closing session', {
+          sinceLastActivityMs: sinceMs,
+        });
+        // Surface it as a local session-terminated event so UIs can react —
+        // handleTransportClosed suppresses events for local closes, but the
+        // idle path is a policy decision by *this* endpoint that consumers
+        // should see explicitly.
+        this.emit('session-terminated', {
+          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+          reason: `idle timeout (${sinceMs}ms)`,
+          remote: false,
+        } as SessionTerminatedEvent);
+        // CONTROL_MESSAGE_TIMEOUT (§15.10.3 / SessionErrorCodeDraft18 0x11)
+        // is the closest spec code for "the peer stopped talking to us."
+        this.close({
+          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+          reason: 'idle timeout',
+        }).catch(() => {/* best effort */});
+      },
+      logWarn: (msg, err) => { log.warn(msg, { err: String(err) }); },
+    });
 
     if (transportOrConfig instanceof MOQTransport) {
       // Main thread mode - existing behavior
@@ -812,7 +836,7 @@ export class MOQTSession {
    * Send data on control stream (works in both modes)
    */
   private async doSendControl(data: Uint8Array): Promise<void> {
-    this.markOutboundActivity();
+    this.idleTracker.markOutbound();
     if (this.useWorker) {
       this.transportWorker!.sendControl(data);
     } else {
@@ -824,7 +848,7 @@ export class MOQTSession {
    * Send datagram (works in both modes)
    */
   private async doSendDatagram(data: Uint8Array): Promise<void> {
-    this.markOutboundActivity();
+    this.idleTracker.markOutbound();
     if (this.useWorker) {
       this.transportWorker!.sendDatagram(data);
     } else {
@@ -955,7 +979,7 @@ export class MOQTSession {
 
     // Set up datagram handler
     const datagramCleanup = this.transport.on('datagram', (data) => {
-      this.markInboundActivity();
+      this.idleTracker.markInbound();
       this.objectRouter.handleDatagram(data);
     });
     this.transportCleanup.push(datagramCleanup);
@@ -1004,7 +1028,7 @@ export class MOQTSession {
 
     // Datagrams from worker
     this.transportWorker.on('datagram', ({ data }) => {
-      this.markInboundActivity();
+      this.idleTracker.markInbound();
       this.objectRouter.handleDatagram(data);
     });
 
@@ -1488,105 +1512,13 @@ export class MOQTSession {
    * reconfigure the running timer.
    */
   configureIdle(config: { idleTimeoutMs?: number; keepaliveIntervalMs?: number }): void {
-    this.idleConfig = {
-      idleTimeoutMs: config.idleTimeoutMs && config.idleTimeoutMs > 0 ? config.idleTimeoutMs : undefined,
-      keepaliveIntervalMs: config.keepaliveIntervalMs && config.keepaliveIntervalMs > 0
-        ? config.keepaliveIntervalMs
-        : undefined,
-    };
+    this.idleTracker.configure(config);
     if (this._state === 'ready') {
       // Reset baselines so a reconfigure doesn't accidentally trip
       // thresholds against a very old activity timestamp, then restart.
-      this.lastOutboundActivityMs = this.now();
-      this.lastInboundActivityMs = this.now();
-      this.stopIdleTimer();
-      this.startIdleTimer();
-    }
-  }
-
-  private now(): number {
-    return typeof performance !== 'undefined' && typeof performance.now === 'function'
-      ? performance.now()
-      : Date.now();
-  }
-
-  private markOutboundActivity(): void {
-    if (this.idleConfig.idleTimeoutMs || this.idleConfig.keepaliveIntervalMs) {
-      this.lastOutboundActivityMs = this.now();
-    }
-  }
-
-  private markInboundActivity(): void {
-    if (this.idleConfig.idleTimeoutMs || this.idleConfig.keepaliveIntervalMs) {
-      this.lastInboundActivityMs = this.now();
-    }
-  }
-
-  private startIdleTimer(): void {
-    if (this.idleTimer !== undefined) return;
-    const { idleTimeoutMs, keepaliveIntervalMs } = this.idleConfig;
-    if (!idleTimeoutMs && !keepaliveIntervalMs) return;
-    // Tick at a granularity that catches the tightest threshold reasonably
-    // fast without polling too aggressively.
-    const tick = Math.max(50, Math.min(idleTimeoutMs ?? Infinity, keepaliveIntervalMs ?? Infinity) / 4);
-    const started = this.now();
-    if (this.lastOutboundActivityMs === 0) this.lastOutboundActivityMs = started;
-    if (this.lastInboundActivityMs === 0) this.lastInboundActivityMs = started;
-    this.idleTimer = setInterval(() => { this.onIdleTick(); }, tick);
-  }
-
-  private stopIdleTimer(): void {
-    if (this.idleTimer !== undefined) {
-      clearInterval(this.idleTimer);
-      this.idleTimer = undefined;
-    }
-  }
-
-  private onIdleTick(): void {
-    if (this._state !== 'ready') return;
-    const now = this.now();
-    const { idleTimeoutMs, keepaliveIntervalMs } = this.idleConfig;
-
-    if (keepaliveIntervalMs && !this.idleClosePending) {
-      const sinceOutbound = now - this.lastOutboundActivityMs;
-      if (sinceOutbound >= keepaliveIntervalMs) {
-        // §11.5 padding datagram — a single byte payload is enough to reset
-        // the peer's QUIC idle timer. Fire-and-forget; `sendPaddingDatagram`
-        // calls `markOutboundActivity()` for us via `doSendDatagram()`.
-        this.sendPaddingDatagram(1).catch((err: unknown) => {
-          log.warn('Idle keepalive padding datagram failed', { err: String(err) });
-        });
-      }
-    }
-
-    if (idleTimeoutMs && !this.idleClosePending) {
-      const sinceActivity = Math.min(
-        now - this.lastOutboundActivityMs,
-        now - this.lastInboundActivityMs,
-      );
-      if (sinceActivity >= idleTimeoutMs) {
-        this.idleClosePending = true;
-        const sinceMs = Math.round(sinceActivity);
-        log.warn('Draft-18 §13.6.1 idle timeout — closing session', {
-          idleTimeoutMs,
-          sinceLastActivityMs: sinceMs,
-        });
-        // Surface it as a local session-terminated event so UIs can react —
-        // handleTransportClosed suppresses events for local closes, but the
-        // idle path is a policy decision by *this* endpoint that consumers
-        // should see explicitly.
-        this.emit('session-terminated', {
-          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
-          reason: `idle timeout (${sinceMs}ms > ${idleTimeoutMs}ms)`,
-          remote: false,
-        } as SessionTerminatedEvent);
-        // CONTROL_MESSAGE_TIMEOUT (§15.10.3 / SessionErrorCodeDraft18 0x11)
-        // is the closest spec code for "the peer stopped talking to us."
-        this.close({
-          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
-          reason: 'idle timeout',
-        }).catch(() => {/* best effort */});
-      }
+      this.idleTracker.resetActivityBaseline();
+      this.idleTracker.stop();
+      this.idleTracker.start();
     }
   }
 
@@ -2077,7 +2009,7 @@ export class MOQTSession {
     // §13.6.1: cancel the idle/keepalive timer before we tear down the
     // transport, otherwise a stale tick could try to send on a closed
     // stream.
-    this.stopIdleTimer();
+    this.idleTracker.stop();
 
     // Stop all publications
     for (const [trackAlias] of this.publicationManager) {
@@ -6478,7 +6410,7 @@ export class MOQTSession {
    * Handle incoming control messages
    */
   private handleControlMessage(data: Uint8Array): void {
-    this.markInboundActivity();
+    this.idleTracker.markInbound();
     const remainingBytes = this.controlBuffer.length - this.controlBufferOffset;
     log.debug('Control message received', {
       newDataSize: data.length,
@@ -7064,9 +6996,9 @@ export class MOQTSession {
     // disarm on any leave. Configuration may have been set before setup(),
     // in which case this is the first place we can honor it.
     if (state === 'ready') {
-      this.startIdleTimer();
+      this.idleTracker.start();
     } else {
-      this.stopIdleTimer();
+      this.idleTracker.stop();
     }
   }
 

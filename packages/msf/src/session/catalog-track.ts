@@ -7,6 +7,7 @@
  * Provides high-level APIs for subscribing to and publishing MSF catalogs.
  */
 
+import { Logger } from '@moq-web/core';
 import type { MOQTSession } from '@moq-web/session';
 import { CATALOG_TRACK_NAME } from '../version.js';
 import { parseCatalogFromBytes, serializeCatalogToBytes } from '../catalog/index.js';
@@ -18,6 +19,8 @@ import {
   createGroupNumbering,
   type GroupNumberingStrategy,
 } from './group-numbering.js';
+
+const log = Logger.create('moqt:msf:catalog-track');
 
 /**
  * Error thrown when catalog operations fail
@@ -107,23 +110,29 @@ export class CatalogSubscriber {
   }
 
   /**
-   * Handle SUBSCRIBE_OK - FETCH from largestGroupId to get current catalog
+   * Handle SUBSCRIBE_OK for the catalog track.
+   *
+   * Historically we issued a follow-up FETCH from `largestGroupId` here so
+   * late subscribers could pick up the current catalog immediately. That
+   * path is disabled because the Akamai relay we deploy against tears down
+   * the QUIC session on any incoming FETCH. The `CatalogPublisher` side
+   * mitigates this by republishing the full catalog on an interval
+   * (`republishIntervalMs`), so a late subscriber sees the next tick over
+   * normal SUBSCRIBE delivery instead of an initial FETCH.
    */
   private async handleSubscribeOk(event: {
     largestGroupId?: bigint;
     largestObjectId?: bigint;
   }): Promise<void> {
-    // Clean up listener - we only need it once
     if (this.subscribeOkCleanup) {
       this.subscribeOkCleanup();
       this.subscribeOkCleanup = undefined;
     }
 
-    // FETCH disabled: Akamai relay disconnects when receiving FETCH messages.
-    // Workaround: Publisher republishes catalog periodically so late subscribers
-    // receive it via normal SUBSCRIBE delivery.
-    // TODO: Re-enable when relay supports FETCH forwarding
-    console.log('[CatalogSubscriber] SUBSCRIBE_OK received, largestGroupId:', event.largestGroupId?.toString());
+    log.debug('SUBSCRIBE_OK received; waiting for publisher republish tick', {
+      largestGroupId: event.largestGroupId?.toString(),
+      largestObjectId: event.largestObjectId?.toString(),
+    });
   }
 
   /**

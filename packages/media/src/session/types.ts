@@ -202,6 +202,13 @@ export interface MediaSubscribeOptions {
   startGroup?: number;
   /** Start object ID when filterType is 'absolute' (default: 0) */
   startObject?: number;
+  /**
+   * GOP duration hint in milliseconds. When supplied (e.g. from the MSF
+   * catalog's `gopDuration` for a video track), `seek()` uses this to
+   * translate a time offset into a group range. Defaults to 1000ms if not
+   * provided.
+   */
+  gopDurationMs?: number;
 }
 
 /**

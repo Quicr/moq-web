@@ -115,6 +115,8 @@ interface ActiveSubscription {
   feedbackTrackAlias?: bigint;
   /** Group ID for feedback objects */
   feedbackGroupId?: number;
+  /** GOP duration hint from the catalog for time↔group math in seek() */
+  gopDurationMs?: number;
 }
 
 /**
@@ -868,6 +870,7 @@ export class MediaSession {
       pipeline,
       mediaType,
       secureContext,
+      gopDurationMs: options?.gopDurationMs,
     });
     this.pipelineToSubscriptionId.set(pipeline, subscriptionId);
     this.subscriptionIdToPipeline.set(subscriptionId, pipeline);
@@ -1418,9 +1421,15 @@ export class MediaSession {
    * This uses FETCH to request historical content from the specified time.
    * The subscription pipeline will buffer and decode the fetched content.
    *
+   * GOP duration is resolved in this order:
+   * 1. `options.gopDurationMs` argument
+   * 2. `gopDurationMs` supplied on the originating {@link subscribe} call
+   * 3. 1000 ms fallback (assumes 1s/GOP)
+   *
    * @param subscriptionId - Active subscription to seek
    * @param timeMs - Target time in milliseconds from start
    * @param durationMs - Duration to fetch in milliseconds (optional, default 5000ms)
+   * @param options - Per-seek overrides
    * @returns Fetch request ID
    *
    * @example
@@ -1430,21 +1439,23 @@ export class MediaSession {
    *
    * // Seek to 1 minute and fetch 10 seconds of content
    * await session.seek(subscriptionId, 60000, 10000);
+   *
+   * // Override GOP duration (catalog says 2s GOPs)
+   * await session.seek(subscriptionId, 60000, 10000, { gopDurationMs: 2000 });
    * ```
    */
   async seek(
     subscriptionId: number,
     timeMs: number,
-    durationMs = 5000
+    durationMs = 5000,
+    options?: { gopDurationMs?: number },
   ): Promise<bigint> {
     const subscription = this.subscriptions.get(subscriptionId);
     if (!subscription) {
       throw new Error(`Subscription ${subscriptionId} not found`);
     }
 
-    // Calculate group range from time
-    // Assume 1 second per group by default (can be configured via track metadata)
-    const gopDuration = 1000; // TODO: Get from track metadata
+    const gopDuration = options?.gopDurationMs ?? subscription.gopDurationMs ?? 1000;
     const startGroup = Math.floor(timeMs / gopDuration);
     const endGroup = Math.floor((timeMs + durationMs) / gopDuration);
 
