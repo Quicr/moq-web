@@ -4,7 +4,8 @@
   "private": true,
   "description": "Media over QUIC Transport (MOQT) TypeScript library",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
   "scripts": {
     "build": "MOQT_VERSION=draft-16 pnpm -r run build",
@@ -15,15 +16,19 @@
     "test:draft-16": "MOQT_VERSION=draft-16 pnpm -r run test",
     "test:e2e": "RUN_E2E=1 pnpm --filter @moq-web/session-e2e --filter @moq-web/media-e2e run test",
     "lint": "pnpm -r run lint",
-    "dev": "MOQT_VERSION=draft-16 pnpm --filter @moq-web/client run dev",
-    "dev:draft-18": "MOQT_VERSION=draft-18 pnpm --filter @moq-web/client run dev",
-    "dev:draft-16": "MOQT_VERSION=draft-16 pnpm --filter @moq-web/client run dev",
+    "dev": "MOQT_VERSION=draft-16 pnpm --filter @moq-web/chat-call run dev",
+    "dev:studio": "MOQT_VERSION=draft-18 pnpm --filter @moq-web/studio run dev",
+    "dev:catalog": "MOQT_VERSION=draft-18 pnpm --filter @moq-web/catalog-playground run dev",
+    "dev:vod": "MOQT_VERSION=draft-18 pnpm --filter @moq-web/vod-dvr run dev",
+    "dev:auth": "pnpm --filter @moq-web/auth-demo run dev",
+    "dev:draft-18": "MOQT_VERSION=draft-18 pnpm --filter @moq-web/chat-call run dev",
+    "dev:draft-16": "MOQT_VERSION=draft-16 pnpm --filter @moq-web/chat-call run dev",
     "clean": "pnpm -r run clean",
     "publish:dry-run": "pnpm --filter @moq-web/core --filter @moq-web/cat --filter @moq-web/secure-objects --filter @moq-web/session --filter @moq-web/msf --filter @moq-web/media exec pnpm publish --dry-run --no-git-checks",
     "bun:build": "MOQT_VERSION=draft-16 bun run --filter '*' build",
     "bun:test": "MOQT_VERSION=draft-16 bun run --filter '*' test",
     "bun:lint": "bun run --filter '*' lint",
-    "bun:dev": "MOQT_VERSION=draft-16 bun run --filter @moq-web/client dev"
+    "bun:dev": "MOQT_VERSION=draft-16 bun run --filter @moq-web/chat-call dev"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

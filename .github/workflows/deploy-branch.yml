@@ -56,14 +56,19 @@ jobs:
       - name: Save branch build
         run: |
           mkdir -p branch-build/${{ github.event.inputs.branch }}
-          cp -r packages/client/dist/* branch-build/${{ github.event.inputs.branch }}/
-          for app_dir in apps/*/dist; do
-            if [ -d "$app_dir" ]; then
-              app_name=$(echo "$app_dir" | cut -d'/' -f2)
-              mkdir -p "branch-build/${{ github.event.inputs.branch }}/apps/$app_name"
-              cp -r "$app_dir"/* "branch-build/${{ github.event.inputs.branch }}/apps/$app_name/"
+          for app in apps/*/; do
+            if [ -f "$app/package.json" ]; then
+              appname=$(basename "$app")
+              (cd "$app" && pnpm vite build --base /${{ github.event.repository.name }}/branches/${{ github.event.inputs.branch }}/apps/$appname/)
+              if [ -d "$app/dist" ]; then
+                mkdir -p "branch-build/${{ github.event.inputs.branch }}/apps/$appname"
+                cp -r "$app/dist"/* "branch-build/${{ github.event.inputs.branch }}/apps/$appname/"
+              fi
             fi
           done
+          if [ -d "branch-build/${{ github.event.inputs.branch }}/apps/chat-call" ]; then
+            cp -r branch-build/${{ github.event.inputs.branch }}/apps/chat-call/. branch-build/${{ github.event.inputs.branch }}/
+          fi
 
       - name: Checkout main for full build
         uses: actions/checkout@v4
@@ -80,7 +85,21 @@ jobs:
           BASE_URL: /${{ github.event.repository.name }}/
 
       - name: Setup combined output
-        run: mv packages/client/dist dist-combined
+        run: |
+          mkdir -p dist-combined
+          for app in apps/*/; do
+            if [ -f "$app/package.json" ]; then
+              appname=$(basename "$app")
+              (cd "$app" && pnpm vite build --base /${{ github.event.repository.name }}/apps/$appname/)
+              if [ -d "$app/dist" ]; then
+                mkdir -p "dist-combined/apps/$appname"
+                cp -r "$app/dist"/* "dist-combined/apps/$appname/"
+              fi
+            fi
+          done
+          if [ -d dist-combined/apps/chat-call ]; then
+            cp -r dist-combined/apps/chat-call/. dist-combined/
+          fi
 
       - name: Combine all builds
         run: |

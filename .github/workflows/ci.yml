@@ -47,7 +47,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dist
-          path: packages/client/dist
+          path: |
+            packages/*/dist
           retention-days: 7
 
   lint:

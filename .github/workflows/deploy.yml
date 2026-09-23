@@ -51,56 +51,39 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build draft-16 (default)
+      - name: Build workspace libs (draft-16)
         run: pnpm run build
         env:
           BASE_URL: /${{ github.event.repository.name }}/
 
-      - name: Build auth-demo
-        run: |
-          if [ -d apps/auth-demo ]; then
-            cd apps/auth-demo
-            pnpm vite build --base /${{ github.event.repository.name }}/auth-demo/
-          fi
-
-      - name: Save draft-16 build
-        run: |
-          mv packages/client/dist dist-combined
-          if [ -d apps/auth-demo/dist ]; then
-            mv apps/auth-demo/dist dist-combined/auth-demo
-          fi
-
-      - name: Build apps
-        run: |
-          for app in apps/*/; do
-            if [ -f "$app/package.json" ]; then
-              (cd "$app" && pnpm build)
-            fi
-          done
-        env:
-          BASE_URL: /${{ github.event.repository.name }}/
-
-      - name: Copy apps to dist
+      - name: Build all demo apps
         run: |
           mkdir -p dist-combined/apps
-          cp apps/index.html dist-combined/apps/
+          cp apps/index.html dist-combined/apps/ 2>/dev/null || true
           for app in apps/*/; do
-            if [ -d "$app/dist" ]; then
+            if [ -f "$app/package.json" ]; then
               appname=$(basename "$app")
-              cp -r "$app/dist" "dist-combined/apps/$appname"
+              (cd "$app" && pnpm vite build --base /${{ github.event.repository.name }}/apps/$appname/)
+              if [ -d "$app/dist" ]; then
+                cp -r "$app/dist" "dist-combined/apps/$appname"
+              fi
             fi
           done
 
-      - name: Clean for draft-18 rebuild
-        run: pnpm run clean
+      - name: Landing page — use chat-call as root when present
+        run: |
+          if [ -d dist-combined/apps/chat-call ]; then
+            cp -r dist-combined/apps/chat-call/. dist-combined/
+          elif [ -d dist-combined/apps/auth-demo ]; then
+            cp -r dist-combined/apps/auth-demo/. dist-combined/
+          fi
 
-      - name: Build draft-18
-        run: pnpm run build:draft-18
+      - name: Rebuild workspace libs (draft-18)
+        run: |
+          pnpm run clean
+          pnpm run build:draft-18
         env:
           BASE_URL: /${{ github.event.repository.name }}/18/
-
-      - name: Save draft-18 build
-        run: mv packages/client/dist dist-combined/18
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
