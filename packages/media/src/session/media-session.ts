@@ -25,6 +25,7 @@ import {
   type FetchErrorEvent,
   type VODPublishOptions,
   type ForwardStateChangeEvent,
+  type NewGroupRequestEvent,
   type SubscribeErrorEvent,
   type NamespaceErrorEvent,
 } from '@moq-web/session';
@@ -1966,6 +1967,21 @@ export class MediaSession {
       }
     });
     this.sessionCleanup.push(forwardStateCleanup);
+
+    // Draft-18 §10.2.13 NEW_GROUP_REQUEST — a subscriber has asked the publisher
+    // to cut a fresh group so the peer can seed its decoder without waiting for
+    // the next scheduled IDR. Force a keyframe on the matching publication.
+    const newGroupRequestCleanup = this.session.on('new-group-request', (event: NewGroupRequestEvent) => {
+      if (event.trackAlias === undefined) return;
+      const publication = this.publications.get(event.trackAlias.toString());
+      if (!publication) return;
+      log.info('NEW_GROUP_REQUEST — forcing keyframe', {
+        trackAlias: event.trackAlias.toString(),
+        requestId: event.requestId.toString(),
+      });
+      publication.pipeline.forceKeyframe();
+    });
+    this.sessionCleanup.push(newGroupRequestCleanup);
   }
 
   /**

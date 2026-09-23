@@ -241,6 +241,60 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     expect(events[0]).toEqual({ requestId: 21n, value: 1n, forwardState: true });
   });
 
+  it('enriches the emitted event with trackAlias when a matching publication is registered', async () => {
+    const session = makeSession();
+    (session as unknown as { incomingRequestKinds: Map<number, string> })
+      .incomingRequestKinds.set(31, 'subscribe');
+
+    // Seed the publication manager so the dispatcher can resolve requestId → publication.
+    (session as unknown as {
+      publicationManager: {
+        add: (p: {
+          trackAlias: bigint;
+          namespace: string[];
+          trackName: string;
+          priority: number;
+          deliveryMode: 'stream' | 'datagram';
+          requestId: bigint;
+          cleanupHandlers: unknown[];
+          forward: number;
+        }) => void;
+      };
+    }).publicationManager.add({
+      trackAlias: 555n,
+      namespace: ['ns'],
+      trackName: 'video',
+      priority: 128,
+      deliveryMode: 'stream',
+      requestId: 31n,
+      cleanupHandlers: [],
+      forward: 1,
+    });
+
+    const events: NewGroupRequestEvent[] = [];
+    session.on('new-group-request', (e) => events.push(e));
+
+    const params = new Map<number, Uint8Array>();
+    params.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(1n));
+
+    (session as unknown as {
+      dispatchRequestUpdateDraft18: (m: RequestUpdateMessageDraft18) => void;
+    }).dispatchRequestUpdateDraft18({
+      type: MessageTypeDraft18.REQUEST_UPDATE,
+      requestId: 31n,
+      forwardState: true,
+      parameters: params,
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      requestId: 31n,
+      value: 1n,
+      forwardState: true,
+      trackAlias: 555n,
+    });
+  });
+
   it('does not emit new-group-request when parameter value is zero', async () => {
     const session = makeSession();
     (session as unknown as { incomingRequestKinds: Map<number, string> })

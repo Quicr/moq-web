@@ -452,6 +452,8 @@ export interface NewGroupRequestEvent {
   value: bigint;
   /** Whether forward=1 accompanied the request (resume + new group is common). */
   forwardState: boolean;
+  /** Track alias of the local publication targeted by this request, when known. */
+  trackAlias?: bigint;
 }
 
 /**

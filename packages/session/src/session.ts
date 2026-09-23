@@ -6064,10 +6064,12 @@ export class MOQTSession {
         value = BigInt(ngrBytes[0] ?? 0);
       }
       if (value !== 0n) {
+        const targetedPub = this.publicationManager.getByRequestId(requestId);
         this.emit('new-group-request', {
           requestId,
           value,
           forwardState: message.forwardState,
+          ...(targetedPub ? { trackAlias: targetedPub.trackAlias } : {}),
         });
       }
     }
