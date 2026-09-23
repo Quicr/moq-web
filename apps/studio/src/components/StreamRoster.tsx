@@ -1,20 +1,30 @@
 import { GlassPanel } from '@moq-web/app-kit/shell';
 
-const PARTICIPANTS = [
-  { name: 'Producer', role: 'host', priority: 32, delivery: 'stream' as const },
-  { name: 'Guest · A', role: 'speaker', priority: 64, delivery: 'stream' as const },
-  { name: 'Guest · B', role: 'speaker', priority: 96, delivery: 'datagram' as const },
-];
+export interface RosterEntry {
+  peerId: string;
+  role: 'host' | 'guest';
+  priority: number;
+  delivery: 'stream' | 'datagram';
+}
 
-export function StreamRoster() {
+interface Props {
+  entries: RosterEntry[];
+  selfId: string;
+}
+
+export function StreamRoster({ entries, selfId }: Props) {
   return (
     <GlassPanel padding="md">
       <div className="ak-heading" style={{ marginBottom: 12 }}>Roster</div>
       <div className="ak-stack" style={{ gap: 8 }}>
-        {PARTICIPANTS.map((p) => (
-          <div key={p.name} className="ak-row-between" style={{ padding: '8px 0' }}>
+        {entries.length === 0 ? (
+          <div className="ak-subtle">No participants yet.</div>
+        ) : entries.map((p) => (
+          <div key={p.peerId} className="ak-row-between" style={{ padding: '8px 0' }}>
             <div>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>
+                {p.peerId}{p.peerId === selfId ? ' (you)' : ''}
+              </div>
               <div className="ak-subtle" style={{ fontSize: 12 }}>{p.role}</div>
             </div>
             <div style={{ display: 'flex', gap: 6 }}>

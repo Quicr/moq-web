@@ -4,3 +4,4 @@
 export * from './adapter.js';
 export * from './version.js';
 export * from './useMoqtSession.js';
+export * from './connector.js';
