@@ -190,27 +190,16 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
   try { await session.subscribeNamespace(roomPrefix); }
   catch (err) { void err; }
 
-  await session.announceNamespace(selfNamespace, { deliveryMode: 'stream' });
-
+  // Publish all our tracks BEFORE announcing our namespace. Otherwise a peer
+  // that sees our announce can race ahead and subscribe to a track we haven't
+  // registered yet, and the relay rejects our subsequent PUBLISH with
+  // DUPLICATE_SUBSCRIPTION (draft-18 error code 0x19).
   const trackAlias = await session.publish(selfNamespace, EVENT_TRACK, {
     deliveryMode: 'stream',
     deliveryTimeout: 0,
     skipForwardWait: true,
     priority: opts.transport.publisher.publisherPriority,
   });
-
-  try {
-    await session.subscribe(selfNamespace, EVENT_TRACK, {
-      priority: opts.transport.subscriber.subscriberPriority,
-    }, (data) => {
-      try {
-        const evt = JSON.parse(decoder.decode(data)) as TimelineEvent;
-        opts.onEvent(opts.selfId, evt);
-      } catch (err) {
-        opts.onError(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-  } catch (err) { void err; }
 
   let localStream: MediaStream | undefined;
   if (opts.publishMedia) {
@@ -266,6 +255,23 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     // Catalog publish is best-effort; some relays may not support it.
     void err;
   }
+
+  // Now that every track is registered, announce ourselves so peers subscribe.
+  await session.announceNamespace(selfNamespace, { deliveryMode: 'stream' });
+
+  // Loopback subscribe so the operator sees their own events.
+  try {
+    await session.subscribe(selfNamespace, EVENT_TRACK, {
+      priority: opts.transport.subscriber.subscriberPriority,
+    }, (data) => {
+      try {
+        const evt = JSON.parse(decoder.decode(data)) as TimelineEvent;
+        opts.onEvent(opts.selfId, evt);
+      } catch (err) {
+        opts.onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  } catch (err) { void err; }
 
   let seq = 0;
   return {
