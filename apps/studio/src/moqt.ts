@@ -259,20 +259,6 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
   // Now that every track is registered, announce ourselves so peers subscribe.
   await session.announceNamespace(selfNamespace, { deliveryMode: 'stream' });
 
-  // Loopback subscribe so the operator sees their own events.
-  try {
-    await session.subscribe(selfNamespace, EVENT_TRACK, {
-      priority: opts.transport.subscriber.subscriberPriority,
-    }, (data) => {
-      try {
-        const evt = JSON.parse(decoder.decode(data)) as TimelineEvent;
-        opts.onEvent(opts.selfId, evt);
-      } catch (err) {
-        opts.onError(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-  } catch (err) { void err; }
-
   let seq = 0;
   return {
     namespace: selfNamespace,
@@ -282,6 +268,7 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       const objectId = 0;
       seq += 1;
       await session.sendObject(trackAlias, encoder.encode(JSON.stringify(evt)), { groupId, objectId });
+      opts.onEvent(opts.selfId, evt);
     },
     getLocalStream: () => localStream,
     setLocalMuted: (muted) => {
