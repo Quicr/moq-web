@@ -11,6 +11,7 @@ import type { FullCatalog } from '@moq-web/msf';
 import { Timeline, type TimelineEntry } from './components/Timeline';
 import { StreamRoster, type RosterEntry } from './components/StreamRoster';
 import { MediaGrid, type MediaTile } from './components/MediaGrid';
+import { EventComposer } from './components/EventComposer';
 import { openStudioBroadcast, type StudioBroadcast, type TimelineEvent } from './moqt';
 
 const ROOM_ID = new URLSearchParams(globalThis.location?.search ?? '').get('room') ?? 'default';
@@ -156,6 +157,15 @@ export function App() {
   ];
 
   const totalPeerTracks = Object.values(peerCatalogs).reduce((n, c) => n + c.tracks.length, 0);
+  const isDraft16 = cfg.relay.draft === 'draft-16';
+
+  const shareRoom = useCallback(() => {
+    const url = new URL(globalThis.location.href);
+    url.searchParams.set('room', ROOM_ID);
+    try {
+      void navigator.clipboard.writeText(url.toString());
+    } catch { /* clipboard may be unavailable */ }
+  }, []);
 
   return (
     <AppShell
@@ -178,6 +188,13 @@ export function App() {
             Publish camera / mic
           </label>
           <button
+            className="ak-btn ak-btn-ghost"
+            onClick={shareRoom}
+            title={`Copy https://…?room=${ROOM_ID}`}
+          >
+            🔗 Share
+          </button>
+          <button
             className="ak-btn ak-btn-primary"
             onClick={() => (status === 'ready' ? void disconnect() : void connect())}
           >
@@ -190,9 +207,19 @@ export function App() {
         <div className="ak-stack">
           {error ? (
             <GlassPanel padding="md">
-              <div className="ak-heading" style={{ color: '#f87171', marginBottom: 4 }}>Session error</div>
-              <div className="ak-subtle" style={{ fontSize: 12 }}>{error}</div>
+              <div className="ak-row-between">
+                <div>
+                  <div className="ak-heading" style={{ color: '#f87171', marginBottom: 4 }}>Session error</div>
+                  <div className="ak-subtle" style={{ fontSize: 12 }}>{error}</div>
+                </div>
+                <button className="ak-btn ak-btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+              </div>
             </GlassPanel>
+          ) : null}
+          {isDraft16 && status === 'ready' ? (
+            <div className="ak-glass" style={{ padding: '8px 12px', fontSize: 12, color: 'var(--ak-fg-muted)' }}>
+              ⚠️ Running on draft-16 — namespace subscribe is unsupported, so peers only discover each other via explicit announcements. Switch to draft-18 for full multi-party discovery.
+            </div>
           ) : null}
           <MediaGrid
             tiles={tiles}
@@ -205,11 +232,7 @@ export function App() {
             status={status}
           />
           <Timeline entries={entries} durationMs={60_000} selfId={SELF_ID} />
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="ak-btn" disabled={status !== 'ready'} onClick={() => void emit('delta', 'Bitrate step-up')}>+ Bitrate delta</button>
-            <button className="ak-btn" disabled={status !== 'ready'} onClick={() => void emit('meta', 'Slide change')}>+ Slide change</button>
-            <button className="ak-btn" disabled={status !== 'ready'} onClick={() => void emit('meta', 'Q&A open')}>+ Q&A open</button>
-          </div>
+          <EventComposer onEmit={(kind, label) => void emit(kind, label)} disabled={status !== 'ready'} />
           {totalPeerTracks > 0 ? (
             <GlassPanel padding="md">
               <div className="ak-heading" style={{ marginBottom: 8 }}>Peer catalogs</div>
