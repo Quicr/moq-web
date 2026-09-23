@@ -15,6 +15,7 @@
     "@moq-web/app-kit": "workspace:*",
     "@moq-web/cat": "workspace:*",
     "@moq-web/core": "workspace:*",
+    "@moq-web/msf": "workspace:*",
     "@moq-web/session": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"

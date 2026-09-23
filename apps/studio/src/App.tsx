@@ -3,7 +3,6 @@ import {
   AppShell,
   GlassPanel,
   StatusDot,
-  TransportConfigPanel,
   TrickPlayBar,
   useDvrPlayer,
   useTransportActions,
@@ -162,10 +161,6 @@ export function App() {
         </div>
         <div className="ak-stack">
           <StreamRoster entries={Object.values(roster)} selfId={SELF_ID} />
-          <GlassPanel padding="md">
-            <div className="ak-heading" style={{ marginBottom: 10 }}>Transport</div>
-            <TransportConfigPanel defaultSection="profile" />
-          </GlassPanel>
         </div>
       </div>
     </AppShell>

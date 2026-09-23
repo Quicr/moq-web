@@ -3,7 +3,6 @@ import {
   AppShell,
   GlassPanel,
   StatusDot,
-  TransportConfigPanel,
   TrickPlayBar,
   useDvrPlayer,
   useTransportActions,
@@ -186,7 +185,6 @@ export function App() {
               </div>
             ) : null}
           </GlassPanel>
-          <TransportConfigPanel defaultSection="playback" />
         </div>
       </div>
     </AppShell>

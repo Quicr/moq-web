@@ -26,6 +26,7 @@
   "dependencies": {
     "@moq-web/core": "workspace:*",
     "@moq-web/media": "workspace:*",
+    "@moq-web/msf": "workspace:*",
     "@moq-web/session": "workspace:*"
   },
   "peerDependencies": {

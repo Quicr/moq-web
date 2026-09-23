@@ -10,7 +10,7 @@ const decoder = new TextDecoder();
 
 export interface CatalogRoundTrip {
   namespace: string[];
-  publish: (payload: Record<string, string | number | boolean>) => Promise<void>;
+  publish: (payload: object | string) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -25,8 +25,8 @@ export interface CatalogRoundTrip {
 export async function openCatalogRoundTrip(opts: {
   transport: TransportConfig;
   namespace: string[];
-  onPublished: (json: Record<string, string | number | boolean>, groupId: number, objectId: number) => void;
-  onReceived: (json: Record<string, string | number | boolean>, groupId: number, objectId: number) => void;
+  onPublished: (json: unknown, groupId: number, objectId: number) => void;
+  onReceived: (json: unknown, groupId: number, objectId: number) => void;
   onError: (err: Error) => void;
   signal?: AbortSignal;
 }): Promise<CatalogRoundTrip & { connected: ConnectedSession }> {
@@ -49,7 +49,7 @@ export async function openCatalogRoundTrip(opts: {
     priority: opts.transport.subscriber.subscriberPriority,
   }, (data, groupId, objectId) => {
     try {
-      const parsed = JSON.parse(decoder.decode(data)) as Record<string, string | number | boolean>;
+      const parsed = JSON.parse(decoder.decode(data)) as unknown;
       opts.onReceived(parsed, groupId, objectId);
     } catch (err) {
       opts.onError(err instanceof Error ? err : new Error(String(err)));
@@ -64,9 +64,11 @@ export async function openCatalogRoundTrip(opts: {
       const groupId = seq;
       const objectId = 0;
       seq += 1;
-      const bytes = encoder.encode(JSON.stringify(payload));
+      const json = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      const bytes = encoder.encode(json);
       await session.sendObject(trackAlias, bytes, { groupId, objectId });
-      opts.onPublished(payload, groupId, objectId);
+      const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      opts.onPublished(parsed, groupId, objectId);
     },
     close: async () => {
       try { await session.close(); } catch { /* noop */ }

@@ -370,3 +370,101 @@ body.ak-body,
   background: var(--ak-warn);
   box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
 }
+
+.ak-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  z-index: 1000;
+  animation: ak-fade-in 160ms ease;
+}
+
+.ak-modal {
+  width: 100%;
+  max-height: calc(100vh - 64px);
+  border-radius: var(--ak-radius-lg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: ak-scale-in 200ms ease;
+}
+
+.ak-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 22px 28px 12px 28px;
+  border-bottom: 1px solid var(--ak-border);
+}
+
+.ak-modal-body {
+  padding: 20px 28px 28px 28px;
+  overflow-y: auto;
+}
+
+@keyframes ak-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ak-scale-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ak-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.ak-settings-card {
+  padding: 20px;
+  border-radius: var(--ak-radius);
+  background: var(--ak-bg-elev);
+  border: 1px solid var(--ak-border);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ak-settings-card h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ak-fg);
+}
+
+.ak-settings-card .ak-caption {
+  margin-top: -6px;
+}
+
+.ak-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--ak-border-strong);
+  background: var(--ak-bg-elev-strong);
+  color: var(--ak-fg-muted);
+  font-size: 16px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.ak-icon-btn:hover {
+  color: var(--ak-fg);
+  background: var(--ak-accent-soft);
+  transform: translateY(-1px);
+}

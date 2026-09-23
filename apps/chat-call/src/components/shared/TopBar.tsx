@@ -1,16 +1,9 @@
-import { useEffect, useState } from 'react';
-import { DraftSwitch, ThemeSwitch, TransportConfigPanel, useTransportConfig } from '@moq-web/app-kit';
+import { useState } from 'react';
+import { DraftSwitch, SettingsDialog, ThemeSwitch, useTransportConfig } from '@moq-web/app-kit';
 
 export function TopBar() {
   const [open, setOpen] = useState(false);
   const cfg = useTransportConfig();
-
-  useEffect(() => {
-    if (!open) return;
-    const listener = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
-    window.addEventListener('keydown', listener);
-    return () => window.removeEventListener('keydown', listener);
-  }, [open]);
 
   return (
     <>
@@ -32,48 +25,17 @@ export function TopBar() {
         <div style={{ flex: 1 }} />
         <DraftSwitch />
         <ThemeSwitch />
-        <button className="ak-btn ak-btn-primary" onClick={() => setOpen(true)}>
-          ⚙ Settings
+        <button
+          type="button"
+          className="ak-icon-btn"
+          onClick={() => setOpen(true)}
+          aria-label="Open transport settings"
+          title="Transport settings"
+        >
+          ⚙
         </button>
       </header>
-      {open && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setOpen(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(6, 8, 20, 0.55)',
-            backdropFilter: 'blur(6px)',
-            zIndex: 50,
-            display: 'flex',
-            justifyContent: 'flex-end',
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: 'min(760px, 100%)',
-              height: '100%',
-              background: 'var(--ak-bg)',
-              boxShadow: 'var(--ak-shadow-2)',
-              padding: 20,
-              overflow: 'auto',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
-              <div>
-                <div className="ak-caption">Transport & playback</div>
-                <div className="ak-title" style={{ fontSize: 20 }}>Settings</div>
-              </div>
-              <div style={{ flex: 1 }} />
-              <button className="ak-btn" onClick={() => setOpen(false)}>Close</button>
-            </div>
-            <TransportConfigPanel />
-          </div>
-        </div>
-      )}
+      <SettingsDialog open={open} onClose={() => setOpen(false)} />
     </>
   );
 }

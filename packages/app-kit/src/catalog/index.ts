@@ -2,3 +2,4 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 export * from './CatalogBuilder.js';
+export * from './MsfCatalogBuilder.js';

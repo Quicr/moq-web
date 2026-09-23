@@ -9,3 +9,5 @@ export { GlassPanel } from './GlassPanel.js';
 export { Toggle } from './Toggle.js';
 export { StatusDot } from './StatusDot.js';
 export type { StatusState } from './StatusDot.js';
+export { Modal } from './Modal.js';
+export type { ModalProps } from './Modal.js';
