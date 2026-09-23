@@ -425,6 +425,23 @@ body.ak-body,
   gap: 16px;
 }
 
+.ak-settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.ak-settings-tabpanel {
+  min-height: 280px;
+}
+
+.ak-settings-tabpanel .ak-settings-card {
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
 .ak-settings-card {
   padding: 20px;
   border-radius: var(--ak-radius);

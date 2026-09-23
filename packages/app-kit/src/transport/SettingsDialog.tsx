@@ -8,6 +8,7 @@ import {
 } from '../latency/profiles.js';
 import { Modal } from '../shell/Modal.js';
 import { Toggle } from '../shell/Toggle.js';
+import { switchDraftInBrowser } from '../moqt/version.js';
 import { useTransportActions, useTransportConfig } from './state.js';
 
 export interface SettingsDialogProps {
@@ -15,26 +16,50 @@ export interface SettingsDialogProps {
   onClose: () => void;
 }
 
+type TabId = 'profile' | 'relay' | 'publisher' | 'subscriber' | 'playback';
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: 'profile', label: 'Profile' },
+  { id: 'relay', label: 'Relay' },
+  { id: 'publisher', label: 'Publisher' },
+  { id: 'subscriber', label: 'Subscriber' },
+  { id: 'playback', label: 'Playback' },
+];
+
 /**
- * Card-layout settings dialog. Each of the 5 categories is its own glass card
- * so the dense knob list is easier to scan than the previous side-nav layout.
+ * Tabbed settings dialog. One card at a time keeps the dense knob list from
+ * overflowing the modal on narrow viewports.
  */
 export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const { reset } = useTransportActions();
+  const [tab, setTab] = useState<TabId>('profile');
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="Settings"
       subtitle="Transport, playback, and relay endpoints for this app."
-      maxWidth={1080}
+      maxWidth={720}
     >
-      <div className="ak-settings-grid">
-        <ProfileCard />
-        <RelayCard />
-        <PublisherCard />
-        <SubscriberCard />
-        <PlaybackCard />
+      <div className="ak-tabs ak-settings-tabs" role="tablist" aria-label="Settings sections">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            className="ak-tab"
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="ak-settings-tabpanel">
+        {tab === 'profile' && <ProfileCard />}
+        {tab === 'relay' && <RelayCard />}
+        {tab === 'publisher' && <PublisherCard />}
+        {tab === 'subscriber' && <SubscriberCard />}
+        {tab === 'playback' && <PlaybackCard />}
       </div>
       <div className="ak-row" style={{ marginTop: 16, justifyContent: 'flex-end', gap: 8 }}>
         <button className="ak-btn ak-btn-ghost" onClick={reset}>↺ Reset to defaults</button>
@@ -156,11 +181,18 @@ function RelayCard() {
         <select
           className="ak-select"
           value={cfg.relay.draft}
-          onChange={(e) => setRelay({ draft: e.target.value as 'draft-16' | 'draft-18' })}
+          onChange={(e) => {
+            const next = e.target.value as 'draft-16' | 'draft-18';
+            setRelay({ draft: next });
+            switchDraftInBrowser(next);
+          }}
         >
           <option value="draft-16">draft-16</option>
           <option value="draft-18">draft-18</option>
         </select>
+        <div className="ak-caption" style={{ marginTop: 4, fontSize: 10 }}>
+          Reloads into the sibling build ({cfg.relay.draft === 'draft-18' ? '/18/ → /' : '/ → /18/'}).
+        </div>
       </label>
       <NumberField
         label="Keep-alive"
