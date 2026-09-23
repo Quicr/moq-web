@@ -72,10 +72,6 @@ describe.each([
 
     await pub.media.publish(namespace, track.name, source.stream, publishConfig);
 
-    // Small settle before subscribing so the relay has registered the
-    // publication.
-    await new Promise((r) => setTimeout(r, 500));
-
     await sub.media.subscribe(namespace, track.name, publishConfig, 'video');
 
     // Wait for the first decoded frame; the exact latency depends on

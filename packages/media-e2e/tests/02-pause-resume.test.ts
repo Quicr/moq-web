@@ -74,8 +74,6 @@ describe.each([
 
     await pub.media.publish(namespace, track.name, source.stream, publishConfig);
 
-    await new Promise((r) => setTimeout(r, 500));
-
     const subscriptionId = await sub.media.subscribe(
       namespace,
       track.name,
