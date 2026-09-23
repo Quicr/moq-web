@@ -8,15 +8,25 @@ import {
   type AudioTrackInput,
   type FullCatalog,
   type VideoTrackInput,
+  type Track,
 } from '@moq-web/msf';
 import { GlassPanel } from '../shell/GlassPanel.js';
 import { Toggle } from '../shell/Toggle.js';
 
-type Role = 'video' | 'audio';
+type TrackKind = 'video' | 'audio' | 'text' | 'mediatimeline' | 'eventtimeline';
+
+const TEXT_FORMATS = [
+  { value: 'wvtt', label: 'WebVTT', mime: 'text/vtt' },
+  { value: 'im1t', label: 'IMSC1 Text', mime: 'application/ttml+xml' },
+  { value: 'stpp', label: 'TTML', mime: 'application/ttml+xml' },
+  { value: 'sbtt', label: 'SRT', mime: 'application/x-subrip' },
+] as const;
+type TextFormat = (typeof TEXT_FORMATS)[number]['value'];
 
 interface VideoDraft {
   kind: 'video';
   id: string;
+  collapsed: boolean;
   name: string;
   codec: string;
   width: number;
@@ -36,6 +46,7 @@ interface VideoDraft {
 interface AudioDraft {
   kind: 'audio';
   id: string;
+  collapsed: boolean;
   name: string;
   codec: string;
   samplerate: number;
@@ -50,7 +61,52 @@ interface AudioDraft {
   audioSpecificConfig?: string;
 }
 
-type TrackDraft = VideoDraft | AudioDraft;
+interface TextDraft {
+  kind: 'text';
+  id: string;
+  collapsed: boolean;
+  name: string;
+  codec: TextFormat;
+  mimeType: string;
+  role: 'caption' | 'subtitle' | 'sign-language' | 'audiodescription';
+  lang: string;
+  label?: string;
+  isLive: boolean;
+  forced: boolean;
+}
+
+interface MediaTimelineDraft {
+  kind: 'mediatimeline';
+  id: string;
+  collapsed: boolean;
+  name: string;
+  isLive: boolean;
+  depends: string;
+  timescale: number;
+  useTemplate: boolean;
+  startMediaTime: number;
+  deltaMediaTime: number;
+  startGroupId: number;
+  startObjectId: number;
+  deltaGroupId: number;
+  deltaObjectId: number;
+  startWallclock: number;
+  deltaWallclock: number;
+  label?: string;
+}
+
+interface EventTimelineDraft {
+  kind: 'eventtimeline';
+  id: string;
+  collapsed: boolean;
+  name: string;
+  isLive: boolean;
+  eventType: string;
+  depends: string;
+  label?: string;
+}
+
+type TrackDraft = VideoDraft | AudioDraft | TextDraft | MediaTimelineDraft | EventTimelineDraft;
 
 interface CatalogFormState {
   generatedAt: boolean;
@@ -69,6 +125,11 @@ interface CatalogFormState {
     audioDescription: boolean;
     subtitle: boolean;
   };
+  scte35: {
+    enabled: boolean;
+    cueOutDuration: number;
+    preRoll: number;
+  };
 }
 
 let uidCounter = 0;
@@ -76,30 +137,57 @@ const uid = () => `t-${++uidCounter}-${Math.random().toString(36).slice(2, 6)}`;
 
 function defaultVideo(): VideoDraft {
   return {
-    kind: 'video',
-    id: uid(),
-    name: 'video-main',
-    codec: 'av01.0.05M.08',
-    width: 1280,
-    height: 720,
-    framerate: 30,
-    bitrate: 2_000_000,
-    isLive: true,
+    kind: 'video', id: uid(), collapsed: false,
+    name: 'video-main', codec: 'av01.0.05M.08',
+    width: 1280, height: 720, framerate: 30, bitrate: 2_000_000, isLive: true,
   };
 }
 
 function defaultAudio(): AudioDraft {
   return {
-    kind: 'audio',
-    id: uid(),
-    name: 'audio-main',
-    codec: 'opus',
-    samplerate: 48_000,
-    channelConfig: 'stereo',
-    bitrate: 96_000,
-    isLive: true,
-    lang: 'en',
+    kind: 'audio', id: uid(), collapsed: false,
+    name: 'audio-main', codec: 'opus',
+    samplerate: 48_000, channelConfig: 'stereo', bitrate: 96_000, isLive: true, lang: 'en',
   };
+}
+
+function defaultText(): TextDraft {
+  return {
+    kind: 'text', id: uid(), collapsed: false,
+    name: 'captions-en', codec: 'wvtt', mimeType: 'text/vtt',
+    role: 'caption', lang: 'en', isLive: true, forced: false,
+  };
+}
+
+function defaultMediaTimeline(): MediaTimelineDraft {
+  return {
+    kind: 'mediatimeline', id: uid(), collapsed: false,
+    name: 'video-main-timeline', isLive: true,
+    depends: 'video-main', timescale: 1000,
+    useTemplate: true,
+    startMediaTime: 0, deltaMediaTime: 33,
+    startGroupId: 0, startObjectId: 0,
+    deltaGroupId: 1, deltaObjectId: 0,
+    startWallclock: 0, deltaWallclock: 33,
+  };
+}
+
+function defaultEventTimeline(): EventTimelineDraft {
+  return {
+    kind: 'eventtimeline', id: uid(), collapsed: false,
+    name: 'chapters', isLive: false,
+    eventType: 'chapter', depends: '',
+  };
+}
+
+function makeTrack(kind: TrackKind): TrackDraft {
+  switch (kind) {
+    case 'video': return defaultVideo();
+    case 'audio': return defaultAudio();
+    case 'text': return defaultText();
+    case 'mediatimeline': return defaultMediaTimeline();
+    case 'eventtimeline': return defaultEventTimeline();
+  }
 }
 
 export interface MsfCatalogBuilderProps {
@@ -109,9 +197,9 @@ export interface MsfCatalogBuilderProps {
 }
 
 /**
- * Full MSF catalog builder — supports adding/removing video + audio tracks
- * with every reserved track field, plus catalog-level flags (generatedAt,
- * isComplete), catalog-wide encryption, and accessibility roles.
+ * Full MSF catalog builder — covers §5 catalog fields, §6 tracks (video,
+ * audio, text/subtitle, mediatimeline §11, eventtimeline §12), §3 encryption,
+ * §16 accessibility, and SCTE-35 markers.
  *
  * Emits a `FullCatalog` and its JSON serialization on publish.
  */
@@ -127,19 +215,14 @@ export function MsfCatalogBuilder({
     generatedAt: true,
     isComplete: false,
     encryption: {
-      enabled: false,
-      scheme: 'moq-secure-objects',
-      cipherSuite: 'aes-128-gcm-sha256',
-      keyId: '',
-      trackBaseKey: '',
+      enabled: false, scheme: 'moq-secure-objects',
+      cipherSuite: 'aes-128-gcm-sha256', keyId: '', trackBaseKey: '',
     },
     accessibility: {
-      enabled: false,
-      caption: false,
-      signLanguage: false,
-      audioDescription: false,
-      subtitle: false,
+      enabled: false, caption: false, signLanguage: false,
+      audioDescription: false, subtitle: false,
     },
+    scte35: { enabled: false, cueOutDuration: 30_000, preRoll: 4_000 },
   });
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -154,8 +237,8 @@ export function MsfCatalogBuilder({
     }
   }, [catalog]);
 
-  const addTrack = (kind: Role) => {
-    setTracks((cur) => [...cur, kind === 'video' ? defaultVideo() : defaultAudio()]);
+  const addTrack = (kind: TrackKind) => {
+    setTracks((cur) => [...cur, makeTrack(kind)]);
   };
 
   const removeTrack = (id: string) => {
@@ -166,13 +249,17 @@ export function MsfCatalogBuilder({
     setTracks((cur) => cur.map((t) => (t.id === id ? ({ ...t, ...patch } as TrackDraft) : t)));
   };
 
+  const toggleCollapse = (id: string) => {
+    setTracks((cur) => cur.map((t) => (t.id === id ? ({ ...t, collapsed: !t.collapsed } as TrackDraft) : t)));
+  };
+
   return (
     <GlassPanel padding="md">
       <div className="ak-row-between" style={{ marginBottom: 14 }}>
         <div>
           <div className="ak-heading">{title}</div>
           <div className="ak-subtle" style={{ fontSize: 12 }}>
-            Full MSF §5–§6 catalog: tracks, encryption, accessibility.
+            Full MSF catalog: video · audio · text · media/event timelines · encryption · accessibility.
           </div>
         </div>
         <div className="ak-row" style={{ gap: 6 }}>
@@ -215,9 +302,17 @@ export function MsfCatalogBuilder({
           onChange={(patch) => setForm((s) => ({ ...s, accessibility: { ...s.accessibility, ...patch } }))}
         />
 
-        <div className="ak-row" style={{ gap: 8 }}>
-          <button className="ak-btn" onClick={() => addTrack('video')}>+ Video track</button>
-          <button className="ak-btn" onClick={() => addTrack('audio')}>+ Audio track</button>
+        <Scte35Card
+          state={form.scte35}
+          onChange={(patch) => setForm((s) => ({ ...s, scte35: { ...s.scte35, ...patch } }))}
+        />
+
+        <div className="ak-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <button className="ak-btn" onClick={() => addTrack('video')}>+ Video</button>
+          <button className="ak-btn" onClick={() => addTrack('audio')}>+ Audio</button>
+          <button className="ak-btn" onClick={() => addTrack('text')}>+ Text / subtitle</button>
+          <button className="ak-btn" onClick={() => addTrack('mediatimeline')}>+ Media timeline</button>
+          <button className="ak-btn" onClick={() => addTrack('eventtimeline')}>+ Event timeline</button>
         </div>
 
         {tracks.map((t) => (
@@ -226,6 +321,7 @@ export function MsfCatalogBuilder({
             track={t}
             onChange={(patch) => updateTrack(t.id, patch)}
             onRemove={() => removeTrack(t.id)}
+            onToggleCollapse={() => toggleCollapse(t.id)}
             canRemove={tracks.length > 1}
           />
         ))}
@@ -280,52 +376,59 @@ function buildCatalog(tracks: TrackDraft[], form: CatalogFormState): FullCatalog
         }
       : undefined;
 
+  const extraTracks: Track[] = [];
+
   for (const t of tracks) {
     if (t.kind === 'video') {
       const input: VideoTrackInput = {
-        name: t.name,
-        codec: t.codec,
-        width: t.width,
-        height: t.height,
-        framerate: t.framerate,
-        bitrate: t.bitrate,
+        name: t.name, codec: t.codec,
+        width: t.width, height: t.height,
+        framerate: t.framerate, bitrate: t.bitrate,
         isLive: t.isLive,
         label: t.label || undefined,
-        renderGroup: t.renderGroup,
-        altGroup: t.altGroup,
+        renderGroup: t.renderGroup, altGroup: t.altGroup,
         targetLatency: t.targetLatency,
         initData: t.initData || undefined,
-        temporalId: t.temporalId,
-        spatialId: t.spatialId,
+        temporalId: t.temporalId, spatialId: t.spatialId,
       };
       b.addVideoTrack(input);
-    } else {
+    } else if (t.kind === 'audio') {
       const input: AudioTrackInput = {
-        name: t.name,
-        codec: t.codec,
-        samplerate: t.samplerate,
-        channelConfig: t.channelConfig,
-        bitrate: t.bitrate,
-        isLive: t.isLive,
+        name: t.name, codec: t.codec,
+        samplerate: t.samplerate, channelConfig: t.channelConfig,
+        bitrate: t.bitrate, isLive: t.isLive,
         label: t.label || undefined,
         lang: t.lang || undefined,
-        renderGroup: t.renderGroup,
-        altGroup: t.altGroup,
+        renderGroup: t.renderGroup, altGroup: t.altGroup,
         targetLatency: t.targetLatency,
         audioSpecificConfig: t.audioSpecificConfig || undefined,
       };
       b.addAudioTrack(input);
+    } else if (t.kind === 'text') {
+      extraTracks.push(buildTextTrack(t));
+    } else if (t.kind === 'mediatimeline') {
+      extraTracks.push(buildMediaTimeline(t));
+    } else if (t.kind === 'eventtimeline') {
+      extraTracks.push(buildEventTimeline(t));
     }
   }
 
   const catalog = b.build();
+  const anyCatalog = catalog as unknown as { tracks: Record<string, unknown>[] };
 
-  // Layer optional catalog-wide encryption + accessibility onto every track.
-  const anyCatalog = catalog as unknown as {
-    tracks: Record<string, unknown>[];
-  };
+  // Append text/timeline tracks after the builder produces the base list.
+  anyCatalog.tracks = [
+    ...anyCatalog.tracks,
+    ...(extraTracks as unknown as Record<string, unknown>[]),
+  ];
+
   if (encExtras) {
-    anyCatalog.tracks = anyCatalog.tracks.map((track) => ({ ...track, ...encExtras }));
+    anyCatalog.tracks = anyCatalog.tracks.map((track) => {
+      if (track.packaging === 'mediatimeline' || track.packaging === 'eventtimeline') {
+        return track;
+      }
+      return { ...track, ...encExtras };
+    });
   }
   if (form.accessibility.enabled) {
     const acc = accessibilityFromForm(form.accessibility);
@@ -336,7 +439,76 @@ function buildCatalog(tracks: TrackDraft[], form: CatalogFormState): FullCatalog
       });
     }
   }
+  if (form.scte35.enabled) {
+    anyCatalog.tracks = anyCatalog.tracks.map((track) => ({
+      ...track,
+      scte35: {
+        enabled: true,
+        cueOutDuration: form.scte35.cueOutDuration,
+        preRoll: form.scte35.preRoll,
+      },
+    }));
+  }
   return catalog;
+}
+
+function buildTextTrack(t: TextDraft): Track {
+  const track = {
+    name: t.name,
+    packaging: 'loc',
+    isLive: t.isLive,
+    codec: t.codec,
+    mimeType: t.mimeType,
+    role: t.role,
+    lang: t.lang,
+    label: t.label || undefined,
+    ...(t.forced ? { 'com.moqweb.forced': true } : {}),
+  };
+  return stripUndefined(track) as unknown as Track;
+}
+
+function buildMediaTimeline(t: MediaTimelineDraft): Track {
+  const depends = t.depends.split(',').map((s) => s.trim()).filter(Boolean);
+  const track: Record<string, unknown> = {
+    name: t.name,
+    packaging: 'mediatimeline',
+    isLive: t.isLive,
+    role: 'mediatimeline',
+    depends,
+    timescale: t.timescale,
+    label: t.label || undefined,
+  };
+  if (t.useTemplate) {
+    track.timelineTemplate = {
+      startMediaTime: t.startMediaTime,
+      deltaMediaTime: t.deltaMediaTime,
+      startGroupId: t.startGroupId,
+      startObjectId: t.startObjectId,
+      deltaGroupId: t.deltaGroupId,
+      deltaObjectId: t.deltaObjectId,
+      startWallclock: t.startWallclock,
+      deltaWallclock: t.deltaWallclock,
+    };
+  }
+  return stripUndefined(track) as unknown as Track;
+}
+
+function buildEventTimeline(t: EventTimelineDraft): Track {
+  const depends = t.depends.split(',').map((s) => s.trim()).filter(Boolean);
+  const track: Record<string, unknown> = {
+    name: t.name,
+    packaging: 'eventtimeline',
+    isLive: t.isLive,
+    role: 'eventtimeline',
+    eventType: t.eventType,
+    depends: depends.length > 0 ? depends : undefined,
+    label: t.label || undefined,
+  };
+  return stripUndefined(track) as unknown as Track;
+}
+
+function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
 }
 
 function accessibilityFromForm(
@@ -350,24 +522,62 @@ function accessibilityFromForm(
   return entries;
 }
 
+function trackSummary(t: TrackDraft): string {
+  switch (t.kind) {
+    case 'video': return `${t.codec} · ${t.width}×${t.height} @${t.framerate} · ${Math.round(t.bitrate / 1000)}kbps`;
+    case 'audio': return `${t.codec} · ${t.samplerate}Hz · ${t.channelConfig} · ${t.lang ?? '?'}`;
+    case 'text': return `${TEXT_FORMATS.find((f) => f.value === t.codec)?.label ?? t.codec} · ${t.role} · ${t.lang}`;
+    case 'mediatimeline': return `→ ${t.depends || '(no deps)'} · ts=${t.timescale}${t.useTemplate ? ' · template' : ''}`;
+    case 'eventtimeline': return `type=${t.eventType} · ${t.depends || '(no deps)'}`;
+  }
+}
+
+function trackKindLabel(kind: TrackKind): string {
+  switch (kind) {
+    case 'video': return 'Video';
+    case 'audio': return 'Audio';
+    case 'text': return 'Text';
+    case 'mediatimeline': return 'Media timeline';
+    case 'eventtimeline': return 'Event timeline';
+  }
+}
+
 function TrackCard({
   track,
   onChange,
   onRemove,
+  onToggleCollapse,
   canRemove,
 }: {
   track: TrackDraft;
   onChange: (patch: Record<string, unknown>) => void;
   onRemove: () => void;
+  onToggleCollapse: () => void;
   canRemove: boolean;
 }) {
   return (
     <div className="ak-settings-card">
       <div className="ak-row-between">
-        <div>
-          <div className="ak-caption">{track.kind === 'video' ? 'Video track' : 'Audio track'}</div>
-          <div style={{ fontWeight: 600, fontSize: 13 }}>{track.name}</div>
-        </div>
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          style={{
+            background: 'transparent', border: 'none', textAlign: 'left',
+            cursor: 'pointer', color: 'var(--ak-fg)', padding: 0, flex: 1,
+          }}
+          aria-expanded={!track.collapsed}
+        >
+          <div className="ak-row" style={{ gap: 8 }}>
+            <span style={{ fontSize: 12, opacity: 0.6 }}>{track.collapsed ? '▸' : '▾'}</span>
+            <div>
+              <div className="ak-caption">{trackKindLabel(track.kind)}</div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{track.name}</div>
+              {track.collapsed && (
+                <div className="ak-subtle" style={{ fontSize: 11, marginTop: 2 }}>{trackSummary(track)}</div>
+              )}
+            </div>
+          </div>
+        </button>
         <div className="ak-row" style={{ gap: 6 }}>
           <Toggle checked={track.isLive} onChange={(v) => onChange({ isLive: v })} />
           <span className="ak-subtle" style={{ fontSize: 11 }}>live</span>
@@ -379,70 +589,145 @@ function TrackCard({
         </div>
       </div>
 
-      <div className="ak-grid-2">
-        <Text label="Track name" value={track.name} onChange={(v) => onChange({ name: v })} />
-        <Text label="Codec" value={track.codec} onChange={(v) => onChange({ codec: v })} />
-        {track.kind === 'video' ? (
-          <>
-            <Num label="Width" value={track.width} onChange={(v) => onChange({ width: v })} />
-            <Num label="Height" value={track.height} onChange={(v) => onChange({ height: v })} />
-            <Num label="Framerate" value={track.framerate} onChange={(v) => onChange({ framerate: v })} />
-            <Num label="Bitrate (bps)" value={track.bitrate} onChange={(v) => onChange({ bitrate: v })} />
-            <Num
-              label="Temporal ID"
-              value={track.temporalId ?? 0}
-              onChange={(v) => onChange({ temporalId: v || undefined })}
-            />
-            <Num
-              label="Spatial ID"
-              value={track.spatialId ?? 0}
-              onChange={(v) => onChange({ spatialId: v || undefined })}
-            />
-          </>
-        ) : (
-          <>
-            <Num label="Samplerate" value={track.samplerate} onChange={(v) => onChange({ samplerate: v })} />
-            <Num label="Bitrate (bps)" value={track.bitrate} onChange={(v) => onChange({ bitrate: v })} />
-            <Select
-              label="Channel config"
-              value={track.channelConfig}
-              options={['mono', 'stereo', 'surround-5.1', 'surround-7.1', 'atmos']}
-              onChange={(v) => onChange({ channelConfig: v as AudioDraft['channelConfig'] })}
-            />
-            <Text
-              label="Language (BCP 47)"
-              value={track.lang ?? ''}
-              onChange={(v) => onChange({ lang: v || undefined })}
-            />
-            <Text
-              label="AudioSpecificConfig (base64)"
-              value={track.audioSpecificConfig ?? ''}
-              onChange={(v) => onChange({ audioSpecificConfig: v || undefined })}
-            />
-          </>
-        )}
-        <Text
-          label="Label"
-          value={track.label ?? ''}
-          onChange={(v) => onChange({ label: v || undefined })}
-        />
-        <Num
-          label="Render group"
-          value={track.renderGroup ?? 0}
-          onChange={(v) => onChange({ renderGroup: v || undefined })}
-        />
-        <Num
-          label="Alt group"
-          value={track.altGroup ?? 0}
-          onChange={(v) => onChange({ altGroup: v || undefined })}
-        />
-        <Num
-          label="Target latency (ms)"
-          value={track.targetLatency ?? 0}
-          onChange={(v) => onChange({ targetLatency: v || undefined })}
-        />
-      </div>
+      {!track.collapsed && (
+        <div className="ak-grid-2">
+          <Text label="Track name" value={track.name} onChange={(v) => onChange({ name: v })} />
+          <Text
+            label="Label"
+            value={track.label ?? ''}
+            onChange={(v) => onChange({ label: v || undefined })}
+          />
+          {track.kind === 'video' && <VideoFields track={track} onChange={onChange} />}
+          {track.kind === 'audio' && <AudioFields track={track} onChange={onChange} />}
+          {track.kind === 'text' && <TextFields track={track} onChange={onChange} />}
+          {track.kind === 'mediatimeline' && <MediaTimelineFields track={track} onChange={onChange} />}
+          {track.kind === 'eventtimeline' && <EventTimelineFields track={track} onChange={onChange} />}
+        </div>
+      )}
     </div>
+  );
+}
+
+function VideoFields({ track, onChange }: { track: VideoDraft; onChange: (p: Record<string, unknown>) => void }) {
+  return (
+    <>
+      <Text label="Codec" value={track.codec} onChange={(v) => onChange({ codec: v })} />
+      <Num label="Width" value={track.width} onChange={(v) => onChange({ width: v })} />
+      <Num label="Height" value={track.height} onChange={(v) => onChange({ height: v })} />
+      <Num label="Framerate" value={track.framerate} onChange={(v) => onChange({ framerate: v })} />
+      <Num label="Bitrate (bps)" value={track.bitrate} onChange={(v) => onChange({ bitrate: v })} />
+      <Num label="Render group" value={track.renderGroup ?? 0} onChange={(v) => onChange({ renderGroup: v || undefined })} />
+      <Num label="Alt group" value={track.altGroup ?? 0} onChange={(v) => onChange({ altGroup: v || undefined })} />
+      <Num label="Target latency (ms)" value={track.targetLatency ?? 0} onChange={(v) => onChange({ targetLatency: v || undefined })} />
+      <Num label="Temporal ID" value={track.temporalId ?? 0} onChange={(v) => onChange({ temporalId: v || undefined })} />
+      <Num label="Spatial ID" value={track.spatialId ?? 0} onChange={(v) => onChange({ spatialId: v || undefined })} />
+    </>
+  );
+}
+
+function AudioFields({ track, onChange }: { track: AudioDraft; onChange: (p: Record<string, unknown>) => void }) {
+  return (
+    <>
+      <Text label="Codec" value={track.codec} onChange={(v) => onChange({ codec: v })} />
+      <Num label="Samplerate" value={track.samplerate} onChange={(v) => onChange({ samplerate: v })} />
+      <Num label="Bitrate (bps)" value={track.bitrate} onChange={(v) => onChange({ bitrate: v })} />
+      <Select
+        label="Channel config"
+        value={track.channelConfig}
+        options={['mono', 'stereo', 'surround-5.1', 'surround-7.1', 'atmos']}
+        onChange={(v) => onChange({ channelConfig: v as AudioDraft['channelConfig'] })}
+      />
+      <Text label="Language (BCP 47)" value={track.lang ?? ''} onChange={(v) => onChange({ lang: v || undefined })} />
+      <Text label="AudioSpecificConfig (b64)" value={track.audioSpecificConfig ?? ''} onChange={(v) => onChange({ audioSpecificConfig: v || undefined })} />
+      <Num label="Render group" value={track.renderGroup ?? 0} onChange={(v) => onChange({ renderGroup: v || undefined })} />
+      <Num label="Alt group" value={track.altGroup ?? 0} onChange={(v) => onChange({ altGroup: v || undefined })} />
+      <Num label="Target latency (ms)" value={track.targetLatency ?? 0} onChange={(v) => onChange({ targetLatency: v || undefined })} />
+    </>
+  );
+}
+
+function TextFields({ track, onChange }: { track: TextDraft; onChange: (p: Record<string, unknown>) => void }) {
+  return (
+    <>
+      <Select
+        label="Format"
+        value={track.codec}
+        options={TEXT_FORMATS.map((f) => f.value)}
+        onChange={(v) => {
+          const fmt = TEXT_FORMATS.find((f) => f.value === v);
+          onChange({ codec: v as TextFormat, mimeType: fmt?.mime ?? track.mimeType });
+        }}
+      />
+      <Text label="MIME type" value={track.mimeType} onChange={(v) => onChange({ mimeType: v })} />
+      <Select
+        label="Role"
+        value={track.role}
+        options={['caption', 'subtitle', 'sign-language', 'audiodescription']}
+        onChange={(v) => onChange({ role: v as TextDraft['role'] })}
+      />
+      <Text label="Language (BCP 47)" value={track.lang} onChange={(v) => onChange({ lang: v })} />
+      <div className="ak-row-between">
+        <div className="ak-subtle" style={{ fontSize: 12 }}>Forced</div>
+        <Toggle checked={track.forced} onChange={(v) => onChange({ forced: v })} />
+      </div>
+    </>
+  );
+}
+
+function MediaTimelineFields({
+  track,
+  onChange,
+}: {
+  track: MediaTimelineDraft;
+  onChange: (p: Record<string, unknown>) => void;
+}) {
+  return (
+    <>
+      <Text
+        label="Depends on (comma-sep)"
+        value={track.depends}
+        onChange={(v) => onChange({ depends: v })}
+      />
+      <Num label="Timescale" value={track.timescale} onChange={(v) => onChange({ timescale: v })} />
+      <div className="ak-row-between" style={{ gridColumn: '1 / -1' }}>
+        <div>
+          <div className="ak-subtle" style={{ fontSize: 12 }}>Include timelineTemplate</div>
+          <div className="ak-caption" style={{ marginTop: 2 }}>§11 fixed-duration templating</div>
+        </div>
+        <Toggle checked={track.useTemplate} onChange={(v) => onChange({ useTemplate: v })} />
+      </div>
+      {track.useTemplate && (
+        <>
+          <Num label="Start media time" value={track.startMediaTime} onChange={(v) => onChange({ startMediaTime: v })} />
+          <Num label="Δ media time" value={track.deltaMediaTime} onChange={(v) => onChange({ deltaMediaTime: v })} />
+          <Num label="Start group ID" value={track.startGroupId} onChange={(v) => onChange({ startGroupId: v })} />
+          <Num label="Start object ID" value={track.startObjectId} onChange={(v) => onChange({ startObjectId: v })} />
+          <Num label="Δ group ID" value={track.deltaGroupId} onChange={(v) => onChange({ deltaGroupId: v })} />
+          <Num label="Δ object ID" value={track.deltaObjectId} onChange={(v) => onChange({ deltaObjectId: v })} />
+          <Num label="Start wallclock (ms)" value={track.startWallclock} onChange={(v) => onChange({ startWallclock: v })} />
+          <Num label="Δ wallclock (ms)" value={track.deltaWallclock} onChange={(v) => onChange({ deltaWallclock: v })} />
+        </>
+      )}
+    </>
+  );
+}
+
+function EventTimelineFields({
+  track,
+  onChange,
+}: {
+  track: EventTimelineDraft;
+  onChange: (p: Record<string, unknown>) => void;
+}) {
+  return (
+    <>
+      <Text label="Event type" value={track.eventType} onChange={(v) => onChange({ eventType: v })} />
+      <Text
+        label="Depends on (comma-sep)"
+        value={track.depends}
+        onChange={(v) => onChange({ depends: v })}
+      />
+    </>
   );
 }
 
@@ -459,7 +744,7 @@ function EncryptionCard({
         <div>
           <div className="ak-caption">Encryption (§3)</div>
           <div className="ak-subtle" style={{ fontSize: 12 }}>
-            Applied to every track in the catalog
+            Applied to media tracks (skips timelines)
           </div>
         </div>
         <Toggle checked={state.enabled} onChange={(v) => onChange({ enabled: v })} />
@@ -509,6 +794,42 @@ function AccessibilityCard({
           <ToggleRow label="Subtitle" checked={state.subtitle} onChange={(v) => onChange({ subtitle: v })} />
           <ToggleRow label="Audio description" checked={state.audioDescription} onChange={(v) => onChange({ audioDescription: v })} />
           <ToggleRow label="Sign language" checked={state.signLanguage} onChange={(v) => onChange({ signLanguage: v })} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Scte35Card({
+  state,
+  onChange,
+}: {
+  state: CatalogFormState['scte35'];
+  onChange: (patch: Partial<CatalogFormState['scte35']>) => void;
+}) {
+  return (
+    <div className="ak-settings-card">
+      <div className="ak-row-between">
+        <div>
+          <div className="ak-caption">SCTE-35 markers</div>
+          <div className="ak-subtle" style={{ fontSize: 12 }}>
+            Ad-insertion cue-out configuration
+          </div>
+        </div>
+        <Toggle checked={state.enabled} onChange={(v) => onChange({ enabled: v })} />
+      </div>
+      {state.enabled && (
+        <div className="ak-grid-2">
+          <Num
+            label="Cue-out duration (ms)"
+            value={state.cueOutDuration}
+            onChange={(v) => onChange({ cueOutDuration: v })}
+          />
+          <Num
+            label="Pre-roll (ms)"
+            value={state.preRoll}
+            onChange={(v) => onChange({ preRoll: v })}
+          />
         </div>
       )}
     </div>
