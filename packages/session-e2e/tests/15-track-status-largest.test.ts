@@ -81,7 +81,7 @@ describe.skipIf(!isDraft18)('TRACK_STATUS LARGEST_OBJECT round-trip', () => {
     }
 
     expect(result).toBeDefined();
-    expect(typeof result!.requestId).toBe('number');
+    expect(typeof result!.requestId).toBe('bigint');
 
     if (result!.latestGroup !== undefined) {
       expect(typeof result!.latestGroup).toBe('bigint');

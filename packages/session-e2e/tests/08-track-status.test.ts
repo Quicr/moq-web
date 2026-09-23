@@ -69,11 +69,12 @@ describe.skipIf(!isDraft18).each([
     expect(settled).toBeDefined();
 
     // If the relay accepted the request, the result must at minimum carry a
-    // numeric requestId; `latestGroup`/`latestObject` may or may not be
-    // present depending on relay behavior — we only check the shape.
+    // bigint requestId (62-bit varint); `latestGroup`/`latestObject` may or
+    // may not be present depending on relay behavior — we only check the
+    // shape.
     if (settled === 'ok') {
       expect(result).toBeDefined();
-      expect(typeof result!.requestId).toBe('number');
+      expect(typeof result!.requestId).toBe('bigint');
       if (result!.latestGroup !== undefined) {
         expect(typeof result!.latestGroup).toBe('bigint');
         expect(typeof result!.latestObject).toBe('bigint');
