@@ -3,14 +3,14 @@ import {
   AppShell,
   GlassPanel,
   StatusDot,
-  TrickPlayBar,
-  useDvrPlayer,
   useTransportActions,
   useTransportConfig,
   type StatusState,
 } from '@moq-web/app-kit';
+import type { FullCatalog } from '@moq-web/msf';
 import { Timeline, type TimelineEntry } from './components/Timeline';
 import { StreamRoster, type RosterEntry } from './components/StreamRoster';
+import { MediaGrid, type MediaTile } from './components/MediaGrid';
 import { openStudioBroadcast, type StudioBroadcast, type TimelineEvent } from './moqt';
 
 const ROOM_ID = new URLSearchParams(globalThis.location?.search ?? '').get('room') ?? 'default';
@@ -28,13 +28,14 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [entries, setEntries] = useState<TimelineEntry[]>([]);
   const [roster, setRoster] = useState<Record<string, RosterEntry>>({});
+  const [localStream, setLocalStream] = useState<MediaStream | undefined>(undefined);
+  const [peerVideoFrames, setPeerVideoFrames] = useState<Map<string, VideoFrame>>(new Map());
+  const [peerCatalogs, setPeerCatalogs] = useState<Record<string, FullCatalog>>({});
+  const [muted, setMuted] = useState(false);
+  const [videoOff, setVideoOff] = useState(false);
+  const [publishMedia, setPublishMedia] = useState(true);
   const roomRef = useRef<StudioBroadcast | null>(null);
   const startedAtRef = useRef<number>(0);
-
-  const controls = useDvrPlayer({
-    range: { startMs: 0, endMs: 60_000, liveEdgeMs: 60_000 },
-    autoPlay: true,
-  });
 
   const disconnect = useCallback(async () => {
     const r = roomRef.current;
@@ -43,6 +44,12 @@ export function App() {
     setStatus('idle');
     setEntries([]);
     setRoster({});
+    setLocalStream(undefined);
+    setPeerVideoFrames((prev) => {
+      for (const f of prev.values()) try { f.close(); } catch { /* noop */ }
+      return new Map();
+    });
+    setPeerCatalogs({});
   }, []);
 
   useEffect(() => () => { void disconnect(); }, [disconnect]);
@@ -57,11 +64,24 @@ export function App() {
         transport: cfg,
         roomId: ROOM_ID,
         selfId: SELF_ID,
+        publishMedia,
         onPeerJoined: (peerId) => {
-          setRoster((cur) => ({ ...cur, [peerId]: { peerId, role: peerId === SELF_ID ? 'host' : 'guest', delivery: 'stream', priority: cfg.publisher.publisherPriority } }));
+          setRoster((cur) => ({ ...cur, [peerId]: { peerId, role: 'guest', delivery: 'stream', priority: cfg.publisher.publisherPriority } }));
         },
         onPeerLeft: (peerId) => {
           setRoster((cur) => {
+            const { [peerId]: _drop, ...rest } = cur;
+            void _drop;
+            return rest;
+          });
+          setPeerVideoFrames((cur) => {
+            const next = new Map(cur);
+            const f = next.get(peerId);
+            if (f) { try { f.close(); } catch { /* noop */ } }
+            next.delete(peerId);
+            return next;
+          });
+          setPeerCatalogs((cur) => {
             const { [peerId]: _drop, ...rest } = cur;
             void _drop;
             return rest;
@@ -70,12 +90,35 @@ export function App() {
         onEvent: (peerId, evt) => {
           setEntries((cur) => [...cur, { ...evt, peerId, receivedAt: Date.now() }].slice(-256));
         },
+        onPeerVideoFrame: (peerId, frame) => {
+          setPeerVideoFrames((cur) => {
+            const next = new Map(cur);
+            const prev = next.get(peerId);
+            if (prev) { try { prev.close(); } catch { /* noop */ } }
+            next.set(peerId, frame);
+            return next;
+          });
+        },
+        onPeerAudioData: (_peerId, audio) => {
+          try { audio.close(); } catch { /* noop */ }
+        },
+        onPeerCatalog: (peerId, catalog) => {
+          setPeerCatalogs((cur) => ({ ...cur, [peerId]: catalog }));
+          setEntries((cur) => [...cur, {
+            t: Date.now() - startedAtRef.current,
+            kind: 'meta' as const,
+            label: `catalog from ${peerId}: ${catalog.tracks.length} tracks`,
+            peerId,
+            receivedAt: Date.now(),
+          }].slice(-256));
+        },
         onError: (err) => {
           setError(err.message);
           setStatus('error');
         },
       });
       roomRef.current = broadcast;
+      setLocalStream(broadcast.getLocalStream());
       setRoster({ [SELF_ID]: { peerId: SELF_ID, role: 'host', delivery: 'stream', priority: cfg.publisher.publisherPriority } });
       setStatus('ready');
       await broadcast.emitEvent({ t: Date.now() - startedAtRef.current, kind: 'join', label: `${SELF_ID} live` });
@@ -83,7 +126,7 @@ export function App() {
       setError((err as Error).message);
       setStatus('error');
     }
-  }, [cfg, disconnect]);
+  }, [cfg, disconnect, publishMedia]);
 
   const emit = useCallback(async (kind: TimelineEvent['kind'], label: string) => {
     const room = roomRef.current;
@@ -94,6 +137,25 @@ export function App() {
       setError((err as Error).message);
     }
   }, []);
+
+  const handleToggleMute = useCallback(() => {
+    const next = !muted;
+    setMuted(next);
+    roomRef.current?.setLocalMuted(next);
+  }, [muted]);
+
+  const handleToggleVideo = useCallback(() => {
+    const next = !videoOff;
+    setVideoOff(next);
+    roomRef.current?.setLocalVideoOff(next);
+  }, [videoOff]);
+
+  const tiles: MediaTile[] = [
+    { peerId: SELF_ID, isSelf: true },
+    ...Object.keys(roster).filter((id) => id !== SELF_ID).map((id) => ({ peerId: id, isSelf: false })),
+  ];
+
+  const totalPeerTracks = Object.values(peerCatalogs).reduce((n, c) => n + c.tracks.length, 0);
 
   return (
     <AppShell
@@ -106,6 +168,15 @@ export function App() {
             status === 'connecting' ? 'Connecting…' :
             status === 'error' ? 'Error' : 'Idle'
           } />
+          <label className="ak-row" style={{ gap: 6, fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={publishMedia}
+              onChange={(e) => setPublishMedia(e.target.checked)}
+              disabled={status === 'ready' || status === 'connecting'}
+            />
+            Publish camera / mic
+          </label>
           <button
             className="ak-btn ak-btn-primary"
             onClick={() => (status === 'ready' ? void disconnect() : void connect())}
@@ -123,41 +194,41 @@ export function App() {
               <div className="ak-subtle" style={{ fontSize: 12 }}>{error}</div>
             </GlassPanel>
           ) : null}
-          <GlassPanel strong padding="sm">
-            <div
-              style={{
-                aspectRatio: '16 / 9',
-                background:
-                  'radial-gradient(60% 80% at 30% 40%, rgba(129, 140, 248, 0.35), transparent 60%), radial-gradient(80% 60% at 80% 60%, rgba(236, 72, 153, 0.30), transparent 55%), #050914',
-                borderRadius: 12,
-                position: 'relative',
-                overflow: 'hidden',
-              }}
-            >
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: 'rgba(255,255,255,0.6)',
-                  fontSize: 14,
-                  letterSpacing: '0.08em',
-                  textTransform: 'uppercase',
-                }}
-              >
-                {status === 'ready' ? `● Live · room=${ROOM_ID}` : 'Press “Go live” to open a MoQ session'}
-              </div>
-            </div>
-          </GlassPanel>
-          <TrickPlayBar controls={controls} />
+          <MediaGrid
+            tiles={tiles}
+            localStream={localStream}
+            peerVideoFrames={peerVideoFrames}
+            muted={muted}
+            videoOff={videoOff}
+            onToggleMute={handleToggleMute}
+            onToggleVideo={handleToggleVideo}
+            status={status}
+          />
           <Timeline entries={entries} durationMs={60_000} selfId={SELF_ID} />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="ak-btn" disabled={status !== 'ready'} onClick={() => void emit('delta', 'Bitrate step-up')}>+ Bitrate delta</button>
             <button className="ak-btn" disabled={status !== 'ready'} onClick={() => void emit('meta', 'Slide change')}>+ Slide change</button>
             <button className="ak-btn" disabled={status !== 'ready'} onClick={() => void emit('meta', 'Q&A open')}>+ Q&A open</button>
           </div>
+          {totalPeerTracks > 0 ? (
+            <GlassPanel padding="md">
+              <div className="ak-heading" style={{ marginBottom: 8 }}>Peer catalogs</div>
+              <div className="ak-stack" style={{ gap: 8 }}>
+                {Object.entries(peerCatalogs).map(([peerId, catalog]) => (
+                  <div key={peerId} className="ak-glass" style={{ padding: 10 }}>
+                    <div className="ak-caption" style={{ marginBottom: 4 }}>{peerId} · {catalog.tracks.length} tracks</div>
+                    <div className="ak-row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                      {catalog.tracks.map((t, i) => (
+                        <span key={i} className="ak-chip ak-chip-neutral" style={{ fontSize: 10 }}>
+                          {t.name} · {t.packaging}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </GlassPanel>
+          ) : null}
         </div>
         <div className="ak-stack">
           <StreamRoster entries={Object.values(roster)} selfId={SELF_ID} />
