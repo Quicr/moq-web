@@ -14,7 +14,7 @@ import { MediaGrid, type MediaTile } from './components/MediaGrid';
 import { EventComposer } from './components/EventComposer';
 import { openStudioBroadcast, type StudioBroadcast, type TimelineEvent } from './moqt';
 
-const ROOM_ID = new URLSearchParams(globalThis.location?.search ?? '').get('room') ?? 'default';
+const INITIAL_ROOM_ID = new URLSearchParams(globalThis.location?.search ?? '').get('room') ?? 'default';
 const SELF_ID = `host-${Math.random().toString(36).slice(2, 8)}`;
 
 export function App() {
@@ -25,6 +25,7 @@ export function App() {
     if (cfg.profile === 'interactive') applyProfile('live-streaming');
   }, [cfg.profile, applyProfile]);
 
+  const [roomId, setRoomId] = useState<string>(INITIAL_ROOM_ID);
   const [status, setStatus] = useState<StatusState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [entries, setEntries] = useState<TimelineEntry[]>([]);
@@ -63,7 +64,7 @@ export function App() {
     try {
       const broadcast = await openStudioBroadcast({
         transport: cfg,
-        roomId: ROOM_ID,
+        roomId,
         selfId: SELF_ID,
         publishMedia,
         onPeerJoined: (peerId) => {
@@ -120,14 +121,20 @@ export function App() {
       });
       roomRef.current = broadcast;
       setLocalStream(broadcast.getLocalStream());
-      setRoster({ [SELF_ID]: { peerId: SELF_ID, role: 'host', delivery: 'stream', priority: cfg.publisher.publisherPriority } });
+      // Merge — don't replace. Peers whose NAMESPACE arrived during the
+      // openStudioBroadcast await already sit in `roster` via onPeerJoined;
+      // an object-literal setRoster here would wipe them and drop their tiles.
+      setRoster((cur) => ({
+        ...cur,
+        [SELF_ID]: { peerId: SELF_ID, role: 'host', delivery: 'stream', priority: cfg.publisher.publisherPriority },
+      }));
       setStatus('ready');
       await broadcast.emitEvent({ t: Date.now() - startedAtRef.current, kind: 'join', label: `${SELF_ID} live` });
     } catch (err) {
       setError((err as Error).message);
       setStatus('error');
     }
-  }, [cfg, disconnect, publishMedia]);
+  }, [cfg, disconnect, publishMedia, roomId]);
 
   const emit = useCallback(async (kind: TimelineEvent['kind'], label: string) => {
     const room = roomRef.current;
@@ -151,9 +158,17 @@ export function App() {
     roomRef.current?.setLocalVideoOff(next);
   }, [videoOff]);
 
+  const peerHasVideo = (peerId: string): boolean => {
+    const cat = peerCatalogs[peerId];
+    if (!cat) return false;
+    return cat.tracks.some((t) => t.name === 'video');
+  };
+
   const tiles: MediaTile[] = [
-    { peerId: SELF_ID, isSelf: true },
-    ...Object.keys(roster).filter((id) => id !== SELF_ID).map((id) => ({ peerId: id, isSelf: false })),
+    ...(publishMedia ? [{ peerId: SELF_ID, isSelf: true }] : []),
+    ...Object.keys(roster)
+      .filter((id) => id !== SELF_ID && peerHasVideo(id))
+      .map((id) => ({ peerId: id, isSelf: false })),
   ];
 
   const totalPeerTracks = Object.values(peerCatalogs).reduce((n, c) => n + c.tracks.length, 0);
@@ -161,11 +176,22 @@ export function App() {
 
   const shareRoom = useCallback(() => {
     const url = new URL(globalThis.location.href);
-    url.searchParams.set('room', ROOM_ID);
+    url.searchParams.set('room', roomId);
     try {
       void navigator.clipboard.writeText(url.toString());
     } catch { /* clipboard may be unavailable */ }
-  }, []);
+  }, [roomId]);
+
+  useEffect(() => {
+    const url = new URL(globalThis.location.href);
+    const current = url.searchParams.get('room') ?? '';
+    if (current !== roomId) {
+      url.searchParams.set('room', roomId);
+      globalThis.history?.replaceState(null, '', url.toString());
+    }
+  }, [roomId]);
+
+  const roomLocked = status === 'ready' || status === 'connecting';
 
   return (
     <AppShell
@@ -179,18 +205,33 @@ export function App() {
             status === 'error' ? 'Error' : 'Idle'
           } />
           <label className="ak-row" style={{ gap: 6, fontSize: 12 }}>
+            <span className="ak-subtle">Room</span>
+            <input
+              className="ak-input"
+              style={{ width: 120, fontSize: 12, padding: '4px 8px' }}
+              value={roomId}
+              onChange={(e) => setRoomId(e.target.value.trim() || 'default')}
+              disabled={roomLocked}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              placeholder="room"
+              title={roomLocked ? 'Disconnect to change the room' : 'Type a room name to join a different room'}
+            />
+          </label>
+          <label className="ak-row" style={{ gap: 6, fontSize: 12 }}>
             <input
               type="checkbox"
               checked={publishMedia}
               onChange={(e) => setPublishMedia(e.target.checked)}
-              disabled={status === 'ready' || status === 'connecting'}
+              disabled={roomLocked}
             />
             Publish camera / mic
           </label>
           <button
             className="ak-btn ak-btn-ghost"
             onClick={shareRoom}
-            title={`Copy https://…?room=${ROOM_ID}`}
+            title={`Copy https://…?room=${roomId}`}
           >
             🔗 Share
           </button>
@@ -203,7 +244,7 @@ export function App() {
         </>
       }
     >
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 3fr) minmax(280px, 1fr)', gap: 20 }}>
+      <div className="studio-grid" style={{ display: 'grid', gap: 20 }}>
         <div className="ak-stack">
           {error ? (
             <GlassPanel padding="md">

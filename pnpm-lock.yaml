@@ -421,6 +421,12 @@ importers:
       '@moq-web/core':
         specifier: workspace:*
         version: link:../core
+      '@moq-web/media':
+        specifier: workspace:*
+        version: link:../media
+      '@moq-web/msf':
+        specifier: workspace:*
+        version: link:../msf
       '@moq-web/session':
         specifier: workspace:*
         version: link:../session

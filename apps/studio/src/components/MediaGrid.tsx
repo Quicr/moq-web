@@ -60,9 +60,27 @@ export function MediaGrid({
 
   const gridStyle: React.CSSProperties = {
     display: 'grid',
-    gridTemplateColumns: `repeat(${Math.min(tiles.length, 2)}, minmax(0, 1fr))`,
+    gridTemplateColumns: `repeat(${Math.min(Math.max(tiles.length, 1), 2)}, minmax(0, 1fr))`,
     gap: 12,
   };
+
+  if (tiles.length === 0) {
+    return (
+      <GlassPanel strong padding="md">
+        <div className="ak-subtle" style={{
+          padding: '24px 8px',
+          textAlign: 'center',
+          fontSize: 13,
+          letterSpacing: '0.04em',
+        }}>
+          No video published. Enable “Publish camera / mic” to appear on air, or
+          wait for a peer to start streaming.
+        </div>
+      </GlassPanel>
+    );
+  }
+
+  const hasLocalTile = tiles.some((t) => t.isSelf);
 
   return (
     <GlassPanel strong padding="sm">
@@ -137,24 +155,26 @@ export function MediaGrid({
           </div>
         ))}
       </div>
-      <div className="ak-row" style={{ justifyContent: 'center', gap: 10, marginTop: 12 }}>
-        <button
-          className={`ak-btn ${muted ? 'ak-btn-ghost' : ''}`}
-          onClick={onToggleMute}
-          disabled={!localStream}
-          title={muted ? 'Unmute' : 'Mute'}
-        >
-          {muted ? '🔇 Muted' : '🎤 Mic'}
-        </button>
-        <button
-          className={`ak-btn ${videoOff ? 'ak-btn-ghost' : ''}`}
-          onClick={onToggleVideo}
-          disabled={!localStream}
-          title={videoOff ? 'Turn on camera' : 'Turn off camera'}
-        >
-          {videoOff ? '📷 Camera off' : '📹 Camera'}
-        </button>
-      </div>
+      {hasLocalTile && (
+        <div className="ak-row" style={{ justifyContent: 'center', gap: 10, marginTop: 12 }}>
+          <button
+            className={`ak-btn ${muted ? 'ak-btn-ghost' : ''}`}
+            onClick={onToggleMute}
+            disabled={!localStream}
+            title={muted ? 'Unmute' : 'Mute'}
+          >
+            {muted ? '🔇 Muted' : '🎤 Mic'}
+          </button>
+          <button
+            className={`ak-btn ${videoOff ? 'ak-btn-ghost' : ''}`}
+            onClick={onToggleVideo}
+            disabled={!localStream}
+            title={videoOff ? 'Turn on camera' : 'Turn off camera'}
+          >
+            {videoOff ? '📷 Camera off' : '📹 Camera'}
+          </button>
+        </div>
+      )}
     </GlassPanel>
   );
 }

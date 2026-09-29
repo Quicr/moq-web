@@ -37,14 +37,32 @@ export function AppShell({
           alignItems: 'center',
           gap: 16,
           borderRadius: 20,
+          flexWrap: 'wrap',
         }}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            flex: '1 1 220px',
+            minWidth: 0,
+          }}
+        >
           <div className="ak-caption">moq-web · app-kit</div>
-          <div className="ak-title">{title}</div>
-          {tagline && <div className="ak-subtle">{tagline}</div>}
+          <div className="ak-title" style={{ overflowWrap: 'anywhere' }}>{title}</div>
+          {tagline && <div className="ak-subtle" style={{ overflowWrap: 'anywhere' }}>{tagline}</div>}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            flexWrap: 'wrap',
+            justifyContent: 'flex-end',
+            rowGap: 8,
+          }}
+        >
           {actions}
           {showDraftSwitch && <DraftSwitch />}
           <ThemeSwitch />

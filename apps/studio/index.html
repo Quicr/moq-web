@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>moq-web · studio</title>
+    <style>
+      .studio-grid {
+        grid-template-columns: minmax(0, 3fr) minmax(280px, 1fr);
+      }
+      @media (max-width: 900px) {
+        .studio-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
   </head>
   <body class="ak-body">
     <div id="root"></div>

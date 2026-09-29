@@ -379,7 +379,7 @@ export class Draft18RequestStream {
           return message as ControlMessageDraft18;
         } catch (err) {
           const msg = (err as Error).message ?? '';
-          if (!msg.includes('Incomplete') && !msg.includes('buffer')) {
+          if (!/incomplete|buffer|underflow/i.test(msg)) {
             throw err;
           }
         }

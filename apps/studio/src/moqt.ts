@@ -7,8 +7,12 @@ import { MediaSession, type MediaConfig } from '@moq-web/media';
 import {
   MSFSession,
   createCatalog,
+  parseCatalogFromBytes,
+  isFullCatalog,
+  CATALOG_TRACK_NAME,
   type FullCatalog,
 } from '@moq-web/msf';
+import type { IncomingPublishEvent } from '@moq-web/session';
 
 const EVENT_TRACK = 'timeline';
 const VIDEO_TRACK = 'video';
@@ -24,6 +28,10 @@ const MEDIA_CONFIG: MediaConfig = {
   audioEnabled: true,
   deliveryMode: 'stream',
   audioDeliveryMode: 'datagram',
+  keyframeInterval: 1,
+  isLive: true,
+  catalogFramerate: 30,
+  filterType: 'latest',
 };
 
 export interface TimelineEvent {
@@ -59,14 +67,23 @@ export interface OpenStudioOptions {
 }
 
 interface PeerState {
-  timelineSubscribed: boolean;
-  mediaSubscribed: boolean;
+  namespace: string[];
+  tracksSubId?: number;
 }
 
 /**
- * Publish `timeline` + optional `video`/`audio` tracks and an MSF catalog
- * under `studio/<room>/<selfId>`, and subscribe to the same track set on any
- * peer that announces under the shared room prefix.
+ * Draft-18 peer discovery + track routing:
+ *   1. `mediaSession.subscribeNamespace(studio/<room>, MEDIA_CONFIG)` — one
+ *      long-lived SUBSCRIBE_NAMESPACE that both surfaces peer NAMESPACE events
+ *      and registers a media config so `MediaSession.handleIncomingPublish`
+ *      auto-builds a decode pipeline for each PUBLISHed video/audio track.
+ *   2. On NAMESPACE announce for a peer, send SUBSCRIBE_TRACKS(peerNs) so the
+ *      relay fans PUBLISHes for that peer's tracks back to us.
+ *   3. When a PUBLISH lands, `session.on('incoming-publish')` fires with a new
+ *      subscriptionId whose object-callback is not yet attached. For non-media
+ *      tracks (timeline, catalog) we bind the callback via
+ *      `setSubscriptionCallback`; video/audio are handled by MediaSession.
+ *      Any pre-callback objects are flushed automatically (pendingObjects).
  */
 export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<StudioBroadcast> {
   const connected = await connectMoqtSession({ transport: opts.transport, signal: opts.signal });
@@ -74,121 +91,122 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
 
   const roomPrefix = ['studio', opts.roomId];
   const selfNamespace = [...roomPrefix, opts.selfId];
+  const selfNamespaceStr = selfNamespace.join('/');
 
   session.on('session-terminated', (evt) =>
     opts.onError(new Error(`Session terminated: ${evt.reason ?? evt.code}`)),
   );
 
   const mediaSession = new MediaSession({ session });
-  const msfSession = new MSFSession(session, selfNamespace);
+  mediaSession.setOwnNamespacePrefix(selfNamespaceStr);
+  // Republish the catalog every 2s so late joiners pick it up. Draft-18
+  // subscriptions deliver from the current object forward and the relay does
+  // not replay history — without this heartbeat, a peer subscribing after our
+  // one-shot publishCatalog() never receives the catalog and their tile is
+  // filtered out by App.tsx's peerHasVideo gate.
+  const msfSession = new MSFSession(session, selfNamespace, {
+    catalogPublishOptions: { republishIntervalMs: 2000 },
+  });
 
   const peers = new Map<string, PeerState>();
-  const mediaSubIdToPeer = new Map<number, string>();
-  const peerCatalogSubs = new Map<string, MSFSession>();
+  const subIdToPeer = new Map<number, string>();
 
   mediaSession.on('video-frame', ({ subscriptionId, frame }) => {
-    const peerId = mediaSubIdToPeer.get(subscriptionId);
-    if (!peerId) {
-      frame.close();
-      return;
-    }
+    const peerId = subIdToPeer.get(subscriptionId);
+    if (!peerId) { frame.close(); return; }
     opts.onPeerVideoFrame(peerId, frame);
   });
 
   mediaSession.on('audio-data', ({ subscriptionId, audioData }) => {
-    const peerId = mediaSubIdToPeer.get(subscriptionId);
-    if (!peerId) {
-      audioData.close();
-      return;
-    }
+    const peerId = subIdToPeer.get(subscriptionId);
+    if (!peerId) { audioData.close(); return; }
     opts.onPeerAudioData(peerId, audioData);
   });
 
-  const subscribeToPeerTimeline = async (peerId: string, ns: string[]) => {
-    const state = peers.get(peerId);
-    if (!state || state.timelineSubscribed) return;
-    state.timelineSubscribed = true;
-    try {
-      await session.subscribe(ns, EVENT_TRACK, {
-        priority: opts.transport.subscriber.subscriberPriority,
-      }, (data) => {
+  const peerIdFromNs = (ns: string[]): string | undefined => {
+    if (ns.length < roomPrefix.length + 1) return undefined;
+    for (let i = 0; i < roomPrefix.length; i++) {
+      if (ns[i] !== roomPrefix[i]) return undefined;
+    }
+    const pid = ns[roomPrefix.length]!;
+    if (pid === opts.selfId) return undefined;
+    return pid;
+  };
+
+  session.on('incoming-publish', (evt: IncomingPublishEvent) => {
+    if (evt.namespace.join('/') === selfNamespaceStr) return;
+    const peerId = peerIdFromNs(evt.namespace);
+    if (!peerId) return;
+    subIdToPeer.set(evt.subscriptionId, peerId);
+
+    const trackName = evt.trackName;
+    const lower = trackName.toLowerCase();
+
+    if (trackName === CATALOG_TRACK_NAME) {
+      session.setSubscriptionCallback(evt.subscriptionId, (data) => {
         try {
-          const evt = JSON.parse(decoder.decode(data)) as TimelineEvent;
-          opts.onEvent(peerId, evt);
+          const cat = parseCatalogFromBytes(data);
+          if (isFullCatalog(cat)) opts.onPeerCatalog(peerId, cat);
+        } catch (err) {
+          opts.onError(
+            new Error(
+              `Failed to parse catalog from ${peerId}: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        }
+      });
+      return;
+    }
+
+    if (lower === EVENT_TRACK || lower.includes('timeline')) {
+      session.setSubscriptionCallback(evt.subscriptionId, (data) => {
+        try {
+          const timelineEvt = JSON.parse(decoder.decode(data)) as TimelineEvent;
+          opts.onEvent(peerId, timelineEvt);
         } catch (err) {
           opts.onError(err instanceof Error ? err : new Error(String(err)));
         }
       });
-    } catch (err) {
-      state.timelineSubscribed = false;
-      opts.onError(err instanceof Error ? err : new Error(String(err)));
+      return;
     }
-  };
-
-  const subscribeToPeerMedia = async (peerId: string, ns: string[]) => {
-    const state = peers.get(peerId);
-    if (!state || state.mediaSubscribed) return;
-    state.mediaSubscribed = true;
-    try {
-      const videoSubId = await mediaSession.subscribe(ns, VIDEO_TRACK, MEDIA_CONFIG, 'video');
-      mediaSubIdToPeer.set(videoSubId, peerId);
-    } catch (err) {
-      opts.onError(err instanceof Error ? err : new Error(String(err)));
-    }
-    try {
-      const audioSubId = await mediaSession.subscribe(ns, AUDIO_TRACK, MEDIA_CONFIG, 'audio');
-      mediaSubIdToPeer.set(audioSubId, peerId);
-    } catch (err) {
-      opts.onError(err instanceof Error ? err : new Error(String(err)));
-    }
-  };
-
-  const subscribeToPeerCatalog = async (peerId: string, ns: string[]) => {
-    if (peerCatalogSubs.has(peerId)) return;
-    const peerMsf = new MSFSession(session, ns);
-    peerCatalogSubs.set(peerId, peerMsf);
-    try {
-      await peerMsf.subscribeCatalog((catalog) => opts.onPeerCatalog(peerId, catalog));
-    } catch (err) {
-      peerCatalogSubs.delete(peerId);
-      // Catalog subscription is best-effort; older peers may not publish one.
-      void err;
-    }
-  };
+    // video/audio: MediaSession.handleIncomingPublish attaches the pipeline
+    // callback for us; nothing to do here.
+  });
 
   session.on('namespace-announced', (evt) => {
     const ns = evt.namespace;
     if (ns.length !== roomPrefix.length + 1) return;
-    for (let i = 0; i < roomPrefix.length; i++) {
-      if (ns[i] !== roomPrefix[i]) return;
-    }
-    const peerId = ns[ns.length - 1]!;
-    if (peerId === opts.selfId) return;
-    if (!peers.has(peerId)) {
-      peers.set(peerId, { timelineSubscribed: false, mediaSubscribed: false });
-      opts.onPeerJoined(peerId);
-    }
-    void subscribeToPeerTimeline(peerId, ns);
-    void subscribeToPeerMedia(peerId, ns);
-    void subscribeToPeerCatalog(peerId, ns);
+    const peerId = peerIdFromNs(ns);
+    if (!peerId) return;
+    if (peers.has(peerId)) return;
+    peers.set(peerId, { namespace: ns });
+    opts.onPeerJoined(peerId);
+    // SUBSCRIBE_TRACKS(peerNs) — asks the relay to send us a PUBLISH for every
+    // track this peer has under their namespace.
+    void session.subscribeTracks(ns)
+      .then((subId) => {
+        const state = peers.get(peerId);
+        if (state) state.tracksSubId = subId;
+      })
+      .catch((err) => opts.onError(err instanceof Error ? err : new Error(String(err))));
   });
 
   session.on('namespace-done', (evt) => {
     const ns = evt.namespace;
     if (ns.length !== roomPrefix.length + 1) return;
     const peerId = ns[ns.length - 1]!;
-    if (peers.delete(peerId)) {
-      const sub = peerCatalogSubs.get(peerId);
-      if (sub) {
-        void sub.unsubscribeCatalog();
-        peerCatalogSubs.delete(peerId);
-      }
-      opts.onPeerLeft(peerId);
+    const state = peers.get(peerId);
+    if (!state) return;
+    peers.delete(peerId);
+    if (state.tracksSubId !== undefined) {
+      void session.unsubscribeNamespace(state.tracksSubId);
     }
+    opts.onPeerLeft(peerId);
   });
 
-  try { await session.subscribeNamespace(roomPrefix); }
-  catch (err) { void err; }
+  // MediaSession-aware subscribe so incoming PUBLISHes auto-attach a decode
+  // pipeline (see MediaSession.handleIncomingPublish).
+  await mediaSession.subscribeNamespace(roomPrefix, MEDIA_CONFIG).catch((err) => { void err; });
 
   // Publish all our tracks BEFORE announcing our namespace. Otherwise a peer
   // that sees our announce can race ahead and subscribe to a track we haven't
@@ -221,7 +239,6 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     }
   }
 
-  // Publish MSF catalog describing our tracks.
   try {
     await msfSession.startCatalogPublishing();
     const builder = createCatalog().generatedAt();
@@ -248,15 +265,14 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     (catalog as unknown as { tracks: unknown[] }).tracks.push({
       name: EVENT_TRACK,
       packaging: 'eventtimeline',
-      eventtimeline: { eventType: 'studio-timeline' },
+      isLive: true,
+      eventType: 'studio-timeline',
     });
     await msfSession.publishCatalog(catalog);
   } catch (err) {
-    // Catalog publish is best-effort; some relays may not support it.
     void err;
   }
 
-  // Now that every track is registered, announce ourselves so peers subscribe.
   await session.announceNamespace(selfNamespace, { deliveryMode: 'stream' });
 
   let seq = 0;
@@ -278,10 +294,13 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       localStream?.getVideoTracks().forEach((t) => { t.enabled = !off; });
     },
     close: async () => {
-      for (const sub of peerCatalogSubs.values()) {
-        try { await sub.unsubscribeCatalog(); } catch { /* noop */ }
+      for (const state of peers.values()) {
+        if (state.tracksSubId !== undefined) {
+          try { await session.unsubscribeNamespace(state.tracksSubId); } catch { /* noop */ }
+        }
       }
-      peerCatalogSubs.clear();
+      peers.clear();
+      subIdToPeer.clear();
       try { await msfSession.stopCatalogPublishing(); } catch { /* noop */ }
       try { await mediaSession.close(); } catch { /* noop */ }
       for (const track of localStream?.getTracks() ?? []) track.stop();

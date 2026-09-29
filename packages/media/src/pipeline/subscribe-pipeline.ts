@@ -581,20 +581,20 @@ export class SubscribePipeline {
     const isAudio = kind === 'audio';
 
     if (this.config.isLive !== undefined) {
+      const profileSettings: Record<string, unknown> = { jitterBufferDelay: jitterDelay };
+      const estimatedGop = isAudio ? 20 : this.config.estimatedGopDuration;
+      if (estimatedGop !== undefined) profileSettings.estimatedGopDuration = estimatedGop;
+      if (this.config.maxLatency !== undefined) profileSettings.maxLatency = this.config.maxLatency;
+      if (this.config.skipToLatestGroup !== undefined) profileSettings.skipToLatestGroup = this.config.skipToLatestGroup;
+      if (this.config.skipGraceFrames !== undefined) profileSettings.skipGraceFrames = this.config.skipGraceFrames;
+      if (this.config.enableCatchUp !== undefined) profileSettings.enableCatchUp = this.config.enableCatchUp;
+      if (this.config.catchUpThreshold !== undefined) profileSettings.catchUpThreshold = this.config.catchUpThreshold;
+      if (this.config.useLatencyDeadline !== undefined) profileSettings.useLatencyDeadline = this.config.useLatencyDeadline;
       return createPlayoutBufferFromTrack<Uint8Array>({
         isLive: this.config.isLive,
         framerate: this.config.catalogFramerate,
         minBufferFrames: this.config.minBufferFrames,
-        profileSettings: {
-          jitterBufferDelay: jitterDelay,
-          maxLatency: this.config.maxLatency,
-          estimatedGopDuration: isAudio ? 20 : this.config.estimatedGopDuration,
-          skipToLatestGroup: this.config.skipToLatestGroup,
-          skipGraceFrames: this.config.skipGraceFrames,
-          enableCatchUp: this.config.enableCatchUp,
-          catchUpThreshold: this.config.catchUpThreshold,
-          useLatencyDeadline: this.config.useLatencyDeadline,
-        },
+        profileSettings: profileSettings as Partial<import('../profiles/experience-profiles.js').ExperienceProfileSettings>,
       });
     }
 

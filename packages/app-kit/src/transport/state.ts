@@ -22,9 +22,13 @@ export interface TransportConfig {
   targetLatencyMs: number;
 }
 
+const ENV_RELAY_URL =
+  typeof import.meta !== 'undefined' &&
+  (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_RELAY_URL;
+
 const DEFAULT_RELAY: RelayConfig = {
   relays: [
-    'https://moqx-main.ci.openmoq.org:4433/moq-relay',
+    ENV_RELAY_URL || 'https://moqx-main.ci.openmoq.org:4433/moq-relay',
   ],
   draft: 'draft-18',
   keepAliveMs: 20_000,
@@ -53,7 +57,7 @@ function loadInitial(): TransportConfig {
     if (!raw) return fromProfile('interactive');
     const parsed = JSON.parse(raw) as Partial<TransportConfig>;
     const base = fromProfile((parsed.profile as LatencyProfileName) ?? 'interactive');
-    return {
+    const merged = {
       ...base,
       ...parsed,
       relay: { ...base.relay, ...(parsed.relay ?? {}) },
@@ -61,6 +65,13 @@ function loadInitial(): TransportConfig {
       subscriber: { ...base.subscriber, ...(parsed.subscriber ?? {}) },
       playback: { ...base.playback, ...(parsed.playback ?? {}) },
     };
+    // VITE_RELAY_URL overrides any persisted relay list so pointing the app at
+    // a different relay is a matter of restarting the dev server, not clearing
+    // localStorage.
+    if (ENV_RELAY_URL) {
+      merged.relay = { ...merged.relay, relays: [ENV_RELAY_URL] };
+    }
+    return merged;
   } catch {
     return fromProfile('interactive');
   }
