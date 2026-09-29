@@ -209,7 +209,12 @@ export class Draft18MessageCodec {
       throw new Draft18CodecError('Incomplete message: not enough payload bytes');
     }
 
-    const reader = new Draft18BufferReader(buffer, offset + headerSize);
+    // Bound the reader to just this frame's payload. `reader.hasMore` is used
+    // by several decoders to detect optional trailing fields (KVPs, extensions),
+    // and must NOT see bytes belonging to subsequent frames in the same buffer.
+    const reader = new Draft18BufferReader(
+      buffer.subarray(offset + headerSize, offset + headerSize + payloadLength),
+    );
 
     log.trace('Decoding draft-18 message', { type: MessageTypeDraft18[messageType] ?? messageType, payloadLength });
 

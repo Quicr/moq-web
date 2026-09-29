@@ -1340,11 +1340,11 @@ export class MOQTSession {
 
         this.routeMessage(message as ControlMessage);
       } catch (err) {
-        if ((err as Error).message?.includes('Incomplete') ||
-            (err as Error).message?.includes('buffer')) {
+        const msg = (err as Error).message ?? '';
+        if (/incomplete|buffer|underflow/i.test(msg)) {
           break;
         }
-        log.error('Error decoding bidi stream message', { error: (err as Error).message });
+        log.error('Error decoding bidi stream message', { error: msg });
         break;
       }
     }
@@ -3110,8 +3110,8 @@ export class MOQTSession {
 
             this.routeMessage(message as ControlMessage);
           } catch (err) {
-            if ((err as Error).message?.includes('Incomplete') ||
-                (err as Error).message?.includes('buffer')) {
+            const msg = (err as Error).message ?? '';
+            if (/incomplete|buffer|underflow/i.test(msg)) {
               break;
             }
             throw err;
@@ -3246,7 +3246,8 @@ export class MOQTSession {
 
             this.routeMessageDraft18(message as ControlMessageDraft18, subscriptionId);
           } catch (err) {
-            if ((err as Error).message?.includes('Incomplete') || (err as Error).message?.includes('buffer')) {
+            const msg = (err as Error).message ?? '';
+            if (/incomplete|buffer|underflow/i.test(msg)) {
               break;
             }
             throw err;
@@ -5459,8 +5460,8 @@ export class MOQTSession {
             this.routeSetupStreamMessage(message);
           }
         } catch (err) {
-          if ((err as Error).message?.includes('Incomplete') ||
-              (err as Error).message?.includes('buffer')) {
+          const msg = (err as Error).message ?? '';
+          if (/incomplete|buffer|underflow/i.test(msg)) {
             break;
           }
           throw err;
@@ -5547,7 +5548,8 @@ export class MOQTSession {
           const [decoded] = this.codec.decodeControlMessage(buffer, 0, this.metrics);
           message = decoded as ControlMessageDraft18;
         } catch (err) {
-          if ((err as Error).message?.includes('Incomplete') || (err as Error).message?.includes('buffer')) {
+          const msg = (err as Error).message ?? '';
+          if (/incomplete|buffer|underflow/i.test(msg)) {
             continue;
           }
           throw err;
@@ -5820,7 +5822,6 @@ export class MOQTSession {
     };
     matchingSubscription.tracks.set(fullTrackNameStr, trackInfo);
 
-    // Emit event
     this.emit('incoming-publish', {
       namespaceSubscriptionId: matchingSubscription.subscriptionId,
       subscriptionId,
@@ -6473,9 +6474,8 @@ export class MOQTSession {
           // Route message
           this.routeMessage(message as ControlMessage);
         } catch (err) {
-          if ((err as Error).message?.includes('Incomplete') ||
-              (err as Error).message?.includes('buffer') ||
-              (err as Error).message?.includes('beyond')) {
+          const msg = (err as Error).message ?? '';
+          if (/incomplete|buffer|underflow|beyond/i.test(msg)) {
             log.debug('Waiting for more data', {
               bufferSize: bufferLength - this.controlBufferOffset,
               messagesDecoded,
