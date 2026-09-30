@@ -17,6 +17,26 @@ import { openStudioBroadcast, type StudioBroadcast, type TimelineEvent } from '.
 const INITIAL_ROOM_ID = new URLSearchParams(globalThis.location?.search ?? '').get('room') ?? 'default';
 const SELF_ID = `host-${Math.random().toString(36).slice(2, 8)}`;
 
+// Diff two peer-catalog snapshots and describe the change in human-readable
+// form. The subscriber applies MSF deltas internally and re-fires the full
+// catalog on every mutation, so the delta itself is not surfaced here — we
+// reconstruct it by comparing the previous full snapshot.
+function diffCatalogs(prev: FullCatalog | undefined, next: FullCatalog): string[] {
+  if (!prev) return [`+catalog · ${next.tracks.length} tracks`];
+  const msgs: string[] = [];
+  const prevByName = new Map(prev.tracks.map((t) => [t.name, t]));
+  const nextByName = new Map(next.tracks.map((t) => [t.name, t]));
+  for (const [name, t] of nextByName) {
+    const p = prevByName.get(name);
+    if (!p) { msgs.push(`+${name} (${t.packaging})`); continue; }
+    if (p.isLive !== t.isLive) msgs.push(`~${name} isLive→${t.isLive}`);
+  }
+  for (const name of prevByName.keys()) {
+    if (!nextByName.has(name)) msgs.push(`-${name}`);
+  }
+  return msgs;
+}
+
 export function App() {
   const cfg = useTransportConfig();
   const { applyProfile } = useTransportActions();
@@ -33,6 +53,7 @@ export function App() {
   const [localStream, setLocalStream] = useState<MediaStream | undefined>(undefined);
   const [peerVideoFrames, setPeerVideoFrames] = useState<Map<string, VideoFrame>>(new Map());
   const [peerCatalogs, setPeerCatalogs] = useState<Record<string, FullCatalog>>({});
+  const [catalogLog, setCatalogLog] = useState<Array<{ t: number; peerId: string; msg: string }>>([]);
   const [muted, setMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
   const [publishMedia, setPublishMedia] = useState(true);
@@ -52,6 +73,7 @@ export function App() {
       return new Map();
     });
     setPeerCatalogs({});
+    setCatalogLog([]);
   }, []);
 
   useEffect(() => () => { void disconnect(); }, [disconnect]);
@@ -105,7 +127,18 @@ export function App() {
           try { audio.close(); } catch { /* noop */ }
         },
         onPeerCatalog: (peerId, catalog) => {
-          setPeerCatalogs((cur) => ({ ...cur, [peerId]: catalog }));
+          setPeerCatalogs((cur) => {
+            const prev = cur[peerId];
+            const changes = diffCatalogs(prev, catalog);
+            if (changes.length > 0) {
+              const now = Date.now();
+              setCatalogLog((log) => [
+                ...changes.map((msg) => ({ t: now, peerId, msg })),
+                ...log,
+              ].slice(0, 64));
+            }
+            return { ...cur, [peerId]: catalog };
+          });
           setEntries((cur) => [...cur, {
             t: Date.now() - startedAtRef.current,
             kind: 'meta' as const,
@@ -296,6 +329,31 @@ export function App() {
         </div>
         <div className="ak-stack">
           <StreamRoster entries={Object.values(roster)} selfId={SELF_ID} />
+          {catalogLog.length > 0 ? (
+            <GlassPanel padding="md">
+              <div className="ak-heading" style={{ marginBottom: 6 }}>Catalog deltas</div>
+              <div
+                className="ak-stack"
+                style={{
+                  gap: 4,
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  fontFamily: 'ui-monospace, monospace',
+                  fontSize: 11,
+                }}
+              >
+                {catalogLog.map((e, i) => (
+                  <div key={i} className="ak-row" style={{ gap: 6 }}>
+                    <span className="ak-subtle" style={{ minWidth: 62 }}>
+                      {new Date(e.t).toLocaleTimeString().slice(-8)}
+                    </span>
+                    <span className="ak-chip ak-chip-neutral" style={{ fontSize: 10 }}>{e.peerId}</span>
+                    <span>{e.msg}</span>
+                  </div>
+                ))}
+              </div>
+            </GlassPanel>
+          ) : null}
         </div>
       </div>
     </AppShell>

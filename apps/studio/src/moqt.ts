@@ -7,14 +7,23 @@ import { MediaSession, type MediaConfig } from '@moq-web/media';
 import {
   MSFSession,
   createCatalog,
+  createDelta,
   parseCatalogFromBytes,
   isFullCatalog,
   CATALOG_TRACK_NAME,
+  encodeEventTimelineEntry,
+  decodeEventTimelineEntry,
+  encodeMediaTimelineEntry,
+  decodeMediaTimelineEntry,
+  type EventTimelineEntry,
+  type MediaTimelineEntry,
+  type MediaTimelinePoint,
   type FullCatalog,
 } from '@moq-web/msf';
 import type { IncomingPublishEvent } from '@moq-web/session';
 
 const EVENT_TRACK = 'timeline';
+const MEDIA_TIMELINE_TRACK = 'mediatimeline';
 const VIDEO_TRACK = 'video';
 const AUDIO_TRACK = 'audio';
 const encoder = new TextEncoder();
@@ -40,6 +49,28 @@ export interface TimelineEvent {
   kind: 'meta' | 'join' | 'delta';
 }
 
+// Accept either an MSF EventTimelineEntry `{ t, data: { kind, label } }` or the
+// legacy JSON shape `{ t, kind, label }` we shipped before the codec migration.
+// Kept until every deployed peer publishes the MSF form.
+function parseTimelineEvent(raw: unknown): TimelineEvent | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.data === 'object' && obj.data !== null) {
+    const point = decodeEventTimelineEntry(obj as EventTimelineEntry);
+    const data = point.data ?? {};
+    const kind = (data as { kind?: unknown }).kind;
+    const label = (data as { label?: unknown }).label;
+    if (typeof label !== 'string' || (kind !== 'meta' && kind !== 'join' && kind !== 'delta')) return null;
+    return { t: point.wallclockTime ?? Date.now(), kind, label };
+  }
+  const kind = obj.kind;
+  const label = obj.label;
+  const t = obj.t;
+  if (typeof label !== 'string' || typeof t !== 'number') return null;
+  if (kind !== 'meta' && kind !== 'join' && kind !== 'delta') return null;
+  return { t, kind, label };
+}
+
 export interface StudioBroadcast {
   namespace: string[];
   connected: ConnectedSession;
@@ -62,6 +93,8 @@ export interface OpenStudioOptions {
   onPeerVideoFrame: (peerId: string, frame: VideoFrame) => void;
   onPeerAudioData: (peerId: string, audio: AudioData) => void;
   onPeerCatalog: (peerId: string, catalog: FullCatalog) => void;
+  /** Fires when a peer's mediatimeline track lands a new keyframe entry. */
+  onPeerMediaTimeline?: (peerId: string, point: MediaTimelinePoint) => void;
   onError: (err: Error) => void;
   signal?: AbortSignal;
 }
@@ -158,11 +191,25 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       return;
     }
 
+    if (lower === MEDIA_TIMELINE_TRACK) {
+      session.setSubscriptionCallback(evt.subscriptionId, (data) => {
+        try {
+          const entry = JSON.parse(decoder.decode(data)) as MediaTimelineEntry;
+          const point = decodeMediaTimelineEntry(entry);
+          opts.onPeerMediaTimeline?.(peerId, point);
+        } catch (err) {
+          opts.onError(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+      return;
+    }
+
     if (lower === EVENT_TRACK || lower.includes('timeline')) {
       session.setSubscriptionCallback(evt.subscriptionId, (data) => {
         try {
-          const timelineEvt = JSON.parse(decoder.decode(data)) as TimelineEvent;
-          opts.onEvent(peerId, timelineEvt);
+          const parsed = JSON.parse(decoder.decode(data)) as unknown;
+          const timelineEvt = parseTimelineEvent(parsed);
+          if (timelineEvt) opts.onEvent(peerId, timelineEvt);
         } catch (err) {
           opts.onError(err instanceof Error ? err : new Error(String(err)));
         }
@@ -220,19 +267,51 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
   });
 
   let localStream: MediaStream | undefined;
+  let videoTrackAlias: bigint | undefined;
+  let mediaTimelineAlias: bigint | undefined;
+  const publishStartMs = performance.now();
+  let mediaTimelineSeq = 0;
   if (opts.publishMedia) {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({
         video: { width: 1280, height: 720 },
         audio: true,
       });
-      await mediaSession.publish(selfNamespace, VIDEO_TRACK, localStream, {
+      videoTrackAlias = await mediaSession.publish(selfNamespace, VIDEO_TRACK, localStream, {
         ...MEDIA_CONFIG,
         audioEnabled: false,
       });
       await mediaSession.publish(selfNamespace, AUDIO_TRACK, localStream, {
         ...MEDIA_CONFIG,
         videoEnabled: false,
+      });
+      mediaTimelineAlias = await session.publish(selfNamespace, MEDIA_TIMELINE_TRACK, {
+        deliveryMode: 'stream',
+        deliveryTimeout: 0,
+        skipForwardWait: true,
+        priority: opts.transport.publisher.publisherPriority,
+      });
+      // Emit a mediatimeline entry each time the video track lands a keyframe
+      // (draft-18 marks keyframes as objectId === 0 in a fresh group). PTS is a
+      // monotonic offset from `publishStartMs`; wallclock is Date.now().
+      mediaSession.on('publish-stats', (stats) => {
+        if (stats.type !== 'video' || stats.objectId !== 0) return;
+        if (videoTrackAlias === undefined || stats.trackAlias !== videoTrackAlias.toString()) return;
+        if (mediaTimelineAlias === undefined) return;
+        const mediaPTS = performance.now() - publishStartMs;
+        const point: MediaTimelinePoint = {
+          mediaPTS,
+          groupId: stats.groupId,
+          objectId: 0,
+          wallclockTime: Date.now(),
+        };
+        const entry = encodeMediaTimelineEntry(point);
+        const seq = mediaTimelineSeq++;
+        void session.sendObject(
+          mediaTimelineAlias,
+          encoder.encode(JSON.stringify(entry)),
+          { groupId: seq, objectId: 0 },
+        ).catch((err) => opts.onError(err instanceof Error ? err : new Error(String(err))));
       });
     } catch (err) {
       opts.onError(err instanceof Error ? err : new Error(String(err)));
@@ -268,6 +347,14 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       isLive: true,
       eventType: 'studio-timeline',
     });
+    if (opts.publishMedia && localStream) {
+      (catalog as unknown as { tracks: unknown[] }).tracks.push({
+        name: MEDIA_TIMELINE_TRACK,
+        packaging: 'mediatimeline',
+        isLive: true,
+        depends: [VIDEO_TRACK],
+      });
+    }
     await msfSession.publishCatalog(catalog);
   } catch (err) {
     void err;
@@ -283,15 +370,34 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       const groupId = seq;
       const objectId = 0;
       seq += 1;
-      await session.sendObject(trackAlias, encoder.encode(JSON.stringify(evt)), { groupId, objectId });
+      const entry = encodeEventTimelineEntry({
+        wallclockTime: evt.t,
+        data: { kind: evt.kind, label: evt.label },
+      });
+      await session.sendObject(trackAlias, encoder.encode(JSON.stringify(entry)), { groupId, objectId });
       opts.onEvent(opts.selfId, evt);
     },
     getLocalStream: () => localStream,
     setLocalMuted: (muted) => {
       localStream?.getAudioTracks().forEach((t) => { t.enabled = !muted; });
+      // Signal the state change to peers with a catalog delta flipping the
+      // audio track's `isLive` flag (MSF §7 update). Peers ignore the flag
+      // for rendering but the debug panel surfaces the transition.
+      const delta = createDelta()
+        .update(AUDIO_TRACK, { isLive: !muted })
+        .build();
+      void msfSession.publishCatalogDelta(delta).catch((err) =>
+        opts.onError(err instanceof Error ? err : new Error(String(err))),
+      );
     },
     setLocalVideoOff: (off) => {
       localStream?.getVideoTracks().forEach((t) => { t.enabled = !off; });
+      const delta = createDelta()
+        .update(VIDEO_TRACK, { isLive: !off })
+        .build();
+      void msfSession.publishCatalogDelta(delta).catch((err) =>
+        opts.onError(err instanceof Error ? err : new Error(String(err))),
+      );
     },
     close: async () => {
       for (const state of peers.values()) {
