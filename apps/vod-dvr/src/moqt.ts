@@ -1,102 +1,152 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
+/**
+ * VOD/DVR subscriber. Subscribes to the catalog and mediatimeline tracks,
+ * exposes a FetchDriver so the app can drive sawtooth FETCH windows against
+ * the video track.
+ */
+
 import { connectMoqtSession, type ConnectedSession } from '@moq-web/app-kit/moqt';
 import type { TransportConfig } from '@moq-web/app-kit/transport';
+import { SubscribePipeline, type SubscribePipelineConfig } from '@moq-web/media';
+import {
+  MSFSession,
+  decodeMediaTimelineEntry,
+  type FullCatalog,
+  type MediaTimelinePoint,
+  type MediaTimelineEntry,
+} from '@moq-web/msf';
+import type { GroupPtsPoint } from '@moq-web/app-kit';
+import type { FetchOptions } from '@moq-web/session';
 
-const CHUNK_TRACK = 'chunks';
-const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-export interface VodChunk {
-  index: number;
-  totalChunks: number;
-  chunkMs: number;
-  assetId: string;
-  payloadBytes: number;
-}
-
-export interface VodPublishHandle {
-  namespace: string[];
+export interface VodViewerHandle {
   connected: ConnectedSession;
-  publishAsset: (asset: { assetId: string; durationMs: number; sizeBytes: number }) => Promise<void>;
+  namespace: string[];
+  waitForCatalog: () => Promise<FullCatalog>;
+  waitForTimeline: () => Promise<GroupPtsPoint[]>;
+  /** Fires whenever the timeline gains a new keyframe entry (publisher still uploading). */
+  onTimelineUpdate: (cb: (points: GroupPtsPoint[]) => void) => () => void;
+  /** Attach a SubscribePipeline for the video track and return it. */
+  attachPipeline: (pipelineConfig: SubscribePipelineConfig) => SubscribePipeline;
+  fetchVideo: (opts: {
+    startGroup: number;
+    endGroup: number;
+    onObject: (data: Uint8Array, groupId: number, objectId: number) => void;
+    fetchOptions?: FetchOptions;
+  }) => Promise<bigint>;
+  cancelFetch: (requestId: bigint) => Promise<void>;
   close: () => Promise<void>;
 }
 
-/**
- * Publish a VOD asset as N chunks (~1s each) on a well-known namespace, and
- * subscribe to the same namespace so a viewer (potentially another tab) can
- * consume the chunks as they arrive.
- */
-export async function openVodBroadcast(opts: {
+export interface VodViewerOptions {
   transport: TransportConfig;
   channel: string;
-  onProgress: (pct: number) => void;
-  onChunk: (chunk: VodChunk, receivedAtMs: number) => void;
-  onError: (err: Error) => void;
+  onError?: (err: Error) => void;
   signal?: AbortSignal;
-}): Promise<VodPublishHandle> {
+}
+
+export async function openVodViewer(opts: VodViewerOptions): Promise<VodViewerHandle> {
   const connected = await connectMoqtSession({ transport: opts.transport, signal: opts.signal });
   const session = connected.session;
-
   const namespace = ['vod', opts.channel];
 
-  session.on('session-terminated', (evt) =>
-    opts.onError(new Error(`Session terminated: ${evt.reason ?? evt.code}`)),
-  );
-
-  await session.announceNamespace(namespace, { deliveryMode: 'stream' });
-
-  const trackAlias = await session.publish(namespace, CHUNK_TRACK, {
-    deliveryMode: 'stream',
-    deliveryTimeout: 0,
-    skipForwardWait: true,
-    priority: opts.transport.publisher.publisherPriority,
-    maxCacheDuration: 3_600_000,
+  session.on('session-terminated', (evt) => {
+    opts.onError?.(new Error(`Session terminated: ${evt.reason ?? evt.code}`));
   });
 
-  try {
-    await session.subscribe(namespace, CHUNK_TRACK, {
-      priority: opts.transport.subscriber.subscriberPriority,
-    }, (data) => {
-      try {
-        const chunk = JSON.parse(decoder.decode(data)) as VodChunk;
-        opts.onChunk(chunk, Date.now());
-      } catch (err) {
-        opts.onError(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-  } catch (err) {
-    opts.onError(err instanceof Error ? err : new Error(String(err)));
-  }
+  const msf = new MSFSession(session, namespace);
+
+  const timelinePoints: GroupPtsPoint[] = [];
+  const timelineListeners = new Set<(pts: GroupPtsPoint[]) => void>();
+  const emitTimeline = () => {
+    const snap = [...timelinePoints];
+    for (const l of timelineListeners) l(snap);
+  };
+
+  let catalogResolve: ((c: FullCatalog) => void) | null = null;
+  let catalogValue: FullCatalog | null = null;
+  const catalogP = new Promise<FullCatalog>((resolve) => { catalogResolve = resolve; });
+
+  await msf.subscribeCatalog((cat) => {
+    catalogValue = cat;
+    catalogResolve?.(cat);
+    catalogResolve = null;
+    // Subscribe the media timeline track lazily once we know it exists.
+    const mediaTimeline = cat.tracks.find(
+      (t) => (t as { packaging?: string }).packaging === 'mediatimeline',
+    );
+    if (mediaTimeline && !timelineSubscribed) {
+      timelineSubscribed = true;
+      void session
+        .subscribe(namespace, mediaTimeline.name, {
+          priority: opts.transport.subscriber.subscriberPriority,
+        }, (data) => {
+          try {
+            const entry = JSON.parse(decoder.decode(data)) as MediaTimelineEntry;
+            const point: MediaTimelinePoint = decodeMediaTimelineEntry(entry);
+            timelinePoints.push({
+              groupId: Number(point.groupId),
+              ptsMs: point.mediaPTS,
+            });
+            emitTimeline();
+          } catch (err) {
+            opts.onError?.(err instanceof Error ? err : new Error(String(err)));
+          }
+        })
+        .catch((err) => opts.onError?.(err instanceof Error ? err : new Error(String(err))));
+    }
+  }).catch((err) => opts.onError?.(err instanceof Error ? err : new Error(String(err))));
+
+  let timelineSubscribed = false;
+
+  let attachedPipeline: SubscribePipeline | null = null;
 
   return {
-    namespace,
     connected,
-    publishAsset: async ({ assetId, durationMs, sizeBytes }) => {
-      const CHUNK_MS = 1000;
-      const totalChunks = Math.max(1, Math.ceil(durationMs / CHUNK_MS));
-      const bytesPerChunk = Math.max(1, Math.floor(sizeBytes / totalChunks));
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk: VodChunk = {
-          index: i,
-          totalChunks,
-          chunkMs: CHUNK_MS,
-          assetId,
-          payloadBytes: bytesPerChunk,
-        };
-        await session.sendObject(trackAlias, encoder.encode(JSON.stringify(chunk)), {
-          groupId: i,
-          objectId: 0,
-          maxCacheDuration: 3_600_000,
-        });
-        opts.onProgress(Math.round(((i + 1) / totalChunks) * 100));
-        // Pace publishing at ~50ms per chunk so the UI shows progress; the relay
-        // won't cache-throttle because chunks are tiny JSON metadata blobs.
-        await new Promise((r) => setTimeout(r, 50));
+    namespace,
+    waitForCatalog: () => catalogValue ? Promise.resolve(catalogValue) : catalogP,
+    waitForTimeline: () => new Promise((resolve) => {
+      if (timelinePoints.length > 0) {
+        resolve([...timelinePoints]);
+        return;
       }
+      const unsub = (pts: GroupPtsPoint[]) => {
+        if (pts.length === 0) return;
+        timelineListeners.delete(unsub);
+        resolve(pts);
+      };
+      timelineListeners.add(unsub);
+    }),
+    onTimelineUpdate: (cb) => {
+      timelineListeners.add(cb);
+      return () => timelineListeners.delete(cb);
     },
+    attachPipeline: (pipelineConfig) => {
+      if (attachedPipeline) return attachedPipeline;
+      attachedPipeline = new SubscribePipeline(pipelineConfig);
+      return attachedPipeline;
+    },
+    fetchVideo: async ({ startGroup, endGroup, onObject, fetchOptions }) => {
+      // Video track name is fixed to `video` (matches publisher).
+      const rid = await session.fetch(
+        namespace,
+        'video',
+        { startGroup, startObject: 0, endGroup, endObject: 0 },
+        {
+          priority: opts.transport.subscriber.subscriberPriority,
+          ...fetchOptions,
+        },
+        (data, groupId, objectId) => onObject(data, groupId, objectId),
+      );
+      return rid;
+    },
+    cancelFetch: (rid) => session.cancelFetch(rid),
     close: async () => {
+      try { await msf.unsubscribeCatalog(); } catch { /* noop */ }
+      try { attachedPipeline?.stop(); } catch { /* noop */ }
       try { await session.close(); } catch { /* noop */ }
     },
   };
