@@ -5,6 +5,7 @@ import {
   StatusDot,
   useTransportActions,
   useTransportConfig,
+  type GroupPtsPoint,
   type StatusState,
 } from '@moq-web/app-kit';
 import type { FullCatalog } from '@moq-web/msf';
@@ -12,7 +13,8 @@ import { Timeline, type TimelineEntry } from './components/Timeline';
 import { StreamRoster, type RosterEntry } from './components/StreamRoster';
 import { MediaGrid, type MediaTile } from './components/MediaGrid';
 import { EventComposer } from './components/EventComposer';
-import { openStudioBroadcast, type StudioBroadcast, type TimelineEvent } from './moqt';
+import { PeerDvrPanel } from './components/PeerDvrPanel';
+import { openStudioBroadcast, type PeerDvrHandle, type StudioBroadcast, type TimelineEvent } from './moqt';
 
 const INITIAL_ROOM_ID = new URLSearchParams(globalThis.location?.search ?? '').get('room') ?? 'default';
 const SELF_ID = `host-${Math.random().toString(36).slice(2, 8)}`;
@@ -57,6 +59,9 @@ export function App() {
   const [muted, setMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
   const [publishMedia, setPublishMedia] = useState(true);
+  const [peerTimelines, setPeerTimelines] = useState<Record<string, GroupPtsPoint[]>>({});
+  const [dvrPeer, setDvrPeer] = useState<string | null>(null);
+  const [dvrHandle, setDvrHandle] = useState<PeerDvrHandle | null>(null);
   const roomRef = useRef<StudioBroadcast | null>(null);
   const startedAtRef = useRef<number>(0);
 
@@ -74,7 +79,11 @@ export function App() {
     });
     setPeerCatalogs({});
     setCatalogLog([]);
-  }, []);
+    setPeerTimelines({});
+    setDvrPeer(null);
+    if (dvrHandle) void dvrHandle.stop();
+    setDvrHandle(null);
+  }, [dvrHandle]);
 
   useEffect(() => () => { void disconnect(); }, [disconnect]);
 
@@ -110,6 +119,16 @@ export function App() {
             void _drop;
             return rest;
           });
+          setPeerTimelines((cur) => {
+            const { [peerId]: _drop, ...rest } = cur;
+            void _drop;
+            return rest;
+          });
+          if (dvrPeer === peerId) {
+            setDvrPeer(null);
+            if (dvrHandle) void dvrHandle.stop();
+            setDvrHandle(null);
+          }
         },
         onEvent: (peerId, evt) => {
           setEntries((cur) => [...cur, { ...evt, peerId, receivedAt: Date.now() }].slice(-256));
@@ -125,6 +144,14 @@ export function App() {
         },
         onPeerAudioData: (_peerId, audio) => {
           try { audio.close(); } catch { /* noop */ }
+        },
+        onPeerMediaTimeline: (peerId, point) => {
+          setPeerTimelines((cur) => {
+            const prev = cur[peerId] ?? [];
+            const g = typeof point.groupId === 'bigint' ? Number(point.groupId) : point.groupId;
+            if (prev.some((p) => p.groupId === g)) return cur;
+            return { ...cur, [peerId]: [...prev, { groupId: g, ptsMs: point.mediaPTS }] };
+          });
         },
         onPeerCatalog: (peerId, catalog) => {
           setPeerCatalogs((cur) => {
@@ -190,6 +217,29 @@ export function App() {
     setVideoOff(next);
     roomRef.current?.setLocalVideoOff(next);
   }, [videoOff]);
+
+  const handleToggleDvr = useCallback((peerId: string) => {
+    const room = roomRef.current;
+    if (!room) return;
+    // Already rewinding this peer — return to live.
+    if (dvrPeer === peerId) {
+      if (dvrHandle) void dvrHandle.stop();
+      setDvrHandle(null);
+      setDvrPeer(null);
+      return;
+    }
+    // Switching peers: stop the previous DVR first.
+    if (dvrHandle) void dvrHandle.stop();
+    const catalog = peerCatalogs[peerId];
+    if (!catalog) return;
+    const handle = room.startPeerDvr(peerId, {
+      onDvrFrame: (frame) => { try { frame.close(); } catch { /* noop */ } },
+      catalog,
+    });
+    if (!handle) return;
+    setDvrHandle(handle);
+    setDvrPeer(peerId);
+  }, [dvrPeer, dvrHandle, peerCatalogs]);
 
   const peerHasVideo = (peerId: string): boolean => {
     const cat = peerCatalogs[peerId];
@@ -304,7 +354,18 @@ export function App() {
             onToggleMute={handleToggleMute}
             onToggleVideo={handleToggleVideo}
             status={status}
+            dvrPeer={dvrPeer}
+            onToggleDvr={handleToggleDvr}
           />
+          {dvrPeer && dvrHandle ? (
+            <PeerDvrPanel
+              peerId={dvrPeer}
+              handle={dvrHandle}
+              timeline={peerTimelines[dvrPeer] ?? []}
+              liveEdgeMs={(peerTimelines[dvrPeer]?.at(-1)?.ptsMs) ?? 0}
+              onClose={() => handleToggleDvr(dvrPeer)}
+            />
+          ) : null}
           <Timeline entries={entries} durationMs={60_000} selfId={SELF_ID} />
           <EventComposer onEmit={(kind, label) => void emit(kind, label)} disabled={status !== 'ready'} />
           {totalPeerTracks > 0 ? (

@@ -3,7 +3,8 @@
 
 import { connectMoqtSession, type ConnectedSession } from '@moq-web/app-kit/moqt';
 import type { TransportConfig } from '@moq-web/app-kit/transport';
-import { MediaSession, type MediaConfig } from '@moq-web/media';
+import { MediaSession, SubscribePipeline, type MediaConfig, type SubscribePipelineConfig } from '@moq-web/media';
+import type { FetchOptions } from '@moq-web/session';
 import {
   MSFSession,
   createCatalog,
@@ -71,6 +72,30 @@ function parseTimelineEvent(raw: unknown): TimelineEvent | null {
   return { t, kind, label };
 }
 
+export interface PeerDvrDriver {
+  fetch: (window: {
+    startGroup: number;
+    endGroup: number;
+    onObject: (groupId: number, objectId: number, data: Uint8Array) => void;
+    fetchOptions?: FetchOptions;
+  }) => Promise<bigint>;
+  cancel: (rid: bigint) => Promise<void>;
+}
+
+export interface PeerDvrHandle {
+  /** Ready-to-attach FetchDriver for `useSawtoothFetch`. */
+  driver: PeerDvrDriver;
+  /** Feed FETCH objects into the decode pipeline. Frames land in the peer canvas. */
+  pushObject: (data: Uint8Array, groupId: number, objectId: number, ptsUs: number) => void;
+  /**
+   * Register (or clear) a paint sink for decoded DVR frames. The DVR panel
+   * component owns the canvas ref, so it installs the sink on mount and clears
+   * it on unmount. Passing `null` swallows frames until the next sink is set.
+   */
+  setFrameSink: (sink: ((frame: VideoFrame) => void) | null) => void;
+  stop: () => Promise<void>;
+}
+
 export interface StudioBroadcast {
   namespace: string[];
   connected: ConnectedSession;
@@ -78,6 +103,15 @@ export interface StudioBroadcast {
   getLocalStream: () => MediaStream | undefined;
   setLocalMuted: (muted: boolean) => void;
   setLocalVideoOff: (off: boolean) => void;
+  /**
+   * Open a per-peer DVR pipeline. Runs alongside the live SUBSCRIBE — the live
+   * decode keeps painting into `onPeerVideoFrame`, and the DVR decode paints
+   * into `onDvrFrame` so the tile can render either one.
+   */
+  startPeerDvr: (peerId: string, opts: {
+    onDvrFrame: (frame: VideoFrame) => void;
+    catalog: FullCatalog;
+  }) => PeerDvrHandle | null;
   close: () => Promise<void>;
 }
 
@@ -398,6 +432,74 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       void msfSession.publishCatalogDelta(delta).catch((err) =>
         opts.onError(err instanceof Error ? err : new Error(String(err))),
       );
+    },
+    startPeerDvr: (peerId, dvrOpts) => {
+      const peerState = peers.get(peerId);
+      if (!peerState) return null;
+      const catalog = dvrOpts.catalog;
+      const video = catalog.tracks.find((t) => (t as { name?: string }).name === VIDEO_TRACK)
+        ?? catalog.tracks.find((t) => (t as { packaging?: string }).packaging === 'loc');
+      if (!video) return null;
+      const description = (catalog as unknown as { initData?: Array<{ data: string }> }).initData?.[0]?.data;
+      const descBytes = description
+        ? Uint8Array.from(atob(description), (c) => c.charCodeAt(0))
+        : undefined;
+      const playback = opts.transport.playback;
+      const cfg: SubscribePipelineConfig = {
+        mediaType: 'video',
+        video: {
+          codec: (video as { codec?: string }).codec ?? 'avc1.42E01E',
+          codedWidth: (video as { width?: number }).width ?? 1280,
+          codedHeight: (video as { height?: number }).height ?? 720,
+          description: descBytes,
+        },
+        // Peer DVR uses VOD playback semantics — sequential release, no
+        // catch-up, no skip. Reuses the transport dialog's playback block.
+        policyType: 'vod',
+        isLive: false,
+        jitterBufferDelay: playback.jitterBufferDelay,
+        maxLatency: playback.maxLatency,
+        estimatedGopDuration: playback.estimatedGopDuration,
+        useLatencyDeadline: playback.useLatencyDeadline,
+        skipToLatestGroup: playback.skipToLatestGroup,
+        skipGraceFrames: playback.skipGraceFrames,
+        enableCatchUp: playback.enableCatchUp,
+        catchUpThreshold: playback.catchUpThreshold,
+        catalogFramerate: (video as { framerate?: number }).framerate,
+      };
+      const pipeline = new SubscribePipeline(cfg);
+      let frameSink: ((frame: VideoFrame) => void) | null = dvrOpts.onDvrFrame;
+      pipeline.on('video-frame', (frame) => {
+        const f = frame as VideoFrame;
+        if (frameSink) frameSink(f);
+        else f.close();
+      });
+      void pipeline.start();
+      const ns = peerState.namespace;
+      return {
+        driver: {
+          fetch: async ({ startGroup, endGroup, onObject, fetchOptions }) => {
+            return session.fetch(
+              ns,
+              VIDEO_TRACK,
+              { startGroup, startObject: 0, endGroup, endObject: 0 },
+              {
+                priority: opts.transport.subscriber.subscriberPriority,
+                ...fetchOptions,
+              },
+              (data, groupId, objectId) => onObject(groupId, objectId, data),
+            );
+          },
+          cancel: (rid) => session.cancelFetch(rid),
+        },
+        pushObject: (data, groupId, objectId, ptsUs) => {
+          pipeline.push(data, groupId, objectId, ptsUs);
+        },
+        setFrameSink: (sink) => { frameSink = sink; },
+        stop: async () => {
+          try { await pipeline.stop(); } catch { /* noop */ }
+        },
+      };
     },
     close: async () => {
       for (const state of peers.values()) {

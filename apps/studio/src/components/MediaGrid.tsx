@@ -19,6 +19,9 @@ interface MediaGridProps {
   onToggleMute: () => void;
   onToggleVideo: () => void;
   status: 'idle' | 'connecting' | 'ready' | 'error';
+  /** Currently-rewound peer (only one at a time). */
+  dvrPeer?: string | null;
+  onToggleDvr?: (peerId: string) => void;
 }
 
 /**
@@ -34,6 +37,8 @@ export function MediaGrid({
   onToggleMute,
   onToggleVideo,
   status,
+  dvrPeer,
+  onToggleDvr,
 }: MediaGridProps) {
   const localRef = useRef<HTMLVideoElement | null>(null);
   const canvasRefs = useRef<Map<string, HTMLCanvasElement>>(new Map());
@@ -151,6 +156,29 @@ export function MediaGrid({
                 width: 8, height: 8, borderRadius: '50%',
                 background: '#10b981', boxShadow: '0 0 0 4px rgba(16, 185, 129, 0.25)',
               }} />
+            )}
+            {!t.isSelf && onToggleDvr && peerVideoFrames.has(t.peerId) && (
+              <button
+                className={`ak-btn ${dvrPeer === t.peerId ? 'ak-btn-primary' : 'ak-btn-ghost'}`}
+                onClick={() => onToggleDvr(t.peerId)}
+                title={dvrPeer === t.peerId ? 'Return to live' : 'Rewind this stream'}
+                style={{
+                  position: 'absolute', top: 8, right: 8,
+                  fontSize: 11, padding: '2px 8px',
+                }}
+              >
+                {dvrPeer === t.peerId ? '⏹ Live' : '⏮ Rewind'}
+              </button>
+            )}
+            {!t.isSelf && dvrPeer === t.peerId && (
+              <div style={{
+                position: 'absolute', top: 8, left: 8,
+                padding: '2px 8px',
+                background: 'rgba(59, 130, 246, 0.8)',
+                borderRadius: 999,
+                color: 'white', fontSize: 10, fontWeight: 700,
+                letterSpacing: '0.08em', textTransform: 'uppercase',
+              }}>DVR</div>
             )}
           </div>
         ))}
