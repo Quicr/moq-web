@@ -154,6 +154,8 @@ export function useDvrPlayer({ range, autoPlay = false }: DvrPlayerOptions = {})
     return () => clearInterval(id);
   }, [state.isPaused, state.isSeeking, state.rate]);
 
+  const setRange = useCallback((r: DvrRange) => dispatch({ type: 'set-range', range: r }), []);
+
   const controls = useMemo<DvrPlayerControls>(
     () => ({
       state,
@@ -164,7 +166,7 @@ export function useDvrPlayer({ range, autoPlay = false }: DvrPlayerOptions = {})
       commitSeek: () => dispatch({ type: 'seek-commit' }),
       setRate: (rate) => dispatch({ type: 'set-rate', rate }),
       setBuffered: (bufferedMs) => dispatch({ type: 'set-buffered', bufferedMs }),
-      setRange: useCallback((r: DvrRange) => dispatch({ type: 'set-range', range: r }), []),
+      setRange,
       goLive: () => {
         const edge = stateRef.current.range.liveEdgeMs ?? stateRef.current.range.endMs;
         dispatch({ type: 'seek', positionMs: edge });
@@ -172,7 +174,7 @@ export function useDvrPlayer({ range, autoPlay = false }: DvrPlayerOptions = {})
         dispatch({ type: 'play' });
       },
     }),
-    [state],
+    [state, setRange],
   );
 
   return controls;

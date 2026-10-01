@@ -110,7 +110,11 @@ export async function publishVodAsset(opts: VodPublishOptions): Promise<VodPubli
 
   // MSF catalog: declare the two tracks with codec info + init data so the
   // viewer's decoder can be configured without probing samples.
-  const msf = new MSFSession(session, namespace);
+  // Republish the catalog every 2s so subscribers that arrive after publish
+  // completes still get it (draft-18 subscriptions don't replay history).
+  const msf = new MSFSession(session, namespace, {
+    catalogPublishOptions: { republishIntervalMs: 2000 },
+  });
   await msf.startCatalogPublishing();
   const catalog = createCatalog()
     .generatedAt()
@@ -132,15 +136,17 @@ export async function publishVodAsset(opts: VodPublishOptions): Promise<VodPubli
     depends: [VIDEO_TRACK],
   });
   // Encode the AVCDecoderConfigurationRecord as base64 for the viewer to feed
-  // the WebCodecs VideoDecoder as `description`.
+  // the WebCodecs VideoDecoder as `description`. MSF §5 stores init blobs in
+  // top-level `initDataList` with `id`; tracks reference them via `initRef`.
   const initDataB64 = base64Encode(source.info.description);
-  (catalog as unknown as { initData?: unknown[] }).initData = [
-    {
-      name: VIDEO_TRACK,
-      data: initDataB64,
-      encoding: 'base64',
-    },
+  const INIT_ID = `${VIDEO_TRACK}-init`;
+  (catalog as unknown as { initDataList?: unknown[] }).initDataList = [
+    { id: INIT_ID, data: initDataB64, mimeType: 'video/avc' },
   ];
+  const videoTrack = catalog.tracks.find(
+    (t) => (t as { name?: string }).name === VIDEO_TRACK,
+  ) as { initRef?: string } | undefined;
+  if (videoTrack) videoTrack.initRef = INIT_ID;
   await msf.publishCatalog(catalog);
 
   const packager = new LOCPackager();

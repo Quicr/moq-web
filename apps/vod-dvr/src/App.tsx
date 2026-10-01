@@ -19,19 +19,9 @@ import { openVodViewer, type VodViewerHandle } from './moqt';
 
 const SAMPLE_URLS = [
   {
-    id: 'bbb-30s',
-    title: 'Big Buck Bunny (30 s H.264)',
-    url: 'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4',
-  },
-  {
-    id: 'sintel-5s',
-    title: 'Sintel (5 s clip)',
-    url: 'https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_1MB.mp4',
-  },
-  {
-    id: 'jellyfish-5s',
-    title: 'Jellyfish (5 s clip)',
-    url: 'https://test-videos.co.uk/vids/jellyfish/mp4/h264/720/Jellyfish_720_10s_1MB.mp4',
+    id: 'local-fixture',
+    title: 'Local fixture (15 s testsrc, H.264)',
+    url: '/sample.mp4',
   },
 ];
 
@@ -106,7 +96,9 @@ export function App() {
     // Wait for the catalog to know codec/description; start the pipeline.
     const catalog = await viewer.waitForCatalog();
     const video = catalog.tracks.find((t) => (t as { packaging?: string }).packaging === 'loc');
-    const description = (catalog as unknown as { initData?: Array<{ data: string }> }).initData?.[0]?.data;
+    const initRef = (video as { initRef?: string } | undefined)?.initRef;
+    const initList = (catalog as unknown as { initDataList?: Array<{ id: string; data?: string }> }).initDataList;
+    const description = initList?.find((e) => e.id === initRef)?.data;
     const descBytes = description
       ? Uint8Array.from(atob(description), (c) => c.charCodeAt(0))
       : undefined;
@@ -294,7 +286,7 @@ export function App() {
                 <button
                   key={s.id}
                   className="ak-btn"
-                  onClick={() => setUrlInput(s.url)}
+                  onClick={() => { setUrlInput(s.url); void startPublish({ url: s.url }); }}
                   style={{ textAlign: 'left' }}
                 >
                   {s.title}

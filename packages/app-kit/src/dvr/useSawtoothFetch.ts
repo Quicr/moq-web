@@ -268,6 +268,10 @@ export function useSawtoothFetch(input: UseSawtoothFetchInput): SawtoothStats {
   useEffect(() => {
     if (isSeeking) return;
     const tick = () => {
+      // Don't probe FETCH before we've seen any keyframes — otherwise we open
+      // the viewer + subscribe to a catalog that doesn't exist yet, get
+      // REQUEST_ERROR 16, and cache a broken viewer.
+      if (input.groupPts.length === 0) return;
       const s = stateRef.current;
       const playheadGroup = s.playheadGroup;
       let bufferedAhead = 0;
@@ -290,7 +294,7 @@ export function useSawtoothFetch(input: UseSawtoothFetchInput): SawtoothStats {
     const id = setInterval(tick, 500);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPaused, isSeeking, opts.lowWaterGops, opts.windowGops, opts.overlapGops, opts.maxInFlight, input.totalGroups]);
+  }, [isPaused, isSeeking, opts.lowWaterGops, opts.windowGops, opts.overlapGops, opts.maxInFlight, input.totalGroups, input.groupPts.length]);
 
   return stats;
 }

@@ -70,19 +70,30 @@ export async function openVodViewer(opts: VodViewerOptions): Promise<VodViewerHa
   let catalogValue: FullCatalog | null = null;
   const catalogP = new Promise<FullCatalog>((resolve) => { catalogResolve = resolve; });
 
+  let timelineSubscribed = false;
+
   await msf.subscribeCatalog((cat) => {
     catalogValue = cat;
     catalogResolve?.(cat);
     catalogResolve = null;
+    console.log('[vod-dvr] catalog received', {
+      tracks: cat.tracks.map((t) => ({ name: (t as { name?: string }).name, packaging: (t as { packaging?: string }).packaging })),
+      hasInitDataList: Array.isArray((cat as unknown as { initDataList?: unknown[] }).initDataList),
+    });
     // Subscribe the media timeline track lazily once we know it exists.
     const mediaTimeline = cat.tracks.find(
       (t) => (t as { packaging?: string }).packaging === 'mediatimeline',
     );
     if (mediaTimeline && !timelineSubscribed) {
       timelineSubscribed = true;
+      // Use absolute-start from group 0 so a late subscriber (after publish
+      // finished) still replays the whole mediatimeline from the relay cache.
       void session
         .subscribe(namespace, mediaTimeline.name, {
           priority: opts.transport.subscriber.subscriberPriority,
+          filterType: 'absolute-start',
+          startGroup: 0,
+          startObject: 0,
         }, (data) => {
           try {
             const entry = JSON.parse(decoder.decode(data)) as MediaTimelineEntry;
@@ -98,9 +109,10 @@ export async function openVodViewer(opts: VodViewerOptions): Promise<VodViewerHa
         })
         .catch((err) => opts.onError?.(err instanceof Error ? err : new Error(String(err))));
     }
-  }).catch((err) => opts.onError?.(err instanceof Error ? err : new Error(String(err))));
-
-  let timelineSubscribed = false;
+  }, (err) => {
+    console.error('[vod-dvr] catalog parse error', err);
+    opts.onError?.(err);
+  });
 
   let attachedPipeline: SubscribePipeline | null = null;
 
