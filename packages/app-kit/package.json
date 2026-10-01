@@ -9,6 +9,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./transport": "./src/transport/index.ts",
+    "./auth": "./src/auth/index.ts",
     "./latency": "./src/latency/index.ts",
     "./catalog": "./src/catalog/index.ts",
     "./dvr": "./src/dvr/index.ts",

@@ -12,6 +12,8 @@
 import { MOQTransport, Logger } from '@moq-web/core';
 import { MOQTSession } from '@moq-web/session';
 import type { TransportConfig } from '../transport/state.js';
+import { getAuthAdapter } from '../auth/index.js';
+import type { AuthOperation } from '../auth/index.js';
 
 const log = Logger.create('app-kit:moqt:connector');
 
@@ -31,6 +33,14 @@ export interface ConnectMoqtOptions {
   clientExtensions?: Map<number, import('@moq-web/core').SetupExtensionValue>;
   /** Optional MOQT_IMPLEMENTATION string to advertise (draft-18 §13.8). */
   implementationString?: string;
+  /**
+   * What the caller intends to do on this session. When a relay-vendor auth
+   * adapter is selected in transport config, the connector mints a token
+   * with matching capability and attaches it per the adapter (Cloudflare =
+   * `?jwt=<token>` on the URL). When no adapter is selected this hint is
+   * ignored and the connect path is unchanged.
+   */
+  auth?: { operations: AuthOperation[] };
 }
 
 function assertRelayList(urls: string[]): asserts urls is string[] {
@@ -45,16 +55,43 @@ function assertRelayList(urls: string[]): asserts urls is string[] {
  * Aborts if `signal` fires.
  */
 export async function connectMoqtSession(opts: ConnectMoqtOptions): Promise<ConnectedSession> {
-  const { transport: cfg, authToken, signal, clientExtensions, implementationString } = opts;
+  const { transport: cfg, authToken, signal, clientExtensions, implementationString, auth } = opts;
   assertRelayList(cfg.relay.relays);
+
+  // Resolve the selected auth adapter once. If none is configured, the loop
+  // below sees `adapter === null` and behaves like before this change.
+  const adapter = getAuthAdapter(cfg.auth?.providerId);
+  const requestedOps = auth?.operations;
 
   const errors: Array<{ url: string; err: unknown }> = [];
   for (const url of cfg.relay.relays) {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+
+    let connectUrl = url;
+    if (adapter && requestedOps && requestedOps.length > 0) {
+      try {
+        const token = await adapter.mintToken({
+          relayUrl: url,
+          operations: requestedOps,
+          state: cfg.auth?.providerState ?? {},
+          signal,
+        });
+        connectUrl = adapter.applyToUrl(url, token);
+      } catch (err) {
+        log.warn('Auth adapter mint failed, trying next relay', {
+          url,
+          adapter: adapter.id,
+          err,
+        });
+        errors.push({ url, err });
+        continue;
+      }
+    }
+
     log.info('Connecting to relay', { url, draft: cfg.relay.draft });
     const transport = new MOQTransport();
     try {
-      await transport.connect(url);
+      await transport.connect(connectUrl);
       if (signal?.aborted) {
         try { await transport.close(); } catch { /* noop */ }
         throw new DOMException('aborted', 'AbortError');

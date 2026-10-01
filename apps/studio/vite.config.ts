@@ -11,5 +11,18 @@ export default defineConfig({
     __MOQT_VERSION__: JSON.stringify(moqtVersion),
     'import.meta.env.VITE_MOQT_VERSION': JSON.stringify(moqtVersion),
   },
-  server: { port: 5180, host: true },
+  server: {
+    port: 5180,
+    host: true,
+    proxy: {
+      // Cloudflare's api.cloudflare.com doesn't return CORS headers, so the
+      // Cloudflare auth adapter can't call it directly from the browser.
+      // Proxy /cf-api/* → https://api.cloudflare.com/client/v4/* in dev.
+      '/cf-api': {
+        target: 'https://api.cloudflare.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/cf-api/, '/client/v4'),
+      },
+    },
+  },
 });

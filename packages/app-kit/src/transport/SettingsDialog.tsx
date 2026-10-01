@@ -9,6 +9,7 @@ import {
 import { Modal } from '../shell/Modal.js';
 import { Toggle } from '../shell/Toggle.js';
 import { switchDraftInBrowser } from '../moqt/version.js';
+import { getAuthAdapter, listAuthAdapters } from '../auth/index.js';
 import { useTransportActions, useTransportConfig } from './state.js';
 
 export interface SettingsDialogProps {
@@ -16,11 +17,12 @@ export interface SettingsDialogProps {
   onClose: () => void;
 }
 
-type TabId = 'profile' | 'relay' | 'publisher' | 'subscriber' | 'playback';
+type TabId = 'profile' | 'relay' | 'auth' | 'publisher' | 'subscriber' | 'playback';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'relay', label: 'Relay' },
+  { id: 'auth', label: 'Auth' },
   { id: 'publisher', label: 'Publisher' },
   { id: 'subscriber', label: 'Subscriber' },
   { id: 'playback', label: 'Playback' },
@@ -57,6 +59,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       <div className="ak-settings-tabpanel">
         {tab === 'profile' && <ProfileCard />}
         {tab === 'relay' && <RelayCard />}
+        {tab === 'auth' && <AuthCard />}
         {tab === 'publisher' && <PublisherCard />}
         {tab === 'subscriber' && <SubscriberCard />}
         {tab === 'playback' && <PlaybackCard />}
@@ -318,6 +321,65 @@ function PlaybackCard() {
         <div className="ak-subtle" style={{ fontSize: 12 }}>Catch-up mode</div>
         <Toggle checked={p.enableCatchUp} onChange={(v) => setPlayback({ enableCatchUp: v })} />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Auth tab. Shows a provider dropdown; when a provider is picked the tab
+ * hands off to that provider's own `SettingsPanel` (adapters own their form
+ * so the shell stays vendor-neutral). "None" is always available and
+ * disables the adapter entirely.
+ */
+function AuthCard() {
+  const cfg = useTransportConfig();
+  const {
+    setAuthProvider,
+    setAuthProviderState,
+    resetAuthProviderState,
+  } = useTransportActions();
+  const adapters = listAuthAdapters();
+  const active = getAuthAdapter(cfg.auth.providerId);
+
+  return (
+    <div className="ak-settings-card">
+      <CardHeader
+        title="Auth"
+        hint="Relay-vendor token provisioning (e.g. Cloudflare moq-rs)"
+      />
+      <label>
+        <div className="ak-caption" style={{ marginBottom: 4 }}>Provider</div>
+        <select
+          className="ak-select"
+          value={cfg.auth.providerId ?? ''}
+          onChange={(e) => setAuthProvider(e.target.value === '' ? null : e.target.value)}
+        >
+          <option value="">None (relay accepts unauthenticated)</option>
+          {adapters.map((a) => (
+            <option key={a.id} value={a.id}>{a.displayName}</option>
+          ))}
+        </select>
+        {active?.description ? (
+          <div className="ak-caption" style={{ fontSize: 11, marginTop: 4 }}>
+            {active.description}
+          </div>
+        ) : null}
+      </label>
+      {active ? (
+        <div style={{ marginTop: 12 }}>
+          <active.SettingsPanel
+            state={cfg.auth.providerState}
+            updateState={setAuthProviderState}
+            resetState={resetAuthProviderState}
+          />
+        </div>
+      ) : (
+        <div className="ak-caption" style={{ fontSize: 12 }}>
+          Pick a provider above to configure vendor-specific auth (API tokens,
+          scoped JWTs). With no provider selected the app connects to the
+          relay without any auth material.
+        </div>
+      )}
     </div>
   );
 }

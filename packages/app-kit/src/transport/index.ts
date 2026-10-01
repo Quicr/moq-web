@@ -11,4 +11,4 @@ export {
   useTransportActions,
   getTransportConfig,
 } from './state.js';
-export type { TransportConfig, TransportActions } from './state.js';
+export type { TransportConfig, TransportActions, AuthConfig } from './state.js';

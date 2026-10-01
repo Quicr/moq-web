@@ -8,3 +8,4 @@ export * from './catalog/index.js';
 export * from './media/index.js';
 export * from './moqt/index.js';
 export * from './dvr/index.js';
+export * from './auth/index.js';

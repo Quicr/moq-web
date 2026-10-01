@@ -153,7 +153,16 @@ interface PeerState {
  *      Any pre-callback objects are flushed automatically (pendingObjects).
  */
 export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<StudioBroadcast> {
-  const connected = await connectMoqtSession({ transport: opts.transport, signal: opts.signal });
+  // Studio is both a publisher (local media + timeline) and a subscriber
+  // (peer namespaces). Request a combined-op token so the auth adapter can
+  // mint a single JWT covering both. Ignored when no adapter is selected.
+  const connected = await connectMoqtSession({
+    transport: opts.transport,
+    signal: opts.signal,
+    auth: {
+      operations: opts.publishMedia ? ['publish', 'subscribe'] : ['subscribe'],
+    },
+  });
   const session = connected.session;
 
   const roomPrefix = ['studio', opts.roomId];
@@ -440,7 +449,9 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       const video = catalog.tracks.find((t) => (t as { name?: string }).name === VIDEO_TRACK)
         ?? catalog.tracks.find((t) => (t as { packaging?: string }).packaging === 'loc');
       if (!video) return null;
-      const description = (catalog as unknown as { initData?: Array<{ data: string }> }).initData?.[0]?.data;
+      const initRef = (video as { initRef?: string }).initRef;
+      const initList = (catalog as unknown as { initDataList?: Array<{ id: string; data?: string }> }).initDataList;
+      const description = initList?.find((e) => e.id === initRef)?.data;
       const descBytes = description
         ? Uint8Array.from(atob(description), (c) => c.charCodeAt(0))
         : undefined;

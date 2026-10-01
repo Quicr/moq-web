@@ -11,6 +11,17 @@ import {
   type RelayConfig,
 } from '../latency/profiles.js';
 
+/**
+ * Selected relay-vendor auth adapter + its provider-specific state.
+ * When `providerId` is null the connect path skips the adapter entirely and
+ * behaves as if this key wasn't set. Shape of `providerState` is opaque —
+ * each adapter owns its own keys.
+ */
+export interface AuthConfig {
+  providerId: string | null;
+  providerState: Record<string, unknown>;
+}
+
 export interface TransportConfig {
   profile: LatencyProfileName;
   relay: RelayConfig;
@@ -20,6 +31,8 @@ export interface TransportConfig {
   playback: LatencyProfile['settings'];
   /** Target end-to-end latency in ms (from the profile, but user-editable). */
   targetLatencyMs: number;
+  /** Optional relay-vendor auth adapter (Cloudflare moq-rs etc.). */
+  auth: AuthConfig;
 }
 
 const ENV_RELAY_URL =
@@ -45,6 +58,7 @@ function fromProfile(name: LatencyProfileName): TransportConfig {
     subscriber: { ...p.subscriber },
     playback: { ...p.settings },
     targetLatencyMs: p.targetLatency,
+    auth: { providerId: null, providerState: {} },
   };
 }
 
@@ -64,6 +78,10 @@ function loadInitial(): TransportConfig {
       publisher: { ...base.publisher, ...(parsed.publisher ?? {}) },
       subscriber: { ...base.subscriber, ...(parsed.subscriber ?? {}) },
       playback: { ...base.playback, ...(parsed.playback ?? {}) },
+      auth: {
+        providerId: parsed.auth?.providerId ?? base.auth.providerId,
+        providerState: parsed.auth?.providerState ?? base.auth.providerState,
+      },
     };
     // VITE_RELAY_URL overrides any persisted relay list so pointing the app at
     // a different relay is a matter of restarting the dev server, not clearing
@@ -140,6 +158,31 @@ class TransportStore {
     this.commit({ ...this.state, targetLatencyMs: ms });
   }
 
+  setAuthProvider(providerId: string | null) {
+    // Clearing the provider drops its state too — user is explicitly
+    // switching adapters and we don't want stale credentials sticking around.
+    const providerState =
+      providerId === this.state.auth.providerId ? this.state.auth.providerState : {};
+    this.commit({ ...this.state, auth: { providerId, providerState } });
+  }
+
+  setAuthProviderState(patch: Record<string, unknown>) {
+    this.commit({
+      ...this.state,
+      auth: {
+        ...this.state.auth,
+        providerState: { ...this.state.auth.providerState, ...patch },
+      },
+    });
+  }
+
+  resetAuthProviderState() {
+    this.commit({
+      ...this.state,
+      auth: { ...this.state.auth, providerState: {} },
+    });
+  }
+
   reset() {
     this.commit(fromProfile('interactive'));
   }
@@ -169,6 +212,9 @@ export interface TransportActions {
   setSubscriber: (patch: Partial<SubscriberTransportConfig>) => void;
   setPlayback: (patch: Partial<LatencyProfile['settings']>) => void;
   setTargetLatency: (ms: number) => void;
+  setAuthProvider: (providerId: string | null) => void;
+  setAuthProviderState: (patch: Record<string, unknown>) => void;
+  resetAuthProviderState: () => void;
   reset: () => void;
 }
 
@@ -193,6 +239,18 @@ export function useTransportActions(): TransportActions {
   const setSubscriber = useCallback((p: Partial<SubscriberTransportConfig>) => store.setSubscriber(p), []);
   const setPlayback = useCallback((p: Partial<LatencyProfile['settings']>) => store.setPlayback(p), []);
   const setTargetLatency = useCallback((ms: number) => store.setTargetLatency(ms), []);
+  const setAuthProvider = useCallback(
+    (id: string | null) => store.setAuthProvider(id),
+    [],
+  );
+  const setAuthProviderState = useCallback(
+    (patch: Record<string, unknown>) => store.setAuthProviderState(patch),
+    [],
+  );
+  const resetAuthProviderState = useCallback(
+    () => store.resetAuthProviderState(),
+    [],
+  );
   const reset = useCallback(() => store.reset(), []);
 
   return useMemo(
@@ -206,6 +264,9 @@ export function useTransportActions(): TransportActions {
       setSubscriber,
       setPlayback,
       setTargetLatency,
+      setAuthProvider,
+      setAuthProviderState,
+      resetAuthProviderState,
       reset,
     }),
     [
@@ -218,6 +279,9 @@ export function useTransportActions(): TransportActions {
       setSubscriber,
       setPlayback,
       setTargetLatency,
+      setAuthProvider,
+      setAuthProviderState,
+      resetAuthProviderState,
       reset,
     ],
   );
