@@ -5,9 +5,10 @@ import { useEffect } from 'react';
 import { getBundledDraft, switchDraftInBrowser } from '../moqt/version.js';
 import { useTransportActions, useTransportConfig } from './state.js';
 
-const DRAFTS: { id: 'draft-16' | 'draft-18'; label: string }[] = [
+const DRAFTS: { id: 'draft-16' | 'draft-18' | 'draft-22'; label: string }[] = [
   { id: 'draft-16', label: 'd16' },
   { id: 'draft-18', label: 'd18' },
+  { id: 'draft-22', label: 'd22' },
 ];
 
 /**

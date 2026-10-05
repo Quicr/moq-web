@@ -22,7 +22,7 @@ export interface MoqtSessionHandle {
 
 export type MoqtConnector<T extends MoqtSessionHandle = MoqtSessionHandle> = (opts: {
   relayUrls: string[];
-  draft: 'draft-16' | 'draft-18';
+  draft: 'draft-16' | 'draft-18' | 'draft-22';
   keepAliveMs: number;
   signal: AbortSignal;
 }) => Promise<T>;

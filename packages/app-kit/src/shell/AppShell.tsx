@@ -10,7 +10,7 @@ export interface AppShellProps {
   title: string;
   tagline?: string;
   actions?: React.ReactNode;
-  /** Show the MoQT draft (d16/d18) switch in the header. Defaults to true. */
+  /** Show the MoQT draft (d16/d18/d22) switch in the header. Defaults to true. */
   showDraftSwitch?: boolean;
   /** Show a gear icon that opens the transport settings dialog. Defaults to true. */
   showSettingsButton?: boolean;

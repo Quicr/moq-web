@@ -185,16 +185,17 @@ function RelayCard() {
           className="ak-select"
           value={cfg.relay.draft}
           onChange={(e) => {
-            const next = e.target.value as 'draft-16' | 'draft-18';
+            const next = e.target.value as 'draft-16' | 'draft-18' | 'draft-22';
             setRelay({ draft: next });
             switchDraftInBrowser(next);
           }}
         >
           <option value="draft-16">draft-16</option>
           <option value="draft-18">draft-18</option>
+          <option value="draft-22">draft-22</option>
         </select>
         <div className="ak-caption" style={{ marginTop: 4, fontSize: 10 }}>
-          Reloads into the sibling build ({cfg.relay.draft === 'draft-18' ? '/18/ → /' : '/ → /18/'}).
+          Reloads into the sibling build for the selected draft.
         </div>
       </label>
       <NumberField

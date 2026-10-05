@@ -11,7 +11,9 @@ import type { Draft } from './adapter.js';
 export function getBundledDraft(): Draft {
   const env = (import.meta as unknown as { env?: Record<string, string> }).env;
   const v = env?.VITE_MOQT_VERSION;
-  return v === 'draft-18' ? 'draft-18' : 'draft-16';
+  if (v === 'draft-22') return 'draft-22';
+  if (v === 'draft-18') return 'draft-18';
+  return 'draft-16';
 }
 
 /**
@@ -27,8 +29,11 @@ export function switchDraftInBrowser(target: Draft): void {
   const cur = getBundledDraft();
   if (cur === target) return;
   const { pathname, search, hash } = window.location;
-  const stripped = pathname.replace(/^\/18(\/|$)/, '/');
-  const nextPath = target === 'draft-18' ? '/18' + stripped : stripped;
+  const stripped = pathname.replace(/^\/(18|22)(\/|$)/, '/');
+  const nextPath =
+    target === 'draft-22' ? '/22' + stripped :
+    target === 'draft-18' ? '/18' + stripped :
+    stripped;
   const targetUrl = `${nextPath}${search}${hash}`;
   if (window.location.pathname === nextPath) {
     console.warn(
