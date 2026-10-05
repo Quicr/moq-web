@@ -1562,6 +1562,10 @@ export interface ClientSetupMessageDraft18 {
    * Even keys carry a varint; odd keys carry length-prefixed bytes.
    */
   extensions?: Map<number, SetupExtensionValue>;
+  /** Draft-22 §9.1.6: max concurrent Range filter params per subscribe/fetch. Default 0. */
+  maxFilterRanges?: number;
+  /** Draft-22 §9.1.7: max outstanding REQUEST_UPDATEs per stream. 0 = unlimited (default). */
+  maxRequestUpdates?: number;
 }
 
 /**
@@ -1592,6 +1596,10 @@ export interface ServerSetupMessageDraft18 {
    * §13.8: relying on this for identification enables fingerprinting.
    */
   moqtImplementation?: string;
+  /** Draft-22 §9.1.6: max concurrent Range filter params per subscribe/fetch. Default 0. */
+  maxFilterRanges?: number;
+  /** Draft-22 §9.1.7: max outstanding REQUEST_UPDATEs per stream. 0 = unlimited (default). */
+  maxRequestUpdates?: number;
 }
 
 /**
@@ -1847,6 +1855,8 @@ export enum FetchSubgroupMode {
 export enum FetchObjectEndOfRange {
   NON_EXISTENT = 0x8c,
   UNKNOWN = 0x10c,
+  /** Draft-22 §11.4.1.2: End of Timed-Out Range */
+  TIMED_OUT = 0x20c,
 }
 
 /**

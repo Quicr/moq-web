@@ -198,5 +198,168 @@ describe('Draft22MessageCodec', () => {
 
       expect(decoded.type).toBe(MessageTypeDraft18.SERVER_SETUP);
     });
+
+    it('roundtrips setup stream with MAX_FILTER_RANGES and MAX_REQUEST_UPDATES', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        maxFilterRanges: 16,
+        maxRequestUpdates: 4,
+      };
+
+      const encoded = Draft22MessageCodec.encodeSetupStream(message);
+      const [decoded] = Draft22MessageCodec.decodeSetupStream(encoded);
+
+      expect(decoded.maxFilterRanges).toBe(16);
+      expect(decoded.maxRequestUpdates).toBe(4);
+    });
+
+    it('roundtrips setup with only MAX_FILTER_RANGES', () => {
+      const message: ClientSetupMessageDraft18 = {
+        type: MessageTypeDraft18.CLIENT_SETUP,
+        maxFilterRanges: 8,
+      };
+
+      const encoded = Draft22MessageCodec.encodeSetupStream(message);
+      const [decoded] = Draft22MessageCodec.decodeSetupStream(encoded);
+
+      expect(decoded.maxFilterRanges).toBe(8);
+      expect(decoded.maxRequestUpdates).toBeUndefined();
+    });
+  });
+
+  describe('LOCATION_FILTER (draft-22 §9.20.9)', () => {
+    it('roundtrips SUBSCRIBE with NONE filter (0x00)', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 10n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: 0x00, // LocationFilterTypeDraft22.NONE
+      };
+
+      const encoded = Draft22MessageCodec.encode(message as any);
+      const [decoded] = Draft22MessageCodec.decode(encoded);
+      const d = decoded as unknown as SubscribeMessageDraft18;
+      expect(d.filter).toBe(0x00);
+    });
+
+    it('roundtrips SUBSCRIBE with RELATIVE_START filter (0x01)', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 11n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: 0x01, // RELATIVE_START
+        startLocation: { group: 3n, object: 0n },
+      };
+
+      const encoded = Draft22MessageCodec.encode(message as any);
+      const [decoded] = Draft22MessageCodec.decode(encoded);
+      const d = decoded as unknown as SubscribeMessageDraft18;
+      expect(d.filter).toBe(0x01);
+      expect(d.startLocation?.group).toBe(3n);
+    });
+
+    it('roundtrips SUBSCRIBE with ABSOLUTE_START filter (0x02)', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 12n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: 0x02, // ABSOLUTE_START
+        startLocation: { group: 10n, object: 5n },
+      };
+
+      const encoded = Draft22MessageCodec.encode(message as any);
+      const [decoded] = Draft22MessageCodec.decode(encoded);
+      const d = decoded as unknown as SubscribeMessageDraft18;
+      expect(d.filter).toBe(0x02);
+      expect(d.startLocation?.group).toBe(10n);
+      expect(d.startLocation?.object).toBe(5n);
+    });
+
+    it('roundtrips SUBSCRIBE with ABSOLUTE_RANGE filter (0x04)', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 14n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: 0x04, // ABSOLUTE_RANGE
+        startLocation: { group: 10n, object: 0n },
+        endGroupDelta: 5n,
+      };
+
+      const encoded = Draft22MessageCodec.encode(message as any);
+      const [decoded] = Draft22MessageCodec.decode(encoded);
+      const d = decoded as unknown as SubscribeMessageDraft18;
+      expect(d.filter).toBe(0x04);
+      expect(d.startLocation?.group).toBe(10n);
+      expect(d.endGroupDelta).toBe(5n);
+    });
+
+    it('roundtrips SUBSCRIBE with NEXT_OBJECT filter (0x05)', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 15n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: 0x05, // NEXT_OBJECT
+      };
+
+      const encoded = Draft22MessageCodec.encode(message as any);
+      const [decoded] = Draft22MessageCodec.decode(encoded);
+      const d = decoded as unknown as SubscribeMessageDraft18;
+      expect(d.filter).toBe(0x05);
+    });
+  });
+
+  describe('INCLUDE_PROPERTIES parameter', () => {
+    it('roundtrips SUBSCRIBE with INCLUDE_PROPERTIES=1 in parameters', () => {
+      const params = new Map<number, Uint8Array>();
+      params.set(0x35, new Uint8Array([1])); // INCLUDE_PROPERTIES = 1
+
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 20n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: 0x05,
+        parameters: params,
+      };
+
+      const encoded = Draft22MessageCodec.encode(message as any);
+      const [decoded] = Draft22MessageCodec.decode(encoded);
+      const d = decoded as unknown as SubscribeMessageDraft18;
+      expect(d.parameters?.get(0x35)).toEqual(new Uint8Array([1]));
+    });
+  });
+
+  describe('Range filter parameters', () => {
+    it('roundtrips SUBSCRIBE with SUBGROUP_FILTER in parameters', () => {
+      const rangeData = new Uint8Array([0x01, 0x00, 0x0A]); // SetID=1, range data
+      const params = new Map<number, Uint8Array>();
+      params.set(0x25, rangeData); // SUBGROUP_FILTER
+
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 30n,
+        trackNamespace: ['ns'],
+        trackName: 'track',
+        forwardState: true,
+        filter: 0x05,
+        parameters: params,
+      };
+
+      const encoded = Draft22MessageCodec.encode(message as any);
+      const [decoded] = Draft22MessageCodec.decode(encoded);
+      const d = decoded as unknown as SubscribeMessageDraft18;
+      expect(d.parameters?.get(0x25)).toEqual(rangeData);
+    });
   });
 });

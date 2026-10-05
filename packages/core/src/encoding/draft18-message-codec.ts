@@ -378,6 +378,22 @@ export class Draft18MessageCodec {
         },
       });
     }
+    if (message.maxFilterRanges !== undefined) {
+      options.push({
+        key: 0x06, // MAX_FILTER_RANGES
+        encode: (w) => {
+          w.writeVarInt(BigInt(message.maxFilterRanges!));
+        },
+      });
+    }
+    if (message.maxRequestUpdates !== undefined) {
+      options.push({
+        key: 0x08, // MAX_REQUEST_UPDATES
+        encode: (w) => {
+          w.writeVarInt(BigInt(message.maxRequestUpdates!));
+        },
+      });
+    }
     // §3.2 application extensions. Reject collisions with known SetupOptions
     // so callers don't accidentally overwrite a codec-managed field.
     if (message.extensions) {
@@ -387,6 +403,8 @@ export class Draft18MessageCodec {
         SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE,
         SetupOptionDraft18.AUTHORITY,
         SetupOptionDraft18.MOQT_IMPLEMENTATION,
+        0x06, // MAX_FILTER_RANGES (draft-22)
+        0x08, // MAX_REQUEST_UPDATES (draft-22)
       ]);
       for (const [key, value] of message.extensions) {
         if (reserved.has(key)) {
@@ -436,6 +454,8 @@ export class Draft18MessageCodec {
     let maxAuthTokenCacheSize: number | undefined;
     let authToken: Uint8Array | undefined;
     let moqtImplementation: string | undefined;
+    let maxFilterRanges: number | undefined;
+    let maxRequestUpdates: number | undefined;
     // §3.2: retain unknown KVPs so callers can inspect peer-advertised
     // extensions (e.g. custom auth schemes, feature flags). Even keys carry
     // a varint value; odd keys carry length-prefixed bytes.
@@ -477,6 +497,14 @@ export class Draft18MessageCodec {
           moqtImplementation = TD.decode(reader.readBytes(length));
           break;
         }
+        case 0x06:
+          // MAX_FILTER_RANGES (draft-22 §9.1.6)
+          maxFilterRanges = reader.readVarIntNumber();
+          break;
+        case 0x08:
+          // MAX_REQUEST_UPDATES (draft-22 §9.1.7)
+          maxRequestUpdates = reader.readVarIntNumber();
+          break;
         default:
           // Unknown option: capture it so the caller can inspect §3.2
           // extensions the peer advertised. Even keys are varints, odd keys
@@ -503,6 +531,8 @@ export class Draft18MessageCodec {
       maxAuthTokenCacheSize,
       authToken,
       moqtImplementation,
+      maxFilterRanges,
+      maxRequestUpdates,
       extensions,
     };
   }

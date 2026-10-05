@@ -186,6 +186,10 @@ export class Draft18StreamCodec {
 
     const streamType = reader.readVarIntNumber();
 
+    if (streamType >= 128) {
+      throw new Draft18StreamCodecError('SUBGROUP_HEADER Type Flags >= 128 is a PROTOCOL_VIOLATION');
+    }
+
     if (!Draft18StreamCodec.isSubgroupHeader(streamType)) {
       throw new Draft18StreamCodecError(`Invalid subgroup header stream type: 0x${streamType.toString(16)}`);
     }
@@ -403,6 +407,9 @@ export class Draft18StreamCodec {
     if (!Draft18StreamCodec.isDatagramType(type)) {
       throw new Draft18StreamCodecError(`Invalid OBJECT_DATAGRAM type: 0x${type.toString(16)}`);
     }
+    if (type & 0x10) {
+      throw new Draft18StreamCodecError('OBJECT_DATAGRAM Type Flags bit 4 is reserved and must be zero');
+    }
 
     const hasProperties = (type & DatagramFlags.PROPERTIES) !== 0;
     const endOfGroup = (type & DatagramFlags.END_OF_GROUP) !== 0;
@@ -542,7 +549,7 @@ export class Draft18StreamCodec {
     const flags = reader.readVarIntNumber();
 
     // End of Range indicators (§11.4.4.2)
-    if (flags === FetchObjectEndOfRange.NON_EXISTENT || flags === FetchObjectEndOfRange.UNKNOWN) {
+    if (flags === FetchObjectEndOfRange.NON_EXISTENT || flags === FetchObjectEndOfRange.UNKNOWN || flags === FetchObjectEndOfRange.TIMED_OUT) {
       const groupIdDelta = reader.readVarInt();
       const objectIdDelta = reader.readVarInt();
       return [
@@ -556,10 +563,8 @@ export class Draft18StreamCodec {
       ];
     }
 
-    if (flags >= 128) {
-      throw new Draft18StreamCodecError(
-        `Invalid fetch object serialization flags: 0x${flags.toString(16)} (spec §11.4.4)`,
-      );
+    if (flags >= 128 && flags !== FetchObjectEndOfRange.NON_EXISTENT && flags !== FetchObjectEndOfRange.UNKNOWN && flags !== FetchObjectEndOfRange.TIMED_OUT) {
+      throw new Draft18StreamCodecError('Fetch Serialization Flags >= 128 with unknown value is a PROTOCOL_VIOLATION');
     }
 
     const subgroupMode = (flags & FetchObjectFlags.SUBGROUP_MODE_MASK) as FetchSubgroupMode;

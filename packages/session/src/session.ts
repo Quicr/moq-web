@@ -97,6 +97,9 @@ import {
   type TrackStatusMessage,
   type TrackStatusOkMessage,
   type TrackStatusErrorMessage,
+  MessageTypeDraft22,
+  type PublishSkippedMessageDraft22,
+  type PublishStateNotifyMessageDraft22,
 } from '@moq-web/core';
 import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
@@ -495,6 +498,10 @@ export class MOQTSession {
    * `setImplementationString(...)` before `setup()`.
    */
   private _implementationString?: string;
+  /** Peer's MAX_REQUEST_UPDATES from SETUP (draft-22 §9.1.7). 0 = unlimited. */
+  private peerMaxRequestUpdates = 0;
+  /** Outstanding REQUEST_UPDATE count per request stream (keyed by requestId). */
+  private outstandingRequestUpdates = new Map<bigint, number>();
   // @ts-expect-error Reserved for token alias caching support (aliasType 1/2)
   private tokenAliasCache = new Map<number, { tokenType: number; tokenValue: Uint8Array }>();
   // @ts-expect-error Reserved for token alias caching support
@@ -1415,6 +1422,11 @@ export class MOQTSession {
     return this._draft === 'draft-18' || this._draft === 'draft-22';
   }
 
+  /** True when this session is specifically speaking draft-22. */
+  private get isDraft22(): boolean {
+    return this._draft === 'draft-22';
+  }
+
   /** True when this session is speaking draft-16 or draft-17. */
   private get isDraft16(): boolean {
     return this._draft === 'draft-16' || this._draft === 'draft-17';
@@ -1845,6 +1857,15 @@ export class MOQTSession {
     }
     const rid = typeof subscriptionRequestId === 'bigint' ? subscriptionRequestId : BigInt(subscriptionRequestId);
 
+    // Draft-22 §9.1.7: Check MAX_REQUEST_UPDATES limit
+    if (this.peerMaxRequestUpdates > 0) {
+      const outstanding = this.outstandingRequestUpdates.get(rid) ?? 0;
+      if (outstanding >= this.peerMaxRequestUpdates) {
+        throw new Error(`MAX_REQUEST_UPDATES limit exceeded for request ${rid.toString()}`);
+      }
+      this.outstandingRequestUpdates.set(rid, outstanding + 1);
+    }
+
     const stream = this.activeRequestStreams.get(rid);
     if (!stream) {
       throw new Error(
@@ -1880,6 +1901,13 @@ export class MOQTSession {
     }
 
     const response = await stream.readMessage();
+
+    // Decrement outstanding REQUEST_UPDATE counter
+    const outstanding = this.outstandingRequestUpdates.get(rid);
+    if (outstanding !== undefined && outstanding > 0) {
+      this.outstandingRequestUpdates.set(rid, outstanding - 1);
+    }
+
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const err = response as RequestErrorMessageDraft18;
       throw new Error(
@@ -1952,6 +1980,27 @@ export class MOQTSession {
     const bytes = this.codec.encodeControlMessage(message);
     await this.doSendControl(bytes);
     log.info('Sent PUBLISH_BLOCKED (draft-18)', { trackAlias: alias.toString() });
+  }
+
+  /**
+   * Send PUBLISH_SKIPPED to indicate the publisher will not send a PUBLISH
+   * for a track matched by SUBSCRIBE_TRACKS (draft-22 §9.19).
+   */
+  async sendPublishSkipped(trackNamespaceSuffix: string[], trackName: string): Promise<void> {
+    if (!this.isDraft22) {
+      throw new Error('sendPublishSkipped() requires draft-22');
+    }
+    const message = {
+      type: 0x0F as any, // MessageTypeDraft22.PUBLISH_SKIPPED
+      trackNamespaceSuffix,
+      trackName,
+    };
+    const bytes = this.codec.encodeControlMessage(message);
+    await this.doSendControl(bytes);
+    log.info('Sent PUBLISH_SKIPPED (draft-22)', {
+      trackNamespaceSuffix: trackNamespaceSuffix.join('/'),
+      trackName,
+    });
   }
 
   /**
@@ -5382,6 +5431,9 @@ export class MOQTSession {
           clearTimeout(timeout);
           const serverSetup = message as ServerSetupMessageDraft18;
           this._peerExtensions = serverSetup.extensions;
+          if ((serverSetup as any).maxRequestUpdates !== undefined) {
+            this.peerMaxRequestUpdates = (serverSetup as any).maxRequestUpdates;
+          }
           log.debug('Received SERVER_SETUP (draft-18)', {
             version: serverSetup.selectedVersion,
             role: serverSetup.role,
@@ -5492,7 +5544,15 @@ export class MOQTSession {
         break;
 
       case MessageTypeDraft18.PUBLISH_BLOCKED:
-        this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
+        if (this.isDraft22) {
+          this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22);
+        } else {
+          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
+        }
+        break;
+
+      case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
+        this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22);
         break;
 
       case MessageTypeDraft18.PUBLISH_DONE:
@@ -5601,7 +5661,15 @@ export class MOQTSession {
           break;
 
         case MessageTypeDraft18.PUBLISH_BLOCKED:
-          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
+          if (this.isDraft22) {
+            this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22);
+          } else {
+            this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
+          }
+          break;
+
+        case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
+          this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22);
           break;
 
         default:
@@ -6387,6 +6455,26 @@ export class MOQTSession {
   private handleIncomingPublishBlockedDraft18(message: PublishBlockedMessageDraft18): void {
     log.info('Received PUBLISH_BLOCKED (draft-18)', { trackAlias: message.trackAlias.toString() });
     this.emit('publish-blocked', { trackAlias: message.trackAlias } as PublishBlockedEvent);
+  }
+
+  private handleIncomingPublishSkippedDraft22(message: PublishSkippedMessageDraft22): void {
+    log.info('Received PUBLISH_SKIPPED (draft-22)', {
+      trackNamespaceSuffix: message.trackNamespaceSuffix.join('/'),
+      trackName: message.trackName,
+    });
+    this.emit('publish-skipped', {
+      trackNamespaceSuffix: message.trackNamespaceSuffix,
+      trackName: message.trackName,
+    });
+  }
+
+  private handleIncomingPublishStateNotifyDraft22(message: PublishStateNotifyMessageDraft22): void {
+    log.info('Received PUBLISH_STATE_NOTIFY (draft-22)', {
+      paramCount: message.parameters.size,
+    });
+    this.emit('publish-state-notify', {
+      parameters: message.parameters,
+    });
   }
 
   /**

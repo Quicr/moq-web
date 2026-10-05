@@ -28,6 +28,9 @@ import {
   RequestErrorCodeDraft18,
   SessionErrorCodeDraft18,
   StreamResetErrorCodeDraft18,
+  RequestErrorCodeDraft22,
+  SessionErrorCodeDraft22,
+  PublishDoneErrorCodeDraft22,
 } from '../messages/types.js';
 
 const GREASE_MULTIPLIER = 0x7f;
@@ -97,4 +100,29 @@ export function normalizeStreamResetErrorCode(code: number): StreamResetErrorCod
   return isKnownEnumValue(StreamResetErrorCodeDraft18 as unknown as Record<string, string | number>, code)
     ? (code as StreamResetErrorCodeDraft18)
     : StreamResetErrorCodeDraft18.INTERNAL_ERROR;
+}
+
+// =============================================================================
+// Draft-22 Normalizers
+// =============================================================================
+// Draft-22 adds CONFLICTING_FILTERS (0x35), INVALID_FILTER (0x36) to REQUEST_ERROR
+// and TOO_MANY_REQUEST_UPDATES (0x1B) to Session Termination.
+// PUBLISH_DONE codes are the same but with SUBSCRIPTION_ENDED removed.
+
+export function normalizeRequestErrorCodeDraft22(code: number): number {
+  return isKnownEnumValue(RequestErrorCodeDraft22 as unknown as Record<string, string | number>, code)
+    ? code
+    : RequestErrorCodeDraft22.INTERNAL_ERROR;
+}
+
+export function normalizeSessionErrorCodeDraft22(code: number): number {
+  return isKnownEnumValue(SessionErrorCodeDraft22 as unknown as Record<string, string | number>, code)
+    ? code
+    : SessionErrorCodeDraft22.INTERNAL_ERROR;
+}
+
+export function normalizePublishDoneErrorCodeDraft22(code: number): number {
+  return isKnownEnumValue(PublishDoneErrorCodeDraft22 as unknown as Record<string, string | number>, code)
+    ? code
+    : PublishDoneErrorCodeDraft22.INTERNAL_ERROR;
 }
