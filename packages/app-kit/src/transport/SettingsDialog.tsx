@@ -8,7 +8,6 @@ import {
 } from '../latency/profiles.js';
 import { Modal } from '../shell/Modal.js';
 import { Toggle } from '../shell/Toggle.js';
-import { switchDraftInBrowser } from '../moqt/version.js';
 import { getAuthAdapter, listAuthAdapters } from '../auth/index.js';
 import { useTransportActions, useTransportConfig } from './state.js';
 
@@ -187,7 +186,6 @@ function RelayCard() {
           onChange={(e) => {
             const next = e.target.value as 'draft-16' | 'draft-18' | 'draft-22';
             setRelay({ draft: next });
-            switchDraftInBrowser(next);
           }}
         >
           <option value="draft-16">draft-16</option>
@@ -195,7 +193,7 @@ function RelayCard() {
           <option value="draft-22">draft-22</option>
         </select>
         <div className="ak-caption" style={{ marginTop: 4, fontSize: 10 }}>
-          Switches draft version. May require a rebuild with MOQT_VERSION={'{target}'}.
+          Takes effect on next connect.
         </div>
       </label>
       <NumberField
