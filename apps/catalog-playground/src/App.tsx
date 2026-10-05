@@ -95,7 +95,10 @@ export function App() {
             status === 'ready' ? `Connected · ${namespace}` :
             status === 'connecting' ? 'Connecting…' :
             status === 'error' ? 'Error' : 'Idle'
-          } />
+          }
+            relayUrl={cfg.relay.relays[0]}
+            draft={cfg.relay.draft}
+          />
           {status === 'ready' ? (
             <button className="ak-btn" onClick={() => void disconnect()}>Disconnect</button>
           ) : null}
