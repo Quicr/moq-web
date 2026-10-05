@@ -195,7 +195,7 @@ function RelayCard() {
           <option value="draft-22">draft-22</option>
         </select>
         <div className="ak-caption" style={{ marginTop: 4, fontSize: 10 }}>
-          Reloads into the sibling build for the selected draft.
+          Switches draft version. May require a rebuild with MOQT_VERSION={'{target}'}.
         </div>
       </label>
       <NumberField

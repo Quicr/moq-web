@@ -18,29 +18,46 @@ export function getBundledDraft(): Draft {
 
 /**
  * Redirect the browser to the sibling build of a different draft, preserving
- * path + query when possible. The deploy layout is:
- *   /               → draft-16 bundle
- *   /18/            → draft-18 bundle
- * In dev, both drafts run on the same origin but a different build script is
- * needed, so we just reload and print a hint.
+ * path + query when possible.
+ *
+ * The deploy layout depends on the hosting environment:
+ *   - Self-hosted: `/` → d16, `/18/` → d18, `/22/` → d22
+ *   - GitHub Pages: all drafts at the same path, different branches/builds
+ *   - Dev server: same origin, different build via MOQT_VERSION env var
+ *
+ * When a simple prefix-based layout is detected (pathname starts at root or
+ * a known draft prefix), the function navigates to the sibling path.
+ * Otherwise it reloads with a query parameter hint and logs a warning.
  */
 export function switchDraftInBrowser(target: Draft): void {
   if (typeof window === 'undefined') return;
   const cur = getBundledDraft();
   if (cur === target) return;
   const { pathname, search, hash } = window.location;
-  const stripped = pathname.replace(/^\/(18|22)(\/|$)/, '/');
-  const nextPath =
-    target === 'draft-22' ? '/22' + stripped :
-    target === 'draft-18' ? '/18' + stripped :
-    stripped;
-  const targetUrl = `${nextPath}${search}${hash}`;
-  if (window.location.pathname === nextPath) {
-    console.warn(
-      `[app-kit] draft mismatch: bundled=${cur} requested=${target}. ` +
-        `Restart the dev server with MOQT_VERSION=${target} to change bundled versions.`,
-    );
-    return;
+
+  // Detect prefix-based layout: pathname starts with / or /18/ or /22/
+  // but NOT a deeper path like /moq-web/branches/... (GitHub Pages)
+  const prefixMatch = pathname.match(/^\/(18|22)?(\/.*)?$/);
+  if (prefixMatch && !pathname.includes('/branches/') && !pathname.includes('/moq-web/')) {
+    const stripped = pathname.replace(/^\/(18|22)(\/|$)/, '/');
+    const nextPath =
+      target === 'draft-22' ? '/22' + stripped :
+      target === 'draft-18' ? '/18' + stripped :
+      stripped;
+    const targetUrl = `${nextPath}${search}${hash}`;
+    if (window.location.pathname !== nextPath) {
+      window.location.assign(targetUrl);
+      return;
+    }
   }
-  window.location.assign(targetUrl);
+
+  // Fallback: can't determine sibling build URL — reload with hint
+  console.warn(
+    `[app-kit] draft switch: bundled=${cur} requested=${target}. ` +
+      `This build is compiled for ${cur}. To use ${target}, rebuild with MOQT_VERSION=${target}.`,
+  );
+  // Reload current page with draft query param as a hint for future builds
+  const params = new URLSearchParams(search);
+  params.set('draft', target);
+  window.location.assign(`${pathname}?${params.toString()}${hash}`);
 }
