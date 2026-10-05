@@ -657,7 +657,7 @@ export class MOQTSession {
     // Bind codec and request-ID scheme to the resolved draft.
     this.codec = getProtocolCodecForVersion(versionEnumFor(this._draft) as Version);
     // Draft-14: 1-based. Draft-16+: clients use even IDs starting at 0.
-    this.nextRequestId = this._draft === 'draft-16' || this._draft === 'draft-17' || this._draft === 'draft-18'
+    this.nextRequestId = this._draft === 'draft-16' || this._draft === 'draft-17' || this._draft === 'draft-18' || this._draft === 'draft-22'
       ? 0
       : 1;
     const configuredMax =
@@ -1410,9 +1410,9 @@ export class MOQTSession {
     return this._draft;
   }
 
-  /** True when this session is speaking draft-18 (per-request bidi streams, MOQT varints, ...). */
+  /** True when this session is speaking a modern draft (18+): per-request bidi streams, MOQT varints, etc. */
   private get isDraft18(): boolean {
-    return this._draft === 'draft-18';
+    return this._draft === 'draft-18' || this._draft === 'draft-22';
   }
 
   /** True when this session is speaking draft-16 or draft-17. */

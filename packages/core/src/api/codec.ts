@@ -10,7 +10,9 @@
 
 import { DEFAULT_DRAFT, type DraftVersion } from '../version/constants.js';
 
-const isDraft18 = (d: DraftVersion): boolean => d === 'draft-18';
+/** Draft-18+ (modern) wire format family: includes drafts 18 through 22. */
+const isModernDraft = (d: DraftVersion): boolean => d === 'draft-18' || d === 'draft-22';
+const isDraft18 = isModernDraft; // alias for backward compat within this file
 const isDraft16 = (d: DraftVersion): boolean => d === 'draft-16' || d === 'draft-17';
 import {
   Version,
@@ -81,7 +83,9 @@ export function capabilitiesFor(draft: DraftVersion = DEFAULT_DRAFT): CodecCapab
  * Protocol version enum value for a given draft.
  */
 export function currentVersionFor(draft: DraftVersion = DEFAULT_DRAFT): Version {
-  return isDraft18(draft) ? Version.DRAFT_18 : Version.DRAFT_16;
+  if (draft === 'draft-22') return Version.DRAFT_22;
+  if (draft === 'draft-18') return Version.DRAFT_18;
+  return Version.DRAFT_16;
 }
 
 // =============================================================================

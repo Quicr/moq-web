@@ -39,6 +39,8 @@ export enum Version {
   DRAFT_17 = 0xff000011,
   /** Draft version 18 */
   DRAFT_18 = 0xff000012,
+  /** Draft version 22 */
+  DRAFT_22 = 0xff000016,
 }
 
 /**
@@ -1984,3 +1986,274 @@ export type ControlMessageDraft18 =
   | NamespaceDoneMessageDraft18
   | SubscribeTracksMessageDraft18
   | PublishBlockedMessageDraft18;
+
+// ============================================================================
+// Draft-22 Message Types and Enums
+// ============================================================================
+
+/**
+ * Draft-22 Control Message Types
+ *
+ * Draft-22 extends draft-18 with renamed and new message types.
+ * PUBLISH_BLOCKED is renamed to PUBLISH_SKIPPED; PUBLISH_STATE_NOTIFY is new.
+ */
+export enum MessageTypeDraft22 {
+  // Inherited from draft-18 (same values)
+  REQUEST_UPDATE = 0x02,
+  SUBSCRIBE = 0x03,
+  SUBSCRIBE_OK = 0x04,
+  REQUEST_ERROR = 0x05,
+  PUBLISH_NAMESPACE = 0x06,
+  REQUEST_OK = 0x07,
+  NAMESPACE = 0x08,
+  PUBLISH_DONE = 0x0B,
+  TRACK_STATUS = 0x0D,
+  NAMESPACE_DONE = 0x0E,
+  // Draft-22 renames PUBLISH_BLOCKED -> PUBLISH_SKIPPED
+  PUBLISH_SKIPPED = 0x0F,
+  GOAWAY = 0x10,
+  FETCH = 0x16,
+  FETCH_OK = 0x18,
+  PUBLISH = 0x1D,
+  PUBLISH_OK = 0x1E,
+  // New in draft-22
+  PUBLISH_STATE_NOTIFY = 0x22,
+  SUBSCRIBE_NAMESPACE = 0x50,
+  SUBSCRIBE_TRACKS = 0x51,
+  /* eslint-disable @typescript-eslint/no-duplicate-enum-values */
+  SETUP = 0x2F00,
+  CLIENT_SETUP = 0x2F00,
+  SERVER_SETUP = 0x2F00,
+  /* eslint-enable @typescript-eslint/no-duplicate-enum-values */
+}
+
+/**
+ * Draft-22 Setup Option Types
+ */
+export enum SetupOptionDraft22 {
+  PATH = 0x01,
+  AUTHORIZATION_TOKEN = 0x03,
+  MAX_AUTH_TOKEN_CACHE_SIZE = 0x04,
+  AUTHORITY = 0x05,
+  MAX_FILTER_RANGES = 0x06,
+  MOQT_IMPLEMENTATION = 0x07,
+  MAX_REQUEST_UPDATES = 0x08,
+}
+
+/**
+ * Draft-22 Request Parameter Types (extends draft-18 with new filter params)
+ */
+export enum RequestParameterDraft22 {
+  OBJECT_DELIVERY_TIMEOUT = 0x02,
+  AUTHORIZATION_TOKEN = 0x03,
+  RENDEZVOUS_TIMEOUT = 0x04,
+  SUBGROUP_DELIVERY_TIMEOUT = 0x06,
+  EXPIRES = 0x08,
+  LARGEST_OBJECT = 0x09,
+  FILL_TIMEOUT = 0x0A,
+  FORWARD = 0x10,
+  SUBSCRIBER_PRIORITY = 0x20,
+  LOCATION_FILTER = 0x21,
+  GROUP_ORDER = 0x22,
+  FILL_PARAMETERS = 0x23,
+  SUBGROUP_FILTER = 0x25,
+  OBJECTID_FILTER = 0x26,
+  PRIORITY_FILTER = 0x27,
+  OBJECT_PROPERTY_FILTER = 0x28,
+  TRACK_PROPERTY_FILTER = 0x29,
+  NEW_GROUP_REQUEST = 0x32,
+  TRACK_NAMESPACE_PREFIX = 0x34,
+  INCLUDE_PROPERTIES = 0x35,
+}
+
+/**
+ * Draft-22 Location Filter Types
+ */
+export enum LocationFilterTypeDraft22 {
+  NONE = 0x00,
+  RELATIVE_START = 0x01,
+  ABSOLUTE_START = 0x02,
+  ABSOLUTE_START_GROUP_END = 0x03,
+  ABSOLUTE_RANGE = 0x04,
+  NEXT_OBJECT = 0x05,
+}
+
+/**
+ * Draft-22 Session Error Codes (extends draft-18)
+ */
+export enum SessionErrorCodeDraft22 {
+  NO_ERROR = 0x0,
+  INTERNAL_ERROR = 0x1,
+  UNAUTHORIZED = 0x2,
+  PROTOCOL_VIOLATION = 0x3,
+  INVALID_REQUEST_ID = 0x4,
+  DUPLICATE_TRACK_ALIAS = 0x5,
+  KEY_VALUE_FORMATTING_ERROR = 0x6,
+  INVALID_PATH = 0x8,
+  MALFORMED_PATH = 0x9,
+  GOAWAY_TIMEOUT = 0x10,
+  CONTROL_MESSAGE_TIMEOUT = 0x11,
+  DATA_STREAM_TIMEOUT = 0x12,
+  AUTH_TOKEN_CACHE_OVERFLOW = 0x13,
+  DUPLICATE_AUTH_TOKEN_ALIAS = 0x14,
+  MALFORMED_AUTH_TOKEN = 0x16,
+  UNKNOWN_AUTH_TOKEN_ALIAS = 0x17,
+  EXPIRED_AUTH_TOKEN = 0x18,
+  INVALID_AUTHORITY = 0x19,
+  MALFORMED_AUTHORITY = 0x1a,
+  TOO_MANY_REQUEST_UPDATES = 0x1B,
+}
+
+/**
+ * Draft-22 REQUEST_ERROR Codes (extends draft-18)
+ */
+export enum RequestErrorCodeDraft22 {
+  INTERNAL_ERROR = 0x0,
+  UNAUTHORIZED = 0x1,
+  TIMEOUT = 0x2,
+  NOT_SUPPORTED = 0x3,
+  MALFORMED_AUTH_TOKEN = 0x4,
+  EXPIRED_AUTH_TOKEN = 0x5,
+  GOING_AWAY = 0x6,
+  EXCESSIVE_LOAD = 0x9,
+  DOES_NOT_EXIST = 0x10,
+  INVALID_RANGE = 0x11,
+  MALFORMED_TRACK = 0x12,
+  UNINTERESTED = 0x20,
+  PREFIX_OVERLAP = 0x30,
+  NAMESPACE_TOO_LARGE = 0x31,
+  UNSUPPORTED_EXTENSION = 0x33,
+  REDIRECT = 0x34,
+  CONFLICTING_FILTERS = 0x35,
+  INVALID_FILTER = 0x36,
+}
+
+/**
+ * Draft-22 PUBLISH_DONE Codes
+ */
+export enum PublishDoneErrorCodeDraft22 {
+  INTERNAL_ERROR = 0x0,
+  UNAUTHORIZED = 0x1,
+  TRACK_ENDED = 0x2,
+  GOING_AWAY = 0x4,
+  TOO_FAR_BEHIND = 0x5,
+  EXPIRED = 0x6,
+  UPDATE_FAILED = 0x8,
+  EXCESSIVE_LOAD = 0x9,
+  MALFORMED_TRACK = 0x12,
+}
+
+// ============================================================================
+// Draft-22 Message Interfaces
+// ============================================================================
+
+/**
+ * Draft-22 PUBLISH_DONE has Stream Count field
+ */
+export interface PublishDoneMessageDraft22 {
+  type: MessageTypeDraft22.PUBLISH_DONE;
+  statusCode: bigint;
+  streamCount: bigint;
+  reasonPhrase: string;
+}
+
+/**
+ * Draft-22 Redirect structure
+ */
+export interface RedirectDraft22 {
+  connectUri: string;
+  trackNamespace: string[];
+  trackName: string;
+}
+
+/**
+ * Draft-22 REQUEST_ERROR has Retry Interval and optional Redirect
+ */
+export interface RequestErrorMessageDraft22 {
+  type: MessageTypeDraft22.REQUEST_ERROR;
+  errorCode: bigint;
+  retryInterval: bigint;
+  reasonPhrase: string;
+  redirect?: RedirectDraft22;
+}
+
+/**
+ * Draft-22 PUBLISH_STATE_NOTIFY
+ */
+export interface PublishStateNotifyMessageDraft22 {
+  type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY;
+  parameters: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 PUBLISH_SKIPPED
+ */
+export interface PublishSkippedMessageDraft22 {
+  type: MessageTypeDraft22.PUBLISH_SKIPPED;
+  trackNamespaceSuffix: string[];
+  trackName: string;
+}
+
+/**
+ * Draft-22 GOAWAY has Timeout field
+ */
+export interface GoAwayMessageDraft22 {
+  type: MessageTypeDraft22.GOAWAY;
+  newSessionUri: string;
+  timeout: bigint;
+}
+
+/**
+ * Draft-22 SUBSCRIBE_OK uses parameters + track properties (no groupOrder/contentExists)
+ */
+export interface SubscribeOkMessageDraft22 {
+  type: MessageTypeDraft22.SUBSCRIBE_OK;
+  trackAlias: bigint;
+  parameters: Map<number, Uint8Array>;
+  trackProperties: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 FETCH_OK has End Of Track, End Location, parameters, track properties
+ */
+export interface FetchOkMessageDraft22 {
+  type: MessageTypeDraft22.FETCH_OK;
+  endOfTrack: boolean;
+  endLocation: Location;
+  parameters: Map<number, Uint8Array>;
+  trackProperties: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 REQUEST_OK has parameters + track properties
+ */
+export interface RequestOkMessageDraft22 {
+  type: MessageTypeDraft22.REQUEST_OK;
+  parameters: Map<number, Uint8Array>;
+  trackProperties: Map<number, Uint8Array>;
+}
+
+/**
+ * Union of Draft-22 control messages
+ */
+export type ControlMessageDraft22 =
+  | ClientSetupMessageDraft18  // Setup messages are the same
+  | ServerSetupMessageDraft18
+  | SubscribeMessageDraft18
+  | SubscribeOkMessageDraft22
+  | PublishMessageDraft18
+  | PublishDoneMessageDraft22
+  | PublishStateNotifyMessageDraft22
+  | PublishSkippedMessageDraft22
+  | RequestErrorMessageDraft22
+  | RequestOkMessageDraft22
+  | RequestUpdateMessageDraft18
+  | GoAwayMessageDraft22
+  | FetchMessageDraft18
+  | FetchOkMessageDraft22
+  | TrackStatusMessageDraft18
+  | PublishNamespaceMessageDraft18
+  | SubscribeNamespaceMessageDraft18
+  | NamespaceMessageDraft18
+  | NamespaceDoneMessageDraft18
+  | SubscribeTracksMessageDraft18;

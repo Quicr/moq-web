@@ -10,8 +10,9 @@
  *
  * Supports:
  * - Draft-14
- * - Draft-16 (default)
- * - Draft-18 (build with MOQT_VERSION=draft-18)
+ * - Draft-16
+ * - Draft-18 (default)
+ * - Draft-22 (build with MOQT_VERSION=draft-22)
  *
  * @packageDocumentation
  *
@@ -190,6 +191,14 @@ export {
   FetchSubgroupMode,
   FetchObjectEndOfRange,
   FetchTypeDraft18,
+  // Draft-22 types
+  MessageTypeDraft22,
+  SetupOptionDraft22,
+  RequestParameterDraft22,
+  LocationFilterTypeDraft22,
+  SessionErrorCodeDraft22,
+  RequestErrorCodeDraft22,
+  PublishDoneErrorCodeDraft22,
 } from './messages/types.js';
 
 // Message interfaces (Draft 14/16)
@@ -271,6 +280,17 @@ export type {
   ObjectDatagramDraft18,
   FetchObjectDraft18,
   SetupExtensionValue,
+  // Draft-22 types
+  ControlMessageDraft22,
+  PublishDoneMessageDraft22,
+  RequestErrorMessageDraft22,
+  RedirectDraft22,
+  PublishStateNotifyMessageDraft22,
+  PublishSkippedMessageDraft22,
+  GoAwayMessageDraft22,
+  SubscribeOkMessageDraft22,
+  FetchOkMessageDraft22,
+  RequestOkMessageDraft22,
 } from './messages/types.js';
 
 // Type guards
@@ -336,6 +356,9 @@ export type { IProtocolCodec, ProtocolCodecCapabilities } from './encoding/proto
 
 // Draft-18 message codec
 export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
+
+// Draft-22 message codec (delegates to Draft18MessageCodec for shared messages)
+export { Draft22MessageCodec } from './encoding/draft22-message-codec.js';
 
 // Draft-18 §14 Grease / reserved codepoint helpers
 export {

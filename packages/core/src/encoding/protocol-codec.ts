@@ -20,6 +20,7 @@ import { Version } from '../messages/types.js';
 import type {
   ControlMessage,
   ControlMessageDraft18,
+  ControlMessageDraft22,
   TrackNamespace,
   FullTrackName,
   Location,
@@ -38,6 +39,7 @@ import type {
   FetchObjectResult,
 } from './message-codec.js';
 import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec.js';
+import { Draft22MessageCodec } from './draft22-message-codec.js';
 import { Draft18StreamCodecError } from './draft18-stream-codec.js';
 import { NoopMetricsSink, type MetricsSink } from '../metrics/index.js';
 
@@ -110,7 +112,7 @@ export interface IProtocolCodec {
   readonly capabilities: ProtocolCodecCapabilities;
 
   // ---- Control messages ----
-  encodeControlMessage(message: ControlMessage | ControlMessageDraft18): Uint8Array;
+  encodeControlMessage(message: ControlMessage | ControlMessageDraft18 | ControlMessageDraft22): Uint8Array;
   /**
    * Decode a control-message frame.
    *
@@ -124,9 +126,9 @@ export interface IProtocolCodec {
     buffer: Uint8Array,
     offset?: number,
     metrics?: MetricsSink,
-  ): [ControlMessage | ControlMessageDraft18, number];
+  ): [ControlMessage | ControlMessageDraft18 | ControlMessageDraft22, number];
 
-  // ---- Setup stream (draft-18) ----
+  // ---- Setup stream (draft-18+) ----
   /** Encode the setup-stream client SETUP frame. Draft-16 codec throws. */
   encodeSetupStream(message: ClientSetupMessageDraft18): Uint8Array;
   /** Decode the setup-stream server SETUP frame. Draft-16 codec throws. */
@@ -208,7 +210,9 @@ export interface IProtocolCodec {
  * call site (e.g. from a negotiated session).
  */
 export function getProtocolCodec(): IProtocolCodec {
-  return DEFAULT_DRAFT === 'draft-18' ? Draft18Codec.instance : Draft16Codec.instance;
+  if (DEFAULT_DRAFT === 'draft-22') return Draft22Codec.instance;
+  if (DEFAULT_DRAFT === 'draft-18') return Draft18Codec.instance;
+  return Draft16Codec.instance;
 }
 
 /**
@@ -217,6 +221,8 @@ export function getProtocolCodec(): IProtocolCodec {
  */
 export function getProtocolCodecForVersion(version: Version): IProtocolCodec {
   switch (version) {
+    case Version.DRAFT_22:
+      return Draft22Codec.instance;
     case Version.DRAFT_18:
     case Version.DRAFT_17:
       return Draft18Codec.instance;
@@ -954,4 +960,193 @@ export class Draft18BufferReader {
   }
 }
 
-export { Draft16Codec, Draft18Codec };
+/**
+ * Draft-22 codec.
+ *
+ * Shares most functionality with draft-18. Delegates control-message
+ * encoding to Draft22MessageCodec which itself delegates shared messages
+ * to Draft18MessageCodec. Only draft-22 specific messages are handled differently.
+ */
+class Draft22Codec implements IProtocolCodec {
+  static readonly instance = new Draft22Codec();
+  readonly version = Version.DRAFT_22;
+  readonly capabilities: ProtocolCodecCapabilities = {
+    usesSetupStream: true,
+    perRequestBidiStream: true,
+    usesRequestUpdateForUnsubscribe: true,
+    usesMoqtVarInt: true,
+    usesUnifiedLocation: true,
+    namespaceResponsesCarryRequestId: false,
+  };
+
+  private constructor() {}
+
+  // ---- Control messages ----
+  encodeControlMessage(message: ControlMessage | ControlMessageDraft18 | ControlMessageDraft22): Uint8Array {
+    return Draft22MessageCodec.encode(message as ControlMessageDraft22);
+  }
+
+  decodeControlMessage(
+    buffer: Uint8Array,
+    offset = 0,
+    metrics: MetricsSink = NOOP_METRICS,
+  ): [ControlMessage | ControlMessageDraft18 | ControlMessageDraft22, number] {
+    const start = nowMs();
+    try {
+      const result = Draft22MessageCodec.decode(buffer, offset);
+      metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
+        codec: 'draft-22',
+        messageType: String(result[0].type),
+      });
+      return result;
+    } catch (err) {
+      metrics.counter('moq.codec.decode.errors', 1, {
+        codec: 'draft-22',
+        reason: classifyDecodeError(err),
+      });
+      throw err;
+    }
+  }
+
+  // ---- Setup stream ----
+  encodeSetupStream(message: ClientSetupMessageDraft18): Uint8Array {
+    return Draft22MessageCodec.encodeSetupStream(message);
+  }
+
+  decodeSetupStream(buffer: Uint8Array, offset = 0): [ServerSetupMessageDraft18, number] {
+    return Draft22MessageCodec.decodeSetupStream(buffer, offset);
+  }
+
+  encodeSetupStreamHeader(): Uint8Array {
+    return Draft18StreamCodec.encodeSetupStreamHeader();
+  }
+
+  decodeSetupStreamHeader(buffer: Uint8Array, offset = 0): [number, number] {
+    return Draft18StreamCodec.decodeSetupStreamHeader(buffer, offset);
+  }
+
+  // ---- All remaining methods delegate to Draft18Codec ----
+  // Subgroup, stream objects, datagrams, fetch streams are shared with draft-18
+
+  encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
+    return Draft18Codec.instance.encodeSubgroupHeader(header, endOfGroup);
+  }
+
+  decodeSubgroupHeader(
+    buffer: Uint8Array,
+    metrics: MetricsSink = NOOP_METRICS,
+  ): [SubgroupHeader, number, boolean, boolean] {
+    return Draft18Codec.instance.decodeSubgroupHeader(buffer, metrics);
+  }
+
+  encodeStreamObject(
+    objectId: number,
+    payload: Uint8Array,
+    status?: ObjectStatus,
+    previousObjectId?: number,
+    hasExtensions?: boolean,
+    extensions?: Map<number, number | Uint8Array>,
+  ): Uint8Array {
+    return Draft18Codec.instance.encodeStreamObject(objectId, payload, status, previousObjectId, hasExtensions, extensions);
+  }
+
+  decodeStreamObject(
+    buffer: Uint8Array,
+    offset = 0,
+    hasExtensions = true,
+    previousObjectId = -1,
+    metrics: MetricsSink = NOOP_METRICS,
+  ): [number, Uint8Array, ObjectStatus, number] {
+    return Draft18Codec.instance.decodeStreamObject(buffer, offset, hasExtensions, previousObjectId, metrics);
+  }
+
+  encodeDatagramHeader(header: ObjectHeader): Uint8Array {
+    return Draft18Codec.instance.encodeDatagramHeader(header);
+  }
+
+  decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
+    return Draft18Codec.instance.decodeDatagramHeader(buffer);
+  }
+
+  encodeDatagramObject(object: MOQTObject): Uint8Array {
+    return Draft18Codec.instance.encodeDatagramObject(object);
+  }
+
+  decodeDatagramObject(buffer: Uint8Array): MOQTObject {
+    return Draft18Codec.instance.decodeDatagramObject(buffer);
+  }
+
+  encodeFetchHeader(header: FetchHeader): Uint8Array {
+    return Draft18Codec.instance.encodeFetchHeader(header);
+  }
+
+  decodeFetchHeader(buffer: Uint8Array): [FetchHeader, number] {
+    return Draft18Codec.instance.decodeFetchHeader(buffer);
+  }
+
+  createFetchEncoderState(): FetchEncoderState {
+    return Draft18Codec.instance.createFetchEncoderState();
+  }
+
+  createFetchDecoderState(): FetchDecoderState {
+    return Draft18Codec.instance.createFetchDecoderState();
+  }
+
+  encodeFetchObject(
+    groupId: number,
+    subgroupId: number,
+    objectId: number,
+    payload: Uint8Array,
+    state: FetchEncoderState,
+    priority = 128,
+  ): Uint8Array {
+    return Draft18Codec.instance.encodeFetchObject(groupId, subgroupId, objectId, payload, state, priority);
+  }
+
+  decodeFetchObject(buffer: Uint8Array, state: FetchDecoderState): FetchObjectResult {
+    return Draft18Codec.instance.decodeFetchObject(buffer, state);
+  }
+
+  // ---- Primitives - delegate to Draft18Codec ----
+  encodeVarInt(value: number | bigint): Uint8Array {
+    return Draft18Codec.instance.encodeVarInt(value);
+  }
+
+  decodeVarInt(buffer: Uint8Array, offset = 0): [bigint, number] {
+    return Draft18Codec.instance.decodeVarInt(buffer, offset);
+  }
+
+  decodeVarIntNumber(buffer: Uint8Array, offset = 0): [number, number] {
+    return Draft18Codec.instance.decodeVarIntNumber(buffer, offset);
+  }
+
+  encodeNamespace(namespace: TrackNamespace): Uint8Array {
+    return Draft18Codec.instance.encodeNamespace(namespace);
+  }
+
+  decodeNamespace(buffer: Uint8Array, offset = 0): [TrackNamespace, number] {
+    return Draft18Codec.instance.decodeNamespace(buffer, offset);
+  }
+
+  encodeFullTrackName(fullTrackName: FullTrackName): Uint8Array {
+    return Draft18Codec.instance.encodeFullTrackName(fullTrackName);
+  }
+
+  decodeFullTrackName(buffer: Uint8Array, offset = 0): [FullTrackName, number] {
+    return Draft18Codec.instance.decodeFullTrackName(buffer, offset);
+  }
+
+  encodeKeyValuePairs(pairs: Map<number, Uint8Array>, deltaEncoded = true): Uint8Array {
+    return Draft18Codec.instance.encodeKeyValuePairs(pairs, deltaEncoded);
+  }
+
+  decodeKeyValuePairs(
+    buffer: Uint8Array,
+    offset = 0,
+    count?: number,
+  ): [Map<number, Uint8Array>, number] {
+    return Draft18Codec.instance.decodeKeyValuePairs(buffer, offset, count);
+  }
+}
+
+export { Draft16Codec, Draft18Codec, Draft22Codec };

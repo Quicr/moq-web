@@ -202,7 +202,7 @@ export class MOQTransport {
    * streams, unidirectional setup pair, MOQT varints, etc).
    */
   private get isDraft18(): boolean {
-    return this._draft === 'draft-18';
+    return this._draft === 'draft-18' || this._draft === 'draft-22';
   }
 
   /**

@@ -53,6 +53,7 @@ export enum Version {
   DRAFT_16 = 0xff000010,
   DRAFT_17 = 0xff000011,
   DRAFT_18 = 0xff000012,
+  DRAFT_22 = 0xff000016,
 }
 
 /**
