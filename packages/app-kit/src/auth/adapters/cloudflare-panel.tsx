@@ -55,7 +55,7 @@ export function CloudflareAuthPanel({ state, updateState, resetState }: Settings
       }
     }
     if (changed) updateState({ tokens: merged });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   const saveCredentials = () => {

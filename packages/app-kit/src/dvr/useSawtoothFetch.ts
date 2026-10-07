@@ -236,7 +236,6 @@ export function useSawtoothFetch(input: UseSawtoothFetchInput): SawtoothStats {
     return () => {
       void cancelAll();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupPtsSignature]);
 
   // Poll the intent every 250ms and dispatch new windows.
@@ -293,7 +292,6 @@ export function useSawtoothFetch(input: UseSawtoothFetchInput): SawtoothStats {
     if (isPaused) return; // Paused: only refresh on external position changes.
     const id = setInterval(tick, 500);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPaused, isSeeking, opts.lowWaterGops, opts.windowGops, opts.overlapGops, opts.maxInFlight, input.totalGroups, input.groupPts.length]);
 
   return stats;
