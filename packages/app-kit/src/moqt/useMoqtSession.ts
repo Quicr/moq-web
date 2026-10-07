@@ -18,11 +18,13 @@ import { getTransportConfig, useTransportConfig } from '../transport/state.js';
  */
 export interface MoqtSessionHandle {
   close: () => Promise<void> | void;
+  /** The relay URL this session connected to (populated by connector). */
+  relayUrl?: string;
 }
 
 export type MoqtConnector<T extends MoqtSessionHandle = MoqtSessionHandle> = (opts: {
   relayUrls: string[];
-  draft: 'draft-16' | 'draft-18';
+  draft: 'draft-16' | 'draft-18' | 'draft-22';
   keepAliveMs: number;
   signal: AbortSignal;
 }) => Promise<T>;
@@ -31,6 +33,8 @@ export interface UseMoqtSessionResult<T extends MoqtSessionHandle> {
   session: T | null;
   status: StatusState;
   error: Error | null;
+  /** The relay URL the session is currently connected to. */
+  relayUrl: string | null;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
 }
@@ -42,6 +46,7 @@ export function useMoqtSession<T extends MoqtSessionHandle = MoqtSessionHandle>(
   const [session, setSession] = useState<T | null>(null);
   const [status, setStatus] = useState<StatusState>('idle');
   const [error, setError] = useState<Error | null>(null);
+  const [relayUrl, setRelayUrl] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const disconnect = useCallback(async () => {
@@ -55,6 +60,7 @@ export function useMoqtSession<T extends MoqtSessionHandle = MoqtSessionHandle>(
       }
     }
     setSession(null);
+    setRelayUrl(null);
     setStatus('idle');
   }, [session]);
 
@@ -77,6 +83,7 @@ export function useMoqtSession<T extends MoqtSessionHandle = MoqtSessionHandle>(
         return;
       }
       setSession(s);
+      setRelayUrl(s.relayUrl ?? null);
       setStatus('ready');
     } catch (e) {
       setError(e as Error);
@@ -97,5 +104,5 @@ export function useMoqtSession<T extends MoqtSessionHandle = MoqtSessionHandle>(
     return () => clearTimeout(id);
   }, [status, cfg.relay.autoReconnect, connect]);
 
-  return { session, status, error, connect, disconnect };
+  return { session, status, error, relayUrl, connect, disconnect };
 }

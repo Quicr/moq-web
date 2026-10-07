@@ -77,9 +77,9 @@ function isDraft16Active(): boolean {
   return _activeDraft === 'draft-16' || _activeDraft === 'draft-17';
 }
 
-/** True while a draft-18 codec call is on the stack. */
+/** True while a modern draft (18+) codec call is on the stack. */
 function isDraft18Active(): boolean {
-  return _activeDraft === 'draft-18';
+  return _activeDraft === 'draft-18' || _activeDraft === 'draft-22';
 }
 
 

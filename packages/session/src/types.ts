@@ -54,7 +54,9 @@ export type SessionEventType =
   | 'incoming-fetch'
   | 'message-sent'
   | 'message-received'
-  | 'forward-state-change';
+  | 'forward-state-change'
+  | 'publish-skipped'
+  | 'publish-state-notify';
 
 /**
  * Fired when the underlying transport closes and carries a draft-18 §15.10.1

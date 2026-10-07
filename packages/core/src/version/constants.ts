@@ -7,7 +7,7 @@
  * Build-time version selection for MOQT draft support.
  * Version is determined at build time via MOQT_VERSION environment variable.
  *
- * Supported: draft-16 (default), draft-17, draft-18.
+ * Supported: draft-16, draft-17, draft-18 (default), draft-22.
  *
  * @example
  * ```bash
@@ -28,16 +28,16 @@ declare const __MOQT_VERSION__: string | undefined;
  * Callers pass one of these strings to MOQTransport / MOQTSession to
  * choose which MOQT draft the codec+wire path will use for the session.
  */
-export type DraftVersion = 'draft-16' | 'draft-17' | 'draft-18';
+export type DraftVersion = 'draft-16' | 'draft-17' | 'draft-18' | 'draft-22';
 
 /**
  * Default draft used when a caller does not specify one.
  *
- * Kept at draft-16 to preserve the historical default. Consumers building
+ * Kept at draft-18 as the current stable default. Consumers building
  * against mixed relay fleets should always pass an explicit `draft`.
  */
 export const DEFAULT_DRAFT: DraftVersion =
-  typeof __MOQT_VERSION__ !== 'undefined' ? (__MOQT_VERSION__ as DraftVersion) : 'draft-16';
+  typeof __MOQT_VERSION__ !== 'undefined' ? (__MOQT_VERSION__ as DraftVersion) : 'draft-18';
 
 /**
  * Version number constants for wire format
@@ -46,6 +46,7 @@ export const VERSION_NUMBER = {
   DRAFT_16: 0xff000010,
   DRAFT_17: 0xff000011,
   DRAFT_18: 0xff000012,
+  DRAFT_22: 0xff000016,
 } as const;
 
 /**
@@ -55,6 +56,7 @@ export const ALPN_PROTOCOL = {
   DRAFT_16: 'moqt-16',
   DRAFT_17: 'moqt-17',
   DRAFT_18: 'moqt-18',
+  DRAFT_22: 'moqt-22',
 } as const;
 
 /**
@@ -70,6 +72,8 @@ export function versionEnumFor(draft: DraftVersion): number {
  */
 export function versionNumberFor(draft: DraftVersion): number {
   switch (draft) {
+    case 'draft-22':
+      return VERSION_NUMBER.DRAFT_22;
     case 'draft-18':
       return VERSION_NUMBER.DRAFT_18;
     case 'draft-17':
@@ -86,6 +90,8 @@ export function versionNumberFor(draft: DraftVersion): number {
  */
 export function alpnProtocolFor(draft: DraftVersion): string {
   switch (draft) {
+    case 'draft-22':
+      return ALPN_PROTOCOL.DRAFT_22;
     case 'draft-18':
       return ALPN_PROTOCOL.DRAFT_18;
     case 'draft-17':

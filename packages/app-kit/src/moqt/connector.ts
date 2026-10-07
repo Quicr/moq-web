@@ -89,7 +89,7 @@ export async function connectMoqtSession(opts: ConnectMoqtOptions): Promise<Conn
     }
 
     log.info('Connecting to relay', { url, draft: cfg.relay.draft });
-    const transport = new MOQTransport();
+    const transport = new MOQTransport({ draft: cfg.relay.draft });
     try {
       await transport.connect(connectUrl);
       if (signal?.aborted) {

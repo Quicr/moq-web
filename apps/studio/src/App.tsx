@@ -286,7 +286,11 @@ export function App() {
             status === 'ready' ? `Live · ${SELF_ID}` :
             status === 'connecting' ? 'Connecting…' :
             status === 'error' ? 'Error' : 'Idle'
-          } />
+          }
+            relayUrl={cfg.relay.relays[0]}
+            draft={cfg.relay.draft}
+            error={error}
+          />
           <label className="ak-row" style={{ gap: 6, fontSize: 12 }}>
             <span className="ak-subtle">Room</span>
             <input

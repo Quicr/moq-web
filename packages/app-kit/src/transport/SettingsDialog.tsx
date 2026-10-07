@@ -8,7 +8,6 @@ import {
 } from '../latency/profiles.js';
 import { Modal } from '../shell/Modal.js';
 import { Toggle } from '../shell/Toggle.js';
-import { switchDraftInBrowser } from '../moqt/version.js';
 import { getAuthAdapter, listAuthAdapters } from '../auth/index.js';
 import { useTransportActions, useTransportConfig } from './state.js';
 
@@ -185,16 +184,16 @@ function RelayCard() {
           className="ak-select"
           value={cfg.relay.draft}
           onChange={(e) => {
-            const next = e.target.value as 'draft-16' | 'draft-18';
+            const next = e.target.value as 'draft-16' | 'draft-18' | 'draft-22';
             setRelay({ draft: next });
-            switchDraftInBrowser(next);
           }}
         >
           <option value="draft-16">draft-16</option>
           <option value="draft-18">draft-18</option>
+          <option value="draft-22">draft-22</option>
         </select>
         <div className="ak-caption" style={{ marginTop: 4, fontSize: 10 }}>
-          Reloads into the sibling build ({cfg.relay.draft === 'draft-18' ? '/18/ → /' : '/ → /18/'}).
+          Takes effect on next connect.
         </div>
       </label>
       <NumberField

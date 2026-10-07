@@ -8,12 +8,14 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "MOQT_VERSION=draft-16 pnpm -r run build",
+    "build": "MOQT_VERSION=draft-18 pnpm -r run build",
     "build:draft-18": "MOQT_VERSION=draft-18 pnpm -r run build",
     "build:draft-16": "MOQT_VERSION=draft-16 pnpm -r run build",
-    "test": "MOQT_VERSION=draft-16 pnpm -r run test",
+    "build:draft-22": "MOQT_VERSION=draft-22 pnpm -r run build",
+    "test": "MOQT_VERSION=draft-18 pnpm -r run test",
     "test:draft-18": "MOQT_VERSION=draft-18 pnpm -r run test",
     "test:draft-16": "MOQT_VERSION=draft-16 pnpm -r run test",
+    "test:draft-22": "MOQT_VERSION=draft-22 pnpm -r run test",
     "test:e2e": "RUN_E2E=1 pnpm --filter @moq-web/session-e2e --filter @moq-web/media-e2e run test",
     "lint": "pnpm -r run lint",
     "dev": "MOQT_VERSION=draft-16 pnpm --filter @moq-web/chat-call run dev",

@@ -215,6 +215,8 @@ export function App() {
               status === 'connecting' ? 'Connecting…' :
               status === 'error' ? 'Error' : 'Idle'
           }
+          relayUrl={cfg.relay.relays[0]}
+          draft={cfg.relay.draft}
         />
       }
     >
