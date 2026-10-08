@@ -1,6 +1,6 @@
 {
   "name": "@moq-web/msf",
-  "version": "0.2.0",
+  "version": "0.2.0-alpha.0",
   "description": "MOQT Streaming Format (MSF) — JSON catalogs for LOC-compliant Media over QUIC delivery",
   "keywords": [
     "moq",

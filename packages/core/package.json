@@ -1,6 +1,6 @@
 {
   "name": "@moq-web/core",
-  "version": "0.2.0",
+  "version": "0.2.0-alpha.0",
   "description": "Core MOQT protocol types, encoding, state management, and transport layer for Media over QUIC",
   "keywords": [
     "moq",

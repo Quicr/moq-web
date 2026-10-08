@@ -1,6 +1,6 @@
 {
   "name": "@moq-web/secure-objects",
-  "version": "0.2.0",
+  "version": "0.2.0-alpha.0",
   "description": "MOQT Secure Objects encryption — WebCrypto-based E2E encryption for Media over QUIC",
   "keywords": [
     "moq",

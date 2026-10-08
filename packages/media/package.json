@@ -1,6 +1,6 @@
 {
   "name": "@moq-web/media",
-  "version": "0.2.0",
+  "version": "0.2.0-alpha.0",
   "description": "WebCodecs encoding/decoding with LOC container format for Media over QUIC (MOQT)",
   "keywords": [
     "moq",

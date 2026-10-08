@@ -61,33 +61,36 @@ pnpm run build:draft-22
 ## Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│              Browser                     │
-│  ┌───────────────────────────────────┐  │
-│  │         @moq-web/client           │  │
-│  │        (React UI App)             │  │
-│  └─────────────┬─────────────────────┘  │
-│                │                         │
-│  ┌─────────────▼─────────────────────┐  │
-│  │         @moq-web/media            │  │
-│  │   (WebCodecs, LOC, Pipelines)     │  │
-│  └─────────────┬─────────────────────┘  │
-│                │                         │
-│  ┌─────────────▼─────────────────────┐  │
-│  │        @moq-web/session           │  │
-│  │    (Protocol, Subscriptions)      │  │
-│  └─────────────┬─────────────────────┘  │
-│                │                         │
-│  ┌─────────────▼─────────────────────┐  │
-│  │         @moq-web/core             │  │
-│  │   (Types, Codecs, Transport)      │  │
-│  └───────────────────────────────────┘  │
-└──────────────────┬──────────────────────┘
-                   │ WebTransport
-                   ▼
-            ┌────────────┐
-            │ MOQT Relay │
-            └────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                         Browser                         │
+│                                                         │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │               @moq-web/app-kit                    │  │
+│  │         (React components & helpers)              │  │
+│  └───────┬──────────────┬───────────────┬────────────┘  │
+│          │              │               │               │
+│  ┌───────▼──────┐  ┌────▼──────────┐  ┌─▼────────────┐ │
+│  │  @moq-web/   │  │  @moq-web/    │  │  @moq-web/   │ │
+│  │    media     │  │     msf       │  │   session    │ │
+│  │  (WebCodecs, │  │  (Catalogs,   │  │  (Protocol,  │ │
+│  │   LOC)       │  │   Switching)  │  │  Subscriptions│ │
+│  └──┬───────┬───┘  └──┬────┬──────┘  └──┬──────┬────┘ │
+│     │       │         │    │             │      │      │
+│  ┌──▼───────▼─────────▼────▼─────────────▼──┐ ┌▼────┐ │
+│  │            @moq-web/core                 │ │ cat  │ │
+│  │     (Types, Encoding, Transport)         │ │(Auth)│ │
+│  └──────────────────────────────────────────┘ └──────┘ │
+│                                                         │
+│  ┌───────────────────────────────┐                      │
+│  │    @moq-web/secure-objects    │                      │
+│  │       (E2E Encryption)        │                      │
+│  └───────────────────────────────┘                      │
+└────────────────────────┬────────────────────────────────┘
+                         │ WebTransport
+                         ▼
+                  ┌────────────┐
+                  │ MOQT Relay │
+                  └────────────┘
 ```
 
 For detailed design documentation, see [docs/design.md](docs/design.md).
@@ -96,12 +99,12 @@ For detailed design documentation, see [docs/design.md](docs/design.md).
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| `@moq-web/core` | 0.2.0 | Protocol types, encoding, state machines, transport |
-| `@moq-web/session` | 0.2.0 | MOQT session management, subscriptions, publications |
-| `@moq-web/media` | 0.2.0 | WebCodecs, LOC container, media pipelines |
-| `@moq-web/cat` | 0.2.0 | Common Authorization Token (CAT) for MOQT auth |
-| `@moq-web/secure-objects` | 0.2.0 | End-to-end encryption for MOQT objects |
-| `@moq-web/msf` | 0.2.0 | Media Switching Framework |
+| [`@moq-web/core`](https://www.npmjs.com/package/@moq-web/core) | 0.2.0-alpha.0 | Protocol types, encoding, state machines, transport |
+| [`@moq-web/session`](https://www.npmjs.com/package/@moq-web/session) | 0.2.0-alpha.0 | MOQT session management, subscriptions, publications |
+| [`@moq-web/media`](https://www.npmjs.com/package/@moq-web/media) | 0.2.0-alpha.0 | WebCodecs, LOC container, media pipelines |
+| [`@moq-web/cat`](https://www.npmjs.com/package/@moq-web/cat) | 0.2.0-alpha.0 | Common Authorization Token (CAT) for MOQT auth |
+| [`@moq-web/secure-objects`](https://www.npmjs.com/package/@moq-web/secure-objects) | 0.2.0-alpha.0 | End-to-end encryption for MOQT objects |
+| [`@moq-web/msf`](https://www.npmjs.com/package/@moq-web/msf) | 0.2.0-alpha.0 | Media Switching Framework |
 | `@moq-web/app-kit` | 0.1.0 | High-level React components and helpers |
 
 ## Prerequisites

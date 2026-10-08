@@ -1,6 +1,6 @@
 {
   "name": "@moq-web/session",
-  "version": "0.2.0",
+  "version": "0.2.0-alpha.0",
   "description": "Generic MOQT session management for Media over QUIC — protocol layer without media codecs",
   "keywords": [
     "moq",
