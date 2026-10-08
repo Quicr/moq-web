@@ -41,17 +41,21 @@ Built on WebTransport and WebCodecs for low-latency video/audio delivery.
 
 ## Protocol Support
 
+Implements [draft-ietf-moq-transport](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/):
+
 | Draft | Status | Notes |
 |-------|--------|-------|
-| Draft-16 | Default | Full support |
-| Draft-15 | Included with Draft-16 | ALPN negotiation |
-| Draft-14 | Build-time flag | Full support |
+| Draft-22 | Supported | Build with `MOQT_VERSION=draft-22` |
+| Draft-18 | **Default** | Full support |
+| Draft-17 | Supported | Included with draft-18 codec path |
+| Draft-16 | Supported | Build with `MOQT_VERSION=draft-16` |
 
-Build for draft-14:
+Build for a specific draft:
 
 ```bash
-pnpm run build:draft-14
-pnpm run dev:draft-14
+pnpm run build:draft-18    # default
+pnpm run build:draft-16
+pnpm run build:draft-22
 ```
 
 ## Architecture
@@ -88,15 +92,17 @@ pnpm run dev:draft-14
 
 For detailed design documentation, see [docs/design.md](docs/design.md).
 
-## Project Structure
+## Packages
 
-```
-packages/
-├── core       # Protocol types, encoding, state machines, transport
-├── session    # MOQT session management, subscriptions, publications
-├── media      # WebCodecs, LOC container, media pipelines
-└── client     # React web application
-```
+| Package | Version | Description |
+|---------|---------|-------------|
+| `@moq-web/core` | 0.2.0 | Protocol types, encoding, state machines, transport |
+| `@moq-web/session` | 0.2.0 | MOQT session management, subscriptions, publications |
+| `@moq-web/media` | 0.2.0 | WebCodecs, LOC container, media pipelines |
+| `@moq-web/cat` | 0.2.0 | Common Authorization Token (CAT) for MOQT auth |
+| `@moq-web/secure-objects` | 0.2.0 | End-to-end encryption for MOQT objects |
+| `@moq-web/msf` | 0.2.0 | Media Switching Framework |
+| `@moq-web/app-kit` | 0.1.0 | High-level React components and helpers |
 
 ## Prerequisites
 
@@ -143,8 +149,10 @@ rm -rf node_modules packages/*/node_modules packages/*/dist packages/*/.tsbuildi
 ## Test
 
 ```bash
-pnpm run test              # Run all tests
-pnpm run test:draft-14     # Test with draft-14
+pnpm run test              # Run all tests (draft-18)
+pnpm run test:draft-18     # Test with draft-18
+pnpm run test:draft-16     # Test with draft-16
+pnpm run test:draft-22     # Test with draft-22
 ```
 
 ## License
