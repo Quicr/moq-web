@@ -510,7 +510,7 @@ async function sendControl(data: Uint8Array): Promise<void> {
       }
       const hex = Array.from(toWrite.subarray(0, Math.min(32, toWrite.length)))
         .map(b => b.toString(16).padStart(2, '0')).join(' ');
-      log('sendControl (draft-18)', { length: toWrite.length, hex, firstMessage: !setupStreamTypeSent });
+      log('sendControl', { length: toWrite.length, hex, firstMessage: !setupStreamTypeSent });
       await setupWriter.write(toWrite);
       metric('counter', 'moq.transport.bytes_out', toWrite.length);
       log('sendControl written successfully');

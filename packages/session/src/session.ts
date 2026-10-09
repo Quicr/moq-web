@@ -1544,7 +1544,7 @@ export class MOQTSession {
       throw new Error(`Cannot setup: session is ${this._state}`);
     }
 
-    log.info('Setting up MOQT session', { useWorker: this.useWorker, isDraft18: this.isDraft18 });
+    log.info('Setting up MOQT session', { useWorker: this.useWorker, draft: this._draft });
     this.setState('setup');
 
     // Set up event handlers based on mode
@@ -1582,14 +1582,14 @@ export class MOQTSession {
       const setupBytes = this.codec.encodeSetupStream(clientSetup);
 
       const hexBytes = Array.from(setupBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      log.info('SETUP bytes (draft-18)', {
+      log.info('SETUP bytes', {
         length: setupBytes.length,
         hex: hexBytes,
         alpnProtocol: alpnProtocolFor(this._draft),
       });
 
       await this.doSendControl(setupBytes);
-      log.info('Sent SETUP (draft-18)');
+      log.info('Sent SETUP');
 
       // Draft-18: Setup can happen in parallel, but wait for server's SETUP
       // to confirm session establishment
@@ -1639,7 +1639,7 @@ export class MOQTSession {
   // ============================================================================
 
   /**
-   * Send GOAWAY to signal graceful session termination (draft-18)
+   * Send GOAWAY to signal graceful session termination
    *
    * @param newSessionUri Optional URI for the client to migrate to (must be zero-length when sent by client, spec §10.4)
    * @param timeoutMs Grace period in milliseconds before the sender enforces closure (spec §10.4)
@@ -1698,7 +1698,7 @@ export class MOQTSession {
     };
 
     const encoded = this.codec.encodeControlMessage(trackStatusMessage);
-    log.info('Sent TRACK_STATUS (draft-18)', {
+    log.info('Sent TRACK_STATUS', {
       requestId: requestId.toString(),
       namespace: namespace.join('/'),
       trackName,
@@ -1725,7 +1725,7 @@ export class MOQTSession {
         latestGroup: ok.largestLocation?.group,
         latestObject: ok.largestLocation?.object,
       };
-      log.info('TRACK_STATUS response received (draft-18)', {
+      log.info('TRACK_STATUS response received', {
         requestId: requestId.toString(),
         expiresMs,
         latestGroup: result.latestGroup?.toString(),
@@ -1800,7 +1800,7 @@ export class MOQTSession {
     };
 
     const encoded = this.codec.encodeControlMessage(subscribeTracksMessage);
-    log.info('Sent SUBSCRIBE_TRACKS (draft-18)', {
+    log.info('Sent SUBSCRIBE_TRACKS', {
       requestId: requestId.toString(),
       prefix: namespacePrefix.join('/'),
     });
@@ -1824,12 +1824,12 @@ export class MOQTSession {
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
 
-    log.info('SUBSCRIBE_TRACKS accepted (draft-18)', { requestId: requestId.toString() });
+    log.info('SUBSCRIBE_TRACKS accepted', { requestId: requestId.toString() });
     return subscriptionId;
   }
 
   /**
-   * Send REQUEST_UPDATE to change forward state on a subscription (draft-18)
+   * Send REQUEST_UPDATE to change forward state on a subscription
    *
    * @param existingRequestId - Request ID of the subscription being updated
    * @param forwardState - New forward state (true = send objects, false = pause)
@@ -1890,7 +1890,7 @@ export class MOQTSession {
 
     const bytes = this.codec.encodeControlMessage(updateMessage);
     await stream.write(bytes);
-    log.info('Sent REQUEST_UPDATE (draft-18)', {
+    log.info('Sent REQUEST_UPDATE', {
       subscriptionRequestId: rid.toString(),
       forwardState,
       newGroupRequest: options?.newGroupRequest ?? false,
@@ -1915,17 +1915,17 @@ export class MOQTSession {
       );
     }
     if (response.type !== MessageTypeDraft18.REQUEST_OK) {
-      log.warn('Unexpected response to REQUEST_UPDATE (draft-18)', {
+      log.warn('Unexpected response to REQUEST_UPDATE', {
         subscriptionRequestId: rid.toString(),
         responseType: response.type,
       });
     } else {
-      log.info('REQUEST_UPDATE acknowledged (draft-18)', { subscriptionRequestId: rid.toString() });
+      log.info('REQUEST_UPDATE acknowledged', { subscriptionRequestId: rid.toString() });
     }
   }
 
   /**
-   * Send PUBLISH_DONE to signal end of publishing on a track (draft-18)
+   * Send PUBLISH_DONE to signal end of publishing on a track
    *
    * @param requestId - Request ID of the PUBLISH
    * @param finalGroup - Final group ID
@@ -1958,7 +1958,7 @@ export class MOQTSession {
     // PUBLISH_DONE terminates the incoming subscription; drop routing state so
     // any future REQUEST_UPDATE on this id doesn't route as §10.9.1 by default.
     this.incomingRequestKinds.delete(requestId);
-    log.info('Sent PUBLISH_DONE (draft-18)', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
+    log.info('Sent PUBLISH_DONE', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
   }
 
   /**
@@ -1979,7 +1979,7 @@ export class MOQTSession {
     };
     const bytes = this.codec.encodeControlMessage(message);
     await this.doSendControl(bytes);
-    log.info('Sent PUBLISH_BLOCKED (draft-18)', { trackAlias: alias.toString() });
+    log.info('Sent PUBLISH_BLOCKED', { trackAlias: alias.toString() });
   }
 
   /**
@@ -2465,7 +2465,7 @@ export class MOQTSession {
 
     const encoded = this.codec.encodeControlMessage(subscribeMessage);
     const subHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('Sent SUBSCRIBE (draft-18)', {
+    log.info('Sent SUBSCRIBE', {
       requestId: requestId.toString(),
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
@@ -2480,7 +2480,7 @@ export class MOQTSession {
     if (response.type === MessageTypeDraft18.SUBSCRIBE_OK) {
       const subscribeOk = response as SubscribeOkMessageDraft18;
       const relayTrackAlias = subscribeOk.trackAlias ?? subscribeOk.requestId;
-      log.info('Received SUBSCRIBE_OK (draft-18)', {
+      log.info('Received SUBSCRIBE_OK', {
         trackAlias: relayTrackAlias.toString(),
         localTrackAlias: trackAlias.toString(),
         largestGroup: subscribeOk.largestLocation.group.toString(),
@@ -2512,7 +2512,7 @@ export class MOQTSession {
       }
     } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
-      log.error('Received REQUEST_ERROR (draft-18)', {
+      log.error('Received REQUEST_ERROR', {
         requestId: error.requestId.toString(),
         errorCode: error.errorCode,
         reasonPhrase: error.reasonPhrase,
@@ -2553,7 +2553,7 @@ export class MOQTSession {
 
     const encoded = this.codec.encodeControlMessage(publishMessage);
     const pubHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('Sent PUBLISH (draft-18)', {
+    log.info('Sent PUBLISH', {
       requestId: requestId.toString(),
       trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
@@ -2567,14 +2567,14 @@ export class MOQTSession {
     if (response.type === MessageTypeDraft18.REQUEST_OK) {
       const ok = response as RequestOkMessageDraft18;
       const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
-      log.info('Received REQUEST_OK for PUBLISH (draft-18)', { requestId: requestId.toString(), expiresMs });
+      log.info('Received REQUEST_OK for PUBLISH', { requestId: requestId.toString(), expiresMs });
       this.emit('request-ok', { requestId, requestKind: 'publish', expiresMs } as RequestOkEvent);
       if (!options?.skipForwardWait) {
-        log.info('PUBLISH accepted, starting immediately (draft-18)');
+        log.info('PUBLISH accepted, starting immediately');
       }
     } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
-      log.error('Received REQUEST_ERROR for PUBLISH (draft-18)', {
+      log.error('Received REQUEST_ERROR for PUBLISH', {
         requestId: error.requestId.toString(),
         errorCode: error.errorCode,
         reasonPhrase: error.reasonPhrase,
@@ -2814,7 +2814,7 @@ export class MOQTSession {
 
     const encoded = this.codec.encodeControlMessage(fetchMessage);
     const fetchHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('Sent FETCH (draft-18)', {
+    log.info('Sent FETCH', {
       requestId: requestId.toString(),
       namespace: namespace.join('/'),
       trackName,
@@ -2828,7 +2828,7 @@ export class MOQTSession {
 
     if (response.type === MessageTypeDraft18.FETCH_OK) {
       const fetchOk = response as _FetchOkMessageDraft18;
-      log.info('Received FETCH_OK (draft-18)', {
+      log.info('Received FETCH_OK', {
         requestId: requestId.toString(),
         endGroup: fetchOk.endLocation.group.toString(),
         endObject: fetchOk.endLocation.object.toString(),
@@ -2851,11 +2851,11 @@ export class MOQTSession {
       // Some relays send REQUEST_OK to accept the fetch and later stream data.
       const ok = response as RequestOkMessageDraft18;
       const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
-      log.info('Received REQUEST_OK for FETCH (draft-18)', { requestId: requestId.toString(), expiresMs });
+      log.info('Received REQUEST_OK for FETCH', { requestId: requestId.toString(), expiresMs });
       this.emit('request-ok', { requestId, requestKind: 'fetch', expiresMs } as RequestOkEvent);
     } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
-      log.error('Received REQUEST_ERROR for FETCH (draft-18)', {
+      log.error('Received REQUEST_ERROR for FETCH', {
         requestId: requestId.toString(),
         errorCode: error.errorCode,
         reasonPhrase: error.reasonPhrase,
@@ -2868,7 +2868,7 @@ export class MOQTSession {
         reason: error.reasonPhrase,
       } as FetchErrorEvent);
     } else {
-      log.warn('Unexpected response to FETCH (draft-18)', {
+      log.warn('Unexpected response to FETCH', {
         requestId: requestId.toString(),
         responseType: response.type,
       });
@@ -2896,7 +2896,7 @@ export class MOQTSession {
       // The relay resets the fetch data stream in response; fire-and-forget.
       try {
         await this.sendRequestUpdate(rid, false, { awaitAck: false });
-        log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel (draft-18)', { requestId: rid.toString() });
+        log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel', { requestId: rid.toString() });
       } catch (err) {
         log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
       }
@@ -3212,7 +3212,7 @@ export class MOQTSession {
     if (this.useWorker && this.transportWorker) {
       const streamId = await this.transportWorker.createBidiStream();
       this.transportWorker.writeStream(streamId, encoded);
-      log.info('Sent SUBSCRIBE_NAMESPACE (draft-18) via worker', { namespacePrefix: prefixStr, requestId: requestId.toString(), streamId });
+      log.info('Sent SUBSCRIBE_NAMESPACE via worker', { namespacePrefix: prefixStr, requestId: requestId.toString(), streamId });
 
       // Create a ReadableStream for the bidi response
       const readable = new ReadableStream<Uint8Array>({
@@ -3222,17 +3222,17 @@ export class MOQTSession {
       });
       this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
       this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
-        log.error('Error reading namespace subscription stream (draft-18)', { error: (err as Error).message });
+        log.error('Error reading namespace subscription stream', { error: (err as Error).message });
       });
     } else if (this.transport) {
       const { readable, writable } = await this.transport.createRequestStream();
       const writer = writable.getWriter();
       await writer.write(encoded);
       writer.releaseLock();
-      log.info('Sent SUBSCRIBE_NAMESPACE (draft-18)', { namespacePrefix: prefixStr, requestId: requestId.toString() });
+      log.info('Sent SUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr, requestId: requestId.toString() });
 
       this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
-        log.error('Error reading namespace subscription stream (draft-18)', { error: (err as Error).message });
+        log.error('Error reading namespace subscription stream', { error: (err as Error).message });
       });
     } else {
       throw new Error('No transport available');
@@ -3240,7 +3240,7 @@ export class MOQTSession {
   }
 
   /**
-   * Read namespace subscription responses (draft-18)
+   * Read namespace subscription responses
    */
   private async readNamespaceSubscriptionStreamDraft18(
     readable: ReadableStream<Uint8Array>,
@@ -3288,7 +3288,7 @@ export class MOQTSession {
             const [message, bytesRead] = this.codec.decodeControlMessage(view, 0, this.metrics);
             consumed += bytesRead;
 
-            log.info('Received message on namespace subscription stream (draft-18)', {
+            log.info('Received message on namespace subscription stream', {
               type: MessageTypeDraft18[message.type],
               subscriptionId,
             });
@@ -3318,7 +3318,7 @@ export class MOQTSession {
         }
       }
     } catch (err) {
-      log.error('Namespace subscription stream error (draft-18)', { error: (err as Error).message });
+      log.error('Namespace subscription stream error', { error: (err as Error).message });
     } finally {
       reader.releaseLock();
     }
@@ -3333,7 +3333,7 @@ export class MOQTSession {
         const ok = message as RequestOkMessageDraft18;
         const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
         const sub = this.namespaceSubscriptions.get(subscriptionId);
-        log.info('Namespace subscription accepted (draft-18)', {
+        log.info('Namespace subscription accepted', {
           subscriptionId,
           requestId: sub?.requestId,
           expiresMs,
@@ -3350,7 +3350,7 @@ export class MOQTSession {
 
       case MessageTypeDraft18.REQUEST_ERROR: {
         const error = message as RequestErrorMessageDraft18;
-        log.error('Namespace subscription rejected (draft-18)', {
+        log.error('Namespace subscription rejected', {
           errorCode: error.errorCode,
           reasonPhrase: error.reasonPhrase,
         });
@@ -3374,7 +3374,7 @@ export class MOQTSession {
         const absolute = subscription
           ? [...subscription.namespacePrefix, ...nsMsg.trackNamespace]
           : nsMsg.trackNamespace;
-        log.info('Received NAMESPACE announcement (draft-18)', {
+        log.info('Received NAMESPACE announcement', {
           namespace: absolute.join('/'),
           subscriptionId,
         });
@@ -3391,7 +3391,7 @@ export class MOQTSession {
         const absolute = subscription
           ? [...subscription.namespacePrefix, ...nsDone.finalNamespace]
           : nsDone.finalNamespace;
-        log.info('Received NAMESPACE_DONE (draft-18)', {
+        log.info('Received NAMESPACE_DONE', {
           namespace: absolute.join('/'),
           subscriptionId,
         });
@@ -3782,7 +3782,7 @@ export class MOQTSession {
     const encoded = this.codec.encodeControlMessage(publishNsMessage);
 
     if ((this.useWorker && this.transportWorker) || this.transport) {
-      log.info('Sent PUBLISH_NAMESPACE (draft-18)', { namespace: namespaceStr, requestId: requestId.toString() });
+      log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId: requestId.toString() });
 
       const response = await this.sendRequestAndWaitResponse(encoded, requestId);
       if (response.type === MessageTypeDraft18.REQUEST_OK) {
@@ -3795,7 +3795,7 @@ export class MOQTSession {
           requestKind: 'publish-namespace',
           expiresMs,
         } as RequestOkEvent);
-        log.info('PUBLISH_NAMESPACE accepted (draft-18)', { namespace: namespaceStr, expiresMs });
+        log.info('PUBLISH_NAMESPACE accepted', { namespace: namespaceStr, expiresMs });
       } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
         this.announcedNamespaces.delete(namespaceStr);
@@ -5413,7 +5413,7 @@ export class MOQTSession {
   }
 
   /**
-   * Wait for SERVER_SETUP message (draft-18).
+   * Wait for SERVER_SETUP message.
    *
    * Draft-18 lets either endpoint send SETUP first on the shared setup stream,
    * so SERVER_SETUP can arrive before this waiter installs its handler. Any
@@ -5423,7 +5423,7 @@ export class MOQTSession {
   private waitForServerSetupDraft18(): Promise<void> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Timeout waiting for SERVER_SETUP (draft-18)'));
+        reject(new Error('Timeout waiting for SERVER_SETUP'));
       }, 10000);
 
       const handler = (message: ControlMessageDraft18) => {
@@ -5434,7 +5434,7 @@ export class MOQTSession {
           if ((serverSetup as any).maxRequestUpdates !== undefined) {
             this.peerMaxRequestUpdates = (serverSetup as any).maxRequestUpdates;
           }
-          log.debug('Received SERVER_SETUP (draft-18)', {
+          log.debug('Received SERVER_SETUP', {
             version: serverSetup.selectedVersion,
             role: serverSetup.role,
             extensionCount: serverSetup.extensions?.size ?? 0,
@@ -5465,12 +5465,12 @@ export class MOQTSession {
   private setupBufferOffset = 0;
 
   /**
-   * Handle incoming setup stream messages (draft-18)
+   * Handle incoming setup stream messages
    */
   private handleSetupMessage(data: Uint8Array): void {
     const hex = Array.from(data.subarray(0, Math.min(32, data.length)))
       .map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('Setup message received (draft-18)', { size: data.length, hex });
+    log.info('Setup message received', { size: data.length, hex });
 
     try {
       // Append to buffer
@@ -5494,7 +5494,7 @@ export class MOQTSession {
 
           this.setupBufferOffset += bytesRead;
 
-          log.info('Received setup message (draft-18)', {
+          log.info('Received setup message', {
             type: MessageTypeDraft18[message.type],
           });
 
@@ -5526,12 +5526,12 @@ export class MOQTSession {
         this.setupBufferOffset = 0;
       }
     } catch (err) {
-      log.error('Error handling setup message (draft-18)', err as Error);
+      log.error('Error handling setup message', err as Error);
     }
   }
 
   /**
-   * Route messages received on the setup stream after connection established (draft-18)
+   * Route messages received on the setup stream after connection established
    */
   private routeSetupStreamMessage(message: ControlMessageDraft18): void {
     switch (message.type) {
@@ -5571,7 +5571,7 @@ export class MOQTSession {
    * Handle incoming bidirectional stream (draft-18 server-initiated requests)
    */
   private handleIncomingBidiStream(stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): void {
-    log.info('Handling incoming bidi stream (draft-18)');
+    log.info('Handling incoming bidi stream');
     this.processIncomingBidiStream(stream).catch(err => {
       log.error('Error processing incoming bidi stream', { error: (err as Error).message });
     });
@@ -5794,7 +5794,7 @@ export class MOQTSession {
       trackAlias,
     } as IncomingSubscribeEvent);
 
-    log.info('Accepted SUBSCRIBE (draft-18)', { trackAlias: trackAlias.toString(), fullTrackName: fullTrackNameStr });
+    log.info('Accepted SUBSCRIBE', { trackAlias: trackAlias.toString(), fullTrackName: fullTrackNameStr });
   }
 
   /**
@@ -5900,7 +5900,7 @@ export class MOQTSession {
       groupOrder: GroupOrder.ASCENDING,
     } as IncomingPublishEvent);
 
-    log.info('Accepted PUBLISH (draft-18)', { trackAlias: message.trackAlias.toString(), fullTrackName: fullTrackNameStr });
+    log.info('Accepted PUBLISH', { trackAlias: message.trackAlias.toString(), fullTrackName: fullTrackNameStr });
   }
 
   /**
@@ -5910,7 +5910,7 @@ export class MOQTSession {
     message: FetchMessageDraft18,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
-    log.info('Received FETCH (draft-18)', { requestId: message.requestId.toString() });
+    log.info('Received FETCH', { requestId: message.requestId.toString() });
     // For now, respond with REQUEST_ERROR since we don't cache objects
     await this.sendRequestErrorOnStream(
       writable,
@@ -5932,7 +5932,7 @@ export class MOQTSession {
     message: TrackStatusMessageDraft18,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
-    log.info('Received TRACK_STATUS (draft-18)', {
+    log.info('Received TRACK_STATUS', {
       requestId: message.requestId.toString(),
       namespace: message.trackNamespace.join('/'),
       trackName: message.trackName,
@@ -5973,7 +5973,7 @@ export class MOQTSession {
     _reader: ReadableStreamDefaultReader<Uint8Array>
   ): Promise<void> {
     const prefix = message.trackNamespacePrefix.join('/');
-    log.info('Received SUBSCRIBE_NAMESPACE (draft-18)', {
+    log.info('Received SUBSCRIBE_NAMESPACE', {
       requestId: message.requestId.toString(),
       prefix,
     });
@@ -6018,7 +6018,7 @@ export class MOQTSession {
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     const prefix = message.trackNamespacePrefix.join('/');
-    log.info('Received PUBLISH_NAMESPACE (draft-18)', {
+    log.info('Received PUBLISH_NAMESPACE', {
       requestId: message.requestId.toString(),
       prefix,
     });
@@ -6035,7 +6035,7 @@ export class MOQTSession {
 
     this.incomingRequestKinds.set(message.requestId, 'publish-namespace');
 
-    log.info('Accepted PUBLISH_NAMESPACE (draft-18)', { prefix });
+    log.info('Accepted PUBLISH_NAMESPACE', { prefix });
   }
 
   /**
@@ -6055,7 +6055,7 @@ export class MOQTSession {
     const paramPrefix = paramPrefixBytes ? decodeTrackNamespaceBytes(paramPrefixBytes) : undefined;
     const paramPrefixStr = paramPrefix?.join('/');
 
-    log.info('Received SUBSCRIBE_TRACKS (draft-18)', {
+    log.info('Received SUBSCRIBE_TRACKS', {
       requestId: message.requestId.toString(),
       prefix,
       paramPrefix: paramPrefixStr,
@@ -6115,7 +6115,7 @@ export class MOQTSession {
   private dispatchRequestUpdateDraft18(message: RequestUpdateMessageDraft18): void {
     const requestId = message.requestId;
     const kind = this.incomingRequestKinds.get(requestId) ?? 'unknown';
-    log.info('Received REQUEST_UPDATE (draft-18)', {
+    log.info('Received REQUEST_UPDATE', {
       requestId: message.requestId.toString(),
       forwardState: message.forwardState,
       variant: kind,
@@ -6198,7 +6198,7 @@ export class MOQTSession {
    */
   private handleIncomingPublishDoneDraft18(message: PublishDoneMessageDraft18): void {
     const requestId = message.requestId;
-    log.info('Received PUBLISH_DONE (draft-18)', {
+    log.info('Received PUBLISH_DONE', {
       requestId: requestId.toString(),
       finalGroup: message.finalLocation.group.toString(),
       finalObject: message.finalLocation.object.toString(),
@@ -6240,7 +6240,7 @@ export class MOQTSession {
     const uri = message.newSessionUri && message.newSessionUri.length > 0
       ? message.newSessionUri
       : undefined;
-    log.info('Received GOAWAY (draft-18)', {
+    log.info('Received GOAWAY', {
       newSessionUri: uri,
       timeoutMs: message.timeout.toString(),
       requestId: message.requestId?.toString(),
@@ -6453,7 +6453,7 @@ export class MOQTSession {
    * Handle incoming PUBLISH_BLOCKED
    */
   private handleIncomingPublishBlockedDraft18(message: PublishBlockedMessageDraft18): void {
-    log.info('Received PUBLISH_BLOCKED (draft-18)', { trackAlias: message.trackAlias.toString() });
+    log.info('Received PUBLISH_BLOCKED', { trackAlias: message.trackAlias.toString() });
     this.emit('publish-blocked', { trackAlias: message.trackAlias } as PublishBlockedEvent);
   }
 

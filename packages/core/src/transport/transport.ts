@@ -516,12 +516,12 @@ export class MOQTransport {
   }
 
   /**
-   * Start listening for incoming bidirectional streams (draft-18)
+   * Start listening for incoming bidirectional streams
    */
   private async startBidiStreamListener(): Promise<void> {
     if (!this.transport) return;
 
-    log.debug('Starting bidi stream listener (draft-18)');
+    log.debug('Starting bidi stream listener');
     const reader = this.transport.incomingBidirectionalStreams.getReader();
 
     try {
@@ -549,7 +549,7 @@ export class MOQTransport {
   }
 
   /**
-   * Start listening for setup stream messages (draft-18)
+   * Start listening for setup stream messages
    */
   private startSetupListener(initialData: Uint8Array): void {
     if (!this.setupReader) return;
@@ -644,7 +644,7 @@ export class MOQTransport {
   }
 
   /**
-   * Send data on the control stream (draft-14/16) or setup stream (draft-18)
+   * Send data on the control stream (draft-14/16) or setup stream
    *
    * @param data - Bytes to send
    * @throws Error if not connected or write fails
@@ -659,7 +659,7 @@ export class MOQTransport {
       if (!this.setupWriter) {
         throw new Error('Setup stream not connected');
       }
-      log.trace('Sending setup message (draft-18)', { size: data.byteLength });
+      log.trace('Sending setup message', { size: data.byteLength });
       await this.setupWriter.write(data);
     } else {
       if (!this.controlWriter) {
@@ -671,7 +671,7 @@ export class MOQTransport {
   }
 
   /**
-   * Create a new bidirectional stream (draft-18)
+   * Create a new bidirectional stream
    * Used for per-request control messages (SUBSCRIBE, PUBLISH, FETCH, etc.)
    *
    * @returns Object with readable and writable streams
