@@ -732,23 +732,18 @@ export class SubscribePipeline {
     const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false);
     const isKeyframe = frame.header.isKeyframe;
 
-    log.info('pushVideo', {
-      groupId, objectId, dataSize: data.length,
-      firstByte: '0x' + data[0]?.toString(16),
-      isKeyframe,
-      mediaType: frame.header.mediaType,
-      payloadSize: frame.payload.length,
-    });
-
     // Skip decoder reconfigure with description — encoder uses Annex B format,
     // but codecDescription is avcC. Passing it would switch decoder to AVCC mode.
 
+    // LOC captureTimestamp is wallclock epoch time — too large for WebCodecs
+    // VideoDecoder which silently drops frames with huge timestamps. Use
+    // performance.now()-based arrival time instead (converted to µs in
+    // processBuffers via the receivedAt fallback path).
     this.videoPlayout.addFrame({
       groupId,
       objectId,
       data: frame.payload,
       isKeyframe,
-      locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
     });
   }
 
@@ -774,7 +769,6 @@ export class SubscribePipeline {
       objectId,
       data: frame.payload,
       isKeyframe: true, // Opus/AAC frames are always key
-      locTimestamp: frame.captureTimestamp ? Math.floor(frame.captureTimestamp * 1000) : undefined,
     });
   }
 
@@ -793,14 +787,6 @@ export class SubscribePipeline {
       this.videoPlayout.tick();
       const activeGroupId = this.videoPlayout.getActiveGroupId();
       const readyFrames = this.videoPlayout.getReadyFrames(5);
-
-      if (readyFrames.length > 0) {
-        log.info('processBuffers releasing', {
-          count: readyFrames.length,
-          activeGroupId,
-          firstFrame: { groupId: readyFrames[0].groupId, objectId: readyFrames[0].objectId, isKeyframe: readyFrames[0].isKeyframe },
-        });
-      }
 
       for (const frame of readyFrames) {
         try {

@@ -378,12 +378,6 @@ export class H264Decoder {
       duration,
     });
 
-    log.info('Feeding decoder', {
-      isKeyframe, dataSize: data.length, timestamp, groupId,
-      decoderState: this.decoder.state,
-      queueSize: this.decoder.decodeQueueSize,
-      firstBytes: '0x' + Array.from(data.subarray(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(''),
-    });
     this.decoder.decode(chunk);
   }
 
