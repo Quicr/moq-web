@@ -378,10 +378,6 @@ export class H264Decoder {
       duration,
     });
 
-    if (isKeyframe) {
-      const h = Array.from(data.subarray(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      log.info(`Decoding keyframe: bytes=[${h}] size=${data.length} ts=${timestamp} group=${groupId} queue=${this.decoder.decodeQueueSize}`);
-    }
     this.decoder.decode(chunk);
   }
 
@@ -453,7 +449,6 @@ export class H264Decoder {
    */
   private handleOutput(frame: VideoFrame): void {
     this.stats.framesDecoded++;
-    log.info(`Decoded frame: ${frame.displayWidth}x${frame.displayHeight} ts=${frame.timestamp} total=${this.stats.framesDecoded}`);
 
     // Log stats every 30 frames to reduce overhead
     if (this.stats.framesDecoded % 30 === 0) {
