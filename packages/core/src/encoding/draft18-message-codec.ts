@@ -16,6 +16,19 @@ import {
   normalizeRequestErrorCode,
 } from './grease.js';
 import {
+  assertBound,
+  encodeTrackNamespace,
+  decodeTrackNamespace,
+  encodeString,
+  decodeString,
+  decodeTrackName,
+  encodeFramed,
+  decodeFramed,
+  MAX_PARAMETER_COUNT,
+  MAX_STRING_LENGTH,
+  MAX_AUTH_TOKEN_LENGTH,
+} from './codec-helpers.js';
+import {
   MessageTypeDraft18,
   Version,
   GroupOrder,
@@ -76,36 +89,8 @@ export class Draft18CodecError extends Error {
   }
 }
 
-// =============================================================================
-// Codec Safety Bounds (B1 SEC)
-// =============================================================================
-// These bounds cap how much work an attacker can force a decoder to perform
-// with a single control message. They are intentionally generous enough to
-// support real MOQT deployments (draft-18 §10) but small enough to prevent
-// pathological allocations from a malicious peer. Any decoded length or count
-// exceeding a bound triggers a Draft18CodecError tagged with
-// `code: 'bounds-exceeded'` so the session can terminate the peer.
-export const MAX_PARAMETER_COUNT = 64;
-export const MAX_STRING_LENGTH = 4096;
-export const MAX_NAMESPACE_TUPLE_COUNT = 32;
-export const MAX_TRACK_NAME_LENGTH = 4096;
-export const MAX_AUTH_TOKEN_LENGTH = 16384;
-
-function assertBound(
-  actual: number,
-  limit: number,
-  what: string,
-  messageType?: MessageTypeDraft18,
-): void {
-  // Reject NaN/negatives from a corrupt varint decode as well as overflows.
-  if (!Number.isFinite(actual) || actual < 0 || actual > limit) {
-    throw new Draft18CodecError(
-      `${what} ${actual} exceeds safety bound ${limit}`,
-      messageType,
-      'bounds-exceeded',
-    );
-  }
-}
+// Re-export bounds constants for backward compatibility (consumers may import from here)
+export { MAX_PARAMETER_COUNT, MAX_STRING_LENGTH, MAX_NAMESPACE_TUPLE_COUNT, MAX_TRACK_NAME_LENGTH, MAX_AUTH_TOKEN_LENGTH } from './codec-helpers.js';
 
 /**
  * Draft-18 Message Codec
@@ -117,171 +102,124 @@ export class Draft18MessageCodec {
   static encode(message: ControlMessageDraft18): Uint8Array {
     log.debug('Encoding draft-18 message', { type: MessageTypeDraft18[message.type] });
 
-    const payloadWriter = new Draft18BufferWriter();
-
-    switch (message.type) {
-      case MessageTypeDraft18.SETUP:
-        Draft18MessageCodec.encodeSetup(payloadWriter, message as ClientSetupMessageDraft18);
-        break;
-      case MessageTypeDraft18.SUBSCRIBE:
-        Draft18MessageCodec.encodeSubscribe(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.SUBSCRIBE_OK:
-        Draft18MessageCodec.encodeSubscribeOk(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.PUBLISH:
-        Draft18MessageCodec.encodePublish(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.REQUEST_ERROR:
-        Draft18MessageCodec.encodeRequestError(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.REQUEST_OK:
-        Draft18MessageCodec.encodeRequestOk(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.FETCH:
-        Draft18MessageCodec.encodeFetch(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.FETCH_OK:
-        Draft18MessageCodec.encodeFetchOk(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.GOAWAY:
-        Draft18MessageCodec.encodeGoAway(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.TRACK_STATUS:
-        Draft18MessageCodec.encodeTrackStatus(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.PUBLISH_DONE:
-        Draft18MessageCodec.encodePublishDone(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.REQUEST_UPDATE:
-        Draft18MessageCodec.encodeRequestUpdate(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.PUBLISH_NAMESPACE:
-        Draft18MessageCodec.encodePublishNamespace(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
-        Draft18MessageCodec.encodeSubscribeNamespace(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.NAMESPACE:
-        Draft18MessageCodec.encodeNamespaceMessage(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.NAMESPACE_DONE:
-        Draft18MessageCodec.encodeNamespaceDone(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.SUBSCRIBE_TRACKS:
-        Draft18MessageCodec.encodeSubscribeTracks(payloadWriter, message);
-        break;
-      case MessageTypeDraft18.PUBLISH_BLOCKED:
-        Draft18MessageCodec.encodePublishBlocked(payloadWriter, message);
-        break;
-      default:
-        throw new Draft18CodecError(`Unknown message type: ${(message as ControlMessageDraft18).type}`);
-    }
-
-    const payload = payloadWriter.toUint8Array();
-
-    // Draft-18 framing: Message Type (MOQT varint) | Message Length (16-bit BE) | Message Payload
-    const typeBytes = MOQTVarInt.encode(BigInt(message.type));
-    const result = new Uint8Array(typeBytes.length + 2 + payload.length);
-    result.set(typeBytes, 0);
-    result[typeBytes.length] = (payload.length >> 8) & 0xFF;
-    result[typeBytes.length + 1] = payload.length & 0xFF;
-    result.set(payload, typeBytes.length + 2);
-
-    return result;
+    return encodeFramed(message.type, (payloadWriter) => {
+      switch (message.type) {
+        case MessageTypeDraft18.SETUP:
+          Draft18MessageCodec.encodeSetup(payloadWriter, message as ClientSetupMessageDraft18);
+          break;
+        case MessageTypeDraft18.SUBSCRIBE:
+          Draft18MessageCodec.encodeSubscribe(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.SUBSCRIBE_OK:
+          Draft18MessageCodec.encodeSubscribeOk(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.PUBLISH:
+          Draft18MessageCodec.encodePublish(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.REQUEST_ERROR:
+          Draft18MessageCodec.encodeRequestError(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.REQUEST_OK:
+          Draft18MessageCodec.encodeRequestOk(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.FETCH:
+          Draft18MessageCodec.encodeFetch(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.FETCH_OK:
+          Draft18MessageCodec.encodeFetchOk(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.GOAWAY:
+          Draft18MessageCodec.encodeGoAway(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.TRACK_STATUS:
+          Draft18MessageCodec.encodeTrackStatus(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.PUBLISH_DONE:
+          Draft18MessageCodec.encodePublishDone(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.REQUEST_UPDATE:
+          Draft18MessageCodec.encodeRequestUpdate(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.PUBLISH_NAMESPACE:
+          Draft18MessageCodec.encodePublishNamespace(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
+          Draft18MessageCodec.encodeSubscribeNamespace(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.NAMESPACE:
+          Draft18MessageCodec.encodeNamespaceMessage(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.NAMESPACE_DONE:
+          Draft18MessageCodec.encodeNamespaceDone(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.SUBSCRIBE_TRACKS:
+          Draft18MessageCodec.encodeSubscribeTracks(payloadWriter, message);
+          break;
+        case MessageTypeDraft18.PUBLISH_BLOCKED:
+          Draft18MessageCodec.encodePublishBlocked(payloadWriter, message);
+          break;
+        default:
+          throw new Draft18CodecError(`Unknown message type: ${(message as ControlMessageDraft18).type}`);
+      }
+    });
   }
 
   /**
    * Decode a draft-18 control message from bytes
    */
   static decode(buffer: Uint8Array, offset = 0): [ControlMessageDraft18, number] {
-    // Draft-18 framing: Message Type (MOQT varint) | Message Length (16-bit BE) | Message Payload
-    const [typeValue, typeBytesRead] = MOQTVarInt.decodeNumber(buffer, offset);
+    // Peek at message type for logging before delegating to decodeFramed
+    const [typeValue] = MOQTVarInt.decodeNumber(buffer, offset);
     const messageType = typeValue as MessageTypeDraft18;
 
-    if (buffer.length < offset + typeBytesRead + 2) {
-      throw new Draft18CodecError('Incomplete message: missing length field');
-    }
-    const payloadLength = (buffer[offset + typeBytesRead] << 8) | buffer[offset + typeBytesRead + 1];
-    const headerSize = typeBytesRead + 2;
+    return decodeFramed<ControlMessageDraft18>(buffer, offset, (reader) => {
+      log.trace('Decoding draft-18 message', { type: MessageTypeDraft18[messageType] ?? messageType });
 
-    if (buffer.length < offset + headerSize + payloadLength) {
-      throw new Draft18CodecError('Incomplete message: not enough payload bytes');
-    }
-
-    // Bound the reader to just this frame's payload. `reader.hasMore` is used
-    // by several decoders to detect optional trailing fields (KVPs, extensions),
-    // and must NOT see bytes belonging to subsequent frames in the same buffer.
-    const reader = new Draft18BufferReader(
-      buffer.subarray(offset + headerSize, offset + headerSize + payloadLength),
-    );
-
-    log.trace('Decoding draft-18 message', { type: MessageTypeDraft18[messageType] ?? messageType, payloadLength });
-
-    let message: ControlMessageDraft18;
-
-    switch (messageType) {
-      case MessageTypeDraft18.SETUP:
-        message = Draft18MessageCodec.decodeSetup(reader, payloadLength);
-        break;
-      case MessageTypeDraft18.SUBSCRIBE:
-        message = Draft18MessageCodec.decodeSubscribe(reader);
-        break;
-      case MessageTypeDraft18.SUBSCRIBE_OK:
-        message = Draft18MessageCodec.decodeSubscribeOk(reader);
-        break;
-      case MessageTypeDraft18.PUBLISH:
-        message = Draft18MessageCodec.decodePublish(reader);
-        break;
-      case MessageTypeDraft18.REQUEST_ERROR:
-        message = Draft18MessageCodec.decodeRequestError(reader);
-        break;
-      case MessageTypeDraft18.REQUEST_OK:
-      case MessageTypeDraft18.PUBLISH_OK:
-        message = Draft18MessageCodec.decodeRequestOk(reader);
-        (message as RequestOkMessageDraft18).type = messageType as MessageTypeDraft18.REQUEST_OK;
-        break;
-      case MessageTypeDraft18.FETCH:
-        message = Draft18MessageCodec.decodeFetch(reader);
-        break;
-      case MessageTypeDraft18.FETCH_OK:
-        message = Draft18MessageCodec.decodeFetchOk(reader);
-        break;
-      case MessageTypeDraft18.GOAWAY:
-        message = Draft18MessageCodec.decodeGoAway(reader);
-        break;
-      case MessageTypeDraft18.TRACK_STATUS:
-        message = Draft18MessageCodec.decodeTrackStatus(reader);
-        break;
-      case MessageTypeDraft18.PUBLISH_DONE:
-        message = Draft18MessageCodec.decodePublishDone(reader);
-        break;
-      case MessageTypeDraft18.REQUEST_UPDATE:
-        message = Draft18MessageCodec.decodeRequestUpdate(reader);
-        break;
-      case MessageTypeDraft18.PUBLISH_NAMESPACE:
-        message = Draft18MessageCodec.decodePublishNamespace(reader);
-        break;
-      case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
-        message = Draft18MessageCodec.decodeSubscribeNamespace(reader);
-        break;
-      case MessageTypeDraft18.NAMESPACE:
-        message = Draft18MessageCodec.decodeNamespaceMessage(reader);
-        break;
-      case MessageTypeDraft18.NAMESPACE_DONE:
-        message = Draft18MessageCodec.decodeNamespaceDone(reader);
-        break;
-      case MessageTypeDraft18.SUBSCRIBE_TRACKS:
-        message = Draft18MessageCodec.decodeSubscribeTracks(reader);
-        break;
-      case MessageTypeDraft18.PUBLISH_BLOCKED:
-        message = Draft18MessageCodec.decodePublishBlocked(reader);
-        break;
-      default:
-        throw new Draft18CodecError(`Unknown message type: ${messageType}`, messageType);
-    }
-
-    return [message, headerSize + payloadLength];
+      switch (messageType) {
+        case MessageTypeDraft18.SETUP:
+          return Draft18MessageCodec.decodeSetup(reader, reader.remaining);
+        case MessageTypeDraft18.SUBSCRIBE:
+          return Draft18MessageCodec.decodeSubscribe(reader);
+        case MessageTypeDraft18.SUBSCRIBE_OK:
+          return Draft18MessageCodec.decodeSubscribeOk(reader);
+        case MessageTypeDraft18.PUBLISH:
+          return Draft18MessageCodec.decodePublish(reader);
+        case MessageTypeDraft18.REQUEST_ERROR:
+          return Draft18MessageCodec.decodeRequestError(reader);
+        case MessageTypeDraft18.REQUEST_OK:
+        case MessageTypeDraft18.PUBLISH_OK: {
+          const msg = Draft18MessageCodec.decodeRequestOk(reader);
+          (msg as RequestOkMessageDraft18).type = messageType as MessageTypeDraft18.REQUEST_OK;
+          return msg;
+        }
+        case MessageTypeDraft18.FETCH:
+          return Draft18MessageCodec.decodeFetch(reader);
+        case MessageTypeDraft18.FETCH_OK:
+          return Draft18MessageCodec.decodeFetchOk(reader);
+        case MessageTypeDraft18.GOAWAY:
+          return Draft18MessageCodec.decodeGoAway(reader);
+        case MessageTypeDraft18.TRACK_STATUS:
+          return Draft18MessageCodec.decodeTrackStatus(reader);
+        case MessageTypeDraft18.PUBLISH_DONE:
+          return Draft18MessageCodec.decodePublishDone(reader);
+        case MessageTypeDraft18.REQUEST_UPDATE:
+          return Draft18MessageCodec.decodeRequestUpdate(reader);
+        case MessageTypeDraft18.PUBLISH_NAMESPACE:
+          return Draft18MessageCodec.decodePublishNamespace(reader);
+        case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
+          return Draft18MessageCodec.decodeSubscribeNamespace(reader);
+        case MessageTypeDraft18.NAMESPACE:
+          return Draft18MessageCodec.decodeNamespaceMessage(reader);
+        case MessageTypeDraft18.NAMESPACE_DONE:
+          return Draft18MessageCodec.decodeNamespaceDone(reader);
+        case MessageTypeDraft18.SUBSCRIBE_TRACKS:
+          return Draft18MessageCodec.decodeSubscribeTracks(reader);
+        case MessageTypeDraft18.PUBLISH_BLOCKED:
+          return Draft18MessageCodec.decodePublishBlocked(reader);
+        default:
+          throw new Draft18CodecError(`Unknown message type: ${messageType}`, messageType);
+      }
+    });
   }
 
   /**
@@ -544,8 +482,8 @@ export class Draft18MessageCodec {
   private static encodeSubscribe(writer: Draft18BufferWriter, message: SubscribeMessageDraft18): void {
     // Draft-18 SUBSCRIBE: Request ID | Track Namespace | Track Name | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
-    Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespace);
-    Draft18MessageCodec.encodeString(writer, message.trackName);
+    encodeTrackNamespace(writer, message.trackNamespace);
+    encodeString(writer, message.trackName);
 
     // Build parameters list including subscription filter
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
@@ -607,8 +545,8 @@ export class Draft18MessageCodec {
 
   private static decodeSubscribe(reader: Draft18BufferReader): SubscribeMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE);
-    const trackName = Draft18MessageCodec.decodeTrackName(reader, MessageTypeDraft18.SUBSCRIBE);
+    const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.SUBSCRIBE);
 
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE numParams', MessageTypeDraft18.SUBSCRIBE);
@@ -731,8 +669,8 @@ export class Draft18MessageCodec {
   private static encodePublish(writer: Draft18BufferWriter, message: PublishMessageDraft18): void {
     // Draft-18 PUBLISH: Request ID | Track Namespace | Track Name | Track Alias | Num Params | Params | Track Properties
     writer.writeVarInt(message.requestId);
-    Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespace);
-    Draft18MessageCodec.encodeString(writer, message.trackName);
+    encodeTrackNamespace(writer, message.trackNamespace);
+    encodeString(writer, message.trackName);
     writer.writeVarInt(message.trackAlias);
 
     // Message Parameters (count-prefixed)
@@ -757,8 +695,8 @@ export class Draft18MessageCodec {
 
   private static decodePublish(reader: Draft18BufferReader): PublishMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH);
-    const trackName = Draft18MessageCodec.decodeTrackName(reader, MessageTypeDraft18.PUBLISH);
+    const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH);
     const trackAlias = reader.readVarInt();
 
     // Message Parameters (count-prefixed)
@@ -797,7 +735,7 @@ export class Draft18MessageCodec {
     // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
     writer.writeVarInt(message.errorCode);
     writer.writeVarInt(message.retryInterval ?? 0n);
-    Draft18MessageCodec.encodeString(writer, message.reasonPhrase);
+    encodeString(writer, message.reasonPhrase);
 
     // Redirect is present only when Error Code === REDIRECT (0x34)
     if (message.errorCode === RequestErrorCodeDraft18.REDIRECT) {
@@ -818,7 +756,7 @@ export class Draft18MessageCodec {
     const rawErrorCode = reader.readVarIntNumber();
     const errorCode = normalizeRequestErrorCode(rawErrorCode);
     const retryInterval = reader.readVarInt();
-    const reasonPhrase = Draft18MessageCodec.decodeString(reader);
+    const reasonPhrase = decodeString(reader);
 
     const message: RequestErrorMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_ERROR,
@@ -840,15 +778,15 @@ export class Draft18MessageCodec {
 
   private static encodeRedirect(writer: Draft18BufferWriter, redirect: RequestErrorRedirectDraft18): void {
     // Draft-18 §10.6.1: Connect URI Length | Connect URI | Track Namespace | Track Name Length | Track Name
-    Draft18MessageCodec.encodeString(writer, redirect.connectUri);
-    Draft18MessageCodec.encodeTrackNamespace(writer, redirect.trackNamespace);
-    Draft18MessageCodec.encodeString(writer, redirect.trackName);
+    encodeString(writer, redirect.connectUri);
+    encodeTrackNamespace(writer, redirect.trackNamespace);
+    encodeString(writer, redirect.trackName);
   }
 
   private static decodeRedirect(reader: Draft18BufferReader): RequestErrorRedirectDraft18 {
-    const connectUri = Draft18MessageCodec.decodeString(reader);
-    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
-    const trackName = Draft18MessageCodec.decodeString(reader);
+    const connectUri = decodeString(reader);
+    const trackNamespace = decodeTrackNamespace(reader);
+    const trackName = decodeString(reader);
     return { connectUri, trackNamespace, trackName };
   }
 
@@ -934,8 +872,8 @@ export class Draft18MessageCodec {
     } else {
       // Standalone fetch (type 0x1)
       writer.writeVarInt(BigInt(FetchTypeDraft18.STANDALONE));
-      Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespace!);
-      Draft18MessageCodec.encodeString(writer, message.trackName!);
+      encodeTrackNamespace(writer, message.trackNamespace!);
+      encodeString(writer, message.trackName!);
       Draft18MessageCodec.encodeLocation(writer, message.startLocation);
       Draft18MessageCodec.encodeLocation(writer, message.endLocation);
     }
@@ -998,8 +936,8 @@ export class Draft18MessageCodec {
     const joiningFlag = fetchType !== FetchTypeDraft18.STANDALONE;
 
     if (fetchType === FetchTypeDraft18.STANDALONE) {
-      trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.FETCH);
-      trackName = Draft18MessageCodec.decodeTrackName(reader, MessageTypeDraft18.FETCH);
+      trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.FETCH);
+      trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH);
       startLocation = Draft18MessageCodec.decodeLocation(reader);
       endLocation = Draft18MessageCodec.decodeLocation(reader);
     } else {
@@ -1089,7 +1027,7 @@ export class Draft18MessageCodec {
 
   private static encodeGoAway(writer: Draft18BufferWriter, message: GoAwayMessageDraft18): void {
     // Draft-18 §10.4: New Session URI Length | New Session URI | Timeout (vi) | [Request ID (vi)]
-    Draft18MessageCodec.encodeString(writer, message.newSessionUri ?? '');
+    encodeString(writer, message.newSessionUri ?? '');
     writer.writeVarInt(message.timeout);
     if (message.requestId !== undefined) {
       writer.writeVarInt(message.requestId);
@@ -1098,7 +1036,7 @@ export class Draft18MessageCodec {
 
   private static decodeGoAway(reader: Draft18BufferReader): GoAwayMessageDraft18 {
     // Draft-18 §10.4: New Session URI Length | New Session URI | Timeout (vi) | [Request ID (vi)]
-    const newSessionUri = Draft18MessageCodec.decodeString(reader);
+    const newSessionUri = decodeString(reader);
     const timeout = reader.readVarInt();
     const requestId = reader.hasMore ? reader.readVarInt() : undefined;
 
@@ -1113,15 +1051,15 @@ export class Draft18MessageCodec {
   private static encodeTrackStatus(writer: Draft18BufferWriter, message: TrackStatusMessageDraft18): void {
     // Same format as SUBSCRIBE: Request ID | Track Namespace | Track Name | Num Params | Params
     writer.writeVarInt(message.requestId);
-    Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespace);
-    Draft18MessageCodec.encodeString(writer, message.trackName);
+    encodeTrackNamespace(writer, message.trackNamespace);
+    encodeString(writer, message.trackName);
     Draft18MessageCodec.encodeMessageParameters(writer, []);
   }
 
   private static decodeTrackStatus(reader: Draft18BufferReader): TrackStatusMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.TRACK_STATUS);
-    const trackName = Draft18MessageCodec.decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS);
+    const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.TRACK_STATUS);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'TRACK_STATUS numParams', MessageTypeDraft18.TRACK_STATUS);
     let previousType = 0;
@@ -1148,7 +1086,7 @@ export class Draft18MessageCodec {
     // Draft-18: Status Code (vi64) | Stream Count (vi64) | Error Reason (Reason Phrase)
     writer.writeVarInt(message.statusCode ?? 0n);
     writer.writeVarInt(message.streamCount ?? 0n);
-    Draft18MessageCodec.encodeString(writer, message.reasonPhrase ?? '');
+    encodeString(writer, message.reasonPhrase ?? '');
   }
 
   private static decodePublishDone(reader: Draft18BufferReader): PublishDoneMessageDraft18 {
@@ -1162,7 +1100,7 @@ export class Draft18MessageCodec {
         ? 0n
         : BigInt(normalizePublishDoneErrorCode(Number(rawStatusCode)));
     const streamCount = reader.readVarInt();
-    const reasonPhrase = Draft18MessageCodec.decodeString(reader);
+    const reasonPhrase = decodeString(reader);
 
     return {
       type: MessageTypeDraft18.PUBLISH_DONE,
@@ -1234,13 +1172,13 @@ export class Draft18MessageCodec {
   private static encodePublishNamespace(writer: Draft18BufferWriter, message: PublishNamespaceMessageDraft18): void {
     // Draft-18: Request ID | Track Namespace | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
-    Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespacePrefix);
+    encodeTrackNamespace(writer, message.trackNamespacePrefix);
     Draft18MessageCodec.encodeMessageParameters(writer, []);
   }
 
   private static decodePublishNamespace(reader: Draft18BufferReader): PublishNamespaceMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_NAMESPACE);
+    const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_NAMESPACE);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH_NAMESPACE numParams', MessageTypeDraft18.PUBLISH_NAMESPACE);
     let previousType = 0;
@@ -1265,13 +1203,13 @@ export class Draft18MessageCodec {
   private static encodeSubscribeNamespace(writer: Draft18BufferWriter, message: SubscribeNamespaceMessageDraft18): void {
     // Draft-18: Request ID | Track Namespace Prefix | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
-    Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespacePrefix);
+    encodeTrackNamespace(writer, message.trackNamespacePrefix);
     Draft18MessageCodec.encodeMessageParameters(writer, []);
   }
 
   private static decodeSubscribeNamespace(reader: Draft18BufferReader): SubscribeNamespaceMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
+    const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_NAMESPACE numParams', MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
     let previousType = 0;
@@ -1294,14 +1232,14 @@ export class Draft18MessageCodec {
   // ============================================================================
 
   private static encodeNamespaceMessage(writer: Draft18BufferWriter, message: NamespaceMessageDraft18): void {
-    Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespace);
+    encodeTrackNamespace(writer, message.trackNamespace);
     if (message.trackNamespaceParameters) {
       Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackNamespaceParameters);
     }
   }
 
   private static decodeNamespaceMessage(reader: Draft18BufferReader): NamespaceMessageDraft18 {
-    const trackNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
+    const trackNamespace = decodeTrackNamespace(reader);
     const trackNamespaceParameters = reader.hasMore
       ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
       : undefined;
@@ -1318,11 +1256,11 @@ export class Draft18MessageCodec {
   // ============================================================================
 
   private static encodeNamespaceDone(writer: Draft18BufferWriter, message: NamespaceDoneMessageDraft18): void {
-    Draft18MessageCodec.encodeTrackNamespace(writer, message.finalNamespace);
+    encodeTrackNamespace(writer, message.finalNamespace);
   }
 
   private static decodeNamespaceDone(reader: Draft18BufferReader): NamespaceDoneMessageDraft18 {
-    const finalNamespace = Draft18MessageCodec.decodeTrackNamespace(reader);
+    const finalNamespace = decodeTrackNamespace(reader);
 
     return {
       type: MessageTypeDraft18.NAMESPACE_DONE,
@@ -1339,7 +1277,7 @@ export class Draft18MessageCodec {
     // Parameters carry FORWARD (§10.2.12), SUBSCRIPTION_FILTER (§10.2.9), and
     // pass-through KVPs. Semantics mirror SUBSCRIBE (§10.7).
     writer.writeVarInt(message.requestId);
-    Draft18MessageCodec.encodeTrackNamespace(writer, message.trackNamespacePrefix);
+    encodeTrackNamespace(writer, message.trackNamespacePrefix);
 
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
@@ -1391,7 +1329,7 @@ export class Draft18MessageCodec {
 
   private static decodeSubscribeTracks(reader: Draft18BufferReader): SubscribeTracksMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespacePrefix = Draft18MessageCodec.decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_TRACKS);
+    const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_TRACKS);
 
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_TRACKS numParams', MessageTypeDraft18.SUBSCRIBE_TRACKS);
@@ -1462,52 +1400,8 @@ export class Draft18MessageCodec {
   // Helper Methods
   // ============================================================================
 
-  private static encodeTrackNamespace(writer: Draft18BufferWriter, namespace: TrackNamespace): void {
-    writer.writeVarInt(namespace.length);
-    for (const field of namespace) {
-      const bytes = TE.encode(field);
-      writer.writeVarInt(bytes.length);
-      writer.writeBytes(bytes);
-    }
-  }
-
-  private static decodeTrackNamespace(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): TrackNamespace {
-    const count = reader.readVarIntNumber();
-    assertBound(count, MAX_NAMESPACE_TUPLE_COUNT, 'TrackNamespace tuple count', messageType);
-    const namespace: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const length = reader.readVarIntNumber();
-      assertBound(length, MAX_STRING_LENGTH, 'TrackNamespace field length', messageType);
-      const bytes = reader.readBytes(length);
-      namespace.push(TD.decode(bytes));
-    }
-    return namespace;
-  }
-
-  private static encodeString(writer: Draft18BufferWriter, str: string): void {
-    const bytes = TE.encode(str);
-    writer.writeVarInt(bytes.length);
-    writer.writeBytes(bytes);
-  }
-
-  private static decodeString(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): string {
-    const length = reader.readVarIntNumber();
-    assertBound(length, MAX_STRING_LENGTH, 'string length', messageType);
-    const bytes = reader.readBytes(length);
-    return TD.decode(bytes);
-  }
-
-  /**
-   * Decode a Track Name (§10.7) — same wire format as decodeString but caps at
-   * MAX_TRACK_NAME_LENGTH (which happens to equal MAX_STRING_LENGTH today, but
-   * is a distinct semantic bound so we tag errors appropriately).
-   */
-  private static decodeTrackName(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): string {
-    const length = reader.readVarIntNumber();
-    assertBound(length, MAX_TRACK_NAME_LENGTH, 'TrackName length', messageType);
-    const bytes = reader.readBytes(length);
-    return TD.decode(bytes);
-  }
+  // encodeTrackNamespace, decodeTrackNamespace, encodeString, decodeString,
+  // decodeTrackName, assertBound — imported from codec-helpers.ts
 
   private static encodeLocation(writer: Draft18BufferWriter, location: Location): void {
     writer.writeVarInt(location.group);

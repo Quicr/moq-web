@@ -16,7 +16,18 @@
 
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
-import { Draft18MessageCodec, Draft18CodecError, MAX_PARAMETER_COUNT, MAX_STRING_LENGTH, MAX_NAMESPACE_TUPLE_COUNT, MAX_TRACK_NAME_LENGTH } from './draft18-message-codec.js';
+import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec.js';
+import {
+  assertBound,
+  encodeTrackNamespace,
+  decodeTrackNamespace,
+  encodeString,
+  decodeTrackName,
+  encodeFramed,
+  decodeFramed,
+  MAX_PARAMETER_COUNT,
+  MAX_STRING_LENGTH,
+} from './codec-helpers.js';
 import {
   MessageTypeDraft18,
   MessageTypeDraft22,
@@ -29,27 +40,9 @@ import {
   type SubscribeMessageDraft18,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
-  type TrackNamespace,
   type Location,
 } from '../messages/types.js';
 
-// Module-level singletons
-const TE = new TextEncoder();
-const TD = new TextDecoder();
-
-function assertBound(
-  actual: number,
-  limit: number,
-  what: string,
-): void {
-  if (!Number.isFinite(actual) || actual < 0 || actual > limit) {
-    throw new Draft18CodecError(
-      `${what} ${actual} exceeds safety bound ${limit}`,
-      undefined,
-      'bounds-exceeded',
-    );
-  }
-}
 
 /**
  * Draft-22 Message Codec
@@ -66,12 +59,12 @@ export class Draft22MessageCodec {
   static encode(message: ControlMessageDraft22): Uint8Array {
     switch (message.type) {
       case MessageTypeDraft22.PUBLISH_SKIPPED:
-        return Draft22MessageCodec.encodeFramed(
+        return encodeFramed(
           message.type,
           (w) => Draft22MessageCodec.encodePublishSkipped(w, message as PublishSkippedMessageDraft22),
         );
       case MessageTypeDraft22.PUBLISH_STATE_NOTIFY:
-        return Draft22MessageCodec.encodeFramed(
+        return encodeFramed(
           message.type,
           (w) => Draft22MessageCodec.encodePublishStateNotify(w, message as PublishStateNotifyMessageDraft22),
         );
@@ -94,15 +87,15 @@ export class Draft22MessageCodec {
 
     switch (typeValue) {
       case MessageTypeDraft22.PUBLISH_SKIPPED:
-        return Draft22MessageCodec.decodeFramed(buffer, offset, (reader) =>
+        return decodeFramed(buffer, offset, (reader) =>
           Draft22MessageCodec.decodePublishSkipped(reader),
         );
       case MessageTypeDraft22.PUBLISH_STATE_NOTIFY:
-        return Draft22MessageCodec.decodeFramed(buffer, offset, (reader) =>
+        return decodeFramed(buffer, offset, (reader) =>
           Draft22MessageCodec.decodePublishStateNotify(reader),
         );
       case MessageTypeDraft22.SUBSCRIBE:
-        return Draft22MessageCodec.decodeFramed(buffer, offset, (reader) =>
+        return decodeFramed(buffer, offset, (reader) =>
           Draft22MessageCodec.decodeSubscribeDraft22(reader),
         );
       default: {
@@ -124,51 +117,7 @@ export class Draft22MessageCodec {
     return Draft18MessageCodec.decodeSetupStream(buffer, offset);
   }
 
-  // ============================================================================
-  // Draft-22 Framing Helpers
-  // ============================================================================
-
-  private static encodeFramed(
-    messageType: number,
-    encodePayload: (writer: Draft18BufferWriter) => void,
-  ): Uint8Array {
-    const payloadWriter = new Draft18BufferWriter();
-    encodePayload(payloadWriter);
-    const payload = payloadWriter.toUint8Array();
-
-    const typeBytes = MOQTVarInt.encode(BigInt(messageType));
-    const result = new Uint8Array(typeBytes.length + 2 + payload.length);
-    result.set(typeBytes, 0);
-    result[typeBytes.length] = (payload.length >> 8) & 0xFF;
-    result[typeBytes.length + 1] = payload.length & 0xFF;
-    result.set(payload, typeBytes.length + 2);
-    return result;
-  }
-
-  private static decodeFramed<T extends ControlMessageDraft22>(
-    buffer: Uint8Array,
-    offset: number,
-    decodePayload: (reader: Draft18BufferReader) => T,
-  ): [T, number] {
-    const [, typeBytesRead] = MOQTVarInt.decodeNumber(buffer, offset);
-
-    if (buffer.length < offset + typeBytesRead + 2) {
-      throw new Draft18CodecError('Incomplete message: missing length field');
-    }
-    const payloadLength = (buffer[offset + typeBytesRead] << 8) | buffer[offset + typeBytesRead + 1];
-    const headerSize = typeBytesRead + 2;
-
-    if (buffer.length < offset + headerSize + payloadLength) {
-      throw new Draft18CodecError('Incomplete message: not enough payload bytes');
-    }
-
-    const reader = new Draft18BufferReader(
-      buffer.subarray(offset + headerSize, offset + headerSize + payloadLength),
-    );
-
-    const message = decodePayload(reader);
-    return [message, headerSize + payloadLength];
-  }
+  // encodeFramed / decodeFramed — imported from codec-helpers.ts
 
   // ============================================================================
   // PUBLISH_SKIPPED (0x0F) - Draft-22 replaces PUBLISH_BLOCKED
@@ -176,13 +125,13 @@ export class Draft22MessageCodec {
 
   private static encodePublishSkipped(writer: Draft18BufferWriter, message: PublishSkippedMessageDraft22): void {
     // Track Namespace Suffix | Track Name Length | Track Name
-    Draft22MessageCodec.encodeTrackNamespace(writer, message.trackNamespaceSuffix);
-    Draft22MessageCodec.encodeString(writer, message.trackName);
+    encodeTrackNamespace(writer, message.trackNamespaceSuffix);
+    encodeString(writer, message.trackName);
   }
 
   private static decodePublishSkipped(reader: Draft18BufferReader): PublishSkippedMessageDraft22 {
-    const trackNamespaceSuffix = Draft22MessageCodec.decodeTrackNamespace(reader);
-    const trackName = Draft22MessageCodec.decodeTrackName(reader);
+    const trackNamespaceSuffix = decodeTrackNamespace(reader);
+    const trackName = decodeTrackName(reader);
 
     return {
       type: MessageTypeDraft22.PUBLISH_SKIPPED,
@@ -249,8 +198,8 @@ export class Draft22MessageCodec {
 
   private static decodeSubscribeDraft22(reader: Draft18BufferReader): SubscribeMessageDraft18 {
     const requestId = reader.readVarInt();
-    const trackNamespace = Draft22MessageCodec.decodeTrackNamespace(reader);
-    const trackName = Draft22MessageCodec.decodeTrackName(reader);
+    const trackNamespace = decodeTrackNamespace(reader);
+    const trackName = decodeTrackName(reader);
 
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE numParams');
@@ -400,10 +349,10 @@ export class Draft22MessageCodec {
    * Encode SUBSCRIBE with draft-22 LOCATION_FILTER encoding.
    */
   static encodeSubscribeDraft22(message: SubscribeMessageDraft18): Uint8Array {
-    return Draft22MessageCodec.encodeFramed(MessageTypeDraft22.SUBSCRIBE, (w) => {
+    return encodeFramed(MessageTypeDraft22.SUBSCRIBE, (w) => {
       w.writeVarInt(message.requestId);
-      Draft22MessageCodec.encodeTrackNamespace(w, message.trackNamespace);
-      Draft22MessageCodec.encodeString(w, message.trackName);
+      encodeTrackNamespace(w, message.trackNamespace);
+      encodeString(w, message.trackName);
 
       const params: Array<{ type: number; encode: (pw: Draft18BufferWriter) => void }> = [];
 
@@ -461,42 +410,6 @@ export class Draft22MessageCodec {
     });
   }
 
-  // ============================================================================
-  // Shared Helper Methods
-  // ============================================================================
-
-  private static encodeTrackNamespace(writer: Draft18BufferWriter, namespace: TrackNamespace): void {
-    writer.writeVarInt(namespace.length);
-    for (const field of namespace) {
-      const bytes = TE.encode(field);
-      writer.writeVarInt(bytes.length);
-      writer.writeBytes(bytes);
-    }
-  }
-
-  private static decodeTrackNamespace(reader: Draft18BufferReader): TrackNamespace {
-    const count = reader.readVarIntNumber();
-    assertBound(count, MAX_NAMESPACE_TUPLE_COUNT, 'TrackNamespace tuple count');
-    const namespace: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const length = reader.readVarIntNumber();
-      assertBound(length, MAX_STRING_LENGTH, 'TrackNamespace field length');
-      const bytes = reader.readBytes(length);
-      namespace.push(TD.decode(bytes));
-    }
-    return namespace;
-  }
-
-  private static encodeString(writer: Draft18BufferWriter, str: string): void {
-    const bytes = TE.encode(str);
-    writer.writeVarInt(bytes.length);
-    writer.writeBytes(bytes);
-  }
-
-  private static decodeTrackName(reader: Draft18BufferReader): string {
-    const length = reader.readVarIntNumber();
-    assertBound(length, MAX_TRACK_NAME_LENGTH, 'TrackName length');
-    const bytes = reader.readBytes(length);
-    return TD.decode(bytes);
-  }
+  // encodeTrackNamespace, decodeTrackNamespace, encodeString, decodeTrackName
+  // — imported from codec-helpers.ts
 }
