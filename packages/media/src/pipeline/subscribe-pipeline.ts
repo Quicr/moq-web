@@ -732,6 +732,14 @@ export class SubscribePipeline {
     const frame = this.unpackager.unpackage(data, this.config.quicrInteropEnabled ?? false);
     const isKeyframe = frame.header.isKeyframe;
 
+    log.info('pushVideo', {
+      groupId, objectId, dataSize: data.length,
+      firstByte: '0x' + data[0]?.toString(16),
+      isKeyframe,
+      mediaType: frame.header.mediaType,
+      payloadSize: frame.payload.length,
+    });
+
     // Skip decoder reconfigure with description — encoder uses Annex B format,
     // but codecDescription is avcC. Passing it would switch decoder to AVCC mode.
 
@@ -785,6 +793,14 @@ export class SubscribePipeline {
       this.videoPlayout.tick();
       const activeGroupId = this.videoPlayout.getActiveGroupId();
       const readyFrames = this.videoPlayout.getReadyFrames(5);
+
+      if (readyFrames.length > 0) {
+        log.info('processBuffers releasing', {
+          count: readyFrames.length,
+          activeGroupId,
+          firstFrame: { groupId: readyFrames[0].groupId, objectId: readyFrames[0].objectId, isKeyframe: readyFrames[0].isKeyframe },
+        });
+      }
 
       for (const frame of readyFrames) {
         try {
