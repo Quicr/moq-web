@@ -1182,7 +1182,7 @@ describe('Draft18MessageCodec', () => {
       expect(d.forwardState).toBe(false);
     });
 
-    it('roundtrips SUBSCRIBE_TRACKS with ABSOLUTE_START filter + startLocation', () => {
+    it('does not encode SUBSCRIPTION_FILTER in SUBSCRIBE_TRACKS (ABSOLUTE_START)', () => {
       const message: SubscribeTracksMessageDraft18 = {
         type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
         requestId: 8n,
@@ -1196,11 +1196,13 @@ describe('Draft18MessageCodec', () => {
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as SubscribeTracksMessageDraft18;
-      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_START);
-      expect(d.startLocation).toEqual({ group: 12n, object: 5n });
+      // SUBSCRIPTION_FILTER is not allowed in SUBSCRIBE_TRACKS per draft-18,
+      // so the decoder falls back to its default (NEXT_GROUP_START).
+      expect(d.filter).toBe(SubscriptionFilterDraft18.NEXT_GROUP_START);
+      expect(d.startLocation).toBeUndefined();
     });
 
-    it('roundtrips SUBSCRIBE_TRACKS with ABSOLUTE_RANGE filter + endGroupDelta', () => {
+    it('does not encode SUBSCRIPTION_FILTER in SUBSCRIBE_TRACKS (ABSOLUTE_RANGE)', () => {
       const message: SubscribeTracksMessageDraft18 = {
         type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
         requestId: 9n,
@@ -1215,9 +1217,9 @@ describe('Draft18MessageCodec', () => {
       const [decoded] = Draft18MessageCodec.decode(encoded);
 
       const d = decoded as SubscribeTracksMessageDraft18;
-      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_RANGE);
-      expect(d.startLocation).toEqual({ group: 3n, object: 0n });
-      expect(d.endGroupDelta).toBe(7n);
+      expect(d.filter).toBe(SubscriptionFilterDraft18.NEXT_GROUP_START);
+      expect(d.startLocation).toBeUndefined();
+      expect(d.endGroupDelta).toBeUndefined();
     });
 
     it('preserves unknown pass-through parameters', () => {

@@ -44,7 +44,7 @@ function captureControlWrites(session: MOQTSession): Uint8Array[] {
 }
 
 describe.skipIf(!IS_DRAFT_18)('draft-18 §10.19 subscribeTracks() send path', () => {
-  it('emits FORWARD=1 and SUBSCRIPTION_FILTER=NEXT_GROUP_START by default', async () => {
+  it('emits FORWARD=1 and defaults to NEXT_GROUP_START filter (not sent on wire)', async () => {
     const session = makeSession();
     const chunks = captureControlWrites(session);
     // Stub sendRequestAndWaitResponse to short-circuit the send + await.
@@ -82,7 +82,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.19 subscribeTracks() send path', ()
     expect((decoded as SubscribeTracksMessageDraft18).forwardState).toBe(false);
   });
 
-  it('propagates ABSOLUTE_RANGE filter + startLocation + endGroupDelta', async () => {
+  it('does not encode SUBSCRIPTION_FILTER even when ABSOLUTE_RANGE is specified', async () => {
     const session = makeSession();
     const chunks: Uint8Array[] = [];
     (session as unknown as {
@@ -100,9 +100,11 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.19 subscribeTracks() send path', ()
 
     const [decoded] = Draft18MessageCodec.decode(chunks[0]);
     const m = decoded as SubscribeTracksMessageDraft18;
-    expect(m.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_RANGE);
-    expect(m.startLocation).toEqual({ group: 4n, object: 0n });
-    expect(m.endGroupDelta).toBe(5n);
+    // SUBSCRIPTION_FILTER is not allowed in SUBSCRIBE_TRACKS per draft-18,
+    // so the decoder falls back to its default (NEXT_GROUP_START).
+    expect(m.filter).toBe(SubscriptionFilterDraft18.NEXT_GROUP_START);
+    expect(m.startLocation).toBeUndefined();
+    expect(m.endGroupDelta).toBeUndefined();
   });
 
   it('carries pass-through raw parameters (e.g. TRACK_NAMESPACE_PREFIX)', async () => {

@@ -1274,8 +1274,9 @@ export class Draft18MessageCodec {
 
   private static encodeSubscribeTracks(writer: Draft18BufferWriter, message: SubscribeTracksMessageDraft18): void {
     // Draft-18 §10.19: Request ID | Track Namespace Prefix | Number of Parameters | Parameters
-    // Parameters carry FORWARD (§10.2.12), SUBSCRIPTION_FILTER (§10.2.9), and
-    // pass-through KVPs. Semantics mirror SUBSCRIBE (§10.7).
+    // SUBSCRIPTION_FILTER is NOT allowed in SUBSCRIBE_TRACKS per draft-18 —
+    // the relay only permits it in SUBSCRIBE, PUBLISH_OK, REQUEST_OK, and
+    // REQUEST_UPDATE. Only FORWARD is sent here.
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespacePrefix);
 
@@ -1287,28 +1288,6 @@ export class Draft18MessageCodec {
       type: RequestParameterDraft18.FORWARD,
       encode: (w) => { w.writeByte(message.forwardState === false ? 0x00 : 0x01); },
     });
-
-    if (message.filter !== undefined) {
-      params.push({
-        type: RequestParameterDraft18.SUBSCRIPTION_FILTER,
-        encode: (w) => {
-          const filterWriter = new Draft18BufferWriter();
-          filterWriter.writeVarInt(BigInt(message.filter));
-          if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
-              message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-            const loc = message.startLocation ?? { group: 0n, object: 0n };
-            filterWriter.writeVarInt(loc.group);
-            filterWriter.writeVarInt(loc.object);
-          }
-          if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-            filterWriter.writeVarInt(message.endGroupDelta ?? 0n);
-          }
-          const filterBytes = filterWriter.toUint8Array();
-          w.writeVarInt(BigInt(filterBytes.length));
-          w.writeBytes(filterBytes);
-        },
-      });
-    }
 
     if (message.parameters) {
       for (const [type, value] of message.parameters) {
