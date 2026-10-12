@@ -16,7 +16,9 @@ import { EventComposer } from './components/EventComposer';
 import { PeerDvrPanel } from './components/PeerDvrPanel';
 import { openStudioBroadcast, type PeerDvrHandle, type StudioBroadcast, type TimelineEvent } from './moqt';
 
-const INITIAL_ROOM_ID = new URLSearchParams(globalThis.location?.search ?? '').get('room') ?? 'default';
+const INITIAL_PARAMS = new URLSearchParams(globalThis.location?.search ?? '');
+const INITIAL_ROOM_ID = INITIAL_PARAMS.get('room') ?? 'default';
+const INITIAL_CONFIG = INITIAL_PARAMS.get('config');
 const SELF_ID = `host-${Math.random().toString(36).slice(2, 8)}`;
 
 // Diff two peer-catalog snapshots and describe the change in human-readable
@@ -41,11 +43,25 @@ function diffCatalogs(prev: FullCatalog | undefined, next: FullCatalog): string[
 
 export function App() {
   const cfg = useTransportConfig();
-  const { applyProfile } = useTransportActions();
+  const { applyProfile, setRelay, setPublisher, setSubscriber, setPlayback, setTargetLatency } = useTransportActions();
 
   useEffect(() => {
     if (cfg.profile === 'interactive') applyProfile('live-streaming');
   }, [cfg.profile, applyProfile]);
+
+  // Apply config from URL params (e.g. from shared link)
+  useEffect(() => {
+    if (!INITIAL_CONFIG) return;
+    try {
+      const shared = JSON.parse(atob(INITIAL_CONFIG));
+      if (shared.profile) applyProfile(shared.profile);
+      if (shared.relay) setRelay(shared.relay);
+      if (shared.publisher) setPublisher(shared.publisher);
+      if (shared.subscriber) setSubscriber(shared.subscriber);
+      if (shared.playback) setPlayback(shared.playback);
+      if (shared.targetLatencyMs != null) setTargetLatency(shared.targetLatencyMs);
+    } catch { /* ignore malformed config */ }
+  }, [applyProfile, setRelay, setPublisher, setSubscriber, setPlayback, setTargetLatency]);
 
   const [roomId, setRoomId] = useState<string>(INITIAL_ROOM_ID);
   const [status, setStatus] = useState<StatusState>('idle');
@@ -260,10 +276,19 @@ export function App() {
   const shareRoom = useCallback(() => {
     const url = new URL(globalThis.location.href);
     url.searchParams.set('room', roomId);
+    const shared = {
+      profile: cfg.profile,
+      relay: cfg.relay,
+      publisher: cfg.publisher,
+      subscriber: cfg.subscriber,
+      playback: cfg.playback,
+      targetLatencyMs: cfg.targetLatencyMs,
+    };
+    url.searchParams.set('config', btoa(JSON.stringify(shared)));
     try {
       void navigator.clipboard.writeText(url.toString());
     } catch { /* clipboard may be unavailable */ }
-  }, [roomId]);
+  }, [roomId, cfg]);
 
   useEffect(() => {
     const url = new URL(globalThis.location.href);
