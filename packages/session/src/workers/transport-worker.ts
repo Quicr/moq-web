@@ -31,7 +31,7 @@ let debug = false;
  * `TransportWorkerConfig.draft`; used to select ALPN and setup-stream layout.
  */
 let workerDraft: DraftVersion = DEFAULT_DRAFT;
-const isDraft18 = () => workerDraft === 'draft-18';
+const isDraft18 = () => workerDraft === 'draft-18' || workerDraft === 'draft-22';
 // True when the local side called disconnect() before `transport.closed` resolved;
 // used to distinguish local vs peer-initiated close in the disconnected event.
 let localDisconnectInitiated = false;

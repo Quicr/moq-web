@@ -190,7 +190,7 @@ export class ObjectRouter {
 
   private readonly _draft: DraftVersion;
   private get isDraft18(): boolean {
-    return this._draft === 'draft-18';
+    return this._draft === 'draft-18' || this._draft === 'draft-22';
   }
   private get isDraft16(): boolean {
     return this._draft === 'draft-16' || this._draft === 'draft-17';
@@ -224,7 +224,7 @@ export class ObjectRouter {
     // shared `ObjectCodec` entrypoints delegate to `Draft18StreamCodec` under
     // draft-18. Legacy drafts still surface here but this is the only label
     // dimension that carries observability weight downstream.
-    this.codecLabel = draft === 'draft-18' ? 'draft-18' : draft;
+    this.codecLabel = (draft === 'draft-18' || draft === 'draft-22') ? 'draft-18' : draft;
   }
 
   /** Register the callback fired when a §8 delivery deadline elapses. */
