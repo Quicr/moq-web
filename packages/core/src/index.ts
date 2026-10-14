@@ -289,6 +289,7 @@ export type {
   PublishSkippedMessageDraft22,
   GoAwayMessageDraft22,
   SubscribeOkMessageDraft22,
+  FetchMessageDraft22,
   FetchOkMessageDraft22,
   RequestOkMessageDraft22,
 } from './messages/types.js';

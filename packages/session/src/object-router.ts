@@ -14,6 +14,7 @@ import {
   ObjectStatus,
   DEFAULT_DRAFT,
   DataStreamType,
+  GroupOrder,
   BufferReader,
   Draft18StreamCodec,
   Draft18CodecError,
@@ -192,9 +193,18 @@ export class ObjectRouter {
   private get isDraft18(): boolean {
     return this._draft === 'draft-18' || this._draft === 'draft-22';
   }
+  private get isDraft22(): boolean {
+    return this._draft === 'draft-22';
+  }
   private get isDraft16(): boolean {
     return this._draft === 'draft-16' || this._draft === 'draft-17';
   }
+
+  /**
+   * Group order per in-flight draft-22 FETCH (§11.4.1.1 needs it to apply
+   * Group ID Delta). Absent means ascending; cleared when the stream ends.
+   */
+  private fetchGroupOrders = new Map<bigint, GroupOrder>();
 
   /**
    * Metrics sink for per-object decode observability (Wave 3 Track I).
@@ -259,6 +269,22 @@ export class ObjectRouter {
    */
   setFetchObjectCallback(callback: FetchObjectCallback): void {
     this.onFetchObject = callback;
+  }
+
+  /**
+   * Record the Group Order a draft-22 FETCH was sent with, before the FETCH
+   * goes out, so its data stream decodes Group ID Delta in the right direction.
+   */
+  setFetchGroupOrder(requestId: bigint, order: GroupOrder): void {
+    this.fetchGroupOrders.set(requestId, order);
+  }
+
+  /**
+   * Drop a FETCH's Group Order when it ends without a data stream
+   * (rejected or cancelled); stream teardown clears it otherwise.
+   */
+  clearFetchGroupOrder(requestId: bigint): void {
+    this.fetchGroupOrders.delete(requestId);
   }
 
   /**
@@ -813,7 +839,11 @@ export class ObjectRouter {
     });
 
     if (this.isDraft18) {
-      return this.handleFetchStreamDraft18(reader, buffer, bufferOffset, done, requestId);
+      try {
+        return await this.handleFetchStreamDraft18(reader, buffer, bufferOffset, done, requestId);
+      } finally {
+        this.fetchGroupOrders.delete(requestId);
+      }
     }
     return this.handleFetchStreamLegacy(reader, buffer, bufferOffset, done, requestId);
   }
@@ -965,6 +995,7 @@ export class ObjectRouter {
     let prevObjectId: bigint | undefined;
     let prevPriority: number | undefined;
     let lastGroupIdEmitted: bigint | undefined;
+    const groupOrder = this.fetchGroupOrders.get(requestId) ?? GroupOrder.ASCENDING;
 
     const ensureBytes = async (): Promise<boolean> => {
       while (!done) {
@@ -1015,12 +1046,17 @@ export class ObjectRouter {
       }
 
       // End-of-Range marker: two varints follow the special flag; MUST NOT
-      // update prior state (spec §11.4.4.2).
+      // update prior state (spec §11.4.4.2). Draft-22 §11.4.1.2: the marker's
+      // Group/Object ID become the prior Group/Object ID for the next object.
       if (decoded.endOfRange !== undefined) {
         bufferOffset = startOffset + headerBytes;
+        if (this.isDraft22) {
+          prevGroupId = decoded.groupIdDelta;
+          prevObjectId = decoded.objectIdDelta;
+        }
         log.info('Draft-18 FETCH end-of-range marker', {
           requestId: requestId.toString(),
-          kind: decoded.endOfRange === FetchObjectEndOfRange.NON_EXISTENT ? 'non-existent' : 'unknown',
+          kind: this.endOfRangeKind(decoded.endOfRange),
           groupIdDelta: decoded.groupIdDelta?.toString(),
           objectIdDelta: decoded.objectIdDelta?.toString(),
         });
@@ -1035,7 +1071,10 @@ export class ObjectRouter {
         // and moqtail/reference decoders treat later Group ID Delta fields as
         // absolute values (there is no arithmetic delta — the flag bit merely
         // signals presence; when absent the value inherits from the prior).
-        groupId = decoded.groupIdDelta;
+        // Draft-22 §11.4.1.1: later objects carry a true delta.
+        groupId = this.isDraft22 && !isFirst
+          ? this.applyGroupDelta(prevGroupId!, decoded.groupIdDelta, groupOrder)
+          : decoded.groupIdDelta;
       } else {
         if (isFirst) {
           throw new Error('Draft-18 FETCH: first object missing Group ID (spec §11.4.4)');
@@ -1046,7 +1085,10 @@ export class ObjectRouter {
       // Resolve Object ID: present-on-wire ⇒ absolute; absent ⇒ prev + 1.
       let objectId: bigint;
       if (decoded.objectIdDelta !== undefined) {
-        objectId = decoded.objectIdDelta;
+        // Draft-22 §11.4.1.1: absolute alongside a Group ID Delta, else a
+        // delta from the prior Object ID.
+        const isRelative = this.isDraft22 && !isFirst && decoded.groupIdDelta === undefined;
+        objectId = isRelative ? prevObjectId! + decoded.objectIdDelta : decoded.objectIdDelta;
       } else {
         if (isFirst) {
           throw new Error('Draft-18 FETCH: first object missing Object ID (spec §11.4.4)');
@@ -1158,6 +1200,26 @@ export class ObjectRouter {
     if (objectCount > 0 && this.onFetchEndOfGroup && lastGroupIdEmitted !== undefined) {
       this.onFetchEndOfGroup(requestId, Number(lastGroupIdEmitted));
     }
+  }
+
+  private endOfRangeKind(marker: FetchObjectEndOfRange): string {
+    switch (marker) {
+      case FetchObjectEndOfRange.NON_EXISTENT:
+        return 'non-existent';
+      case FetchObjectEndOfRange.TIMED_OUT:
+        return 'timed-out';
+      default:
+        return 'unknown';
+    }
+  }
+
+  /** Draft-22 §11.4.1.1: Group ID = prior +/- (delta + 1) by Group Order. */
+  private applyGroupDelta(prev: bigint, delta: bigint, order: GroupOrder): bigint {
+    const groupId = order === GroupOrder.DESCENDING ? prev - (delta + 1n) : prev + delta + 1n;
+    if (groupId < 0n) {
+      throw new Error('Draft-22 FETCH: Group ID Delta underflows below 0 (spec §11.4.1.1, PROTOCOL_VIOLATION)');
+    }
+    return groupId;
   }
 
   // ─── §8 delivery-timeout helpers ────────────────────────────────────────

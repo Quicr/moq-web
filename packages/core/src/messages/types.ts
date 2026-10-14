@@ -2235,6 +2235,28 @@ export interface FetchOkMessageDraft22 {
 }
 
 /**
+ * Draft-22 FETCH (§9.11): standalone only, range carried in LOCATION_FILTER.
+ * Omitted end means Largest Object; end is inclusive.
+ */
+export interface FetchMessageDraft22 {
+  type: MessageTypeDraft22.FETCH;
+  requestId: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  subscriberPriority: number;
+  groupOrder: GroupOrder;
+  locationFilter?: {
+    type: LocationFilterTypeDraft22;
+    startLocation?: Location;
+    endGroupDelta?: bigint;
+    endObject?: bigint;
+  };
+  /** FILL_TIMEOUT (§9.20.5) in milliseconds */
+  fillTimeoutMs?: bigint;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
  * Draft-22 REQUEST_OK has parameters + track properties
  */
 export interface RequestOkMessageDraft22 {
@@ -2259,7 +2281,7 @@ export type ControlMessageDraft22 =
   | RequestOkMessageDraft22
   | RequestUpdateMessageDraft18
   | GoAwayMessageDraft22
-  | FetchMessageDraft18
+  | FetchMessageDraft22
   | FetchOkMessageDraft22
   | TrackStatusMessageDraft18
   | PublishNamespaceMessageDraft18

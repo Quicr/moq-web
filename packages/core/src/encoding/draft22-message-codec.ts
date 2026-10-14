@@ -31,6 +31,7 @@ import {
 import {
   MessageTypeDraft18,
   MessageTypeDraft22,
+  GroupOrder,
   LocationFilterTypeDraft22,
   RequestParameterDraft22,
   type ControlMessageDraft18,
@@ -40,9 +41,12 @@ import {
   type SubscribeMessageDraft18,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
+  type FetchMessageDraft22,
   type Location,
 } from '../messages/types.js';
 
+/** §9.20: SUBSCRIBER_PRIORITY default when the parameter is omitted */
+const DEFAULT_SUBSCRIBER_PRIORITY = 128;
 
 /**
  * Draft-22 Message Codec
@@ -67,6 +71,11 @@ export class Draft22MessageCodec {
         return encodeFramed(
           message.type,
           (w) => Draft22MessageCodec.encodePublishStateNotify(w, message as PublishStateNotifyMessageDraft22),
+        );
+      case MessageTypeDraft22.FETCH:
+        return encodeFramed(
+          message.type,
+          (w) => Draft22MessageCodec.encodeFetch(w, message as FetchMessageDraft22),
         );
       case MessageTypeDraft18.SUBSCRIBE:
         return Draft22MessageCodec.encodeSubscribeDraft22(message as unknown as SubscribeMessageDraft18);
@@ -93,6 +102,10 @@ export class Draft22MessageCodec {
       case MessageTypeDraft22.PUBLISH_STATE_NOTIFY:
         return decodeFramed(buffer, offset, (reader) =>
           Draft22MessageCodec.decodePublishStateNotify(reader),
+        );
+      case MessageTypeDraft22.FETCH:
+        return decodeFramed(buffer, offset, (reader) =>
+          Draft22MessageCodec.decodeFetch(reader),
         );
       case MessageTypeDraft22.SUBSCRIBE:
         return decodeFramed(buffer, offset, (reader) =>
@@ -266,6 +279,188 @@ export class Draft22MessageCodec {
       endGroupDelta,
       parameters: parameters.size > 0 ? parameters : undefined,
     };
+  }
+
+  // ============================================================================
+  // FETCH (0x16) - Draft-22 §9.11: range carried in LOCATION_FILTER
+  // ============================================================================
+
+  private static encodeFetch(writer: Draft18BufferWriter, message: FetchMessageDraft22): void {
+    if (message.groupOrder !== GroupOrder.ASCENDING && message.groupOrder !== GroupOrder.DESCENDING) {
+      throw new Draft18CodecError(`Invalid FETCH GROUP_ORDER ${message.groupOrder} (PROTOCOL_VIOLATION)`);
+    }
+
+    writer.writeVarInt(message.requestId);
+    encodeTrackNamespace(writer, message.trackNamespace);
+    encodeString(writer, message.trackName);
+
+    const params: Array<{ type: number; encode: (pw: Draft18BufferWriter) => void }> = [
+      {
+        type: RequestParameterDraft22.SUBSCRIBER_PRIORITY,
+        encode: (pw) => pw.writeByte(message.subscriberPriority),
+      },
+      {
+        type: RequestParameterDraft22.GROUP_ORDER,
+        encode: (pw) => pw.writeByte(message.groupOrder),
+      },
+    ];
+
+    const filter = message.locationFilter;
+    if (filter) {
+      params.push({
+        type: RequestParameterDraft22.LOCATION_FILTER,
+        encode: (pw) => Draft22MessageCodec.encodeLocationFilter(pw, filter),
+      });
+    }
+
+    if (message.fillTimeoutMs !== undefined) {
+      params.push({
+        type: RequestParameterDraft22.FILL_TIMEOUT,
+        encode: (pw) => pw.writeVarInt(message.fillTimeoutMs!),
+      });
+    }
+
+    // Pass through additional parameters (e.g. AUTHORIZATION_TOKEN)
+    if (message.parameters) {
+      for (const [type, value] of message.parameters) {
+        if (type % 2 === 0) {
+          params.push({ type, encode: (pw) => pw.writeBytes(value) });
+        } else {
+          params.push({ type, encode: (pw) => { pw.writeVarInt(BigInt(value.length)); pw.writeBytes(value); } });
+        }
+      }
+    }
+
+    // Write count + delta-encoded parameters
+    params.sort((a, b) => a.type - b.type);
+    writer.writeVarInt(BigInt(params.length));
+    let prevType = 0;
+    for (const param of params) {
+      writer.writeVarInt(BigInt(param.type - prevType));
+      prevType = param.type;
+      param.encode(writer);
+    }
+  }
+
+  private static decodeFetch(reader: Draft18BufferReader): FetchMessageDraft22 {
+    const requestId = reader.readVarInt();
+    const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.FETCH);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH);
+
+    const numParams = reader.readVarIntNumber();
+    assertBound(numParams, MAX_PARAMETER_COUNT, 'FETCH numParams', MessageTypeDraft18.FETCH);
+
+    // §9.20: omitted SUBSCRIBER_PRIORITY is 128, omitted GROUP_ORDER is ascending
+    let subscriberPriority = DEFAULT_SUBSCRIBER_PRIORITY;
+    let groupOrder = GroupOrder.ASCENDING;
+    let locationFilter: FetchMessageDraft22['locationFilter'];
+    let fillTimeoutMs: bigint | undefined;
+    const parameters = new Map<number, Uint8Array>();
+
+    let previousType = 0;
+    for (let i = 0; i < numParams; i++) {
+      const type = previousType + reader.readVarIntNumber();
+      previousType = type;
+
+      switch (type) {
+        case RequestParameterDraft22.SUBSCRIBER_PRIORITY:
+          subscriberPriority = reader.readByte();
+          break;
+        case RequestParameterDraft22.GROUP_ORDER: {
+          // §9.20.8: any value other than 1 or 2 is a PROTOCOL_VIOLATION
+          const order = reader.readByte();
+          if (order !== GroupOrder.ASCENDING && order !== GroupOrder.DESCENDING) {
+            throw new Draft18CodecError(`Invalid FETCH GROUP_ORDER ${order} (PROTOCOL_VIOLATION)`);
+          }
+          groupOrder = order;
+          break;
+        }
+        case RequestParameterDraft22.LOCATION_FILTER:
+          locationFilter = Draft22MessageCodec.decodeLocationFilter(reader);
+          break;
+        case RequestParameterDraft22.FILL_TIMEOUT:
+          fillTimeoutMs = reader.readVarInt();
+          break;
+        default:
+          parameters.set(type, Draft22MessageCodec.readParameterValue(reader, type));
+      }
+    }
+
+    return {
+      type: MessageTypeDraft22.FETCH,
+      requestId,
+      trackNamespace,
+      trackName,
+      subscriberPriority,
+      groupOrder,
+      locationFilter,
+      fillTimeoutMs,
+      parameters: parameters.size > 0 ? parameters : undefined,
+    };
+  }
+
+  /**
+   * §9.20.9: LOCATION_FILTER value is not length-prefixed; fields depend on
+   * the filter type.
+   */
+  private static encodeLocationFilter(
+    writer: Draft18BufferWriter,
+    filter: NonNullable<FetchMessageDraft22['locationFilter']>,
+  ): void {
+    writer.writeVarInt(BigInt(filter.type));
+
+    switch (filter.type) {
+      case LocationFilterTypeDraft22.NONE:
+      case LocationFilterTypeDraft22.NEXT_OBJECT:
+        return;
+      case LocationFilterTypeDraft22.RELATIVE_START:
+        writer.writeVarInt(filter.startLocation?.group ?? 0n);
+        return;
+      case LocationFilterTypeDraft22.ABSOLUTE_START:
+        writer.writeVarInt(filter.startLocation?.group ?? 0n);
+        writer.writeVarInt(filter.startLocation?.object ?? 0n);
+        return;
+      case LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END:
+        writer.writeVarInt(filter.startLocation?.group ?? 0n);
+        writer.writeVarInt(filter.startLocation?.object ?? 0n);
+        writer.writeVarInt(filter.endGroupDelta ?? 0n);
+        return;
+      case LocationFilterTypeDraft22.ABSOLUTE_RANGE:
+        writer.writeVarInt(filter.startLocation?.group ?? 0n);
+        writer.writeVarInt(filter.startLocation?.object ?? 0n);
+        writer.writeVarInt(filter.endGroupDelta ?? 0n);
+        writer.writeVarInt(filter.endObject ?? 0n);
+        return;
+      default:
+        throw new Draft18CodecError(`Unknown LOCATION_FILTER type: ${filter.type}`);
+    }
+  }
+
+  private static decodeLocationFilter(
+    reader: Draft18BufferReader,
+  ): NonNullable<FetchMessageDraft22['locationFilter']> {
+    const type = reader.readVarIntNumber();
+
+    switch (type) {
+      case LocationFilterTypeDraft22.NONE:
+      case LocationFilterTypeDraft22.NEXT_OBJECT:
+        return { type };
+      case LocationFilterTypeDraft22.RELATIVE_START:
+        return { type, startLocation: { group: reader.readVarInt(), object: 0n } };
+      case LocationFilterTypeDraft22.ABSOLUTE_START:
+        return { type, startLocation: { group: reader.readVarInt(), object: reader.readVarInt() } };
+      case LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END: {
+        const startLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
+        return { type, startLocation, endGroupDelta: reader.readVarInt() };
+      }
+      case LocationFilterTypeDraft22.ABSOLUTE_RANGE: {
+        const startLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
+        const endGroupDelta = reader.readVarInt();
+        return { type, startLocation, endGroupDelta, endObject: reader.readVarInt() };
+      }
+      default:
+        throw new Draft18CodecError(`Unknown LOCATION_FILTER type: ${type}`);
+    }
   }
 
   // ============================================================================

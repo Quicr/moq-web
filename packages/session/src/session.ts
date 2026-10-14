@@ -98,6 +98,9 @@ import {
   type TrackStatusOkMessage,
   type TrackStatusErrorMessage,
   MessageTypeDraft22,
+  LocationFilterTypeDraft22,
+  RequestParameterDraft22,
+  type FetchMessageDraft22,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
 } from '@moq-web/core';
@@ -2770,47 +2773,12 @@ export class MOQTSession {
     range: FetchRange,
     options?: FetchOptions,
   ): Promise<void> {
-    // Draft-18 endLocation is *exclusive* per spec §7.5 (relays such as moxygen
-    // decrement the object component to derive the inclusive "last" location).
-    // The API's FetchRange.endObject is inclusive, so we bump the wire value
-    // by one before encoding. `endObject == 0` is the caller's "whole End
-    // Group" sentinel (also spec-compliant on the wire), so leave it as 0.
-    const fetchType = options?.fetchType ?? FetchTypeDraft18.STANDALONE;
-    const isJoining =
-      fetchType === FetchTypeDraft18.JOINING_RELATIVE ||
-      fetchType === FetchTypeDraft18.JOINING_ABSOLUTE;
-    if (isJoining && options?.subscribeRequestId === undefined) {
-      throw new Error('Joining FETCH requires options.subscribeRequestId');
-    }
-    const parameters = new Map<number, Uint8Array>();
-    addDeliveryTimeoutParams(parameters, options);
-    if (options?.authToken) {
-      parameters.set(
-        RequestParameterDraft18.AUTHORIZATION_TOKEN,
-        encodeRequestAuthTokenBytes(options.authToken),
-      );
-    }
-    const fetchMessage: FetchMessageDraft18 = {
-      type: MessageTypeDraft18.FETCH,
-      requestId,
-      fetchType,
-      joiningFlag: isJoining,
-      subscribeRequestId: options?.subscribeRequestId,
-      joiningStart: options?.joiningStart ?? 0n,
-      trackNamespace: namespace,
-      trackName,
-      subscriberPriority: options?.priority ?? 128,
-      groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
-      startLocation: {
-        group: BigInt(range.startGroup),
-        object: BigInt(range.startObject),
-      },
-      endLocation: {
-        group: BigInt(range.endGroup),
-        object: BigInt(range.endObject === 0 ? 0 : range.endObject + 1),
-      },
-      parameters: parameters.size > 0 ? parameters : undefined,
-    };
+    const fetchMessage = this.isDraft22
+      ? this.buildFetchDraft22(requestId, namespace, trackName, range, options)
+      : this.buildFetchDraft18(requestId, namespace, trackName, range, options);
+
+    // §11.4.1.1: the data stream needs the Group Order to apply Group ID Delta.
+    this.objectRouter.setFetchGroupOrder(requestId, fetchMessage.groupOrder);
 
     const encoded = this.codec.encodeControlMessage(fetchMessage);
     const fetchHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -2861,6 +2829,7 @@ export class MOQTSession {
         reasonPhrase: error.reasonPhrase,
       });
       this.activeFetches.delete(requestId);
+      this.objectRouter.clearFetchGroupOrder(requestId);
       await this.closeRequestStream(requestId);
       this.emit('fetch-error', {
         requestId,
@@ -2873,6 +2842,108 @@ export class MOQTSession {
         responseType: response.type,
       });
     }
+  }
+
+  /** Draft-18 §10.12: FETCH with Fetch Type and raw start/end Locations. */
+  private buildFetchDraft18(
+    requestId: bigint,
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+  ): FetchMessageDraft18 {
+    // Draft-18 endLocation is *exclusive* per spec §7.5 (relays such as moxygen
+    // decrement the object component to derive the inclusive "last" location).
+    // The API's FetchRange.endObject is inclusive, so we bump the wire value
+    // by one before encoding. `endObject == 0` is the caller's "whole End
+    // Group" sentinel (also spec-compliant on the wire), so leave it as 0.
+    const fetchType = options?.fetchType ?? FetchTypeDraft18.STANDALONE;
+    const isJoining =
+      fetchType === FetchTypeDraft18.JOINING_RELATIVE ||
+      fetchType === FetchTypeDraft18.JOINING_ABSOLUTE;
+    if (isJoining && options?.subscribeRequestId === undefined) {
+      throw new Error('Joining FETCH requires options.subscribeRequestId');
+    }
+    const parameters = new Map<number, Uint8Array>();
+    addDeliveryTimeoutParams(parameters, options);
+    if (options?.authToken) {
+      parameters.set(
+        RequestParameterDraft18.AUTHORIZATION_TOKEN,
+        encodeRequestAuthTokenBytes(options.authToken),
+      );
+    }
+    return {
+      type: MessageTypeDraft18.FETCH,
+      requestId,
+      fetchType,
+      joiningFlag: isJoining,
+      subscribeRequestId: options?.subscribeRequestId,
+      joiningStart: options?.joiningStart ?? 0n,
+      trackNamespace: namespace,
+      trackName,
+      subscriberPriority: options?.priority ?? 128,
+      groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
+      startLocation: {
+        group: BigInt(range.startGroup),
+        object: BigInt(range.startObject),
+      },
+      endLocation: {
+        group: BigInt(range.endGroup),
+        object: BigInt(range.endObject === 0 ? 0 : range.endObject + 1),
+      },
+      parameters: parameters.size > 0 ? parameters : undefined,
+    };
+  }
+
+  /**
+   * Draft-22 §9.11: FetchRange becomes a LOCATION_FILTER. The end is
+   * inclusive, so unlike draft-18 no +1 is applied; `endObject == 0` keeps
+   * its "whole End Group" meaning via ABSOLUTE_START_GROUP_END.
+   */
+  private buildFetchDraft22(
+    requestId: bigint,
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+  ): FetchMessageDraft22 {
+    const fetchType = options?.fetchType ?? FetchTypeDraft18.STANDALONE;
+    if (fetchType !== FetchTypeDraft18.STANDALONE) {
+      throw new Error('joining FETCH not supported in draft-22');
+    }
+    if (range.endGroup < range.startGroup) {
+      throw new Error(`FETCH endGroup ${range.endGroup} is before startGroup ${range.startGroup}`);
+    }
+
+    const groupOrder = options?.groupOrder ?? GroupOrder.ASCENDING;
+    const wholeEndGroup = range.endObject === 0;
+    const parameters = new Map<number, Uint8Array>();
+    if (options?.authToken) {
+      parameters.set(
+        RequestParameterDraft22.AUTHORIZATION_TOKEN,
+        encodeRequestAuthTokenBytes(options.authToken),
+      );
+    }
+
+    return {
+      type: MessageTypeDraft22.FETCH,
+      requestId,
+      trackNamespace: namespace,
+      trackName,
+      subscriberPriority: options?.priority ?? 128,
+      groupOrder,
+      locationFilter: {
+        type: wholeEndGroup
+          ? LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END
+          : LocationFilterTypeDraft22.ABSOLUTE_RANGE,
+        startLocation: { group: BigInt(range.startGroup), object: BigInt(range.startObject) },
+        endGroupDelta: BigInt(range.endGroup - range.startGroup),
+        endObject: wholeEndGroup ? undefined : BigInt(range.endObject),
+      },
+      // §9.20.5: 0 is meaningful (only immediately available Objects)
+      fillTimeoutMs: options?.fillTimeout !== undefined ? BigInt(options.fillTimeout) : undefined,
+      parameters: parameters.size > 0 ? parameters : undefined,
+    };
   }
 
   /**
@@ -2920,6 +2991,7 @@ export class MOQTSession {
     // Remove from active fetches
     this.activeFetches.delete(rid);
     this.fetchStreamBuffers.delete(rid);
+    this.objectRouter.clearFetchGroupOrder(rid);
     log.info('Fetch cancelled', { requestId: rid.toString() });
   }
 

@@ -8,12 +8,15 @@ import {
   MessageTypeDraft18,
   MessageTypeDraft22,
   Version,
+  GroupOrder,
+  LocationFilterTypeDraft22,
   SubscriptionFilterDraft18,
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
   type SubscribeMessageDraft18,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
+  type FetchMessageDraft22,
 } from '../messages/types';
 import { ALPN_PROTOCOL } from '../version/constants';
 
@@ -360,6 +363,130 @@ describe('Draft22MessageCodec', () => {
       const [decoded] = Draft22MessageCodec.decode(encoded);
       const d = decoded as unknown as SubscribeMessageDraft18;
       expect(d.parameters?.get(0x25)).toEqual(rangeData);
+    });
+  });
+
+  describe('FETCH (draft-22 §9.11)', () => {
+    const baseFetch = (): FetchMessageDraft22 => ({
+      type: MessageTypeDraft22.FETCH,
+      requestId: 4n,
+      trackNamespace: ['a'],
+      trackName: 't',
+      subscriberPriority: 128,
+      groupOrder: GroupOrder.ASCENDING,
+    });
+
+    it('encodes ABSOLUTE_RANGE to the exact spec bytes', () => {
+      const message: FetchMessageDraft22 = {
+        ...baseFetch(),
+        locationFilter: {
+          type: LocationFilterTypeDraft22.ABSOLUTE_RANGE,
+          startLocation: { group: 1n, object: 0n },
+          endGroupDelta: 2n,
+          endObject: 5n,
+        },
+      };
+
+      // type | len(16) | reqId | ns(1,"a") | name(1,"t") | nparams
+      // | SUBSCRIBER_PRIORITY(0x20)=128 | LOCATION_FILTER(+1) 4,1,0,2,5 | GROUP_ORDER(+1)=1
+      const expected = new Uint8Array([
+        0x16, 0x00, 0x11,
+        0x04, 0x01, 0x01, 0x61, 0x01, 0x74, 0x03,
+        0x20, 0x80,
+        0x01, 0x04, 0x01, 0x00, 0x02, 0x05,
+        0x01, 0x01,
+      ]);
+
+      expect(Draft22MessageCodec.encode(message)).toEqual(expected);
+    });
+
+    it('roundtrips ABSOLUTE_RANGE', () => {
+      const message: FetchMessageDraft22 = {
+        ...baseFetch(),
+        subscriberPriority: 7,
+        groupOrder: GroupOrder.DESCENDING,
+        locationFilter: {
+          type: LocationFilterTypeDraft22.ABSOLUTE_RANGE,
+          startLocation: { group: 10n, object: 3n },
+          endGroupDelta: 4n,
+          endObject: 9n,
+        },
+      };
+
+      const encoded = Draft22MessageCodec.encode(message);
+      const [decoded, bytesRead] = Draft22MessageCodec.decode(encoded);
+
+      expect(bytesRead).toBe(encoded.length);
+      expect(decoded).toEqual(message);
+    });
+
+    it('roundtrips ABSOLUTE_START_GROUP_END', () => {
+      const message: FetchMessageDraft22 = {
+        ...baseFetch(),
+        locationFilter: {
+          type: LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END,
+          startLocation: { group: 2n, object: 1n },
+          endGroupDelta: 3n,
+        },
+      };
+
+      const [decoded] = Draft22MessageCodec.decode(Draft22MessageCodec.encode(message));
+
+      expect(decoded).toEqual(message);
+    });
+
+    it('roundtrips without a location filter', () => {
+      const message = baseFetch();
+
+      const [decoded] = Draft22MessageCodec.decode(Draft22MessageCodec.encode(message));
+      const d = decoded as FetchMessageDraft22;
+
+      expect(d.locationFilter).toBeUndefined();
+      expect(d).toEqual(message);
+    });
+
+    it('roundtrips FILL_TIMEOUT', () => {
+      const message: FetchMessageDraft22 = { ...baseFetch(), fillTimeoutMs: 1500n };
+
+      const [decoded] = Draft22MessageCodec.decode(Draft22MessageCodec.encode(message));
+
+      expect((decoded as FetchMessageDraft22).fillTimeoutMs).toBe(1500n);
+    });
+
+    it('applies defaults when priority and group order are omitted', () => {
+      const bytes = new Uint8Array([0x16, 0x00, 0x07, 0x04, 0x01, 0x01, 0x61, 0x01, 0x74, 0x00]);
+
+      const [decoded] = Draft22MessageCodec.decode(bytes);
+      const d = decoded as FetchMessageDraft22;
+
+      expect(d.subscriberPriority).toBe(128);
+      expect(d.groupOrder).toBe(GroupOrder.ASCENDING);
+    });
+
+    it('rejects an invalid GROUP_ORDER on decode', () => {
+      const bytes = new Uint8Array([
+        0x16, 0x00, 0x09,
+        0x04, 0x01, 0x01, 0x61, 0x01, 0x74, 0x01,
+        0x22, 0x03,
+      ]);
+
+      expect(() => Draft22MessageCodec.decode(bytes)).toThrow(/GROUP_ORDER/);
+    });
+
+    it('rejects an invalid group order on encode', () => {
+      const message = { ...baseFetch(), groupOrder: 3 as GroupOrder };
+
+      expect(() => Draft22MessageCodec.encode(message)).toThrow(/GROUP_ORDER/);
+    });
+
+    it('rejects an unknown location filter type on decode', () => {
+      const bytes = new Uint8Array([
+        0x16, 0x00, 0x0A,
+        0x04, 0x01, 0x01, 0x61, 0x01, 0x74, 0x01,
+        0x21, 0x09, 0x00,
+      ]);
+
+      expect(() => Draft22MessageCodec.decode(bytes)).toThrow(/LOCATION_FILTER/);
     });
   });
 });
