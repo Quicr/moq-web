@@ -96,6 +96,7 @@ export type {
   NamespaceAnnouncedEvent,
   NamespaceDoneEvent,
   SubscribeNamespaceOptions,
+  TrackFilter,
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,

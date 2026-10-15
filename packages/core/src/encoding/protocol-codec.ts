@@ -138,7 +138,7 @@ export interface IProtocolCodec {
   decodeSetupStreamHeader(buffer: Uint8Array, offset?: number): [number, number];
 
   // ---- Subgroup streams ----
-  encodeSubgroupHeader(header: SubgroupHeader, endOfGroup?: boolean): [Uint8Array, boolean];
+  encodeSubgroupHeader(header: SubgroupHeader, endOfGroup?: boolean, hasProperties?: boolean): [Uint8Array, boolean];
   /**
    * Decode a subgroup-header frame. Same `metrics` semantics as
    * {@link decodeControlMessage}; the histogram is emitted under
@@ -155,6 +155,7 @@ export interface IProtocolCodec {
     previousObjectId?: number,
     hasExtensions?: boolean,
     extensions?: Map<number, number | Uint8Array>,
+    objectProperties?: Map<number, Uint8Array>,
   ): Uint8Array;
   decodeStreamObject(
     buffer: Uint8Array,
@@ -162,7 +163,7 @@ export interface IProtocolCodec {
     hasExtensions?: boolean,
     previousObjectId?: number,
     metrics?: MetricsSink,
-  ): [number, Uint8Array, ObjectStatus, number];
+  ): [number, Uint8Array, ObjectStatus, number, Map<number, Uint8Array>?];
 
   // ---- Datagrams ----
   encodeDatagramHeader(header: ObjectHeader): Uint8Array;
@@ -307,8 +308,8 @@ class Draft16Codec implements IProtocolCodec {
   }
 
   // ---- Subgroup streams ----
-  encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
-    return withDraft('draft-16', () => ObjectCodec.encodeSubgroupHeader(header, endOfGroup));
+  encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false, hasProperties = false): [Uint8Array, boolean] {
+    return withDraft('draft-16', () => ObjectCodec.encodeSubgroupHeader(header, endOfGroup, hasProperties));
   }
 
   decodeSubgroupHeader(
@@ -339,6 +340,7 @@ class Draft16Codec implements IProtocolCodec {
     previousObjectId?: number,
     hasExtensions?: boolean,
     extensions?: Map<number, number | Uint8Array>,
+    objectProperties?: Map<number, Uint8Array>,
   ): Uint8Array {
     return withDraft('draft-16', () =>
       ObjectCodec.encodeStreamObject(
@@ -348,6 +350,7 @@ class Draft16Codec implements IProtocolCodec {
         previousObjectId,
         hasExtensions,
         extensions,
+        objectProperties,
       ),
     );
   }
@@ -358,7 +361,7 @@ class Draft16Codec implements IProtocolCodec {
     hasExtensions = true,
     previousObjectId = -1,
     metrics: MetricsSink = NOOP_METRICS,
-  ): [number, Uint8Array, ObjectStatus, number] {
+  ): [number, Uint8Array, ObjectStatus, number, Map<number, Uint8Array>?] {
     const start = nowMs();
     try {
       const result = withDraft('draft-16', () =>
@@ -602,8 +605,8 @@ class Draft18Codec implements IProtocolCodec {
   }
 
   // ---- Subgroup streams ----
-  encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
-    return withDraft('draft-18', () => ObjectCodec.encodeSubgroupHeader(header, endOfGroup));
+  encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false, hasProperties = false): [Uint8Array, boolean] {
+    return withDraft('draft-18', () => ObjectCodec.encodeSubgroupHeader(header, endOfGroup, hasProperties));
   }
 
   decodeSubgroupHeader(
@@ -634,6 +637,7 @@ class Draft18Codec implements IProtocolCodec {
     previousObjectId?: number,
     hasExtensions?: boolean,
     extensions?: Map<number, number | Uint8Array>,
+    objectProperties?: Map<number, Uint8Array>,
   ): Uint8Array {
     return withDraft('draft-18', () =>
       ObjectCodec.encodeStreamObject(
@@ -643,6 +647,7 @@ class Draft18Codec implements IProtocolCodec {
         previousObjectId,
         hasExtensions,
         extensions,
+        objectProperties,
       ),
     );
   }
@@ -653,7 +658,7 @@ class Draft18Codec implements IProtocolCodec {
     hasExtensions = true,
     previousObjectId = -1,
     metrics: MetricsSink = NOOP_METRICS,
-  ): [number, Uint8Array, ObjectStatus, number] {
+  ): [number, Uint8Array, ObjectStatus, number, Map<number, Uint8Array>?] {
     const start = nowMs();
     try {
       const result = withDraft('draft-18', () =>

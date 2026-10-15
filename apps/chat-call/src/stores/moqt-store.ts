@@ -25,12 +25,15 @@ interface MoqtState {
   messages: PeerMessage[];
   localStream: MediaStream | null;
   peerVideoFrames: Map<string, VideoFrame>;
+  topNEnabled: boolean;
+  topNMaxTracks: number;
 
   join: (params: JoinParams) => Promise<void>;
   leave: () => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
   setLocalMuted: (muted: boolean) => void;
   setLocalVideoOff: (off: boolean) => void;
+  setTopN: (enabled: boolean, maxTracks?: number) => void;
 }
 
 function parseNamespace(prefix: string): string[] {
@@ -71,6 +74,8 @@ export const useMoqtStore = create<MoqtState>((set, get) => {
     messages: [],
     localStream: null,
     peerVideoFrames: new Map(),
+    topNEnabled: false,
+    topNMaxTracks: 4,
 
     join: async (params) => {
       const prev = get().room;
@@ -88,6 +93,7 @@ export const useMoqtStore = create<MoqtState>((set, get) => {
       });
 
       const roomPrefix = [...parseNamespace(params.namespacePrefix), params.roomId];
+      const { topNEnabled, topNMaxTracks } = get();
       const room = new MoqtRoom({
         relayUrl: RELAY_URL,
         roomPrefix,
@@ -99,6 +105,7 @@ export const useMoqtStore = create<MoqtState>((set, get) => {
           video: params.publishVideo,
           audio: params.publishAudio,
         },
+        topN: topNEnabled ? { enabled: true, maxTracks: topNMaxTracks, timeout: 5000 } : undefined,
         onPeerJoined: (participant: Participant) => {
           set((s) => {
             if (s.participants.some((p) => p.id === participant.id)) return s;
@@ -192,6 +199,13 @@ export const useMoqtStore = create<MoqtState>((set, get) => {
       for (const track of stream.getVideoTracks()) {
         track.enabled = !off;
       }
+    },
+
+    setTopN: (enabled, maxTracks) => {
+      set({
+        topNEnabled: enabled,
+        ...(maxTracks !== undefined ? { topNMaxTracks: maxTracks } : {}),
+      });
     },
   };
 });

@@ -21,6 +21,12 @@ const MEDIA_CONFIG: MediaConfig = {
   audioDeliveryMode: 'datagram',
 };
 
+export interface TopNConfig {
+  enabled: boolean;
+  maxTracks: number;
+  timeout: number; // ms
+}
+
 export interface RoomConnectOptions {
   relayUrl: string;
   roomPrefix: string[];
@@ -32,6 +38,8 @@ export interface RoomConnectOptions {
     video: boolean;
     audio: boolean;
   };
+  /** Top-N active speaker configuration */
+  topN?: TopNConfig;
   onPeerJoined: (participant: Participant) => void;
   onPeerLeft: (participantId: string) => void;
   onMessage: (msg: PeerMessage) => void;
@@ -108,6 +116,27 @@ export class MoqtRoom {
     });
 
     await session.subscribeNamespace(this.opts.roomPrefix);
+
+    const topN = this.opts.topN;
+    if (topN?.enabled) {
+      // Subscribe to shared video namespace with TrackFilter for relay-side top-N
+      const videoPrefix = [...this.opts.roomPrefix, VIDEO_TRACK];
+      await session.subscribeNamespace(videoPrefix, {
+        trackFilter: {
+          propertyType: 12, // audioActivityIndicator
+          maxTracksSelected: topN.maxTracks,
+          timeout: topN.timeout,
+        },
+      });
+      // Subscribe to shared audio namespace (no filter — receive all audio)
+      const audioPrefix = [...this.opts.roomPrefix, AUDIO_TRACK];
+      await session.subscribeNamespace(audioPrefix);
+
+      // Announce under shared namespaces
+      await session.announceNamespace([...this.opts.roomPrefix, VIDEO_TRACK, this.opts.selfId], { deliveryMode: 'stream' });
+      await session.announceNamespace([...this.opts.roomPrefix, AUDIO_TRACK, this.opts.selfId], { deliveryMode: 'stream' });
+    }
+
     await session.announceNamespace(this.selfNamespace, { deliveryMode: 'stream' });
 
     if (this.opts.publish.chat) {
@@ -173,21 +202,37 @@ export class MoqtRoom {
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
     this.mediaStream = stream;
 
+    const topN = this.opts.topN;
     const config: MediaConfig = {
       ...MEDIA_CONFIG,
       videoEnabled: this.opts.publish.video,
       audioEnabled: this.opts.publish.audio,
       authToken: tokenToRequestAuth(this.opts.chatToken),
+      vadEnabled: topN?.enabled,
     };
 
+    // When top-N is enabled, publish under shared namespace prefix
+    // so the relay can apply track filtering across all participants.
+    // Format: [...roomPrefix, "video"] with trackName = selfId
+    // Otherwise: [...roomPrefix, selfId] with trackName = "video"
+    const videoNamespace = topN?.enabled
+      ? [...this.opts.roomPrefix, VIDEO_TRACK]
+      : this.selfNamespace;
+    const videoTrackName = topN?.enabled ? this.opts.selfId : VIDEO_TRACK;
+
+    const audioNamespace = topN?.enabled
+      ? [...this.opts.roomPrefix, AUDIO_TRACK]
+      : this.selfNamespace;
+    const audioTrackName = topN?.enabled ? this.opts.selfId : AUDIO_TRACK;
+
     if (this.opts.publish.video) {
-      await this.mediaSession.publish(this.selfNamespace, VIDEO_TRACK, stream, {
+      await this.mediaSession.publish(videoNamespace, videoTrackName, stream, {
         ...config,
         audioEnabled: false,
       });
     }
     if (this.opts.publish.audio) {
-      await this.mediaSession.publish(this.selfNamespace, AUDIO_TRACK, stream, {
+      await this.mediaSession.publish(audioNamespace, audioTrackName, stream, {
         ...config,
         videoEnabled: false,
       });
@@ -257,10 +302,16 @@ export class MoqtRoom {
     if (!state || state.mediaSubscribed) return;
     state.mediaSubscribed = true;
 
+    const topN = this.opts.topN;
     const config: MediaConfig = {
       ...MEDIA_CONFIG,
       authToken: tokenToRequestAuth(this.opts.chatToken),
     };
+
+    // When top-N is enabled, peer media is under shared namespace and
+    // subscribed via namespace subscription with track filter (done in connect).
+    // Individual peer subscriptions are only needed in non-top-N mode.
+    if (topN?.enabled) return;
 
     try {
       const videoSubId = await this.mediaSession.subscribe(namespace, VIDEO_TRACK, config, 'video');

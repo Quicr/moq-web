@@ -186,6 +186,9 @@ export interface MediaConfig {
     numberOfChannels?: number;
     description?: Uint8Array;
   };
+
+  /** Enable voice activity detection for top-N active speaker */
+  vadEnabled?: boolean;
 }
 
 /**

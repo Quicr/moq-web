@@ -11,11 +11,16 @@ interface TileProps {
   canvasRef?: (el: HTMLCanvasElement | null) => void;
   showVideo: boolean;
   showAudioOff: boolean;
+  /** Activity value for speaking indicator (0=silent, 1=continuous, 2=speechStart) */
+  activityValue?: number;
 }
 
-function Tile({ displayName, isSelf, videoRef, canvasRef, showVideo, showAudioOff }: TileProps) {
+function Tile({ displayName, isSelf, videoRef, canvasRef, showVideo, showAudioOff, activityValue }: TileProps) {
+  const isSpeaking = activityValue !== undefined && activityValue > 0;
   return (
-    <div className="relative bg-gray-900/90 rounded-2xl overflow-hidden flex items-center justify-center min-h-[200px]">
+    <div className={`relative bg-slate-900 rounded-2xl overflow-hidden flex items-center justify-center min-h-[200px] transition-all duration-200 ${
+      isSpeaking ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-100' : ''
+    }`}>
       {showVideo ? (
         isSelf ? (
           <video
@@ -34,13 +39,13 @@ function Tile({ displayName, isSelf, videoRef, canvasRef, showVideo, showAudioOf
       ) : (
         <Avatar name={displayName} size="lg" />
       )}
-      <div className="absolute bottom-2 left-2 flex items-center gap-1.5 bg-black/50 backdrop-blur-sm rounded-lg px-2 py-1">
-        {showAudioOff && <Icon name="mic_off" size={14} className="text-red-400" />}
+      <div className="absolute bottom-2 left-2 flex items-center gap-1.5 bg-slate-900/60 backdrop-blur-sm rounded-lg px-2 py-1">
+        {showAudioOff && <Icon name="mic_off" size={14} className="text-rose-400" />}
         <span className="text-white text-xs font-medium">{isSelf ? 'You' : displayName}</span>
       </div>
       {isSelf && (
         <div className="absolute top-2 right-2">
-          <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+          <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
         </div>
       )}
     </div>
@@ -128,11 +133,12 @@ export function MediaGrid() {
             }}
             showVideo={peerVideoFrames.has(p.id)}
             showAudioOff={false}
+            activityValue={p.activityValue}
           />
         ))}
         {totalTiles < 4 && (
-          <div className="border-2 border-dashed border-gray-200/40 rounded-2xl flex items-center justify-center">
-            <div className="text-center text-gray-300">
+          <div className="border-2 border-dashed border-slate-300/50 rounded-2xl flex items-center justify-center">
+            <div className="text-center text-slate-400">
               <Icon name="person_add" size={28} />
               <p className="text-xs mt-1">
                 {room ? 'Waiting for others' : 'Connecting...'}
@@ -142,16 +148,16 @@ export function MediaGrid() {
         )}
       </div>
 
-      <div className="p-3 border-t border-gray-200/40">
+      <div className="p-3 border-t border-slate-200/50">
         <div className="flex items-center justify-center gap-3">
           {canPublish ? (
             <>
               <button
                 onClick={handleMuteToggle}
-                className={`p-3 rounded-full transition-all ${
+                className={`p-3 rounded-full transition-all duration-150 ${
                   isMuted
-                    ? 'bg-red-100 text-red-600 hover:bg-red-200'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    ? 'bg-rose-100 text-rose-600 hover:bg-rose-200'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
                 title={isMuted ? 'Unmute' : 'Mute'}
               >
@@ -159,17 +165,17 @@ export function MediaGrid() {
               </button>
               <button
                 onClick={handleVideoToggle}
-                className={`p-3 rounded-full transition-all ${
+                className={`p-3 rounded-full transition-all duration-150 ${
                   isVideoOff
-                    ? 'bg-red-100 text-red-600 hover:bg-red-200'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    ? 'bg-rose-100 text-rose-600 hover:bg-rose-200'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
                 title={isVideoOff ? 'Turn on camera' : 'Turn off camera'}
               >
                 <Icon name={isVideoOff ? 'videocam_off' : 'videocam'} size={20} />
               </button>
               <button
-                className="p-3 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
+                className="p-3 rounded-full bg-slate-100 text-slate-400 transition-all duration-150 cursor-not-allowed"
                 title="Screen share"
                 disabled
               >
@@ -177,7 +183,7 @@ export function MediaGrid() {
               </button>
             </>
           ) : (
-            <div className="flex items-center gap-2 text-sm text-gray-400">
+            <div className="flex items-center gap-2 text-sm text-slate-400">
               <Icon name="visibility" size={18} />
               Viewing mode — sign in to publish
             </div>

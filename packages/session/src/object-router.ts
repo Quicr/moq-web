@@ -68,7 +68,8 @@ export type ObjectCallback = (
   data: Uint8Array,
   groupId: number,
   objectId: number,
-  timestamp: number
+  timestamp: number,
+  objectProperties?: Map<number, Uint8Array>
 ) => void;
 
 /**
@@ -525,7 +526,7 @@ export class ObjectRouter {
             const decodeStart = nowMs();
             try {
               const view = buffer.subarray(bufferOffset);
-              const [objectId, payload, status, bytesConsumed] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, previousObjectId);
+              const [objectId, payload, status, bytesConsumed, objectProperties] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, previousObjectId);
               this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
                 codec: this.codecLabel,
                 messageType: 'stream_object',
@@ -576,7 +577,7 @@ export class ObjectRouter {
                 const timestamp = performance.now() * 1000;
                 // Copy payload to avoid detaching the shared buffer when transferred via postMessage
                 const payloadCopy = new Uint8Array(payload);
-                this.deliverObject(subscription, payloadCopy, subgroupHeader.groupId, objectId, timestamp);
+                this.deliverObject(subscription, payloadCopy, subgroupHeader.groupId, objectId, timestamp, objectProperties);
 
                 log.trace('Processed stream object', {
                   groupId: subgroupHeader.groupId,
@@ -730,7 +731,8 @@ export class ObjectRouter {
     data: Uint8Array,
     groupId: number,
     objectId: number,
-    timestamp: number
+    timestamp: number,
+    objectProperties?: Map<number, Uint8Array>
   ): void {
     // Detect gaps in object delivery
     const last = this.lastDelivered.get(subscription.subscriptionId);
@@ -766,12 +768,12 @@ export class ObjectRouter {
 
     // Call subscription's object handler if set
     if (subscription.onObject) {
-      subscription.onObject(data, groupId, objectId, timestamp);
+      subscription.onObject(data, groupId, objectId, timestamp, objectProperties);
     }
 
     // Call global callback
     if (this.onObject) {
-      this.onObject(subscription, data, groupId, objectId, timestamp);
+      this.onObject(subscription, data, groupId, objectId, timestamp, objectProperties);
     }
   }
 

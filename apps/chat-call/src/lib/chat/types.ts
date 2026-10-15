@@ -3,6 +3,10 @@ export interface Participant {
   displayName: string;
   namespace: string[];
   isSelf: boolean;
+  /** Current audio activity value (0=silent, 1=continuous, 2=speechStart) */
+  activityValue?: number;
+  /** Timestamp of last received video frame (for staleness detection) */
+  lastFrameTime?: number;
 }
 
 export interface PeerMessage {

@@ -456,6 +456,8 @@ export class MediaSession {
       // QuicR-Mac interop settings
       quicrInteropEnabled: config.quicrInteropEnabled,
       quicrParticipantId: config.quicrParticipantId,
+      // Top-N VAD
+      vadEnabled: config.vadEnabled,
     });
 
     // Build publish options
@@ -490,6 +492,7 @@ export class MediaSession {
           objectId: obj.objectId,
           newGroup: obj.isKeyframe,
           type: 'video',
+          objectProperties: obj.objectProperties,
         });
       }).catch((err) => {
         log.error('Video send failed', err as Error);
@@ -509,6 +512,7 @@ export class MediaSession {
             groupId: obj.groupId,
             objectId: obj.objectId,
             type: 'audio',
+            objectProperties: obj.objectProperties,
           });
         }).catch((err) => {
           log.error('Encryption failed for audio object', err as Error);
@@ -518,6 +522,7 @@ export class MediaSession {
           groupId: obj.groupId,
           objectId: obj.objectId,
           type: 'audio',
+          objectProperties: obj.objectProperties,
         });
       }
     });
@@ -1245,6 +1250,8 @@ export class MediaSession {
       // QuicR-Mac interop settings
       quicrInteropEnabled: config.quicrInteropEnabled,
       quicrParticipantId: config.quicrParticipantId,
+      // Top-N VAD
+      vadEnabled: config.vadEnabled,
     });
 
     // Create secure context if encryption is enabled
@@ -1266,6 +1273,7 @@ export class MediaSession {
           objectId: obj.objectId,
           newGroup: obj.isKeyframe,
           type: 'video',
+          objectProperties: obj.objectProperties,
         });
       }).catch((err) => {
         log.error('Video send failed', err as Error);
@@ -1284,6 +1292,7 @@ export class MediaSession {
             groupId: obj.groupId,
             objectId: obj.objectId,
             type: 'audio',
+            objectProperties: obj.objectProperties,
           });
         }).catch((err) => {
           log.error('Encryption failed for audio object', err as Error);
@@ -1293,6 +1302,7 @@ export class MediaSession {
           groupId: obj.groupId,
           objectId: obj.objectId,
           type: 'audio',
+          objectProperties: obj.objectProperties,
         });
       }
     });

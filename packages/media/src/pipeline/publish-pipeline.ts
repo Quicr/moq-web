@@ -33,11 +33,12 @@
  * ```
  */
 
-import { Logger, Priority } from '@moq-web/core';
+import { Logger, Priority, MOQTVarInt } from '@moq-web/core';
 import { H264Encoder, VideoEncoderConfig, EncodedVideoFrame } from '../webcodecs/video-encoder.js';
 import { OpusEncoder, OpusEncoderOptions, EncodedAudioFrame } from '../webcodecs/audio-encoder.js';
 import { LOCPackager } from '../loc/loc-container.js';
 import { CodecEncodeWorkerClient } from '../workers/codec-encode-worker-api.js';
+import { AudioActivityStateMachine, AudioActivityValue } from '../vad/audio-activity-state-machine.js';
 
 const log = Logger.create('moqt:media:publish-pipeline');
 
@@ -61,6 +62,10 @@ export interface PublishPipelineConfig {
   quicrInteropEnabled?: boolean;
   /** Participant ID for QuicR interop (32-bit) */
   quicrParticipantId?: number;
+  /** Enable voice activity detection and audio activity indicator for top-N */
+  vadEnabled?: boolean;
+  /** Audio activity state machine timing config */
+  vadConfig?: import('../vad/audio-activity-state-machine.js').AudioActivityConfig;
 }
 
 /**
@@ -81,6 +86,8 @@ export interface PublishedObject {
   timestamp: number;
   /** Priority for transmission */
   priority: Priority;
+  /** Object properties (key-value) carried as MoQ object properties */
+  objectProperties?: Map<number, Uint8Array>;
 }
 
 /**
@@ -179,6 +186,14 @@ export class PublishPipeline {
   private audioObjectId = 0;
   /** Abort controller */
   private abortController?: AbortController;
+  /** Audio activity state machine (when vadEnabled) */
+  private activityStateMachine?: AudioActivityStateMachine;
+  /** Latest activity value shared from audio to video (atomic-like) */
+  private latestActivityValue = AudioActivityValue.SPEECH_END;
+  /** Last committed activity on video for transition detection */
+  private lastVideoActivity = AudioActivityValue.SPEECH_END;
+  /** Header key for audioActivityIndicator */
+  private static readonly ACTIVITY_HEADER_ID = 12;
 
   /**
    * Create a new PublishPipeline
@@ -199,6 +214,11 @@ export class PublishPipeline {
       // Pass channelId for multiplexed worker support
       this.encodeWorkerClient = new CodecEncodeWorkerClient(config.encodeWorker, this.channelId);
       this.setupWorkerHandlers();
+    }
+
+    if (config.vadEnabled) {
+      this.activityStateMachine = new AudioActivityStateMachine(config.vadConfig);
+      log.info('VAD enabled for top-N active speaker', { vadConfig: config.vadConfig });
     }
 
     log.debug('PublishPipeline created', { ...config, useWorker: this.useWorker, channelId: this.channelId });
@@ -475,6 +495,20 @@ export class PublishPipeline {
    * Handle encoded video frame
    */
   private handleEncodedVideoFrame(frame: EncodedVideoFrame): void {
+    // VAD transition detection: on upward transition, force keyframe + new group
+    if (this.activityStateMachine) {
+      const currentActivity = this.latestActivityValue;
+      if (currentActivity > this.lastVideoActivity) {
+        // Upward transition — force keyframe so relay can immediately forward
+        if (!frame.isKeyframe) {
+          this.forceNextKeyframe = true;
+        }
+        this.lastVideoActivity = currentActivity;
+      } else if (currentActivity < this.lastVideoActivity) {
+        this.lastVideoActivity = currentActivity;
+      }
+    }
+
     // Update group/object IDs
     if (frame.isKeyframe) {
       this.videoGroupId++;
@@ -505,6 +539,11 @@ export class PublishPipeline {
       timestamp: frame.timestamp,
       priority: frame.isKeyframe ? Priority.HIGH : Priority.MEDIUM_HIGH,
     };
+
+    // Stamp activity properties on video object
+    if (this.activityStateMachine) {
+      obj.objectProperties = this.buildActivityProperties(this.latestActivityValue);
+    }
 
     // OPS-hi 1: per-frame hot-path — demoted from .info to .trace.
     log.trace('Video object ready', {
@@ -728,6 +767,10 @@ export class PublishPipeline {
               format: audioData.format,
             });
           }
+          // Run VAD on raw audio samples if enabled
+          if (this.activityStateMachine) {
+            this.processVAD(audioData);
+          }
           await this.opusEncoder.encode(audioData);
           audioData.close();
         }
@@ -777,10 +820,50 @@ export class PublishPipeline {
       size: obj.data.byteLength,
     });
 
+    // Stamp activity properties on audio object
+    if (this.activityStateMachine) {
+      obj.objectProperties = this.buildActivityProperties(this.latestActivityValue);
+    }
+
     // Skip emitting if paused (forward=0)
     if (!this._paused) {
       this.emit('audio-object', obj);
     }
+  }
+
+  /**
+   * Simple energy-based VAD on raw AudioData samples.
+   * Feeds result into the AudioActivityStateMachine.
+   */
+  private processVAD(audioData: AudioData): void {
+    if (!this.activityStateMachine) return;
+    try {
+      const samples = new Float32Array(audioData.numberOfFrames);
+      audioData.copyTo(samples, { planeIndex: 0, format: 'f32-planar' });
+
+      // Compute RMS energy
+      let sum = 0;
+      for (let i = 0; i < samples.length; i++) {
+        sum += samples[i] * samples[i];
+      }
+      const rms = Math.sqrt(sum / samples.length);
+
+      // Simple energy threshold for voice activity
+      const voiceActive = rms > 0.01;
+      this.latestActivityValue = this.activityStateMachine.update(voiceActive, performance.now());
+    } catch {
+      // AudioData.copyTo may fail if format is unsupported — skip VAD for this frame
+    }
+  }
+
+  /**
+   * Build objectProperties map with audioActivityIndicator header.
+   */
+  private buildActivityProperties(activityValue: AudioActivityValue): Map<number, Uint8Array> {
+    const props = new Map<number, Uint8Array>();
+    // Header ID 12 is even → value is a single varint
+    props.set(PublishPipeline.ACTIVITY_HEADER_ID, MOQTVarInt.encode(BigInt(activityValue)));
+    return props;
   }
 
   /**

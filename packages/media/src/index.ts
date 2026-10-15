@@ -233,7 +233,7 @@ export type {
 } from './workers/index.js';
 
 // Voice Activity Detection
-export { BaseVAD, LibfvadVAD, SileroVAD } from './vad/index.js';
+export { BaseVAD, LibfvadVAD, SileroVAD, AudioActivityStateMachine, AudioActivityValue } from './vad/index.js';
 export type {
   VAD,
   VADConfig,
@@ -242,6 +242,7 @@ export type {
   VADProvider,
   LibfvadModule,
   SileroVADFactory,
+  AudioActivityConfig,
 } from './vad/index.js';
 
 // Experience Profiles

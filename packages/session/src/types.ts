@@ -196,6 +196,8 @@ export interface ObjectMetadata {
   type?: string;
   /** Max cache duration in milliseconds - tells relay how long to cache this object */
   maxCacheDuration?: number;
+  /** Object properties (key-value pairs) carried as MoQ object extension headers */
+  objectProperties?: Map<number, Uint8Array>;
 }
 
 /**
@@ -591,6 +593,21 @@ export interface IncomingSubscribeEvent {
 }
 
 /**
+ * Track filter for relay-side top-N selection on namespace subscriptions.
+ * The relay inspects the specified object property on each track and
+ * forwards objects from at most `maxTracksSelected` tracks with the
+ * highest property values.
+ */
+export interface TrackFilter {
+  /** Object property key to rank by (e.g. 12 = audioActivityIndicator) */
+  propertyType: number;
+  /** Maximum number of tracks the relay should forward */
+  maxTracksSelected: number;
+  /** Milliseconds before the relay deselects an idle track */
+  timeout: number;
+}
+
+/**
  * Options for subscribing to a namespace
  */
 export interface SubscribeNamespaceOptions {
@@ -604,6 +621,8 @@ export interface SubscribeNamespaceOptions {
    * `undefined` omits the parameter.
    */
   expires?: number;
+  /** Track filter for relay-side top-N selection (draft-18+) */
+  trackFilter?: TrackFilter;
 }
 
 /**

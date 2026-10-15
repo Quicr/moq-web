@@ -1753,7 +1753,7 @@ export class MOQTSession {
    */
   async subscribeTracks(
     namespacePrefix: string[],
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
+    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, objectProperties?: Map<number, Uint8Array>) => void,
     options?: {
       forwardState?: boolean;
       filter?: SubscriptionFilterDraft18;
@@ -2318,7 +2318,7 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
     options?: SubscribeOptions,
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
+    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, objectProperties?: Map<number, Uint8Array>) => void,
     onEndOfGroup?: (groupId: number) => void
   ): Promise<number> {
     if (!this.isReady) {
@@ -3057,7 +3057,7 @@ export class MOQTSession {
 
     if (this.isDraft18) {
       // Draft-18: Send SUBSCRIBE_NAMESPACE on per-request bidi stream
-      await this.subscribeNamespaceDraft18(requestId, namespacePrefix, subscriptionId);
+      await this.subscribeNamespaceDraft18(requestId, namespacePrefix, subscriptionId, _options?.trackFilter);
     } else {
       // Build SUBSCRIBE_NAMESPACE message
       const message = {
@@ -3197,14 +3197,34 @@ export class MOQTSession {
   private async subscribeNamespaceDraft18(
     requestId: bigint,
     namespacePrefix: string[],
-    subscriptionId: number
+    subscriptionId: number,
+    trackFilter?: import('./types.js').TrackFilter
   ): Promise<void> {
     const prefixStr = namespacePrefix.join('/');
+
+    // Build parameters map with optional TrackFilter
+    let parameters: Map<number, Uint8Array> | undefined;
+    if (trackFilter) {
+      parameters = new Map();
+      // Encode TrackFilter as TRACK_PROPERTY_FILTER (0x29):
+      // propertyType (varint) | maxTracksSelected (varint) | timeout (varint)
+      const filterWriter = new BufferWriter();
+      filterWriter.writeVarInt(trackFilter.propertyType);
+      filterWriter.writeVarInt(trackFilter.maxTracksSelected);
+      filterWriter.writeVarInt(trackFilter.timeout);
+      parameters.set(0x29, filterWriter.toUint8Array());
+      log.info('TrackFilter encoded', {
+        propertyType: trackFilter.propertyType,
+        maxTracksSelected: trackFilter.maxTracksSelected,
+        timeout: trackFilter.timeout,
+      });
+    }
 
     const subscribeNsMessage: SubscribeNamespaceMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
       requestId,
       trackNamespacePrefix: namespacePrefix,
+      parameters,
     };
 
     const encoded = this.codec.encodeControlMessage(subscribeNsMessage);
@@ -3483,7 +3503,7 @@ export class MOQTSession {
    */
   setSubscriptionCallback(
     subscriptionId: number,
-    onObject: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void
+    onObject: (data: Uint8Array, groupId: number, objectId: number, timestamp: number, objectProperties?: Map<number, Uint8Array>) => void
   ): void {
     const subscription = this.subscriptionManager.get(subscriptionId);
     if (subscription) {
@@ -3493,7 +3513,7 @@ export class MOQTSession {
         const pending = subscription.pendingObjects;
         subscription.pendingObjects = undefined;
         for (const obj of pending) {
-          onObject(obj.data, obj.groupId, obj.objectId, obj.timestamp);
+          onObject(obj.data, obj.groupId, obj.objectId, obj.timestamp, obj.objectProperties);
         }
       }
       log.debug('Updated subscription callback', { subscriptionId });
@@ -4826,13 +4846,15 @@ export class MOQTSession {
       const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
       const streamInfo = await this.doCreateStream(sendOrder !== undefined ? { sendOrder } : undefined);
 
+      const hasProperties = metadata.objectProperties !== undefined && metadata.objectProperties.size > 0;
+
       // Set END_OF_GROUP=true since this stream contains one complete object/group
       const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
         trackAlias,
         groupId: metadata.groupId,
         subgroupId: 0,
         publisherPriority: priority ?? 128,
-      }, true /* endOfGroup */);
+      }, true /* endOfGroup */, hasProperties);
 
       // Build extensions map if maxCacheDuration is specified
       let extensions: Map<number, number> | undefined;
@@ -4846,8 +4868,9 @@ export class MOQTSession {
         data,
         ObjectStatus.NORMAL,
         -1, // previousObjectId (first object)
-        hasExtensions,
-        extensions
+        hasExtensions || hasProperties,
+        extensions,
+        metadata.objectProperties
       );
 
       const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -4941,13 +4964,15 @@ export class MOQTSession {
         const gopSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
         const streamInfo = await this.doCreateStream(gopSendOrder !== undefined ? { sendOrder: gopSendOrder } : undefined);
 
+        const hasProperties = metadata.objectProperties !== undefined && metadata.objectProperties.size > 0;
+
         // Set END_OF_GROUP=true since each stream contains exactly one complete group (one GOP)
         const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
           trackAlias,
           groupId: metadata.groupId,
           subgroupId: 0,
           publisherPriority: priority,
-        }, true /* endOfGroup */);
+        }, true /* endOfGroup */, hasProperties);
 
         // Build extensions map if maxCacheDuration is specified
         let extensions: Map<number, number> | undefined;
@@ -4961,8 +4986,9 @@ export class MOQTSession {
           data,
           ObjectStatus.NORMAL,
           -1, // previousObjectId (first object)
-          hasExtensions,
-          extensions
+          hasExtensions || hasProperties,
+          extensions,
+          metadata.objectProperties
         );
 
         const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -5003,19 +5029,22 @@ export class MOQTSession {
 
           const pfSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
           const streamInfo = await this.doCreateStream(pfSendOrder !== undefined ? { sendOrder: pfSendOrder } : undefined);
+          const pfHasProperties = metadata.objectProperties !== undefined && metadata.objectProperties.size > 0;
           const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
             trackAlias,
             groupId: metadata.groupId,
             subgroupId: 0,
             publisherPriority: priority,
-          }, false);
+          }, false, pfHasProperties);
 
           const objectData = this.codec.encodeStreamObject(
             metadata.objectId,
             data,
             ObjectStatus.NORMAL,
             -1,
-            hasExtensions
+            hasExtensions || pfHasProperties,
+            undefined,
+            metadata.objectProperties
           );
 
           const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -5064,7 +5093,8 @@ export class MOQTSession {
           ObjectStatus.NORMAL,
           existing.previousObjectId, // Delta encoding from previous object
           existing.hasExtensions,
-          extensions
+          extensions,
+          metadata.objectProperties
         );
 
         try {

@@ -25,8 +25,8 @@ export function Lobby() {
               <Icon name="chat" size={20} className="text-white" />
             </div>
             <div>
-              <h1 className="font-semibold text-gray-800">MoQ Chat</h1>
-              <p className="text-xs text-gray-500">Media over QUIC</p>
+              <h1 className="font-semibold text-slate-800">MoQ Chat</h1>
+              <p className="text-xs text-slate-500">Media over QUIC</p>
             </div>
           </div>
 
@@ -34,19 +34,19 @@ export function Lobby() {
             <div className="flex items-center gap-2">
               <Avatar name={user.displayName} src={user.avatarUrl} size="sm" />
               <div className="hidden sm:block">
-                <div className="text-sm font-medium text-gray-700">{user.displayName}</div>
-                <div className="text-xs text-gray-400">
+                <div className="text-sm font-medium text-slate-700">{user.displayName}</div>
+                <div className="text-xs text-slate-400">
                   {user.isAnonymous ? 'Guest' : user.email}
                 </div>
               </div>
             </div>
             {user.isAnonymous && (
-              <span className="badge bg-gray-100 text-gray-500">
+              <span className="badge bg-slate-100 text-slate-500">
                 <Icon name="visibility" size={12} className="mr-1" />
                 View only
               </span>
             )}
-            <button onClick={logout} className="btn-ghost text-gray-400" title="Sign out">
+            <button onClick={logout} className="btn-ghost text-slate-400" title="Sign out">
               <Icon name="logout" size={20} />
             </button>
           </div>

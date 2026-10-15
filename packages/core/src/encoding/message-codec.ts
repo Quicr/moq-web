@@ -2851,7 +2851,7 @@ export class ObjectCodec {
    * @param endOfGroup - Whether this is the last subgroup in the group
    * @returns Tuple of [encoded bytes, hasExtensions flag]
    */
-  static encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false): [Uint8Array, boolean] {
+  static encodeSubgroupHeader(header: SubgroupHeader, endOfGroup = false, hasProperties = false): [Uint8Array, boolean] {
     if (isDraft18Active()) {
       const d18Header: SubgroupHeaderDraft18 = {
         trackAlias: typeof header.trackAlias === 'bigint' ? header.trackAlias : BigInt(header.trackAlias),
@@ -2860,9 +2860,10 @@ export class ObjectCodec {
         publisherPriority: header.publisherPriority,
         endOfGroup: endOfGroup ? true : undefined,
         firstObject: true,
+        hasProperties: hasProperties || undefined,
       };
       const encoded = Draft18StreamCodec.encodeSubgroupHeader(d18Header);
-      return [encoded, false]; // draft-18 uses properties, not extensions flag
+      return [encoded, hasProperties]; // hasProperties tells caller that object headers include properties
     }
 
     // Draft-16: Type | Track Alias | Group ID | [Subgroup ID] | [Publisher Priority]
@@ -2994,7 +2995,8 @@ export class ObjectCodec {
     status: ObjectStatus = ObjectStatus.NORMAL,
     previousObjectId = -1,
     hasExtensions = false,
-    extensions?: Map<number, number | Uint8Array>
+    extensions?: Map<number, number | Uint8Array>,
+    objectProperties?: Map<number, Uint8Array>
   ): Uint8Array {
     if (isDraft18Active()) {
       // Draft-18: Object ID Delta | [Properties] | Payload Length | [Object Status] | [Payload]
@@ -3002,11 +3004,13 @@ export class ObjectCodec {
       const isFirstObject = previousObjectId < 0;
       const objectIdDelta = isFirstObject ? objectId : (objectId - previousObjectId - 1);
 
+      const hasProps = hasExtensions || (objectProperties !== undefined && objectProperties.size > 0);
       const objHeader: ObjectHeaderDraft18 = {
         objectIdDelta: BigInt(objectIdDelta),
         payloadLength: BigInt(payload.length),
+        objectProperties,
       };
-      const headerBytes = Draft18StreamCodec.encodeObjectHeader(objHeader, hasExtensions);
+      const headerBytes = Draft18StreamCodec.encodeObjectHeader(objHeader, hasProps);
 
       if (payload.length === 0 && status !== ObjectStatus.NORMAL) {
         // payloadLength=0 means Object Status varint follows
@@ -3121,14 +3125,14 @@ export class ObjectCodec {
    * @param offset - Offset to start reading from
    * @param hasExtensions - Whether objects have extensions (from header type EXTENSIONS bit)
    * @param previousObjectId - Previous object ID for delta decoding, -1 for first object
-   * @returns Tuple of [objectId, payload, status, bytesConsumed]
+   * @returns Tuple of [objectId, payload, status, bytesConsumed, objectProperties?]
    */
   static decodeStreamObject(
     buffer: Uint8Array,
     offset = 0,
     hasExtensions = true,
     previousObjectId = -1
-  ): [number, Uint8Array, ObjectStatus, number] {
+  ): [number, Uint8Array, ObjectStatus, number, Map<number, Uint8Array>?] {
     if (isDraft18Active()) {
       // Draft-18: Object ID Delta | [Properties] | Payload Length | [Object Status] | [Payload]
       const [objHeader, headerBytesRead] = Draft18StreamCodec.decodeObjectHeader(buffer, offset, hasExtensions);
@@ -3144,7 +3148,7 @@ export class ObjectCodec {
         }
         const [statusVal, statusBytes] = MOQTVarInt.decodeNumber(buffer, offset + headerBytesRead);
         const status = statusVal as ObjectStatus;
-        return [objectId, new Uint8Array(0), status, headerBytesRead + statusBytes];
+        return [objectId, new Uint8Array(0), status, headerBytesRead + statusBytes, objHeader.objectProperties];
       }
 
       const totalNeeded = headerBytesRead + payloadLength;
@@ -3152,7 +3156,7 @@ export class ObjectCodec {
         throw new Error(`Incomplete object: need ${totalNeeded} bytes, have ${buffer.length - offset}`);
       }
       const payload = buffer.subarray(offset + headerBytesRead, offset + totalNeeded);
-      return [objectId, payload, ObjectStatus.NORMAL, totalNeeded];
+      return [objectId, payload, ObjectStatus.NORMAL, totalNeeded, objHeader.objectProperties];
     }
 
     // Draft-16 format: Object ID Delta | [ExtLen] | [Extensions] | Payload Length | [Status] | [Payload]

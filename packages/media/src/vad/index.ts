@@ -13,3 +13,5 @@ export { LibfvadVAD } from './libfvad-vad.js';
 export type { LibfvadModule } from './libfvad-vad.js';
 export { SileroVAD } from './silero-vad.js';
 export type { SileroVADFactory } from './silero-vad.js';
+export { AudioActivityStateMachine, AudioActivityValue } from './audio-activity-state-machine.js';
+export type { AudioActivityConfig } from './audio-activity-state-machine.js';
