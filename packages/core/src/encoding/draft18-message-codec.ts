@@ -9,7 +9,7 @@
  */
 
 import { Logger } from '../utils/logger.js';
-import { MOQTVarInt } from './moqt-varint.js';
+import { MOQTVarInt, MOQT_VARINT_MAX } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
 import {
   normalizePublishDoneErrorCode,
@@ -114,6 +114,47 @@ const DRAFT18_NORMALIZERS: ErrorCodeNormalizers = {
   requestError: normalizeRequestErrorCode,
   publishDone: normalizePublishDoneErrorCode,
 };
+
+const P18 = RequestParameterDraft18;
+
+/**
+ * §10.2.2-10.2.14: the Message Parameters each message may carry. REQUEST_OK
+ * is the union over the replies that use it (PUBLISH_OK, REQUEST_UPDATE_OK,
+ * TRACK_STATUS_OK, ...).
+ */
+const PARAMETER_SCOPES: ReadonlyMap<MessageTypeDraft18, ReadonlySet<number>> = new Map([
+  [MessageTypeDraft18.SUBSCRIBE, new Set([
+    P18.AUTHORIZATION_TOKEN, P18.OBJECT_DELIVERY_TIMEOUT, P18.SUBGROUP_DELIVERY_TIMEOUT, P18.RENDEZVOUS_TIMEOUT,
+    P18.FORWARD, P18.SUBSCRIBER_PRIORITY, P18.SUBSCRIPTION_FILTER, P18.GROUP_ORDER, P18.NEW_GROUP_REQUEST,
+  ])],
+  [MessageTypeDraft18.SUBSCRIBE_OK, new Set([P18.EXPIRES, P18.LARGEST_OBJECT])],
+  [MessageTypeDraft18.PUBLISH, new Set([P18.AUTHORIZATION_TOKEN, P18.EXPIRES, P18.LARGEST_OBJECT, P18.FORWARD])],
+  [MessageTypeDraft18.REQUEST_OK, new Set([
+    P18.OBJECT_DELIVERY_TIMEOUT, P18.SUBGROUP_DELIVERY_TIMEOUT, P18.EXPIRES, P18.LARGEST_OBJECT, P18.FORWARD,
+    P18.SUBSCRIBER_PRIORITY, P18.SUBSCRIPTION_FILTER, P18.GROUP_ORDER, P18.NEW_GROUP_REQUEST,
+  ])],
+  [MessageTypeDraft18.FETCH, new Set([
+    P18.AUTHORIZATION_TOKEN, P18.FILL_TIMEOUT, P18.SUBSCRIBER_PRIORITY, P18.GROUP_ORDER,
+  ])],
+  [MessageTypeDraft18.FETCH_OK, new Set<number>()],
+  [MessageTypeDraft18.TRACK_STATUS, new Set([P18.AUTHORIZATION_TOKEN])],
+  [MessageTypeDraft18.REQUEST_UPDATE, new Set([
+    P18.AUTHORIZATION_TOKEN, P18.OBJECT_DELIVERY_TIMEOUT, P18.SUBGROUP_DELIVERY_TIMEOUT, P18.FORWARD,
+    P18.SUBSCRIBER_PRIORITY, P18.SUBSCRIPTION_FILTER, P18.NEW_GROUP_REQUEST, P18.TRACK_NAMESPACE_PREFIX,
+  ])],
+  [MessageTypeDraft18.PUBLISH_NAMESPACE, new Set([P18.AUTHORIZATION_TOKEN])],
+  [MessageTypeDraft18.SUBSCRIBE_NAMESPACE, new Set([P18.AUTHORIZATION_TOKEN])],
+  // TRACK_NAMESPACE_PREFIX is only defined for REQUEST_UPDATE (§10.2.14), but
+  // MOQTSession.subscribeTracks() still sends it here, so it stays accepted
+  // until the sender is fixed.
+  [MessageTypeDraft18.SUBSCRIBE_TRACKS, new Set([P18.AUTHORIZATION_TOKEN, P18.FORWARD, P18.TRACK_NAMESPACE_PREFIX])],
+]);
+
+/** §10.2.8 / §10.2.12: uint8 parameters with a restricted range */
+const UINT8_RANGES: ReadonlyMap<number, readonly [min: number, max: number]> = new Map([
+  [P18.FORWARD, [0, 1]],
+  [P18.GROUP_ORDER, [GroupOrder.ASCENDING, GroupOrder.DESCENDING]],
+]);
 
 // Re-export bounds constants for backward compatibility (consumers may import from here)
 export { MAX_PARAMETER_COUNT, MAX_STRING_LENGTH, MAX_NAMESPACE_TUPLE_COUNT, MAX_TRACK_NAME_LENGTH, MAX_AUTH_TOKEN_LENGTH } from './codec-helpers.js';
@@ -585,30 +626,19 @@ export class Draft18MessageCodec {
 
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE numParams', MessageTypeDraft18.SUBSCRIBE);
-    let filter = SubscriptionFilterDraft18.NEXT_GROUP_START;
-    let startLocation: Location | undefined;
+    // §10.2.9: an omitted filter means unfiltered, i.e. AbsoluteStart {0, 0}
+    let filter = SubscriptionFilterDraft18.ABSOLUTE_START;
+    let startLocation: Location | undefined = { group: 0n, object: 0n };
     let endGroupDelta: bigint | undefined;
     const parameters = new Map<number, Uint8Array>();
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE, previousType, i);
       previousType = type;
 
       if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
-        const length = reader.readVarIntNumber();
-        assertBound(length, MAX_STRING_LENGTH, 'SUBSCRIBE SUBSCRIPTION_FILTER length', MessageTypeDraft18.SUBSCRIBE);
-        const filterBytes = reader.readBytes(length);
-        const filterReader = new Draft18BufferReader(filterBytes, 0);
-        filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
-        if (filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
-            filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-          startLocation = { group: filterReader.readVarInt(), object: filterReader.readVarInt() };
-        }
-        if (filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-          endGroupDelta = filterReader.readVarInt();
-        }
+        ({ filter, startLocation, endGroupDelta } = Draft18MessageCodec.readFilter(reader, MessageTypeDraft18.SUBSCRIBE));
       } else {
         const value = Draft18MessageCodec.readParameterValue(reader, type);
         parameters.set(type, value);
@@ -669,8 +699,7 @@ export class Draft18MessageCodec {
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE_OK, previousType, i);
       previousType = type;
 
       if (type === RequestParameterDraft18.LARGEST_OBJECT) {
@@ -739,8 +768,7 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH numParams', MessageTypeDraft18.PUBLISH);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.PUBLISH, previousType, i);
       previousType = type;
       Draft18MessageCodec.readParameterValue(reader, type);
     }
@@ -858,8 +886,7 @@ export class Draft18MessageCodec {
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.REQUEST_OK, previousType, i);
       previousType = type;
 
       if (type === RequestParameterDraft18.EXPIRES) {
@@ -991,13 +1018,12 @@ export class Draft18MessageCodec {
     const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.FETCH, previousType, i);
       previousType = type;
       if (type === RequestParameterDraft18.SUBSCRIBER_PRIORITY) {
         subscriberPriority = reader.readByte();
       } else if (type === RequestParameterDraft18.GROUP_ORDER) {
-        groupOrder = reader.readByte() as GroupOrder;
+        groupOrder = Draft18MessageCodec.readUint8Parameter(reader, type) as GroupOrder;
       } else {
         parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
       }
@@ -1039,8 +1065,7 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'FETCH_OK numParams', MessageTypeDraft18.FETCH_OK);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.FETCH_OK, previousType, i);
       previousType = type;
       Draft18MessageCodec.readParameterValue(reader, type);
     }
@@ -1101,8 +1126,7 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'TRACK_STATUS numParams', MessageTypeDraft18.TRACK_STATUS);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.TRACK_STATUS, previousType, i);
       previousType = type;
       Draft18MessageCodec.readParameterValue(reader, type);
     }
@@ -1186,8 +1210,7 @@ export class Draft18MessageCodec {
     let forwardState = true;
     const parameters = new Map<number, Uint8Array>();
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.REQUEST_UPDATE, previousType, i);
       previousType = type;
       const value = Draft18MessageCodec.readParameterValue(reader, type);
       if (type === RequestParameterDraft18.FORWARD) {
@@ -1223,8 +1246,7 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH_NAMESPACE numParams', MessageTypeDraft18.PUBLISH_NAMESPACE);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.PUBLISH_NAMESPACE, previousType, i);
       previousType = type;
       Draft18MessageCodec.readParameterValue(reader, type);
     }
@@ -1254,8 +1276,7 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_NAMESPACE numParams', MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE, previousType, i);
       previousType = type;
       Draft18MessageCodec.readParameterValue(reader, type);
     }
@@ -1353,33 +1374,16 @@ export class Draft18MessageCodec {
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_TRACKS numParams', MessageTypeDraft18.SUBSCRIBE_TRACKS);
     let forwardState = true;
-    let filter = SubscriptionFilterDraft18.NEXT_GROUP_START;
-    let startLocation: Location | undefined;
-    let endGroupDelta: bigint | undefined;
     const parameters = new Map<number, Uint8Array>();
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE_TRACKS, previousType, i);
       previousType = type;
 
       if (type === RequestParameterDraft18.FORWARD) {
         // §10.2.12: single-byte value, no length prefix.
-        forwardState = reader.readByte() === 0x01;
-      } else if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
-        const length = reader.readVarIntNumber();
-        assertBound(length, MAX_STRING_LENGTH, 'SUBSCRIBE_TRACKS SUBSCRIPTION_FILTER length', MessageTypeDraft18.SUBSCRIBE_TRACKS);
-        const filterBytes = reader.readBytes(length);
-        const filterReader = new Draft18BufferReader(filterBytes, 0);
-        filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
-        if (filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
-            filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-          startLocation = { group: filterReader.readVarInt(), object: filterReader.readVarInt() };
-        }
-        if (filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-          endGroupDelta = filterReader.readVarInt();
-        }
+        forwardState = Draft18MessageCodec.readUint8Parameter(reader, type) === 0x01;
       } else {
         const value = Draft18MessageCodec.readParameterValue(reader, type);
         parameters.set(type, value);
@@ -1391,9 +1395,8 @@ export class Draft18MessageCodec {
       requestId,
       trackNamespacePrefix,
       forwardState,
-      filter,
-      startLocation,
-      endGroupDelta,
+      // §10.2: SUBSCRIBE_TRACKS carries no SUBSCRIPTION_FILTER
+      filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
       parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
@@ -1453,16 +1456,90 @@ export class Draft18MessageCodec {
   }
 
   /**
+   * Read a parameter's type. §10.2: an unknown parameter, or one the message
+   * may not carry, closes the session; so does a repeat, except for
+   * AUTHORIZATION_TOKEN (§10.2.2).
+   */
+  private static nextParameterType(
+    reader: Draft18BufferReader,
+    messageType: MessageTypeDraft18,
+    previousType: number,
+    index: number,
+  ): number {
+    const delta = reader.readVarIntNumber();
+    const type = previousType + delta;
+    const name = RequestParameterDraft18[type];
+    const scope = MessageTypeDraft18[messageType];
+
+    if (name === undefined) {
+      throw new Draft18CodecError(`Unknown parameter 0x${type.toString(16)} in ${scope} (PROTOCOL_VIOLATION)`, messageType);
+    }
+    if (!PARAMETER_SCOPES.get(messageType)?.has(type)) {
+      throw new Draft18CodecError(`${name} not allowed in ${scope} (PROTOCOL_VIOLATION)`, messageType);
+    }
+    if (index > 0 && delta === 0 && type !== RequestParameterDraft18.AUTHORIZATION_TOKEN) {
+      throw new Draft18CodecError(`Duplicate parameter ${name} in ${scope} (PROTOCOL_VIOLATION)`, messageType);
+    }
+
+    return type;
+  }
+
+  /** Read a uint8 parameter, closing the session on a value outside its range (§10.2.8, §10.2.12). */
+  private static readUint8Parameter(reader: Draft18BufferReader, type: number): number {
+    const value = reader.readByte();
+    const range = UINT8_RANGES.get(type);
+    if (range && (value < range[0] || value > range[1])) {
+      throw new Draft18CodecError(
+        `Invalid ${RequestParameterDraft18[type]} ${value} (PROTOCOL_VIOLATION)`,
+      );
+    }
+
+    return value;
+  }
+
+  /**
+   * Read a length-prefixed Subscription Filter (§5.1.2). An unknown filter
+   * type, or an AbsoluteRange ending past Group 2^64-1, closes the session.
+   */
+  private static readFilter(reader: Draft18BufferReader, messageType: MessageTypeDraft18): {
+    filter: SubscriptionFilterDraft18;
+    startLocation?: Location;
+    endGroupDelta?: bigint;
+  } {
+    const length = reader.readVarIntNumber();
+    assertBound(length, MAX_STRING_LENGTH, 'SUBSCRIPTION_FILTER length', messageType);
+    const filterReader = new Draft18BufferReader(reader.readBytes(length), 0);
+
+    const filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
+    if (!SubscriptionFilterDraft18[filter]) {
+      throw new Draft18CodecError(`Unknown filter type ${filter} (PROTOCOL_VIOLATION)`, messageType);
+    }
+    if (filter !== SubscriptionFilterDraft18.ABSOLUTE_START && filter !== SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+      return { filter };
+    }
+
+    const startLocation = { group: filterReader.readVarInt(), object: filterReader.readVarInt() };
+    if (filter === SubscriptionFilterDraft18.ABSOLUTE_START) {
+      return { filter, startLocation };
+    }
+
+    const endGroupDelta = filterReader.readVarInt();
+    if (startLocation.group + endGroupDelta > MOQT_VARINT_MAX) {
+      throw new Draft18CodecError('AbsoluteRange end Group exceeds 2^64-1 (PROTOCOL_VIOLATION)', messageType);
+    }
+
+    return { filter, startLocation, endGroupDelta };
+  }
+
+  /**
    * Read a parameter value based on type (for skipping unknown parameters)
    */
   private static readParameterValue(reader: Draft18BufferReader, type: number): Uint8Array {
     switch (type) {
       case RequestParameterDraft18.FORWARD:
       case RequestParameterDraft18.SUBSCRIBER_PRIORITY:
-      case RequestParameterDraft18.GROUP_ORDER: {
-        const b = reader.readByte();
-        return new Uint8Array([b]);
-      }
+      case RequestParameterDraft18.GROUP_ORDER:
+        return new Uint8Array([Draft18MessageCodec.readUint8Parameter(reader, type)]);
       case RequestParameterDraft18.EXPIRES:
       case RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT:
       case RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT:

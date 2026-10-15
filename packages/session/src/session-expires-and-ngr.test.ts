@@ -362,9 +362,9 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX on SUBS
       return { type: MessageTypeDraft18.REQUEST_OK, requestId: 0n } as ControlMessageDraft18;
     };
 
-    // Pick an odd key (length-prefixed byte string) so we don't collide with
-    // the §10.2 varint decoder logic and can prove pass-through survives.
-    const passthroughKey = 0x51;
+    // An odd key (length-prefixed byte string) that SUBSCRIBE_TRACKS may carry
+    // (§10.2.2), to prove pass-through survives.
+    const passthroughKey = RequestParameterDraft18.AUTHORIZATION_TOKEN;
     const extra = new Map<number, Uint8Array>([
       [passthroughKey, new Uint8Array([0xde, 0xad])],
     ]);

@@ -268,7 +268,6 @@ describe('Draft18MessageCodec', () => {
       const params = new Map<number, Uint8Array>([
         [RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, MOQTVarInt.encode(2000n)],
         [RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, MOQTVarInt.encode(200n)],
-        [RequestParameterDraft18.FILL_TIMEOUT, MOQTVarInt.encode(750n)],
         [RequestParameterDraft18.RENDEZVOUS_TIMEOUT, MOQTVarInt.encode(1500n)],
       ]);
       const message: SubscribeMessageDraft18 = {
@@ -287,7 +286,6 @@ describe('Draft18MessageCodec', () => {
       const p = d.parameters!;
       expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT)!)[0])).toBe(2000);
       expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT)!)[0])).toBe(200);
-      expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.FILL_TIMEOUT)!)[0])).toBe(750);
       expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.RENDEZVOUS_TIMEOUT)!)[0])).toBe(1500);
     });
   });
@@ -769,12 +767,9 @@ describe('Draft18MessageCodec', () => {
       expect(() => Draft18MessageCodec.decode(bad)).toThrow(Draft18CodecError);
     });
 
-    it('roundtrips FETCH with subscriber delivery-timeout parameters', () => {
+    it('roundtrips FETCH with FILL_TIMEOUT', () => {
       const params = new Map<number, Uint8Array>([
-        [RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, MOQTVarInt.encode(500n)],
-        [RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, MOQTVarInt.encode(50n)],
         [RequestParameterDraft18.FILL_TIMEOUT, MOQTVarInt.encode(250n)],
-        [RequestParameterDraft18.RENDEZVOUS_TIMEOUT, MOQTVarInt.encode(1000n)],
       ]);
       const message: FetchMessageDraft18 = {
         type: MessageTypeDraft18.FETCH,
@@ -793,10 +788,7 @@ describe('Draft18MessageCodec', () => {
       const [decoded] = Draft18MessageCodec.decode(encoded);
       const d = decoded as FetchMessageDraft18;
       const decodedParams = d.parameters!;
-      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT)!)[0])).toBe(500);
-      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT)!)[0])).toBe(50);
       expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.FILL_TIMEOUT)!)[0])).toBe(250);
-      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.RENDEZVOUS_TIMEOUT)!)[0])).toBe(1000);
     });
 
     it('encodeFetch throws when joining without subscribeRequestId', () => {
@@ -1259,24 +1251,17 @@ describe('Draft18MessageCodec', () => {
       expect(d.endGroupDelta).toBeUndefined();
     });
 
-    it('preserves unknown pass-through parameters', () => {
-      const passThrough = new Map<number, Uint8Array>([
-        [0x40, new Uint8Array([0xde, 0xad, 0xbe, 0xef])],
-      ]);
+    it('rejects an unknown parameter (§10.2)', () => {
       const message: SubscribeTracksMessageDraft18 = {
         type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
         requestId: 10n,
         trackNamespacePrefix: ['ns'],
         forwardState: true,
         filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
-        parameters: passThrough,
+        parameters: new Map([[0x40, new Uint8Array([0xde, 0xad, 0xbe, 0xef])]]),
       };
 
-      const encoded = Draft18MessageCodec.encode(message);
-      const [decoded] = Draft18MessageCodec.decode(encoded);
-
-      const d = decoded as SubscribeTracksMessageDraft18;
-      expect(d.parameters?.get(0x40)).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+      expect(() => Draft18MessageCodec.decode(Draft18MessageCodec.encode(message))).toThrow(/Unknown parameter 0x40/);
     });
   });
 
