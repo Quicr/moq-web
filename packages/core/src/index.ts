@@ -290,6 +290,8 @@ export type {
   GoAwayMessageDraft22,
   SubscribeOkMessageDraft22,
   FetchMessageDraft22,
+  LocationFilterDraft22,
+  SubscribeMessageDraft22,
   FetchOkMessageDraft22,
   RequestOkMessageDraft22,
 } from './messages/types.js';

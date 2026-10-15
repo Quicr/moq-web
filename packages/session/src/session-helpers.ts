@@ -14,11 +14,13 @@ import {
   ConnectionStateMachine as _ConnectionStateMachine,
   MessageCodec,
   MOQTVarInt,
+  LocationFilterTypeDraft22,
   RequestParameterDraft18,
   SubscriptionFilterDraft18,
   TrackPropertyDraft18,
   type ConnectionState,
   type ControlMessageDraft18,
+  type LocationFilterDraft22,
   type IProtocolCodec,
 } from '@moq-web/core';
 import { base64urlDecode, C4M_TOKEN_TYPE, coseSign1Encode } from '@moq-web/cat';
@@ -112,6 +114,51 @@ export function mapSubscribeFilter(options: {
     case undefined:
     default:
       return { filter: SubscriptionFilterDraft18.NEXT_GROUP_START };
+  }
+}
+
+/**
+ * Draft-22 §9.20.9 LOCATION_FILTER mapping for SUBSCRIBE.
+ *
+ * Same inputs as `mapSubscribeFilter`, but yields draft-22 filter types.
+ * 'absolute-range' has no end object in the API (the whole end group is
+ * included), so it maps to ABSOLUTE_START_GROUP_END. Unknown / omitted values
+ * start at the Next Group (RELATIVE_START 0).
+ */
+export function mapLocationFilter(
+  options: Parameters<typeof mapSubscribeFilter>[0],
+): LocationFilterDraft22 {
+  const startGroup = BigInt(options?.startGroup ?? 0);
+  const startObject = BigInt(options?.startObject ?? 0);
+
+  switch (options?.filterType) {
+    case 'largest-object':
+      return { type: LocationFilterTypeDraft22.NEXT_OBJECT };
+    case 'absolute':
+    case 'absolute-start':
+      return {
+        type: LocationFilterTypeDraft22.ABSOLUTE_START,
+        startLocation: { group: startGroup, object: startObject },
+      };
+    case 'absolute-range': {
+      const endGroup = BigInt(options.endGroup ?? options.startGroup ?? 0);
+      if (endGroup < startGroup) {
+        throw new Error(`SUBSCRIBE endGroup ${endGroup} is before startGroup ${startGroup}`);
+      }
+
+      return {
+        type: LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END,
+        startLocation: { group: startGroup, object: startObject },
+        endGroupDelta: endGroup - startGroup,
+      };
+    }
+    case 'latest':
+    case 'next-group':
+    default:
+      return {
+        type: LocationFilterTypeDraft22.RELATIVE_START,
+        startLocation: { group: 0n, object: 0n },
+      };
   }
 }
 

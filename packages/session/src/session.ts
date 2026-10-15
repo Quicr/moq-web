@@ -101,6 +101,7 @@ import {
   LocationFilterTypeDraft22,
   RequestParameterDraft22,
   type FetchMessageDraft22,
+  type SubscribeMessageDraft22,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
 } from '@moq-web/core';
@@ -115,6 +116,7 @@ import {
   encodeTokenBytes,
   encodeTrackNamespaceBytes,
   generateSessionId,
+  mapLocationFilter,
   mapSubscribeFilter,
   namespacePrefixMatches,
   narrowBigIntToNumber,
@@ -2452,19 +2454,33 @@ export class MOQTSession {
       );
     }
 
-    const { filter, startLocation, endGroupDelta } = mapSubscribeFilter(options);
+    // §9.20.9: draft-22 carries the filter as LOCATION_FILTER, with different type values
+    let subscribeMessage: SubscribeMessageDraft18 | SubscribeMessageDraft22;
+    if (this.isDraft22) {
+      subscribeMessage = {
+        type: MessageTypeDraft22.SUBSCRIBE,
+        requestId,
+        trackNamespace: namespace,
+        trackName,
+        forwardState: true,
+        locationFilter: mapLocationFilter(options),
+        parameters,
+      };
+    } else {
+      const { filter, startLocation, endGroupDelta } = mapSubscribeFilter(options);
 
-    const subscribeMessage: SubscribeMessageDraft18 = {
-      type: MessageTypeDraft18.SUBSCRIBE,
-      requestId,
-      trackNamespace: namespace,
-      trackName,
-      forwardState: true,
-      filter,
-      startLocation,
-      endGroupDelta,
-      parameters,
-    };
+      subscribeMessage = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId,
+        trackNamespace: namespace,
+        trackName,
+        forwardState: true,
+        filter,
+        startLocation,
+        endGroupDelta,
+        parameters,
+      };
+    }
 
     const encoded = this.codec.encodeControlMessage(subscribeMessage);
     const subHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');

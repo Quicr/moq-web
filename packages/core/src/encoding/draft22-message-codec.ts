@@ -38,11 +38,11 @@ import {
   type ControlMessageDraft22,
   type ClientSetupMessageDraft18,
   type ServerSetupMessageDraft18,
-  type SubscribeMessageDraft18,
+  type SubscribeMessageDraft22,
+  type LocationFilterDraft22,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
   type FetchMessageDraft22,
-  type Location,
 } from '../messages/types.js';
 
 /** §9.20: SUBSCRIBER_PRIORITY default when the parameter is omitted */
@@ -77,8 +77,8 @@ export class Draft22MessageCodec {
           message.type,
           (w) => Draft22MessageCodec.encodeFetch(w, message as FetchMessageDraft22),
         );
-      case MessageTypeDraft18.SUBSCRIBE:
-        return Draft22MessageCodec.encodeSubscribeDraft22(message as unknown as SubscribeMessageDraft18);
+      case MessageTypeDraft22.SUBSCRIBE:
+        return Draft22MessageCodec.encodeSubscribeDraft22(message as SubscribeMessageDraft22);
       default:
         // All other messages share draft-18 wire format
         return Draft18MessageCodec.encode(message as unknown as ControlMessageDraft18);
@@ -209,7 +209,7 @@ export class Draft22MessageCodec {
   // SUBSCRIBE decode — draft-22 uses LOCATION_FILTER instead of SUBSCRIPTION_FILTER
   // ============================================================================
 
-  private static decodeSubscribeDraft22(reader: Draft18BufferReader): SubscribeMessageDraft18 {
+  private static decodeSubscribeDraft22(reader: Draft18BufferReader): SubscribeMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader);
     const trackName = decodeTrackName(reader);
@@ -217,66 +217,41 @@ export class Draft22MessageCodec {
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE numParams');
 
-    // Default: no filter (draft-22 NONE = 0x00 maps to NEXT_GROUP_START for compat)
-    let filter = 1; // NEXT_GROUP_START / RELATIVE_START
-    let startLocation: Location | undefined;
-    let endGroupDelta: bigint | undefined;
+    // §9.20.18: FORWARD defaults to 1 when omitted
+    let forwardState = true;
+    let locationFilter: LocationFilterDraft22 | undefined;
     const parameters = new Map<number, Uint8Array>();
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = previousType + reader.readVarIntNumber();
       previousType = type;
 
-      if (type === RequestParameterDraft22.LOCATION_FILTER) {
-        // Draft-22 §9.20.9: LOCATION_FILTER uses the 6-mode encoding
-        const filterType = reader.readVarIntNumber();
-        filter = filterType;
-
-        switch (filterType) {
-          case LocationFilterTypeDraft22.NONE:
-          case LocationFilterTypeDraft22.NEXT_OBJECT:
-            // No additional fields
-            break;
-          case LocationFilterTypeDraft22.RELATIVE_START:
-            // StartGroup (relative)
-            startLocation = { group: reader.readVarInt(), object: 0n };
-            break;
-          case LocationFilterTypeDraft22.ABSOLUTE_START:
-            // StartGroup, StartObject
-            startLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
-            break;
-          case LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END:
-            // StartGroup, StartObject, EndGroupDelta
-            startLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
-            endGroupDelta = reader.readVarInt();
-            break;
-          case LocationFilterTypeDraft22.ABSOLUTE_RANGE:
-            // StartGroup, StartObject, EndGroupDelta, EndObject
-            startLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
-            endGroupDelta = reader.readVarInt();
-            reader.readVarInt(); // EndObject — consumed but stored in parameters for passthrough
-            break;
-          default:
-            throw new Draft18CodecError(`Unknown LOCATION_FILTER type: ${filterType}`);
+      switch (type) {
+        case RequestParameterDraft22.FORWARD: {
+          // §9.20.18: any value other than 0 or 1 is a PROTOCOL_VIOLATION
+          const forward = reader.readByte();
+          if (forward !== 0 && forward !== 1) {
+            throw new Draft18CodecError(`Invalid FORWARD ${forward} (PROTOCOL_VIOLATION)`);
+          }
+          forwardState = forward === 1;
+          break;
         }
-      } else {
-        // Read parameter value based on draft-22 rules
-        const value = Draft22MessageCodec.readParameterValue(reader, type);
-        parameters.set(type, value);
+        case RequestParameterDraft22.LOCATION_FILTER:
+          locationFilter = Draft22MessageCodec.decodeLocationFilter(reader);
+          break;
+        default:
+          parameters.set(type, Draft22MessageCodec.readParameterValue(reader, type));
       }
     }
 
     return {
-      type: MessageTypeDraft18.SUBSCRIBE,
+      type: MessageTypeDraft22.SUBSCRIBE,
       requestId,
       trackNamespace,
       trackName,
-      forwardState: true,
-      filter,
-      startLocation,
-      endGroupDelta,
+      forwardState,
+      locationFilter,
       parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
@@ -353,7 +328,7 @@ export class Draft22MessageCodec {
     // §9.20: omitted SUBSCRIBER_PRIORITY is 128, omitted GROUP_ORDER is ascending
     let subscriberPriority = DEFAULT_SUBSCRIBER_PRIORITY;
     let groupOrder = GroupOrder.ASCENDING;
-    let locationFilter: FetchMessageDraft22['locationFilter'];
+    let locationFilter: LocationFilterDraft22 | undefined;
     let fillTimeoutMs: bigint | undefined;
     const parameters = new Map<number, Uint8Array>();
 
@@ -405,7 +380,7 @@ export class Draft22MessageCodec {
    */
   private static encodeLocationFilter(
     writer: Draft18BufferWriter,
-    filter: NonNullable<FetchMessageDraft22['locationFilter']>,
+    filter: LocationFilterDraft22,
   ): void {
     writer.writeVarInt(BigInt(filter.type));
 
@@ -438,7 +413,7 @@ export class Draft22MessageCodec {
 
   private static decodeLocationFilter(
     reader: Draft18BufferReader,
-  ): NonNullable<FetchMessageDraft22['locationFilter']> {
+  ): LocationFilterDraft22 {
     const type = reader.readVarIntNumber();
 
     switch (type) {
@@ -543,7 +518,7 @@ export class Draft22MessageCodec {
   /**
    * Encode SUBSCRIBE with draft-22 LOCATION_FILTER encoding.
    */
-  static encodeSubscribeDraft22(message: SubscribeMessageDraft18): Uint8Array {
+  static encodeSubscribeDraft22(message: SubscribeMessageDraft22): Uint8Array {
     return encodeFramed(MessageTypeDraft22.SUBSCRIBE, (w) => {
       w.writeVarInt(message.requestId);
       encodeTrackNamespace(w, message.trackNamespace);
@@ -551,34 +526,18 @@ export class Draft22MessageCodec {
 
       const params: Array<{ type: number; encode: (pw: Draft18BufferWriter) => void }> = [];
 
-      // FORWARD (0x10)
-      if (message.forwardState !== false) {
-        params.push({ type: RequestParameterDraft22.FORWARD, encode: (pw) => pw.writeByte(0x01) });
-      }
+      // FORWARD (0x10) — always sent; the omitted default (1) would unpause
+      params.push({
+        type: RequestParameterDraft22.FORWARD,
+        encode: (pw) => pw.writeByte(message.forwardState ? 0x01 : 0x00),
+      });
 
-      // LOCATION_FILTER (0x21) — draft-22 6-mode encoding
-      if (message.filter !== undefined) {
+      // LOCATION_FILTER (0x21)
+      const filter = message.locationFilter;
+      if (filter !== undefined) {
         params.push({
           type: RequestParameterDraft22.LOCATION_FILTER,
-          encode: (pw) => {
-            pw.writeVarInt(BigInt(message.filter));
-            const ft = message.filter as number;
-            if (ft === LocationFilterTypeDraft22.RELATIVE_START) {
-              pw.writeVarInt(message.startLocation?.group ?? 0n);
-            } else if (ft === LocationFilterTypeDraft22.ABSOLUTE_START) {
-              pw.writeVarInt(message.startLocation?.group ?? 0n);
-              pw.writeVarInt(message.startLocation?.object ?? 0n);
-            } else if (ft === LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END) {
-              pw.writeVarInt(message.startLocation?.group ?? 0n);
-              pw.writeVarInt(message.startLocation?.object ?? 0n);
-              pw.writeVarInt(message.endGroupDelta ?? 0n);
-            } else if (ft === LocationFilterTypeDraft22.ABSOLUTE_RANGE) {
-              pw.writeVarInt(message.startLocation?.group ?? 0n);
-              pw.writeVarInt(message.startLocation?.object ?? 0n);
-              pw.writeVarInt(message.endGroupDelta ?? 0n);
-              pw.writeVarInt(0n); // EndObject
-            }
-          },
+          encode: (pw) => Draft22MessageCodec.encodeLocationFilter(pw, filter),
         });
       }
 

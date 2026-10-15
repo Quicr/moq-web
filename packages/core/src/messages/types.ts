@@ -2235,6 +2235,30 @@ export interface FetchOkMessageDraft22 {
 }
 
 /**
+ * Draft-22 LOCATION_FILTER parameter value (§9.20.9)
+ */
+export interface LocationFilterDraft22 {
+  type: LocationFilterTypeDraft22;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
+  endObject?: bigint;
+}
+
+/**
+ * Draft-22 SUBSCRIBE (§9.7): filter is carried in LOCATION_FILTER and
+ * pause state in FORWARD. Absent filter means unfiltered.
+ */
+export interface SubscribeMessageDraft22 {
+  type: MessageTypeDraft22.SUBSCRIBE;
+  requestId: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  forwardState: boolean;
+  locationFilter?: LocationFilterDraft22;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
  * Draft-22 FETCH (§9.11): standalone only, range carried in LOCATION_FILTER.
  * Omitted end means Largest Object; end is inclusive.
  */
@@ -2245,12 +2269,7 @@ export interface FetchMessageDraft22 {
   trackName: string;
   subscriberPriority: number;
   groupOrder: GroupOrder;
-  locationFilter?: {
-    type: LocationFilterTypeDraft22;
-    startLocation?: Location;
-    endGroupDelta?: bigint;
-    endObject?: bigint;
-  };
+  locationFilter?: LocationFilterDraft22;
   /** FILL_TIMEOUT (§9.20.5) in milliseconds */
   fillTimeoutMs?: bigint;
   parameters?: Map<number, Uint8Array>;
@@ -2271,7 +2290,7 @@ export interface RequestOkMessageDraft22 {
 export type ControlMessageDraft22 =
   | ClientSetupMessageDraft18  // Setup messages are the same
   | ServerSetupMessageDraft18
-  | SubscribeMessageDraft18
+  | SubscribeMessageDraft22
   | SubscribeOkMessageDraft22
   | PublishMessageDraft18
   | PublishDoneMessageDraft22
