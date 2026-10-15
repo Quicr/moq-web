@@ -37,6 +37,7 @@ import {
   skipKvpValue,
   encodeFramed,
   decodeFramed,
+  peekMessageType,
   MAX_PARAMETER_COUNT,
   MAX_STRING_LENGTH,
   MAX_AUTH_TOKEN_LENGTH,
@@ -83,6 +84,20 @@ const log = Logger.create('moqt:core:draft18-codec');
 // hot path.
 const TE = new TextEncoder();
 const TD = new TextDecoder();
+
+/** `Draft18CodecError.code` for a message that has not fully arrived yet. */
+export const CODEC_INCOMPLETE = 'incomplete';
+
+/** `Draft18CodecError.code` for a message whose body disagrees with its Length (§9). */
+export const CODEC_MALFORMED = 'malformed';
+
+/**
+ * True when `err` only says more bytes are needed. Every other decode error
+ * is a violation of the peer's framing or syntax.
+ */
+export function isIncompleteDecode(err: unknown): boolean {
+  return err instanceof Draft18CodecError && err.code === CODEC_INCOMPLETE;
+}
 
 export class Draft18CodecError extends Error {
   messageType?: MessageTypeDraft18;
@@ -241,7 +256,7 @@ export class Draft18MessageCodec {
     normalizers: ErrorCodeNormalizers = DRAFT18_NORMALIZERS,
   ): [ControlMessageDraft18, number] {
     // Peek at message type for logging before delegating to decodeFramed
-    const [typeValue] = MOQTVarInt.decodeNumber(buffer, offset);
+    const typeValue = peekMessageType(buffer, offset);
     const messageType = typeValue as MessageTypeDraft18;
 
     return decodeFramed<ControlMessageDraft18>(buffer, offset, (reader) => {
@@ -301,14 +316,26 @@ export class Draft18MessageCodec {
    */
   static decodeSetupStream(buffer: Uint8Array, offset = 0): [ServerSetupMessageDraft18, number] {
     if (buffer.length < offset + 2) {
-      throw new Draft18CodecError('Incomplete setup message: missing length field');
+      throw new Draft18CodecError('Incomplete setup message: missing length field', undefined, CODEC_INCOMPLETE);
     }
     const payloadLength = (buffer[offset] << 8) | buffer[offset + 1];
     if (buffer.length < offset + 2 + payloadLength) {
-      throw new Draft18CodecError('Incomplete setup message: not enough payload bytes');
+      throw new Draft18CodecError('Incomplete setup message: not enough payload bytes', undefined, CODEC_INCOMPLETE);
     }
-    const reader = new Draft18BufferReader(buffer, offset + 2);
-    const message = Draft18MessageCodec.decodeSetup(reader, payloadLength);
+    const reader = new Draft18BufferReader(buffer.subarray(offset + 2, offset + 2 + payloadLength));
+    let message: ServerSetupMessageDraft18;
+    try {
+      message = Draft18MessageCodec.decodeSetup(reader, payloadLength);
+    } catch (err) {
+      if (err instanceof Draft18CodecError) {
+        throw err;
+      }
+      throw new Draft18CodecError(
+        `SETUP body shorter than its options: ${(err as Error).message} (PROTOCOL_VIOLATION)`,
+        undefined,
+        CODEC_MALFORMED,
+      );
+    }
     return [message, 2 + payloadLength];
   }
 

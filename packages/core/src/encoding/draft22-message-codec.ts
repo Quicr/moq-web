@@ -34,6 +34,7 @@ import {
   decodeKeyValuePairsToEnd,
   encodeFramed,
   decodeFramed,
+  peekMessageType,
 } from './codec-helpers.js';
 import {
   ParameterScopeDraft22,
@@ -157,7 +158,7 @@ export class Draft22MessageCodec {
    */
   static decode(buffer: Uint8Array, offset = 0): [ControlMessageDraft22, number] {
     // Peek at message type to decide which codec to use
-    const [typeValue] = MOQTVarInt.decodeNumber(buffer, offset);
+    const typeValue = peekMessageType(buffer, offset);
 
     switch (typeValue) {
       case RESERVED_MESSAGE_TYPE:

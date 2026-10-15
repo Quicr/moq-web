@@ -11,7 +11,7 @@
 
 import { MOQTVarInt, MOQT_VARINT_MAX } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
-import { Draft18CodecError } from './draft18-message-codec.js';
+import { Draft18CodecError, CODEC_INCOMPLETE, CODEC_MALFORMED } from './draft18-message-codec.js';
 import type { AuthorizationToken, MessageTypeDraft18, TrackNamespace } from '../messages/types.js';
 
 // Module-level singletons shared across helpers
@@ -404,32 +404,73 @@ export function encodeFramed(
 }
 
 /**
+ * Read the Message Type of a framed control message. A type cut short by the
+ * end of `buffer` is "incomplete", not malformed.
+ */
+export function peekMessageType(buffer: Uint8Array, offset: number): number {
+  try {
+    return MOQTVarInt.decodeNumber(buffer, offset)[0];
+  } catch (err) {
+    if (/underflow/i.test((err as Error).message)) {
+      throw new Draft18CodecError('Incomplete message: truncated message type', undefined, CODEC_INCOMPLETE);
+    }
+    throw new Draft18CodecError(`Invalid message type: ${(err as Error).message} (PROTOCOL_VIOLATION)`, undefined, CODEC_MALFORMED);
+  }
+}
+
+/**
  * Decode a framed control message:
  *   Message Type (MOQT varint) | Message Length (16-bit BE) | Payload
  *
  * Returns the decoded message and total bytes consumed (header + payload).
+ *
+ * A body that is not exactly consumed by its fields breaks §9 ("If the length
+ * does not match the length of the Message Body, the receiver MUST close the
+ * session with a PROTOCOL_VIOLATION"), so it is `malformed`, never
+ * `incomplete`: only the framing can be incomplete.
  */
 export function decodeFramed<T>(
   buffer: Uint8Array,
   offset: number,
   decodePayload: (reader: Draft18BufferReader) => T,
 ): [T, number] {
-  const [, typeBytesRead] = MOQTVarInt.decodeNumber(buffer, offset);
+  peekMessageType(buffer, offset);
+  const typeBytesRead = MOQTVarInt.lengthFromFirstByte(buffer[offset]);
 
   if (buffer.length < offset + typeBytesRead + 2) {
-    throw new Draft18CodecError('Incomplete message: missing length field');
+    throw new Draft18CodecError('Incomplete message: missing length field', undefined, CODEC_INCOMPLETE);
   }
   const payloadLength = (buffer[offset + typeBytesRead] << 8) | buffer[offset + typeBytesRead + 1];
   const headerSize = typeBytesRead + 2;
 
   if (buffer.length < offset + headerSize + payloadLength) {
-    throw new Draft18CodecError('Incomplete message: not enough payload bytes');
+    throw new Draft18CodecError('Incomplete message: not enough payload bytes', undefined, CODEC_INCOMPLETE);
   }
 
   const reader = new Draft18BufferReader(
     buffer.subarray(offset + headerSize, offset + headerSize + payloadLength),
   );
 
-  const message = decodePayload(reader);
+  let message: T;
+  try {
+    message = decodePayload(reader);
+  } catch (err) {
+    if (err instanceof Draft18CodecError) {
+      throw err;
+    }
+    throw new Draft18CodecError(
+      `Message body shorter than its fields: ${(err as Error).message} (PROTOCOL_VIOLATION)`,
+      undefined,
+      CODEC_MALFORMED,
+    );
+  }
+  if (reader.hasMore) {
+    throw new Draft18CodecError(
+      `Message body has ${reader.remaining} trailing bytes (PROTOCOL_VIOLATION)`,
+      undefined,
+      CODEC_MALFORMED,
+    );
+  }
+
   return [message, headerSize + payloadLength];
 }

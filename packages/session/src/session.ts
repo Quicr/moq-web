@@ -37,6 +37,8 @@ import {
   PublishDoneErrorCodeDraft18,
   SessionErrorCodeDraft18,
   Draft18CodecError,
+  isIncompleteDecode,
+  INVALID_FILTER_CODE,
   StreamResetErrorCodeDraft18,
   normalizeSessionErrorCode,
   normalizeSessionErrorCodeDraft22,
@@ -1412,6 +1414,7 @@ export class MOQTSession {
       return response;
     } catch (err) {
       // Failed to read the first response — the stream is unusable, drop it.
+      this.closeOnFatalDecode(err);
       await this.closeRequestStream(requestId);
       throw err;
     }
@@ -1460,20 +1463,17 @@ export class MOQTSession {
   }
 
   /**
-   * An unknown message type is a protocol violation (draft-22 §9, draft-18
-   * §10); a malformed or unusable Authorization Token has its own session
-   * error (§8.9). Close the session and return whether `err` was one.
+   * A message that breaks the framing or syntax rules is a protocol violation
+   * (draft-22 §9, draft-18 §10); a malformed or unusable Authorization Token
+   * has its own session error (§8.9). Close the session and return whether
+   * `err` was one. A Range Filter the receiver refuses is answered per request
+   * (INVALID_FILTER), not fatal.
    */
   private closeOnFatalDecode(err: unknown): boolean {
-    if (!(err instanceof Draft18CodecError)) {
+    if (!(err instanceof Draft18CodecError) || isIncompleteDecode(err) || err.code === INVALID_FILTER_CODE) {
       return false;
     }
-    const code = /^Unknown message type/.test(err.message)
-      ? SessionErrorCodeDraft18.PROTOCOL_VIOLATION
-      : FATAL_DECODE_CODES.get(err.code);
-    if (code === undefined) {
-      return false;
-    }
+    const code = FATAL_DECODE_CODES.get(err.code) ?? SessionErrorCodeDraft18.PROTOCOL_VIOLATION;
     void this.close({ code, reason: err.message }).catch(() => {});
 
     return true;
@@ -1937,6 +1937,13 @@ export class MOQTSession {
 
     log.info('Setting up MOQT session', { useWorker: this.useWorker, draft: this._draft });
     this.setState('setup');
+
+    // A new connection starts a new control stream (migrate() runs setup() again).
+    this.peerSetupSeen = false;
+    this.setupBuffer = new Uint8Array(0);
+    this.setupBufferOffset = 0;
+    this.pendingSetupMessages = [];
+    this.onSetupMessage = undefined;
 
     // Set up event handlers based on mode
     if (this.useWorker) {
@@ -6473,108 +6480,97 @@ export class MOQTSession {
   /** Setup message buffer for draft-18 */
   private setupBuffer = new Uint8Array(0);
   private setupBufferOffset = 0;
+  /** True once the peer's SETUP arrived; the control stream then carries GOAWAY only (draft-22 §9, §9.2). */
+  private peerSetupSeen = false;
 
   /**
-   * Handle incoming setup stream messages
+   * Handle bytes from the peer's control stream: its SETUP (Length | Options,
+   * the type is implicit), then framed messages. GOAWAY is the only other
+   * message allowed there (draft-22 Table 5).
    */
   private handleSetupMessage(data: Uint8Array): void {
     const hex = Array.from(data.subarray(0, Math.min(32, data.length)))
       .map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Setup message received', { size: data.length, hex });
 
-    try {
-      // Append to buffer
-      if (this.setupBuffer.length === 0) {
-        this.setupBuffer = new Uint8Array(data);
-        this.setupBufferOffset = 0;
-      } else {
-        const remaining = this.setupBuffer.length - this.setupBufferOffset;
-        const newBuffer = new Uint8Array(remaining + data.length);
-        newBuffer.set(this.setupBuffer.subarray(this.setupBufferOffset));
-        newBuffer.set(data, remaining);
-        this.setupBuffer = newBuffer;
-        this.setupBufferOffset = 0;
-      }
+    // Append to buffer
+    if (this.setupBuffer.length === 0) {
+      this.setupBuffer = new Uint8Array(data);
+      this.setupBufferOffset = 0;
+    } else {
+      const remaining = this.setupBuffer.length - this.setupBufferOffset;
+      const newBuffer = new Uint8Array(remaining + data.length);
+      newBuffer.set(this.setupBuffer.subarray(this.setupBufferOffset));
+      newBuffer.set(data, remaining);
+      this.setupBuffer = newBuffer;
+      this.setupBufferOffset = 0;
+    }
 
-      // Try to decode messages (setup stream has no message type prefix)
-      while (this.setupBufferOffset < this.setupBuffer.length) {
-        try {
-          const view = this.setupBuffer.subarray(this.setupBufferOffset);
-          const [message, bytesRead] = this.codec.decodeSetupStream(view);
+    while (this.setupBufferOffset < this.setupBuffer.length) {
+      try {
+        const view = this.setupBuffer.subarray(this.setupBufferOffset);
+        const [message, bytesRead] = this.peerSetupSeen
+          ? this.codec.decodeControlMessage(view)
+          : this.codec.decodeSetupStream(view);
+        this.setupBufferOffset += bytesRead;
 
-          this.setupBufferOffset += bytesRead;
+        log.info('Received control stream message', {
+          type: MessageTypeDraft18[message.type],
+        });
 
-          log.info('Received setup message', {
-            type: MessageTypeDraft18[message.type],
-          });
-
-          // Handle setup callback (used during initial setup). If the waiter
-          // hasn't subscribed yet (draft-18 allows SERVER_SETUP to arrive
-          // before or in parallel with CLIENT_SETUP), queue for later drain.
-          if (this.onSetupMessage) {
-            this.onSetupMessage(message);
-          } else if (this._state !== 'ready' && this._state !== 'closing') {
-            this.pendingSetupMessages.push(message);
-          }
-
-          // Route post-setup messages (GOAWAY, REQUEST_UPDATE on setup stream)
-          if (this._state === 'ready' || this._state === 'closing') {
-            this.routeSetupStreamMessage(message);
-          }
-        } catch (err) {
-          const msg = (err as Error).message ?? '';
-          if (/incomplete|buffer|underflow/i.test(msg)) {
-            break;
-          }
-          throw err;
+        if (this.peerSetupSeen) {
+          this.routeSetupStreamMessage(message as ControlMessageDraft18);
+          continue;
         }
-      }
 
-      // Reset buffer if all consumed
-      if (this.setupBufferOffset >= this.setupBuffer.length) {
-        this.setupBuffer = new Uint8Array(0);
-        this.setupBufferOffset = 0;
+        this.peerSetupSeen = true;
+        this.deliverPeerSetup(message as ControlMessageDraft18);
+      } catch (err) {
+        if (isIncompleteDecode(err)) {
+          break;
+        }
+        if (!this.closeOnFatalDecode(err)) {
+          log.error('Error handling setup message', err as Error);
+        }
+        return;
       }
-    } catch (err) {
-      log.error('Error handling setup message', err as Error);
+    }
+
+    // Reset buffer if all consumed
+    if (this.setupBufferOffset >= this.setupBuffer.length) {
+      this.setupBuffer = new Uint8Array(0);
+      this.setupBufferOffset = 0;
     }
   }
 
   /**
-   * Route messages received on the setup stream after connection established
+   * Hand the peer's SETUP to the waiter in `setup()`. SERVER_SETUP can arrive
+   * before the waiter subscribes (draft-18 lets either side send first), so
+   * it is queued until then.
+   */
+  private deliverPeerSetup(message: ControlMessageDraft18): void {
+    if (this.onSetupMessage) {
+      this.onSetupMessage(message);
+    } else {
+      this.pendingSetupMessages.push(message);
+    }
+  }
+
+  /**
+   * Route a message on the peer's control stream after its SETUP. Only GOAWAY
+   * belongs there (draft-22 §9.2, Table 5); anything else, including a second
+   * SETUP, closes the session.
    */
   private routeSetupStreamMessage(message: ControlMessageDraft18): void {
-    switch (message.type) {
-      case MessageTypeDraft18.GOAWAY:
-        this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
-        break;
-
-      case MessageTypeDraft18.REQUEST_UPDATE:
-        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22);
-        break;
-
-      case MessageTypeDraft18.PUBLISH_BLOCKED:
-        if (this.isDraft22) {
-          this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22);
-        } else {
-          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
-        }
-        break;
-
-      case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
-        this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22);
-        break;
-
-      case MessageTypeDraft18.PUBLISH_DONE:
-        this.handleIncomingPublishDoneDraft18(message as PublishDoneMessageDraft18);
-        break;
-
-      default:
-        // SERVER_SETUP messages are ignored post-setup
-        if (message.type !== MessageTypeDraft18.SERVER_SETUP) {
-          log.warn('Unhandled message on setup stream', { type: MessageTypeDraft18[message.type] });
-        }
+    if (message.type === MessageTypeDraft18.GOAWAY) {
+      this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
+      return;
     }
+
+    void this.close({
+      code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
+      reason: `Message type ${message.type} is not allowed on the control stream`,
+    }).catch(() => {});
   }
 
   /**

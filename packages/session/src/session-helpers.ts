@@ -15,6 +15,7 @@ import {
   BufferWriter,
   decodeDraft18AuthToken,
   Draft18CodecError,
+  isIncompleteDecode,
   ConnectionStateMachine as _ConnectionStateMachine,
   encodeDraft18AuthToken,
   MessageCodec,
@@ -642,8 +643,7 @@ export class Draft18RequestStream {
           this.pending = this.pending.subarray(bytesRead);
           return message as ControlMessageDraft18;
         } catch (err) {
-          const msg = (err as Error).message ?? '';
-          if (!/incomplete|buffer|underflow/i.test(msg)) {
+          if (!isIncompleteDecode(err)) {
             throw err;
           }
         }
