@@ -841,6 +841,15 @@ export class MOQTSession {
 
     // Set up forward state change listener to emit events for MediaSession
     this.publicationManager.onForwardStateChange((trackAlias, forward) => {
+      // Objects omitted while paused still exist, so the open subgroup stream
+      // must be reset, not FINed (d22 §11.3.2, d18 §11.4.3).
+      if (this.isDraft18 && forward === 0) {
+        void this.resetPublicationStream(
+          trackAlias.toString(),
+          StreamResetErrorCodeDraft18.CANCELLED,
+          'subscription paused',
+        ).catch(() => {});
+      }
       this.emit('forward-state-change', { trackAlias, forward });
     });
 
