@@ -7518,10 +7518,11 @@ export class MOQTSession {
   }
 
   /**
-   * Handle incoming FETCH on bidi stream
+   * Handle incoming FETCH on bidi stream. We keep no objects, so every FETCH
+   * is refused; the error says why (see `fetchRefusal`).
    */
   private async handleIncomingFetchDraft18(
-    message: FetchMessageDraft18,
+    message: FetchMessageDraft18 | FetchMessageDraft22,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     log.info('Received FETCH', { requestId: message.requestId.toString() });
@@ -7529,13 +7530,57 @@ export class MOQTSession {
       return;
     }
 
-    // For now, respond with REQUEST_ERROR since we don't cache objects
-    await this.sendRequestErrorOnStream(
-      writable,
-      message.requestId,
-      RequestErrorCodeDraft18.NOT_SUPPORTED,
-      'Fetch not supported',
-    );
+    const refusal = this.fetchRefusal(message);
+    await this.sendRequestErrorOnStream(writable, message.requestId, refusal.code, refusal.reason);
+  }
+
+  /**
+   * The error for a FETCH we cannot serve. The ones the spec mandates come
+   * first: DOES_NOT_EXIST for a track we do not publish, INVALID_RANGE when no
+   * Object was published or the Start Location is past the Largest Object
+   * (d22 §3.2, d18 §10.12.3). A Joining FETCH (d18 §10.12.2) needs one of our
+   * subscriptions that has Forward State 1. NOT_SUPPORTED is left for a range
+   * that is valid but that we have no objects to serve.
+   */
+  private fetchRefusal(message: FetchMessageDraft18 | FetchMessageDraft22): { code: RequestErrorCodeDraft18; reason: string } {
+    const joiningId = (message as FetchMessageDraft18).subscribeRequestId;
+    const joined = joiningId === undefined ? undefined : this.publicationManager.getByRequestId(joiningId);
+    if (joiningId !== undefined && !joined) {
+      return { code: RequestErrorCodeDraft18.INVALID_JOINING_REQUEST_ID, reason: 'No such subscription to join' };
+    }
+
+    const namespace = joined?.namespace ?? message.trackNamespace ?? [];
+    const trackName = joined?.trackName ?? message.trackName ?? '';
+    const exists = this.matchesAnnouncedNamespace(namespace) !== undefined || this.publicationManager.getByTrackName(namespace, trackName) !== undefined;
+    if (!exists) {
+      return { code: RequestErrorCodeDraft18.DOES_NOT_EXIST, reason: 'Track not published by this session' };
+    }
+
+    const largest = this.publicationManager.largestOf(namespace, trackName);
+    if (largest === undefined || joined?.forward === 0) {
+      return { code: RequestErrorCodeDraft18.INVALID_RANGE, reason: 'No Objects to fetch' };
+    }
+
+    const start = this.fetchStart(message, largest);
+    if (compareLocations(start, largest) > 0) {
+      return { code: RequestErrorCodeDraft18.INVALID_RANGE, reason: 'Start Location is after the Largest Object' };
+    }
+
+    return { code: RequestErrorCodeDraft18.NOT_SUPPORTED, reason: 'Fetch not supported' };
+  }
+
+  /** The Start Location of a FETCH (d22 §9.20.9; d18 §10.12.1, §10.12.2). */
+  private fetchStart(message: FetchMessageDraft18 | FetchMessageDraft22, largest: Location): Location {
+    if (this.isDraft22) {
+      return resolveLocationFilter((message as FetchMessageDraft22).locationFilter, largest).start;
+    }
+
+    const { fetchType, joiningStart, startLocation } = message as FetchMessageDraft18;
+    if (fetchType === FetchTypeDraft18.JOINING_ABSOLUTE) {
+      return { group: joiningStart ?? 0n, object: 0n };
+    }
+
+    return startLocation;
   }
 
   /**
