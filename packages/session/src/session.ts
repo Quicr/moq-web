@@ -232,6 +232,9 @@ const STREAM_COUNT_UNKNOWN_DRAFT22 = (1n << 64n) - 1n;
  */
 const OWN_MAX_FILTER_RANGES = 0;
 
+/** MOQT_IMPLEMENTATION we send unless the app replaces or removes it (draft-22 §9.1.5) */
+const DEFAULT_IMPLEMENTATION_STRING = 'moq-web';
+
 /** Delivery timeout the draft-14/16 PUBLISH advertised when the app set none */
 const LEGACY_DELIVERY_TIMEOUT_MS = 5000;
 
@@ -668,13 +671,12 @@ export class MOQTSession {
    */
   private _peerExtensions?: Map<number, import('@moq-web/core').SetupExtensionValue>;
   /**
-   * Draft-18 §13.8: implementation identifier the client advertises in the
-   * MOQT_IMPLEMENTATION SetupOption. `undefined` (the default) means we do
-   * NOT advertise, per §13.8 which cautions against unconditional
-   * fingerprintable identifiers. Callers can opt in with
-   * `setImplementationString(...)` before `setup()`.
+   * Implementation identifier the client advertises in the MOQT_IMPLEMENTATION
+   * SetupOption (draft-22 §9.1.5: an endpoint SHOULD send it unless configured
+   * not to). `undefined` means it was switched off with
+   * `setImplementationString(undefined)` before `setup()`.
    */
-  private _implementationString?: string;
+  private _implementationString: string | undefined = DEFAULT_IMPLEMENTATION_STRING;
   /** Peer's MAX_REQUEST_UPDATES from SETUP (draft-22 §9.1.7). 0 = unlimited. */
   private peerMaxRequestUpdates = 0;
   /** Peer's MAX_FILTER_RANGES from SETUP (draft-22 §9.1.6). Default 0: no Range Filters. */
@@ -2241,14 +2243,12 @@ export class MOQTSession {
   }
 
   /**
-   * Draft-18 §13.8: opt in to sending the MOQT_IMPLEMENTATION SetupOption.
-   *
-   * §13.8 cautions endpoints against always advertising an implementation
-   * identifier because it enables passive fingerprinting. By default this
-   * client omits the field; call this before `setup()` with a string to
-   * advertise it, or with `undefined` to explicitly disable (also the
-   * default). Must be called before `setup()` — the value is read once when
-   * CLIENT_SETUP is encoded.
+   * Set the MOQT_IMPLEMENTATION SetupOption (draft-22 §9.1.5, draft-18
+   * §10.3.1.5). The client sends `moq-web` by default, since an endpoint
+   * SHOULD send one unless configured not to; the value should stay minimal
+   * because it enables passive fingerprinting (§15.8). Pass a string to
+   * replace it, or `undefined` to send none. Must be called before `setup()`:
+   * the value is read once when CLIENT_SETUP is encoded.
    */
   setImplementationString(value: string | undefined): void {
     if (this._state !== 'none') {
@@ -2335,11 +2335,6 @@ export class MOQTSession {
           tokenValue: tokenBytes,
         });
       }
-      // §13.8: MOQT_IMPLEMENTATION aids interoperability debugging but also
-      // enables passive fingerprinting. The spec cautions against always
-      // advertising it, so this client omits it by default and only sends
-      // when the caller has explicitly opted in via
-      // `setImplementationString()`.
       const clientSetup: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
         moqtImplementation: this._implementationString,

@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * Unit tests for the draft-18 §13.8 fingerprinting-mitigation opt-in.
- *
- * §13.8 cautions endpoints against unconditionally advertising a
- * MOQT_IMPLEMENTATION SetupOption because it enables passive
- * fingerprinting. The client now omits the field by default; callers can
- * opt in via `MOQTSession.setImplementationString(...)` before `setup()`.
+ * Unit tests for the MOQT_IMPLEMENTATION SetupOption (draft-22 §9.1.5,
+ * draft-18 §10.3.1.5): an endpoint SHOULD send one unless configured not to.
+ * The client sends `moq-web` by default; callers can replace it, or send
+ * none, via `MOQTSession.setImplementationString(...)` before `setup()`.
  *
  * We drive setup() through a stubbed sendControl to capture the encoded
  * CLIENT_SETUP bytes and inspect the decoded options.
@@ -17,7 +15,6 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   Draft18MessageCodec,
   MOQTransport,
-  SetupOptionDraft18,
   type ServerSetupMessageDraft18,
   DEFAULT_DRAFT,
 } from '@moq-web/core';
@@ -56,21 +53,20 @@ function decodeSetup(bytes: Uint8Array): ServerSetupMessageDraft18 {
   return Draft18MessageCodec.decodeSetupStream(bytes)[0];
 }
 
-describe.skipIf(!IS_DRAFT_18)('draft-18 §13.8 MOQT_IMPLEMENTATION opt-in', () => {
-  it('omits MOQT_IMPLEMENTATION from CLIENT_SETUP by default', async () => {
+describe.skipIf(!IS_DRAFT_18)('draft-18 MOQT_IMPLEMENTATION', () => {
+  it('sends moq-web in CLIENT_SETUP by default', async () => {
     const { session, controlBytes } = makeSession();
 
     await session.setup();
 
     expect(controlBytes.length).toBeGreaterThan(0);
     // The setup stream omits the message-type prefix, so decode returns the
-    // codec's SERVER_SETUP shape regardless of direction — the field of
-    // interest is `moqtImplementation`, which must be absent by default.
+    // codec's SERVER_SETUP shape regardless of direction.
     const decoded = decodeSetup(controlBytes[0]);
-    expect(decoded.moqtImplementation).toBeUndefined();
+    expect(decoded.moqtImplementation).toBe('moq-web');
   });
 
-  it('sends the configured implementation string when opted in', async () => {
+  it('sends the configured implementation string instead', async () => {
     const { session, controlBytes } = makeSession();
 
     session.setImplementationString('cats-and-dogs 4.2.0');
@@ -80,7 +76,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.8 MOQT_IMPLEMENTATION opt-in', () =
     expect(decoded.moqtImplementation).toBe('cats-and-dogs 4.2.0');
   });
 
-  it('setImplementationString(undefined) explicitly disables (same as default)', async () => {
+  it('setImplementationString(undefined) sends none', async () => {
     const { session, controlBytes } = makeSession();
 
     session.setImplementationString('will-be-cleared');
@@ -99,23 +95,5 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.8 MOQT_IMPLEMENTATION opt-in', () =
     const { session } = makeSession();
     await session.setup();
     expect(() => session.setImplementationString('too-late')).toThrow(/after setup\(\)/);
-  });
-
-  it('a raw encoded CLIENT_SETUP with no MOQT_IMPLEMENTATION SetupOption is legal', async () => {
-    const { session, controlBytes } = makeSession();
-    await session.setup();
-
-    // Confirm the encoded byte stream contains no MOQT_IMPLEMENTATION
-    // SetupOption key — belt-and-braces alongside the decoded assertion.
-    const bytes = controlBytes[0];
-    // MOQT_IMPLEMENTATION = 0x07 — since SetupOption keys are varints and 0x07
-    // is a single byte in the varint encoding, a simple byte scan is a safe
-    // (over-inclusive) heuristic. It's fine that this may false-positive on
-    // an unrelated byte — we only assert the *decoded* map above; this check
-    // is a cheap sanity anchor.
-    expect(SetupOptionDraft18.MOQT_IMPLEMENTATION).toBe(0x07);
-    // Positive control: an empty ClientSetup round-trip preserves absence.
-    const decoded = decodeSetup(bytes);
-    expect(decoded.moqtImplementation).toBeUndefined();
   });
 });
