@@ -292,6 +292,47 @@ function successResponseType(kind: OutgoingRequestKind): MessageTypeDraft18 {
   }
 }
 
+const GOAWAY = MessageTypeDraft18.GOAWAY;
+const REQUEST_UPDATE = MessageTypeDraft18.REQUEST_UPDATE;
+const REQUEST_OK = MessageTypeDraft18.REQUEST_OK;
+const REQUEST_ERROR = MessageTypeDraft18.REQUEST_ERROR;
+
+/**
+ * What the peer may send on a request stream we opened, after its response,
+ * by kind of request (draft-22 Table 5, §3.6, §4.2, §9.5, §9.10). REQUEST_OK
+ * and REQUEST_ERROR answer our REQUEST_UPDATEs; the sender of a request may
+ * also update it, so the subscriber of a PUBLISH of ours can.
+ */
+const INBOUND_ON_OUR_REQUEST: ReadonlyMap<OutgoingRequestKind, ReadonlySet<number>> = new Map([
+  ['subscribe', new Set<number>([
+    MessageTypeDraft18.PUBLISH_DONE, MessageTypeDraft22.PUBLISH_STATE_NOTIFY, REQUEST_OK, REQUEST_ERROR, GOAWAY,
+  ])],
+  ['publish', new Set<number>([REQUEST_UPDATE, REQUEST_OK, REQUEST_ERROR, GOAWAY])],
+  ['fetch', new Set<number>([REQUEST_OK, REQUEST_ERROR, GOAWAY])],
+  ['track-status', new Set<number>([GOAWAY])],
+  ['publish-namespace', new Set<number>([REQUEST_OK, REQUEST_ERROR, GOAWAY])],
+  ['subscribe-namespace', new Set<number>([
+    MessageTypeDraft18.NAMESPACE, MessageTypeDraft18.NAMESPACE_DONE, REQUEST_OK, REQUEST_ERROR, GOAWAY,
+  ])],
+  ['subscribe-tracks', new Set<number>([MessageTypeDraft18.PUBLISH_BLOCKED, REQUEST_OK, REQUEST_ERROR, GOAWAY])],
+]);
+
+/**
+ * What the peer may send on a request stream it opened and we accepted. A
+ * peer that PUBLISHed to us is the publisher: it ends the subscription and
+ * answers our REQUEST_UPDATEs. Everyone else only updates its own request.
+ */
+const INBOUND_ON_PEER_REQUEST: ReadonlyMap<RequestUpdateVariant, ReadonlySet<number>> = new Map([
+  ['publish', new Set<number>([
+    MessageTypeDraft18.PUBLISH_DONE, MessageTypeDraft22.PUBLISH_STATE_NOTIFY,
+    REQUEST_UPDATE, REQUEST_OK, REQUEST_ERROR, GOAWAY,
+  ])],
+  ['subscribe', new Set<number>([REQUEST_UPDATE, GOAWAY])],
+  ['subscribe-namespace', new Set<number>([REQUEST_UPDATE, GOAWAY])],
+  ['subscribe-tracks', new Set<number>([REQUEST_UPDATE, GOAWAY])],
+  ['publish-namespace', new Set<number>([REQUEST_UPDATE, GOAWAY])],
+]);
+
 /** A REQUEST_UPDATE waiting for its REQUEST_OK / REQUEST_ERROR (draft-22 §9.5, draft-18 §10.9). */
 interface PendingRequestUpdate {
   resolve: () => void;
@@ -1630,9 +1671,18 @@ export class MOQTSession {
    * REQUEST_UPDATE, for its own new ID.
    */
   private async dispatchStreamMessage(requestId: bigint, message: ControlMessageDraft18): Promise<void> {
+    // Only the messages this request and our role allow (draft-22 Table 5, §9.5, §9.10)
+    const request = this.outgoingRequests.get(requestId);
+    const allowed = request
+      ? INBOUND_ON_OUR_REQUEST.get(request.kind)
+      : INBOUND_ON_PEER_REQUEST.get(this.incomingRequestKinds.get(requestId) ?? 'unknown');
+    if (!allowed?.has(message.type)) {
+      this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
+      return;
+    }
+
     // A SUBSCRIBE_NAMESPACE stream is read from the start, so its first
     // message is checked here (draft-22 §4.2).
-    const request = this.outgoingRequests.get(requestId);
     const isFirstResponse = request !== undefined && !request.answered;
     if (isFirstResponse && !this.acceptFirstResponse(requestId, message)) {
       return;
@@ -1686,10 +1736,6 @@ export class MOQTSession {
         break;
 
       case MessageTypeDraft18.PUBLISH_BLOCKED:
-        if (this.outgoingRequests.get(requestId)?.kind !== 'subscribe-tracks') {
-          this.closeForUnexpectedMessage(requestId, message);
-          break;
-        }
         if (this.isDraft22) {
           this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22, requestId);
         } else {
@@ -1741,7 +1787,7 @@ export class MOQTSession {
     const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
     const request = this.outgoingRequests.get(requestId);
     if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
-      this.closeForUnexpectedMessage(requestId, message);
+      this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
       return;
     }
 
@@ -1757,12 +1803,12 @@ export class MOQTSession {
     const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
     const request = this.outgoingRequests.get(requestId);
     if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
-      this.closeForUnexpectedMessage(requestId, message);
+      this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
       return;
     }
 
     if (!request.announced.delete(JSON.stringify(message.finalNamespace))) {
-      this.closeForUnexpectedMessage(requestId, message);
+      this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
       return;
     }
 
@@ -1773,8 +1819,8 @@ export class MOQTSession {
   }
 
   /** The peer sent a message its role or the request's kind does not allow (draft-22 Table 5). */
-  private closeForUnexpectedMessage(requestId: bigint, message: ControlMessageDraft18): void {
-    const reason = `Message type ${message.type} is not allowed on request ${requestId.toString()}`;
+  private closeForUnexpectedMessage(message: ControlMessageDraft18, where: string): void {
+    const reason = `Message type ${message.type} is not allowed on ${where}`;
     log.error(reason);
     void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
   }
@@ -6690,6 +6736,12 @@ export class MOQTSession {
 
       log.info('Received message on incoming bidi stream', { type: MessageTypeDraft18[message.type] });
 
+      // A bidi stream begins with a request; any other message closes the session (draft-22 §6.3)
+      if (!PEER_REQUEST_TYPES.has(message.type)) {
+        this.closeForUnexpectedMessage(message, 'a new bidirectional stream');
+        return;
+      }
+
       assertNoTokenRegister(message);
 
       const peerRequestId = (message as { requestId?: bigint }).requestId;
@@ -6746,39 +6798,6 @@ export class MOQTSession {
         case MessageTypeDraft18.SUBSCRIBE_TRACKS:
           await this.handleIncomingSubscribeTracksDraft18(message as SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22, handlerWritable);
           break;
-
-        case MessageTypeDraft18.REQUEST_UPDATE:
-          await this.handleIncomingRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, handlerWritable);
-          break;
-
-        case MessageTypeDraft18.PUBLISH_DONE:
-          this.handleIncomingPublishDoneDraft18(message as PublishDoneMessageDraft18);
-          break;
-
-        case MessageTypeDraft18.GOAWAY:
-          this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
-          break;
-
-        case MessageTypeDraft18.PUBLISH_BLOCKED:
-          if (this.isDraft22) {
-            this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22);
-          } else {
-            this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
-          }
-          break;
-
-        case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
-          this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22);
-          break;
-
-        default:
-          log.warn('Unhandled message type on incoming bidi stream', { type: message.type });
-          await this.sendRequestErrorOnStream(
-            handlerWritable,
-            0n,
-            RequestErrorCodeDraft18.NOT_SUPPORTED,
-            'Unsupported message type',
-          );
       }
 
       // An accepted request can still get REQUEST_UPDATEs and must end with
@@ -7214,25 +7233,12 @@ export class MOQTSession {
   }
 
   /**
-   * Handle incoming REQUEST_UPDATE on bidi stream
-   */
-  private async handleIncomingRequestUpdateDraft18(
-    message: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22,
-    _writable: WritableStream<Uint8Array>
-  ): Promise<void> {
-    this.dispatchRequestUpdateDraft18(message);
-  }
-
-  /**
    * Route a draft-18 REQUEST_UPDATE (§10.9) to the correct variant handler
    * based on the request kind we previously accepted for `requestId`, the
    * request whose stream carried it (the update's own ID is a new one):
    * - §10.9.1 subscription-scoped → forward-paused / forward-resumed
    * - §10.9.2 namespace-scoped   → namespace-forward-paused / -resumed
    *
-   * If the target requestId is unknown we log and fall back to the
-   * subscription variant, which matches prior behaviour and keeps backward
-   * compatibility with peers that don't set up state before updating.
    */
   private dispatchRequestUpdateDraft18(
     message: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22,
@@ -7310,23 +7316,14 @@ export class MOQTSession {
       }
     }
 
-    // §10.9.1 — subscription-scoped update. Narrow the forward-state flip to
-    // the publication bound to this requestId so a pause from one subscriber
-    // doesn't stall the session's other tracks. If we don't have a matching
-    // publication (kind === 'unknown'), fall back to the session-wide update
-    // for backward compatibility with peers that don't set up state first.
+    // §10.9.1 — subscription-scoped update. The forward-state flip applies to
+    // the publication bound to this requestId, so a pause from one subscriber
+    // doesn't stall the session's other tracks.
     if (message.forwardState === undefined) {
       return;
     }
     const forward = message.forwardState ? 1 : 0;
-    const matched = this.publicationManager.setForwardByRequestId(requestId, forward);
-    if (!matched) {
-      if (message.forwardState) {
-        this.publicationManager.resolveAllForward();
-      }
-      // No matching publication → nothing to pause on our side; still emit
-      // the event so any bespoke listener can react.
-    }
+    this.publicationManager.setForwardByRequestId(requestId, forward);
     if (message.forwardState) {
       this.emit('forward-resumed', { requestId });
     } else {
