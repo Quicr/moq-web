@@ -1704,6 +1704,7 @@ export class MOQTSession {
             reasonPhrase: 'Range filters not supported (MAX_FILTER_RANGES 0)',
           };
           await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(refusal));
+          await this.endRefusedRequest(requestId);
           break;
         }
 
@@ -1754,6 +1755,27 @@ export class MOQTSession {
       default:
         log.warn('Unhandled message on request stream', { requestId: requestId.toString(), type: message.type });
     }
+  }
+
+  /**
+   * A REQUEST_UPDATE we refused also ends the request it updates: a
+   * subscription we publish ends with PUBLISH_DONE UPDATE_FAILED, and a
+   * namespace request's stream is closed (draft-22 §9.5.1).
+   */
+  private async endRefusedRequest(requestId: bigint): Promise<void> {
+    const publication = this.publicationManager.getByRequestId(requestId);
+    if (this.incomingRequestKinds.get(requestId) === 'subscribe') {
+      await this.sendPublishDone(
+        requestId,
+        Number(publication?.latestGroup ?? 0n),
+        Number(publication?.latestObject ?? 0n),
+        'REQUEST_UPDATE refused',
+        PublishDoneErrorCodeDraft18.UPDATE_FAILED,
+      );
+    } else if (this.incomingRequestKinds.has(requestId)) {
+      await this.closeRequestStream(requestId);
+    }
+    this.endRequest(requestId);
   }
 
   /** The response to our SUBSCRIBE_NAMESPACE (draft-22 §4.2). */

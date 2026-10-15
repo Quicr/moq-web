@@ -17,6 +17,7 @@ import {
   MOQTransport,
   MessageTypeDraft18,
   MessageTypeDraft22,
+  PublishDoneErrorCodeDraft22,
   RequestErrorCodeDraft22,
   RequestParameterDraft22,
   type ControlMessageDraft18,
@@ -497,7 +498,7 @@ describe('draft-22 Range Filters, publisher side (§9.1.6, §3.3.2)', () => {
     expect(peer.replies()).toEqual([expect.objectContaining(invalidFilter)]);
   });
 
-  it('answers a REQUEST_UPDATE with Ranges with REQUEST_ERROR and keeps the request', async () => {
+  it('answers a REQUEST_UPDATE with Ranges with REQUEST_ERROR, then ends the subscription (§9.5.1)', async () => {
     const { session, internals } = makeSession();
     const peer = installIncomingStream(session);
     peer.send(subscribe());
@@ -507,11 +508,33 @@ describe('draft-22 Range Filters, publisher side (§9.1.6, §3.3.2)', () => {
     await tick();
 
     const replies = peer.replies();
-    expect(replies[replies.length - 1]).toMatchObject({
-      type: MessageTypeDraft18.REQUEST_ERROR,
-      errorCode: RequestErrorCodeDraft22.INVALID_FILTER,
+    expect(replies.slice(-2)).toMatchObject([
+      { type: MessageTypeDraft18.REQUEST_ERROR, errorCode: RequestErrorCodeDraft22.INVALID_FILTER },
+      { type: MessageTypeDraft18.PUBLISH_DONE, statusCode: BigInt(PublishDoneErrorCodeDraft22.UPDATE_FAILED) },
+    ]);
+    expect(internals.publicationManager.getByRequestId(PEER_REQUEST_ID)).toBeUndefined();
+  });
+
+  it('closes the stream of a namespace request whose REQUEST_UPDATE it refuses (§9.5.1)', async () => {
+    const { session } = makeSession();
+    const peer = installIncomingStream(session);
+    peer.send({
+      type: MessageTypeDraft22.SUBSCRIBE_TRACKS,
+      requestId: PEER_REQUEST_ID,
+      trackNamespacePrefix: ['ns'],
+      forwardState: true,
     });
-    expect(internals.publicationManager.getByRequestId(PEER_REQUEST_ID)).toBeDefined();
+    await peer.open();
+
+    peer.send({
+      type: MessageTypeDraft18.REQUEST_UPDATE,
+      requestId: PEER_UPDATE_ID,
+      rangeFilters: [{ type: P.TRACK_PROPERTY_FILTER, setId: 0, propertyType: 2n, ranges: [{ start: 1n }] }],
+    });
+    await tick();
+
+    expect(peer.replies().slice(-1)).toMatchObject([invalidFilter]);
+    expect(peer.closed).toHaveBeenCalled();
   });
 
   it('accepts a REQUEST_UPDATE that only removes filters (zero Ranges)', async () => {
