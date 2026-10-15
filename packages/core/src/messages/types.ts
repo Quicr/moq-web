@@ -1684,6 +1684,8 @@ export interface RequestOkMessageDraft18 {
    * When absent, subscribers infer "no objects yet" for the track.
    */
   largestLocation?: Location;
+  /** §10.2.12 FORWARD in a PUBLISH_OK: the subscription's initial state; omitted is 1 */
+  forwardState?: boolean;
 }
 
 /**
@@ -1908,7 +1910,8 @@ export interface PublishDoneMessageDraft18 {
 export interface RequestUpdateMessageDraft18 {
   type: MessageTypeDraft18.REQUEST_UPDATE;
   requestId: bigint;
-  forwardState: boolean;
+  /** Omitted leaves the subscription's forward state unchanged (§10.2.12) */
+  forwardState?: boolean;
   /** SUBSCRIPTION_FILTER (§10.2.9) replacing the subscription's filter */
   filter?: SubscriptionFilterDraft18;
   startLocation?: Location;

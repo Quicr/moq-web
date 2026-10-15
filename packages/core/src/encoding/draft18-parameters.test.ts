@@ -93,6 +93,7 @@ describe('draft-18 §10.2 parameter validation (M-08)', () => {
     const expected = new Draft18BufferWriter();
     encodeTrackNamespace(expected, ['a', 'b']);
     expect(prefix).toEqual(expected.toUint8Array());
+    expect(Draft18MessageCodec.encode(decoded)).toEqual(wire);
   });
 
   it('rejects FORWARD outside 0..1', () => {

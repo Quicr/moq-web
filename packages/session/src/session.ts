@@ -1748,7 +1748,7 @@ export class MOQTSession {
         break;
 
       case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
-        this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22);
+        this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22, requestId);
         break;
 
       default:
@@ -3657,6 +3657,10 @@ export class MOQTSession {
       const ok = response as RequestOkMessageDraft18;
       const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
       log.info('Received REQUEST_OK for PUBLISH', { requestId: requestId.toString(), expiresMs });
+      // Draft-18 §5.1: a subscriber can start the subscription paused with FORWARD=0 in PUBLISH_OK
+      if (ok.forwardState === false) {
+        this.publicationManager.setForwardByRequestId(requestId, 0);
+      }
       this.emit('request-ok', { requestId, requestKind: 'publish', expiresMs } as RequestOkEvent);
       if (!options?.skipForwardWait) {
         log.info('PUBLISH accepted, starting immediately');
@@ -4563,7 +4567,9 @@ export class MOQTSession {
       audioDeliveryMode,
       requestId,
       cleanupHandlers: [],
-      forward: 0, // Will be updated after PUBLISH_OK
+      // Draft-18/22: our PUBLISH sets the initial Forward State to 1 (§3.1.1); the
+      // draft-14/16 PUBLISH_OK decides
+      forward: this.isDraft18 ? 1 : 0,
     };
     this.publicationManager.add(publication);
 
@@ -5715,6 +5721,12 @@ export class MOQTSession {
     const priority = publication?.priority ?? 128;
     const deliveryMode = publication?.deliveryMode ?? 'stream';
     const audioDeliveryMode = publication?.audioDeliveryMode ?? 'datagram';
+
+    // A paused subscription gets no Objects, though they still exist (d22 §3.1.1)
+    if (this.isDraft18 && publication?.forward === 0) {
+      this.publicationManager.updateLatest(trackAlias, BigInt(metadata.groupId), BigInt(metadata.objectId));
+      return;
+    }
 
     if (deliveryMode === 'datagram') {
       await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
@@ -6933,7 +6945,8 @@ export class MOQTSession {
       audioDeliveryMode: announceInfo.options.audioDeliveryMode ?? 'datagram',
       requestId: message.requestId,
       cleanupHandlers: [],
-      forward: 1,
+      // The subscriber sets the initial Forward State (d22 §3.1.1, d18 §5.1)
+      forward: message.forwardState === false ? 0 : 1,
       subscriberPriority,
       subscriberGroupOrder,
       ...subscriberTimeouts,
@@ -7042,7 +7055,8 @@ export class MOQTSession {
       namespace,
       trackName,
       trackAlias: message.trackAlias,
-      paused: false,
+      // Draft-22 §3.1.1: the PUBLISH sets the initial state. Our draft-18 PUBLISH_OK sets it to 1.
+      paused: this.isDraft22 && message.forwardState === false,
       onObject: matchingSubscription.onObject,
     };
     this.subscriptionManager.add(subscription);
@@ -7649,7 +7663,13 @@ export class MOQTSession {
     });
   }
 
-  private handleIncomingPublishStateNotifyDraft22(message: PublishStateNotifyMessageDraft22): void {
+  private handleIncomingPublishStateNotifyDraft22(message: PublishStateNotifyMessageDraft22, requestId: bigint): void {
+    // It reports whether the publisher has the subscription paused (§9.20.18)
+    const subscription = this.subscriptionManager.findByRequestId(requestId);
+    if (subscription && message.forwardState !== undefined) {
+      subscription.paused = !message.forwardState;
+    }
+
     log.info('Received PUBLISH_STATE_NOTIFY (draft-22)', {
       forwardState: message.forwardState,
       largestLocation: message.largestLocation && `${message.largestLocation.group}/${message.largestLocation.object}`,

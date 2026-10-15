@@ -590,13 +590,11 @@ export class Draft18MessageCodec {
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
     // FORWARD parameter (0x10): even type = single byte value
-    // 0x01 = forward new objects to subscriber
-    if (message.forwardState !== false) {
-      params.push({
-        type: RequestParameterDraft18.FORWARD,
-        encode: (w) => { w.writeByte(0x01); },
-      });
-    }
+    // 0x01 = forward new objects to subscriber, 0x00 = start paused (§10.2.12)
+    params.push({
+      type: RequestParameterDraft18.FORWARD,
+      encode: (w) => { w.writeByte(message.forwardState === false ? 0x00 : 0x01); },
+    });
 
     if (message.filter !== undefined) {
       params.push(Draft18MessageCodec.filterParameter(message));
@@ -664,6 +662,8 @@ export class Draft18MessageCodec {
     let filter = SubscriptionFilterDraft18.ABSOLUTE_START;
     let startLocation: Location | undefined = { group: 0n, object: 0n };
     let endGroupDelta: bigint | undefined;
+    // §10.2.12: an omitted FORWARD is 1
+    let forwardState = true;
     const parameters = new Map<number, Uint8Array>();
 
     let previousType = 0;
@@ -673,6 +673,8 @@ export class Draft18MessageCodec {
 
       if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
         ({ filter, startLocation, endGroupDelta } = Draft18MessageCodec.readFilter(reader, MessageTypeDraft18.SUBSCRIBE));
+      } else if (type === RequestParameterDraft18.FORWARD) {
+        forwardState = Draft18MessageCodec.readUint8Parameter(reader, type) === 0x01;
       } else {
         const value = Draft18MessageCodec.readParameterValue(reader, type);
         parameters.set(type, value);
@@ -684,7 +686,7 @@ export class Draft18MessageCodec {
       requestId,
       trackNamespace,
       trackName,
-      forwardState: true,
+      forwardState,
       filter,
       startLocation,
       endGroupDelta,
@@ -775,13 +777,11 @@ export class Draft18MessageCodec {
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
     // FORWARD parameter (0x10): even type = single byte
-    // 0x01 = will forward new objects
-    if (message.forwardState !== false) {
-      params.push({
-        type: RequestParameterDraft18.FORWARD,
-        encode: (w) => { w.writeByte(0x01); },
-      });
-    }
+    // 0x01 = will forward new objects, 0x00 = starts paused (§10.2.12)
+    params.push({
+      type: RequestParameterDraft18.FORWARD,
+      encode: (w) => { w.writeByte(message.forwardState === false ? 0x00 : 0x01); },
+    });
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
 
@@ -800,11 +800,16 @@ export class Draft18MessageCodec {
     // Message Parameters (count-prefixed)
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH numParams', MessageTypeDraft18.PUBLISH);
+    // §10.2.12: an omitted FORWARD is 1
+    let forwardState = true;
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.PUBLISH, previousType, i);
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      const value = Draft18MessageCodec.readParameterValue(reader, type);
+      if (type === RequestParameterDraft18.FORWARD) {
+        forwardState = value[0] === 0x01;
+      }
     }
 
     // Track Properties (KVPs to end)
@@ -818,7 +823,7 @@ export class Draft18MessageCodec {
       trackAlias,
       trackNamespace,
       trackName,
-      forwardState: true,
+      forwardState,
       largestLocation: { group: 0n, object: 0n },
       trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
@@ -908,6 +913,12 @@ export class Draft18MessageCodec {
         },
       });
     }
+    if (message.forwardState !== undefined) {
+      params.push({
+        type: RequestParameterDraft18.FORWARD,
+        encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
+      });
+    }
     Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
@@ -917,6 +928,8 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'REQUEST_OK numParams', MessageTypeDraft18.REQUEST_OK);
     let expires: bigint | undefined;
     let largestLocation: Location | undefined;
+    // §10.2.12: FORWARD in a PUBLISH_OK sets the initial state; omitted is 1
+    let forwardState: boolean | undefined;
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
@@ -925,6 +938,8 @@ export class Draft18MessageCodec {
 
       if (type === RequestParameterDraft18.EXPIRES) {
         expires = reader.readVarInt();
+      } else if (type === RequestParameterDraft18.FORWARD) {
+        forwardState = Draft18MessageCodec.readUint8Parameter(reader, type) === 0x01;
       } else if (type === RequestParameterDraft18.LARGEST_OBJECT) {
         const group = reader.readVarInt();
         const object = reader.readVarInt();
@@ -939,6 +954,7 @@ export class Draft18MessageCodec {
       requestId: 0n,
       expires,
       largestLocation,
+      forwardState,
     };
   }
 
@@ -1221,11 +1237,14 @@ export class Draft18MessageCodec {
     writer.writeVarInt(message.requestId);
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
-    // FORWARD parameter (0x10): even type = single byte value (0 = pause, 1 = resume)
-    params.push({
-      type: RequestParameterDraft18.FORWARD,
-      encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
-    });
+    // FORWARD parameter (0x10): even type = single byte value (0 = pause, 1 = resume);
+    // omitted leaves the subscription's state unchanged (§10.2.12)
+    if (message.forwardState !== undefined) {
+      params.push({
+        type: RequestParameterDraft18.FORWARD,
+        encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
+      });
+    }
 
     if (message.filter !== undefined) {
       params.push(Draft18MessageCodec.filterParameter(message));
@@ -1245,7 +1264,7 @@ export class Draft18MessageCodec {
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'REQUEST_UPDATE numParams', MessageTypeDraft18.REQUEST_UPDATE);
     let previousType = 0;
-    let forwardState = true;
+    let forwardState: boolean | undefined;
     let filterFields: ReturnType<typeof Draft18MessageCodec.readFilter> | undefined;
     const parameters = new Map<number, Uint8Array>();
     for (let i = 0; i < numParams; i++) {
@@ -1257,7 +1276,7 @@ export class Draft18MessageCodec {
       }
       const value = Draft18MessageCodec.readParameterValue(reader, type);
       if (type === RequestParameterDraft18.FORWARD) {
-        forwardState = value.length > 0 ? value[0] === 0x01 : true;
+        forwardState = value[0] === 0x01;
       } else {
         parameters.set(type, value);
       }
