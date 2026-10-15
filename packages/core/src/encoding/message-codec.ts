@@ -2859,7 +2859,7 @@ export class ObjectCodec {
         subgroupId: BigInt(header.subgroupId),
         publisherPriority: header.publisherPriority,
         endOfGroup: endOfGroup ? true : undefined,
-        firstObject: true,
+        firstObject: header.firstObject ?? true,
       };
       const encoded = Draft18StreamCodec.encodeSubgroupHeader(d18Header);
       return [encoded, false]; // draft-18 uses properties, not extensions flag

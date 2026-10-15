@@ -1433,6 +1433,11 @@ export interface SubgroupHeader {
   subgroupId: number;
   /** Publisher priority (byte 0-255) */
   publisherPriority: number;
+  /**
+   * Draft-18+: the stream starts at the subgroup's first object (FIRST_OBJECT
+   * bit, d22 §11.3.1). Defaults to true; false for a stream reopened mid-subgroup.
+   */
+  firstObject?: boolean;
 }
 
 /**

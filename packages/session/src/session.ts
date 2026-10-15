@@ -5465,21 +5465,17 @@ export class MOQTSession {
 
     if (deliveryMode === 'datagram') {
       await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
-    } else {
+    } else if (metadata.newGroup === undefined && metadata.type === 'audio' && audioDeliveryMode === 'datagram') {
+      // Audio uses configured audioDeliveryMode (default: datagram for low latency)
+      await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
+    } else if (this.isDraft18) {
+      // Draft-18/22 §2.2: a subgroup is one stream, whatever the object type
+      await this.sendSubgroupObject(trackAlias, data, metadata, priority);
+    } else if (metadata.newGroup !== undefined) {
       // newGroup flag triggers group-based stream batching (one stream per group)
-      if (metadata.newGroup !== undefined) {
-        await this.sendObjectWithGOP(trackAlias, data, metadata, priority);
-      } else if (metadata.type === 'audio') {
-        // Audio uses configured audioDeliveryMode (default: datagram for low latency)
-        if (audioDeliveryMode === 'datagram') {
-          await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
-        } else {
-          await this.sendObjectViaStream(trackAlias, data, metadata, priority);
-        }
-      } else {
-        // Other data uses individual streams
-        await this.sendObjectViaStream(trackAlias, data, metadata, priority);
-      }
+      await this.sendObjectWithGOP(trackAlias, data, metadata, priority);
+    } else {
+      await this.sendObjectViaStream(trackAlias, data, metadata, priority);
     }
 
     // Track largest (group, object) tuple for §10.14 TRACK_STATUS replies.
@@ -5529,6 +5525,15 @@ export class MOQTSession {
           size: datagram.byteLength,
         });
       } catch (err) {
+        // A track keeps one Delivery Mode (draft-22 §12.1), so only legacy drafts fall back
+        if (this.isDraft18) {
+          log.warn('Failed to send datagram', {
+            trackAlias: trackAlias.toString(),
+            size: datagram.byteLength,
+            error: (err as Error).message,
+          });
+          return;
+        }
         log.warn('Failed to send datagram, falling back to stream', {
           trackAlias: trackAlias.toString(),
           size: datagram.byteLength,
@@ -5537,6 +5542,12 @@ export class MOQTSession {
         await this.sendObjectViaStream(trackAlias, data, metadata, priority);
       }
     } else {
+      if (this.isDraft18) {
+        throw new Error(
+          `Object of ${datagram.byteLength} bytes exceeds the ${this.maxDatagramSize}-byte datagram limit; ` +
+          'a datagram track cannot send it on a stream (draft-22 §12.1)',
+        );
+      }
       log.debug('Object too large for datagram, using stream', {
         size: datagram.byteLength,
         maxSize: this.maxDatagramSize,
@@ -5554,6 +5565,11 @@ export class MOQTSession {
     metadata: ObjectMetadata,
     priority?: number
   ): Promise<void> {
+    if (this.isDraft18) {
+      await this.sendSubgroupObject(trackAlias, data, metadata, priority ?? 128);
+      return;
+    }
+
     // §8: arm the subgroup-delivery deadline before touching the wire so a
     // stalled create/write path is caught by the same timer that guards
     // long-running GOP streams. Since sendObjectViaStream sends one whole
@@ -5622,6 +5638,132 @@ export class MOQTSession {
       // Delivery finished (or errored) — disarm the deadline either way.
       if (timeoutKey) this.publisherDeliveryTimeouts.disarm(timeoutKey);
     }
+  }
+
+  /**
+   * Draft-18/22: send an object on its subgroup's stream (§2.2: objects of a
+   * subgroup MUST NOT span streams). Subgroup 0 of each group gets one stream,
+   * kept open across objects; the next group finishes it with a FIN.
+   *
+   *   (G,0) (G,1) (G,2)  -> stream A: header | obj 0 | obj 1 | obj 2
+   *   (G+1,0)            -> FIN A; stream B: header | obj 0
+   */
+  private async sendSubgroupObject(
+    trackAlias: bigint,
+    data: Uint8Array,
+    metadata: ObjectMetadata,
+    priority: number
+  ): Promise<void> {
+    const aliasKey = trackAlias.toString();
+
+    try {
+      let existing = this.activeVideoStreams.get(aliasKey);
+      if (existing && existing.groupId !== metadata.groupId) {
+        await this.closeVideoGOPStream(aliasKey);
+        existing = undefined;
+      }
+
+      if (!existing) {
+        await this.openSubgroupWithObject(trackAlias, data, metadata, priority);
+        return;
+      }
+
+      const maxCacheDuration = metadata.maxCacheDuration ?? existing.maxCacheDuration;
+      const objectData = this.codec.encodeStreamObject(
+        metadata.objectId,
+        data,
+        ObjectStatus.NORMAL,
+        existing.previousObjectId,
+        existing.hasExtensions,
+        maxCacheDuration ? new Map([[ObjectExtension.MAX_CACHE_DURATION, maxCacheDuration]]) : undefined,
+      );
+
+      try {
+        await this.doWriteStream({ writer: existing.writer, streamId: existing.streamId }, objectData);
+        existing.objectCount++;
+        existing.previousObjectId = metadata.objectId;
+      } catch (writeErr) {
+        const errMsg = (writeErr as Error).message;
+        if (!errMsg.includes('not found') && !errMsg.includes('STOP_SENDING')) {
+          throw writeErr;
+        }
+
+        // The peer stopped the stream: carry on in a new one for the same subgroup
+        log.info('Subgroup stream closed by peer, reopening', {
+          trackAlias: aliasKey,
+          groupId: metadata.groupId,
+          objectId: metadata.objectId,
+        });
+        this.activeVideoStreams.delete(aliasKey);
+        this.decrementOpenStreamCount();
+        await this.openSubgroupWithObject(trackAlias, data, metadata, priority);
+      }
+    } catch (err) {
+      log.error('Failed to send subgroup object', {
+        trackAlias: aliasKey,
+        groupId: metadata.groupId,
+        objectId: metadata.objectId,
+        error: (err as Error).message,
+      });
+      this.activeVideoStreams.delete(aliasKey);
+    }
+  }
+
+  /**
+   * Open the stream of subgroup 0 of the object's group and write the
+   * subgroup header and the object. FIRST_OBJECT only when no earlier stream
+   * of this group went out (§11.3.1); END_OF_GROUP because the group's stream
+   * is finished when the next group starts.
+   */
+  private async openSubgroupWithObject(
+    trackAlias: bigint,
+    data: Uint8Array,
+    metadata: ObjectMetadata,
+    priority: number
+  ): Promise<void> {
+    const publication = this.publicationManager.get(trackAlias);
+    const reopened = publication?.lastStreamGroup === metadata.groupId;
+    if (publication) {
+      publication.lastStreamGroup = metadata.groupId;
+    }
+
+    this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
+    const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+    const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
+
+    const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
+      trackAlias,
+      groupId: metadata.groupId,
+      subgroupId: 0,
+      publisherPriority: priority,
+      firstObject: !reopened,
+    }, true /* endOfGroup */);
+
+    const maxCacheDuration = metadata.maxCacheDuration;
+    const objectData = this.codec.encodeStreamObject(
+      metadata.objectId,
+      data,
+      ObjectStatus.NORMAL,
+      -1, // first object on this stream
+      hasExtensions,
+      maxCacheDuration ? new Map([[ObjectExtension.MAX_CACHE_DURATION, maxCacheDuration]]) : undefined,
+    );
+
+    const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
+    combinedData.set(subgroupHeader, 0);
+    combinedData.set(objectData, subgroupHeader.length);
+
+    // Tracked before the write so a delivery timeout can reset a stalled first write
+    this.activeVideoStreams.set(trackAlias.toString(), {
+      writer: streamInfo.writer,
+      streamId: streamInfo.streamId,
+      groupId: metadata.groupId,
+      objectCount: 1,
+      previousObjectId: metadata.objectId,
+      hasExtensions,
+      maxCacheDuration,
+    });
+    await this.doWriteStream(streamInfo, combinedData);
   }
 
   /**

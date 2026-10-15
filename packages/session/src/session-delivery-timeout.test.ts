@@ -75,10 +75,12 @@ describe('§8 publisher-side delivery-timeout enforcement', () => {
     priv.doWriteStream = vi.fn().mockImplementation(() => new Promise<void>(() => { /* stall */ }));
     priv.doCloseStream = closeSpy;
 
-    // Track the stream so resetPublicationStream has something to abort.
-    priv.activeVideoStreams.set('7', {
-      writer, streamId: 100, groupId: 0, objectCount: 0, previousObjectId: -1, hasExtensions: false,
-    });
+    // Draft-16/17 send one stream per object; give resetPublicationStream a stream to abort.
+    if (session.draft === 'draft-16' || session.draft === 'draft-17') {
+      priv.activeVideoStreams.set('7', {
+        writer, streamId: 100, groupId: 0, objectCount: 0, previousObjectId: -1, hasExtensions: false,
+      });
+    }
 
     const timeoutEvents: DeliveryTimeoutEvent[] = [];
     session.on('delivery-timeout', (ev) => timeoutEvents.push(ev as DeliveryTimeoutEvent));

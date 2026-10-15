@@ -39,6 +39,8 @@ export interface InternalPublication extends PublicationInfo {
   subscriberGroupOrder?: GroupOrder;
   /** Draft-18 §9.9 PUBLISH_DONE Stream Count: data streams opened so far. */
   streamsOpened?: number;
+  /** Group of the latest subgroup stream opened, to tell a reopen from a first open. */
+  lastStreamGroup?: number;
 }
 
 /**
