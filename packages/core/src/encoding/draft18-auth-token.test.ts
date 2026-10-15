@@ -7,8 +7,18 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { Draft18CodecError } from './draft18-message-codec';
+import { Draft18CodecError, Draft18MessageCodec } from './draft18-message-codec';
+import { Draft22MessageCodec } from './draft22-message-codec';
 import {
+  MessageTypeDraft18,
+  MessageTypeDraft22,
+  RequestParameterDraft18,
+  SubscriptionFilterDraft18,
+  type SubscribeMessageDraft18,
+  type SubscribeMessageDraft22,
+} from '../messages/types';
+import {
+  AUTH_TOKEN_FORMAT_ERROR,
   AuthTokenAliasType,
   decodeDraft18AuthToken,
   encodeDraft18AuthToken,
@@ -63,5 +73,49 @@ describe('Draft-18/22 Authorization Token (§8.9)', () => {
   it('rejects a truncated structure', () => {
     expect(() => decodeDraft18AuthToken(new Uint8Array([0x03]))).toThrow(Draft18CodecError);
     expect(() => decodeDraft18AuthToken(new Uint8Array([]))).toThrow(Draft18CodecError);
+  });
+
+  describe('receiver duties (§8.9)', () => {
+    const malformed = new Uint8Array([0x09]); // alias type 9 is undefined
+
+    it('flags an undecodable Token as a KEY_VALUE_FORMATTING_ERROR', () => {
+      try {
+        decodeDraft18AuthToken(malformed);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as Draft18CodecError).code).toBe(AUTH_TOKEN_FORMAT_ERROR);
+      }
+    });
+
+    it('rejects an undecodable Token in a draft-18 request parameter', () => {
+      const message: SubscribeMessageDraft18 = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId: 1n,
+        trackNamespace: ['a'],
+        trackName: 't',
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
+        parameters: new Map([[RequestParameterDraft18.AUTHORIZATION_TOKEN, malformed]]),
+      };
+
+      expect(() => Draft18MessageCodec.decode(Draft18MessageCodec.encode(message))).toThrow(
+        expect.objectContaining({ code: AUTH_TOKEN_FORMAT_ERROR }),
+      );
+    });
+
+    it('rejects an undecodable Token in a draft-22 request', () => {
+      const message: SubscribeMessageDraft22 = {
+        type: MessageTypeDraft22.SUBSCRIBE,
+        requestId: 1n,
+        trackNamespace: ['a'],
+        trackName: 't',
+        forwardState: true,
+        authTokens: [malformed],
+      };
+
+      expect(() => Draft22MessageCodec.decode(Draft22MessageCodec.encode(message))).toThrow(
+        expect.objectContaining({ code: AUTH_TOKEN_FORMAT_ERROR }),
+      );
+    });
   });
 });

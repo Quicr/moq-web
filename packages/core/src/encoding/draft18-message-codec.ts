@@ -27,6 +27,7 @@ import {
   decodeReasonPhrase,
   decodeTrackName,
   encodeKeyValuePairs,
+  decodeDraft18AuthToken,
   decodeKeyValuePairsToEnd,
   DEFAULT_SUBSCRIBER_PRIORITY,
   MAX_SAFE_KEY,
@@ -1560,7 +1561,9 @@ export class Draft18MessageCodec {
       case RequestParameterDraft18.AUTHORIZATION_TOKEN: {
         const length = reader.readVarIntNumber();
         assertBound(length, MAX_AUTH_TOKEN_LENGTH, 'AUTHORIZATION_TOKEN parameter length');
-        return reader.readBytes(length);
+        const token = reader.readBytes(length);
+        decodeDraft18AuthToken(token);
+        return token;
       }
       case RequestParameterDraft18.SUBSCRIPTION_FILTER:
       case RequestParameterDraft18.TRACK_NAMESPACE_PREFIX:

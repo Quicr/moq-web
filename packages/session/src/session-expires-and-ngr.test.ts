@@ -366,7 +366,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX on SUBS
     // (§10.2.2), to prove pass-through survives.
     const passthroughKey = RequestParameterDraft18.AUTHORIZATION_TOKEN;
     const extra = new Map<number, Uint8Array>([
-      [passthroughKey, new Uint8Array([0xde, 0xad])],
+      [passthroughKey, new Uint8Array([0x03, 0x00, 0xde, 0xad])],
     ]);
 
     await session.subscribeTracks(['media'], undefined, {
@@ -377,6 +377,6 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX on SUBS
     const [decoded] = Draft18MessageCodec.decode(chunks[0]);
     const m = decoded as SubscribeTracksMessageDraft18;
     expect(m.parameters?.has(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX)).toBe(true);
-    expect(m.parameters?.get(passthroughKey)).toEqual(new Uint8Array([0xde, 0xad]));
+    expect(m.parameters?.get(passthroughKey)).toEqual(new Uint8Array([0x03, 0x00, 0xde, 0xad]));
   });
 });

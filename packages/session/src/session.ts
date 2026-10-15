@@ -19,6 +19,8 @@
 import {
   MOQTransport,
   MessageCodec,
+  AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
+  AUTH_TOKEN_FORMAT_ERROR,
   AuthTokenAliasType,
   encodeDraft18AuthToken,
   MessageType,
@@ -124,6 +126,7 @@ import {
   Draft18RequestStream,
   RequestStreamEnded,
   addDeliveryTimeoutParams,
+  assertNoTokenRegister,
   applyRangeFilters,
   assertNotReservedNamespace,
   buildTrackProperties,
@@ -206,6 +209,12 @@ import type {
 } from './types.js';
 
 const log = Logger.create('moqt:session');
+
+/** Codec error tags that end the session, and the session error each one maps to */
+const FATAL_DECODE_CODES: ReadonlyMap<string | undefined, SessionErrorCodeDraft18> = new Map([
+  [AUTH_TOKEN_FORMAT_ERROR, SessionErrorCodeDraft18.KEY_VALUE_FORMATTING_ERROR],
+  [AUTH_TOKEN_CACHE_OVERFLOW_ERROR, SessionErrorCodeDraft18.AUTH_TOKEN_CACHE_OVERFLOW],
+]);
 
 /** PUBLISH_DONE Stream Count meaning "publisher cannot give the exact number": 2^62-1 in draft-18 §10.11 */
 const STREAM_COUNT_UNKNOWN_DRAFT18 = (1n << 62n) - 1n;
@@ -1416,7 +1425,7 @@ export class MOQTSession {
           return;
         }
         log.info('Request stream ended', { requestId: requestId.toString(), reason: (err as Error).message });
-        if (this.closeOnUnknownType(err)) {
+        if (this.closeOnFatalDecode(err)) {
           return;
         }
         if (!(err instanceof RequestStreamEnded)) {
@@ -1439,14 +1448,21 @@ export class MOQTSession {
   }
 
   /**
-   * An unknown message type is a protocol violation: close the session
-   * (draft-22 §9, draft-18 §10). Returns whether `err` was one.
+   * An unknown message type is a protocol violation (draft-22 §9, draft-18
+   * §10); a malformed or unusable Authorization Token has its own session
+   * error (§8.9). Close the session and return whether `err` was one.
    */
-  private closeOnUnknownType(err: unknown): boolean {
-    if (!(err instanceof Draft18CodecError) || !/^Unknown message type/.test(err.message)) {
+  private closeOnFatalDecode(err: unknown): boolean {
+    if (!(err instanceof Draft18CodecError)) {
       return false;
     }
-    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason: err.message }).catch(() => {});
+    const code = /^Unknown message type/.test(err.message)
+      ? SessionErrorCodeDraft18.PROTOCOL_VIOLATION
+      : FATAL_DECODE_CODES.get(err.code);
+    if (code === undefined) {
+      return false;
+    }
+    void this.close({ code, reason: err.message }).catch(() => {});
 
     return true;
   }
@@ -6337,6 +6353,8 @@ export class MOQTSession {
 
       log.info('Received message on incoming bidi stream', { type: MessageTypeDraft18[message.type] });
 
+      assertNoTokenRegister(message);
+
       // Register before dispatch: a handler's events can reach for this stream.
       // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
       if (ACCEPTED_REQUEST_TYPES.has(message.type)) {
@@ -6417,7 +6435,7 @@ export class MOQTSession {
         return;
       }
     } catch (err) {
-      if (!this.closeOnUnknownType(err)) {
+      if (!this.closeOnFatalDecode(err)) {
         log.error('Error reading incoming bidi stream', { error: (err as Error).message });
       }
     }

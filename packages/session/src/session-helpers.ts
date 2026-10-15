@@ -10,8 +10,11 @@
  */
 
 import {
+  AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
   AuthTokenAliasType,
   BufferWriter,
+  decodeDraft18AuthToken,
+  Draft18CodecError,
   ConnectionStateMachine as _ConnectionStateMachine,
   encodeDraft18AuthToken,
   MessageCodec,
@@ -505,6 +508,30 @@ export function encodeRequestAuthTokenBytes(authToken: RequestAuthToken): Uint8A
     tokenType,
     tokenValue: authToken.tokenBytes,
   });
+}
+
+/**
+ * §8.9: this session advertises no token cache (MAX_AUTH_TOKEN_CACHE_SIZE 0),
+ * so a request whose Token registers an Alias exceeds it. Throws a codec
+ * error tagged for a session close with AUTH_TOKEN_CACHE_OVERFLOW.
+ */
+export function assertNoTokenRegister(message: ControlMessageDraft18): void {
+  // Draft-22 requests carry every Token in `authTokens`; draft-18 keeps one in `parameters`
+  const { authTokens, parameters } = message as {
+    authTokens?: Uint8Array[];
+    parameters?: Map<number, Uint8Array>;
+  };
+  const tokens = authTokens ?? [parameters?.get(RequestParameterDraft18.AUTHORIZATION_TOKEN)];
+
+  for (const bytes of tokens) {
+    if (bytes && decodeDraft18AuthToken(bytes).aliasType === AuthTokenAliasType.REGISTER) {
+      throw new Draft18CodecError(
+        'Authorization Token registers an Alias with no token cache (AUTH_TOKEN_CACHE_OVERFLOW)',
+        undefined,
+        AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
+      );
+    }
+  }
 }
 
 /**

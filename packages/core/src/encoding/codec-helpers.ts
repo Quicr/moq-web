@@ -312,15 +312,28 @@ export function encodeDraft18AuthToken(token: AuthorizationToken): Uint8Array {
   return writer.toUint8Array();
 }
 
+/**
+ * Error tag for a Token structure that cannot be decoded: the receiver MUST
+ * close the session with KEY_VALUE_FORMATTING_ERROR (§8.9).
+ */
+export const AUTH_TOKEN_FORMAT_ERROR = 'key-value-formatting-error';
+
+/**
+ * Error tag for a Token that registers an Alias with no token cache: the
+ * receiver MUST close the session with AUTH_TOKEN_CACHE_OVERFLOW (§8.9).
+ */
+export const AUTH_TOKEN_CACHE_OVERFLOW_ERROR = 'auth-token-cache-overflow';
+
 /** Decode a Token structure (see {@link encodeDraft18AuthToken}). */
 export function decodeDraft18AuthToken(data: Uint8Array): AuthorizationToken {
   try {
     return readAuthToken(new Draft18BufferReader(data));
   } catch (error) {
-    if (error instanceof Draft18CodecError) {
-      throw error;
-    }
-    throw new Draft18CodecError(`Undecodable auth token: ${(error as Error).message}`);
+    throw new Draft18CodecError(
+      `Undecodable auth token: ${(error as Error).message} (KEY_VALUE_FORMATTING_ERROR)`,
+      undefined,
+      AUTH_TOKEN_FORMAT_ERROR,
+    );
   }
 }
 

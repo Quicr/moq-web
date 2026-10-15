@@ -365,6 +365,8 @@ export type { IProtocolCodec, ProtocolCodecCapabilities } from './encoding/proto
 // Draft-18 message codec
 export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
 export {
+  AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
+  AUTH_TOKEN_FORMAT_ERROR,
   AuthTokenAliasType,
   decodeDraft18AuthToken,
   encodeDraft18AuthToken,

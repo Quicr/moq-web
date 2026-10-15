@@ -24,6 +24,7 @@ import {
   assertBound,
   encodeTrackNamespace,
   decodeTrackNamespace,
+  decodeDraft18AuthToken,
   MAX_CONTROL_MESSAGE_LENGTH,
   MAX_AUTH_TOKEN_LENGTH,
 } from './codec-helpers.js';
@@ -237,9 +238,12 @@ function readEntries(reader: Draft18BufferReader, scope: ParameterScopeDraft22, 
         (result.rangeFilters ??= []).push(filter);
         break;
       }
-      case ValueKind.AUTH_TOKEN:
-        (result.authTokens ??= []).push(readRaw(reader, type, found));
+      case ValueKind.AUTH_TOKEN: {
+        const token = readRaw(reader, type, found);
+        decodeDraft18AuthToken(token);
+        (result.authTokens ??= []).push(token);
         break;
+      }
       default:
         storeRaw(result, parameters, type, readRaw(reader, type, found));
     }

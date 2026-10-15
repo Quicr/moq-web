@@ -442,12 +442,12 @@ describe('Draft22 §9.20 message parameters', () => {
         trackName: 't',
         subscriberPriority: 128,
         groupOrder: GroupOrder.ASCENDING,
-        authTokens: [bytes(0xaa, 0xbb)],
+        authTokens: [bytes(0x03, 0x00, 0xaa, 0xbb)],
       };
 
       const [decoded] = Draft22MessageCodec.decode(Draft22MessageCodec.encode(fetch));
 
-      expect((decoded as FetchMessageDraft22).authTokens).toEqual([bytes(0xaa, 0xbb)]);
+      expect((decoded as FetchMessageDraft22).authTokens).toEqual([bytes(0x03, 0x00, 0xaa, 0xbb)]);
       expect((decoded as FetchMessageDraft22).parameters).toBeUndefined();
     });
 
@@ -458,13 +458,15 @@ describe('Draft22 §9.20 message parameters', () => {
         trackNamespace: ['a'],
         trackName: 't',
         forwardState: true,
-        authTokens: [bytes(0xaa), bytes(0xbb, 0xcc)],
+        authTokens: [bytes(0x03, 0x00, 0xaa), bytes(0x03, 0x00, 0xbb, 0xcc)],
       };
 
       const encoded = Draft22MessageCodec.encode(message);
 
-      // nparams=3 | AUTH(0x03) 1 aa | AUTH (delta 0) 2 bb cc | FORWARD(+0x0d)=1
-      expect(Array.from(encoded.slice(-10))).toEqual([0x03, 0x03, 0x01, 0xaa, 0x00, 0x02, 0xbb, 0xcc, 0x0d, 0x01]);
+      // nparams=3 | AUTH(0x03) len 3 USE_VALUE type 0 aa | AUTH (delta 0) len 4 ... | FORWARD(+0x0d)=1
+      expect(Array.from(encoded.slice(-14))).toEqual([
+        0x03, 0x03, 0x03, 0x03, 0x00, 0xaa, 0x00, 0x04, 0x03, 0x00, 0xbb, 0xcc, 0x0d, 0x01,
+      ]);
       const [decoded] = Draft22MessageCodec.decode(encoded);
       expect((decoded as SubscribeMessageDraft22).authTokens).toEqual(message.authTokens);
     });
@@ -472,8 +474,8 @@ describe('Draft22 §9.20 message parameters', () => {
 
   describe('namespace requests (§9.14, §9.15)', () => {
     it('accepts AUTHORIZATION_TOKEN in SUBSCRIBE_NAMESPACE', () => {
-      // reqId=2 | ns(1,"a") | nparams=1 | AUTHORIZATION_TOKEN(0x03) len=1
-      const wire = bytes(0x50, 0x00, 0x08, 0x02, 0x01, 0x01, 0x61, 0x01, 0x03, 0x01, 0xaa);
+      // reqId=2 | ns(1,"a") | nparams=1 | AUTHORIZATION_TOKEN(0x03) len=3 USE_VALUE type 0 aa
+      const wire = bytes(0x50, 0x00, 0x0a, 0x02, 0x01, 0x01, 0x61, 0x01, 0x03, 0x03, 0x03, 0x00, 0xaa);
 
       const [decoded, bytesRead] = Draft22MessageCodec.decode(wire);
 

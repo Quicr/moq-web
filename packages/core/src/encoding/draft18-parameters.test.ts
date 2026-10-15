@@ -61,7 +61,7 @@ describe('draft-18 §10.2 parameter validation (M-08)', () => {
   });
 
   it('allows AUTHORIZATION_TOKEN to repeat', () => {
-    const wire = subscribeWire([[P.AUTHORIZATION_TOKEN, [0x01, 0xaa]], [0, [0x01, 0xbb]]]);
+    const wire = subscribeWire([[P.AUTHORIZATION_TOKEN, [0x03, 0x03, 0x00, 0xaa]], [0, [0x03, 0x03, 0x00, 0xbb]]]);
 
     expect(() => Draft18MessageCodec.decode(wire)).not.toThrow();
   });
