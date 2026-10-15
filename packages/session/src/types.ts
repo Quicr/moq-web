@@ -464,22 +464,20 @@ export interface PublishBlockedEvent {
 }
 
 /**
- * Draft-18 §8 delivery-timeout event. Fired when a subscriber-side or
- * publisher-side delivery deadline elapses. The peer receives a
+ * Draft-18 §8 delivery-timeout event. Fired when a publisher-side delivery
+ * deadline elapses. The peer receives a
  * `DELIVERY_TIMEOUT` (§15.10.4) stream reset; consumers can use this
  * event to surface the drop in the UI or reset an application decoder.
  */
 export interface DeliveryTimeoutEvent {
-  /** Which side of the pipeline observed the timeout. */
-  side: 'subscriber' | 'publisher';
+  /** Which side of the pipeline observed the timeout (always the publisher). */
+  side: 'publisher';
   /** Which class of deadline expired. */
   reason: 'subgroup' | 'object' | 'fill' | 'rendezvous';
   /** §15.10.4 stream reset code conveyed to the peer. */
   resetCode: number;
   /** Track alias whose stream was affected. */
   trackAlias?: bigint;
-  /** Subscription that owned the subgroup (subscriber-side only). */
-  subscriptionId?: number;
   /** Group / subgroup / object that missed its deadline. */
   groupId?: number;
   subgroupId?: number;

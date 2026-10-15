@@ -5637,15 +5637,6 @@ export class MOQTSession {
           size: datagram.byteLength,
         });
       } catch (err) {
-        // A track keeps one Delivery Mode (draft-22 §12.1), so only legacy drafts fall back
-        if (this.isDraft18) {
-          log.warn('Failed to send datagram', {
-            trackAlias: trackAlias.toString(),
-            size: datagram.byteLength,
-            error: (err as Error).message,
-          });
-          return;
-        }
         log.warn('Failed to send datagram, falling back to stream', {
           trackAlias: trackAlias.toString(),
           size: datagram.byteLength,
@@ -5654,12 +5645,7 @@ export class MOQTSession {
         await this.sendObjectViaStream(trackAlias, data, metadata, priority);
       }
     } else {
-      if (this.isDraft18) {
-        throw new Error(
-          `Object of ${datagram.byteLength} bytes exceeds the ${this.maxDatagramSize}-byte datagram limit; ` +
-          'a datagram track cannot send it on a stream (draft-22 §12.1)',
-        );
-      }
+      // Delivery Mode is per Object, set by how it is first sent (d22 §2)
       log.debug('Object too large for datagram, using stream', {
         size: datagram.byteLength,
         maxSize: this.maxDatagramSize,

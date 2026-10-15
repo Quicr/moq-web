@@ -6,8 +6,8 @@
  * draft-22 §2.2, §11.3.1, §12.1).
  *
  * Objects of one subgroup go on one stream. FIRST_OBJECT is set only when the
- * stream starts at the subgroup's first object. A track keeps one Delivery
- * Mode, so an oversize datagram object is refused, not sent on a stream.
+ * stream starts at the subgroup's first object. Delivery Mode is per Object
+ * (d22 §2), so an oversize datagram object goes on a stream.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -132,14 +132,16 @@ describe.each(['draft-18', 'draft-22'] as const)('subgroup streams (%s)', (draft
     expect(reopened.data[0] & SubgroupFlags.FIRST_OBJECT).toBe(0);
   });
 
-  it('does not move an oversize datagram object onto a stream', async () => {
+  it('sends an oversize object of a datagram track as a subgroup stream, a small one as a datagram', async () => {
     const h = makeHarness(draft, 'datagram');
 
-    await expect(
-      h.session.sendObject(TRACK_ALIAS, OVERSIZE_PAYLOAD, { groupId: GROUP, objectId: 0, type: 'data' }),
-    ).rejects.toThrow(/datagram/i);
+    await h.session.sendObject(TRACK_ALIAS, PAYLOAD, { groupId: GROUP, objectId: 0, type: 'data' });
+    await h.session.sendObject(TRACK_ALIAS, OVERSIZE_PAYLOAD, { groupId: GROUP, objectId: 1, type: 'data' });
 
-    expect(h.created).toHaveLength(0);
-    expect(h.datagrams).toHaveLength(0);
+    expect(h.datagrams).toHaveLength(1);
+    expect(h.created).toHaveLength(1);
+    const [header] = Draft18StreamCodec.decodeSubgroupHeader(h.writes[0].data);
+    expect(header.groupId).toBe(BigInt(GROUP));
+    expect(header.firstObject).toBe(true);
   });
 });
