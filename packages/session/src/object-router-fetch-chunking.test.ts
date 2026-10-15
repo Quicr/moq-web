@@ -66,6 +66,34 @@ function chunked(bytes: Uint8Array, split: number): ReadableStream<Uint8Array> {
   });
 }
 
+describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH header (%s)', (draft) => {
+  it('reads a multi-byte Request ID as an MOQT vi64', async () => {
+    // 2211 needs two bytes; as a QUIC varint the 0b10 prefix means four
+    const requestId = 2211n;
+    const bytes = new Uint8Array([
+      ...MOQTVarInt.encode(BigInt(DataStreamType.FETCH_HEADER)),
+      ...MOQTVarInt.encode(requestId),
+      ...Draft18StreamCodec.encodeFetchObject({
+        subgroupMode: FetchSubgroupMode.ZERO,
+        groupIdDelta: 3n,
+        objectIdDelta: 0n,
+        publisherPriority: PRIORITY,
+        payloadLength: 1n,
+      }),
+      0xaa,
+    ]);
+    const router = new ObjectRouter(new SubscriptionManager(), undefined, draft);
+    const delivered: Array<[bigint, number, number]> = [];
+    router.setFetchObjectCallback((id, _data, group, object) => {
+      delivered.push([id, group, object]);
+    });
+
+    await router.handleIncomingStream(chunked(bytes, bytes.length));
+
+    expect(delivered).toEqual([[requestId, 3, 0]]);
+  });
+});
+
 describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH chunking (%s)', (draft) => {
   it('delivers identical objects wherever the stream is split', async () => {
     const bytes = fetchBytes();

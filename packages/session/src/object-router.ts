@@ -16,6 +16,7 @@ import {
   DataStreamType,
   GroupOrder,
   BufferReader,
+  MOQTVarInt,
   Draft18StreamCodec,
   Draft18CodecError,
   Draft18StreamCodecError,
@@ -64,6 +65,9 @@ const log = Logger.create('moqt:session:object-router');
 
 /** Cap on cancelled FETCH ids awaiting a stream that may never arrive */
 const MAX_CANCELLED_FETCHES = 256;
+
+/** FETCH_HEADER's stream type (0x05) is a single byte in every draft */
+const FETCH_HEADER_TYPE_BYTES = 1;
 
 /**
  * Callback for received objects
@@ -853,17 +857,24 @@ export class ObjectRouter {
     let buffer = initialBuffer;
     let done = initialDone;
 
-    // Parse FETCH_HEADER: stream type (already consumed) + request ID (62-bit
-    // varint). The Request ID can be split across reads, so keep reading
-    // until it decodes or the stream ends.
+    // Parse FETCH_HEADER: stream type (already consumed) + request ID. The
+    // Request ID can be split across reads, so keep reading until it decodes
+    // or the stream ends. Draft-18+ encodes it as an MOQT vi64, not a QUIC
+    // varint; the two differ for values of 64 and up.
     let requestId: bigint | undefined;
     let bufferOffset = 0;
     while (requestId === undefined) {
       try {
-        const headerReader = new BufferReader(buffer);
-        headerReader.skip(1); // Skip stream type byte (0x05)
-        requestId = headerReader.readVarInt();
-        bufferOffset = headerReader.offset;
+        if (this.isDraft18) {
+          const [value, length] = MOQTVarInt.decode(buffer, FETCH_HEADER_TYPE_BYTES);
+          requestId = value;
+          bufferOffset = FETCH_HEADER_TYPE_BYTES + length;
+        } else {
+          const headerReader = new BufferReader(buffer);
+          headerReader.skip(FETCH_HEADER_TYPE_BYTES);
+          requestId = headerReader.readVarInt();
+          bufferOffset = headerReader.offset;
+        }
       } catch {
         if (done) {
           log.error('Failed to decode FETCH request ID');
