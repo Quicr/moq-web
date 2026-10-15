@@ -5969,6 +5969,7 @@ export class MOQTSession {
   on(event: 'namespace-forward-resumed', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'new-group-request', handler: (event: NewGroupRequestEvent) => void): () => void;
   on(event: 'stream-reset', handler: (event: StreamResetEvent) => void): () => void;
+  on(event: 'delivery-timeout', handler: (event: DeliveryTimeoutEvent) => void): () => void;
   on(event: 'goaway', handler: (event: GoAwayEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
