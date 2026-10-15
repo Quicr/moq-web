@@ -18,6 +18,7 @@ import {
   type FetchMessageDraft22,
   type PublishMessageDraft22,
   type PublishStateNotifyMessageDraft22,
+  type RangeFilterDraft22,
   type RequestUpdateMessageDraft22,
   type SubscribeMessageDraft22,
   type SubscribeTracksMessageDraft22,
@@ -586,7 +587,7 @@ describe('Draft22 §9.20 message parameters', () => {
     });
 
     it('does not cap the number of parameters at 64', () => {
-      const rangeFilters = Array.from({ length: 70 }, (_, setId) => ({
+      const rangeFilters = Array.from({ length: 70 }, (_, setId): RangeFilterDraft22 => ({
         type: RequestParameterDraft22.SUBGROUP_FILTER,
         setId,
         ranges: [{ start: 0n, end: 10n }],
