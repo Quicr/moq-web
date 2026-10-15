@@ -582,9 +582,6 @@ export class Draft18StreamCodec {
     let objectProperties: Map<number, Uint8Array> | undefined;
     if (hasProperties) {
       const propsLength = reader.readVarIntNumber();
-      if (propsLength === 0) {
-        throw new Draft18StreamCodecError('PROPERTIES flag set with zero-length properties (spec §11.4.4)');
-      }
       assertStreamBound(propsLength, MAX_PROPERTIES_LENGTH, 'FetchObject propsLength');
       const propsEnd = reader.offset + propsLength;
       objectProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
