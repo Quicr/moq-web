@@ -108,7 +108,8 @@ export interface TransportConfig {
    * MOQT draft version to speak on this connection.
    *
    * Selects the ALPN protocol string and the setup-stream layout.
-   * Defaults to the build-time DEFAULT_DRAFT (draft-16 unless overridden).
+   * Defaults to DEFAULT_DRAFT: draft-18 for the published packages, or
+   * MOQT_VERSION where a Vite/Vitest build defines it.
    * Pass explicitly when your relay fleet mixes drafts.
    */
   draft?: DraftVersion;

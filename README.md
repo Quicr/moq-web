@@ -45,17 +45,23 @@ Implements [draft-ietf-moq-transport](https://datatracker.ietf.org/doc/draft-iet
 
 | Draft | Status | Notes |
 |-------|--------|-------|
-| Draft-22 | Supported | Build with `MOQT_VERSION=draft-22` |
+| Draft-22 | Supported | |
 | Draft-18 | **Default** | Full support |
 | Draft-17 | Supported | Included with draft-18 codec path |
-| Draft-16 | Supported | Build with `MOQT_VERSION=draft-16` |
+| Draft-16 | Supported | |
 
-Build for a specific draft:
+Select the draft at runtime when creating the transport:
+
+```ts
+const transport = new MOQTransport({ draft: 'draft-22' });
+```
+
+The published packages default to draft-18. `MOQT_VERSION` only changes the
+default for the bundled apps (built with Vite) and for test runs:
 
 ```bash
-pnpm run build:draft-18    # default
-pnpm run build:draft-16
-pnpm run build:draft-22
+pnpm run build:draft-22    # apps default to draft-22; packages unchanged
+pnpm run test:draft-22
 ```
 
 ## Architecture
