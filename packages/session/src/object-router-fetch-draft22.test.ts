@@ -161,6 +161,18 @@ describe('ObjectRouter draft-22 FETCH stream deltas (§11.4.1.1)', () => {
     expect(seen).toEqual([[2, 0], [5, 0], [6, 5]]);
   });
 
+  it('does not deliver an ID above 2^53-1 rounded onto its neighbour', async () => {
+    const router = new ObjectRouter(new SubscriptionManager(), undefined, 'draft-22');
+    const seen: Seen = [];
+    router.setFetchObjectCallback((_id, _data, group, object) => {
+      seen.push([group, object]);
+    });
+
+    await router.handleIncomingStream(fetchStream([first((1n << 60n) + 1n, 0n)])).catch(() => undefined);
+
+    expect(seen).toEqual([]);
+  });
+
   it('clears the registered group order when the stream ends', async () => {
     const router = new ObjectRouter(new SubscriptionManager(), undefined, 'draft-22');
     const seen: Seen = [];

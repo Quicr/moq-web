@@ -29,6 +29,7 @@ import {
 import type { FetchDecoderState, FetchObjectDraft18 } from '@moq-web/core';
 import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
+import { narrowBigIntToNumber } from './session-helpers.js';
 import { streamResetReason } from './stream-reset-reason.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 
@@ -1272,8 +1273,9 @@ export class ObjectRouter {
       bufferOffset = payloadStart + payloadLenN;
 
       objectCount++;
-      const groupIdN = Number(groupId);
-      const objectIdN = Number(objectId);
+      // IDs are vi64; refuse values a number would round
+      const groupIdN = narrowBigIntToNumber(groupId, 'FETCH Group ID');
+      const objectIdN = narrowBigIntToNumber(objectId, 'FETCH Object ID');
 
       // Emit end-of-group when the group changes (but not on the very first
       // object). We track the last-emitted group so we don't re-signal.

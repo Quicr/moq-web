@@ -83,7 +83,7 @@ function isDraft18Active(): boolean {
 }
 
 
-import { MOQTVarInt } from './moqt-varint.js';
+import { MOQTVarInt, toSafeNumber } from './moqt-varint.js';
 import type { SubgroupHeaderDraft18, ObjectHeaderDraft18, ObjectDatagramDraft18 } from '../messages/types.js';
 import {
   MessageType,
@@ -2698,9 +2698,9 @@ export class ObjectCodec {
       // groupId/objectId are bounded numbers (see ObjectHeader note).
       const header: ObjectHeader = {
         trackAlias: datagram.trackAlias,
-        groupId: Number(datagram.groupId),
+        groupId: toSafeNumber(datagram.groupId, 'Group ID'),
         subgroupId: 0,
-        objectId: Number(datagram.objectId ?? 0n),
+        objectId: toSafeNumber(datagram.objectId ?? 0n, 'Object ID'),
         publisherPriority: datagram.publisherPriority ?? 128,
         objectStatus: ObjectStatus.NORMAL,
       };
@@ -2898,8 +2898,8 @@ export class ObjectCodec {
       // groupId/subgroupId are bounded numbers (see SubgroupHeader note).
       const header: SubgroupHeader = {
         trackAlias: d18Header.trackAlias,
-        groupId: Number(d18Header.groupId),
-        subgroupId: Number(d18Header.subgroupId ?? 0n),
+        groupId: toSafeNumber(d18Header.groupId, 'Group ID'),
+        subgroupId: toSafeNumber(d18Header.subgroupId ?? 0n, 'Subgroup ID'),
         publisherPriority: priority,
       };
       return [header, bytesRead, endOfGroup, hasProperties];
@@ -3133,8 +3133,10 @@ export class ObjectCodec {
       // Draft-18: Object ID Delta | [Properties] | Payload Length | [Object Status] | [Payload]
       const [objHeader, headerBytesRead] = Draft18StreamCodec.decodeObjectHeader(buffer, offset, hasExtensions);
       const isFirstObject = previousObjectId < 0;
-      const delta = Number(objHeader.objectIdDelta);
-      const objectId = isFirstObject ? delta : (previousObjectId + delta + 1);
+      const objectId = toSafeNumber(
+        isFirstObject ? objHeader.objectIdDelta : BigInt(previousObjectId) + objHeader.objectIdDelta + 1n,
+        'Object ID',
+      );
       const payloadLength = Number(objHeader.payloadLength);
 
       if (payloadLength === 0) {

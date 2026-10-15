@@ -50,6 +50,18 @@ export class MOQTVarIntError extends Error {
 }
 
 /**
+ * Narrow a vi64 ID to a number, refusing values that a number cannot hold
+ * exactly (above 2^53-1) instead of rounding them onto a neighbouring ID.
+ */
+export function toSafeNumber(value: bigint, what: string): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new MOQTVarIntError(`${what} ${value} exceeds Number.MAX_SAFE_INTEGER`);
+  }
+
+  return Number(value);
+}
+
+/**
  * MOQT Variable-Length Integer Codec
  *
  * @remarks
