@@ -602,26 +602,7 @@ export class Draft18MessageCodec {
     }
 
     if (message.filter !== undefined) {
-      params.push({
-        type: RequestParameterDraft18.SUBSCRIPTION_FILTER,
-        encode: (w) => {
-          // Length-prefixed: encode filter into temp buffer, write length + bytes
-          const filterWriter = new Draft18BufferWriter();
-          filterWriter.writeVarInt(BigInt(message.filter));
-          if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
-              message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-            const loc = message.startLocation ?? { group: 0n, object: 0n };
-            filterWriter.writeVarInt(loc.group);
-            filterWriter.writeVarInt(loc.object);
-          }
-          if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-            filterWriter.writeVarInt(message.endGroupDelta ?? 0n);
-          }
-          const filterBytes = filterWriter.toUint8Array();
-          w.writeVarInt(BigInt(filterBytes.length));
-          w.writeBytes(filterBytes);
-        },
-      });
+      params.push(Draft18MessageCodec.filterParameter(message));
     }
 
     // Add any additional raw parameters. §10.2 wire convention: even keys
@@ -645,6 +626,34 @@ export class Draft18MessageCodec {
     }
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
+  }
+
+  /** The SUBSCRIPTION_FILTER parameter (§10.2.9) for a message carrying `filter`. */
+  private static filterParameter(message: {
+    filter?: SubscriptionFilterDraft18;
+    startLocation?: Location;
+    endGroupDelta?: bigint;
+  }): { type: number; encode: (w: Draft18BufferWriter) => void } {
+    return {
+      type: RequestParameterDraft18.SUBSCRIPTION_FILTER,
+      encode: (w) => {
+        // Length-prefixed: encode filter into temp buffer, write length + bytes
+        const filterWriter = new Draft18BufferWriter();
+        filterWriter.writeVarInt(BigInt(message.filter!));
+        if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
+            message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+          const loc = message.startLocation ?? { group: 0n, object: 0n };
+          filterWriter.writeVarInt(loc.group);
+          filterWriter.writeVarInt(loc.object);
+        }
+        if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+          filterWriter.writeVarInt(message.endGroupDelta ?? 0n);
+        }
+        const filterBytes = filterWriter.toUint8Array();
+        w.writeVarInt(BigInt(filterBytes.length));
+        w.writeBytes(filterBytes);
+      },
+    };
   }
 
   private static decodeSubscribe(reader: Draft18BufferReader): SubscribeMessageDraft18 {
@@ -1221,6 +1230,10 @@ export class Draft18MessageCodec {
       encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
     });
 
+    if (message.filter !== undefined) {
+      params.push(Draft18MessageCodec.filterParameter(message));
+    }
+
     if (message.parameters) {
       for (const [type, value] of message.parameters) {
         params.push({ type, encode: (w) => w.writeBytes(value) });
@@ -1236,10 +1249,15 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'REQUEST_UPDATE numParams', MessageTypeDraft18.REQUEST_UPDATE);
     let previousType = 0;
     let forwardState = true;
+    let filterFields: ReturnType<typeof Draft18MessageCodec.readFilter> | undefined;
     const parameters = new Map<number, Uint8Array>();
     for (let i = 0; i < numParams; i++) {
       const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.REQUEST_UPDATE, previousType, i);
       previousType = type;
+      if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
+        filterFields = Draft18MessageCodec.readFilter(reader, MessageTypeDraft18.REQUEST_UPDATE);
+        continue;
+      }
       const value = Draft18MessageCodec.readParameterValue(reader, type);
       if (type === RequestParameterDraft18.FORWARD) {
         forwardState = value.length > 0 ? value[0] === 0x01 : true;
@@ -1252,6 +1270,7 @@ export class Draft18MessageCodec {
       type: MessageTypeDraft18.REQUEST_UPDATE,
       requestId,
       forwardState,
+      ...filterFields,
       parameters: parameters.size > 0 ? parameters : undefined,
     };
   }

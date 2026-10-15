@@ -1055,6 +1055,23 @@ describe('Draft18MessageCodec', () => {
       expect(d.requestId).toBe(1n);
       expect(d.forwardState).toBe(false);
     });
+
+    it('roundtrips REQUEST_UPDATE with a SUBSCRIPTION_FILTER (§10.9.1)', () => {
+      const message: RequestUpdateMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_UPDATE,
+        requestId: 3n,
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.ABSOLUTE_START,
+        startLocation: { group: 42n, object: 5n },
+      };
+
+      const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+      const d = decoded as RequestUpdateMessageDraft18;
+      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_START);
+      expect(d.startLocation).toEqual({ group: 42n, object: 5n });
+      expect(d.parameters).toBeUndefined();
+    });
   });
 
   describe('PUBLISH_NAMESPACE', () => {

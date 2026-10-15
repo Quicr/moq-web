@@ -2491,6 +2491,8 @@ export class MOQTSession {
       newGroupRequest?: boolean | number;
       fill?: FillParametersDraft22;
       rangeFilters?: RangeFilterDraft22[];
+      /** Move the subscription's start to this Location (draft-22 §9.5.1, draft-18 §10.9.1) */
+      seekTo?: { group: bigint; object: bigint };
     },
   ): Promise<void> {
     if (!this.isDraft18) {
@@ -2535,6 +2537,10 @@ export class MOQTSession {
         requestId: updateId,
         // Draft-22 §9.5: FORWARD is not allowed when updating a FETCH
         forwardState: this.activeFetches.has(rid) || options?.fill || options?.rangeFilters ? undefined : forwardState,
+        locationFilter: options?.seekTo && {
+          type: LocationFilterTypeDraft22.ABSOLUTE_START,
+          startLocation: options.seekTo,
+        },
         fill: options?.fill,
         rangeFilters: options?.rangeFilters,
         parameters: extraParams.size > 0 ? extraParams : undefined,
@@ -2543,6 +2549,10 @@ export class MOQTSession {
         type: MessageTypeDraft18.REQUEST_UPDATE,
         requestId: updateId,
         forwardState,
+        ...(options?.seekTo && {
+          filter: SubscriptionFilterDraft18.ABSOLUTE_START,
+          startLocation: options.seekTo,
+        }),
         parameters: extraParams.size > 0 ? extraParams : undefined,
       };
 
@@ -6284,8 +6294,9 @@ export class MOQTSession {
   }
 
   /**
-   * Seek a subscription to a specific position using SUBSCRIBE_UPDATE
-   * Used for live trick play to change the start position
+   * Seek a subscription to a specific position. Draft-18/22 move its start
+   * with a REQUEST_UPDATE on the subscription's request stream and resume
+   * delivery; earlier drafts send SUBSCRIBE_UPDATE. Used for live trick play.
    */
   async seekSubscription(
     subscriptionId: number,
@@ -6299,6 +6310,14 @@ export class MOQTSession {
     }
 
     log.info('Seeking subscription', { subscriptionId, groupId, objectId });
+
+    if (this.isDraft18) {
+      await this.sendRequestUpdate(subscription.requestId, true, {
+        seekTo: { group: BigInt(groupId), object: BigInt(objectId) },
+      });
+      subscription.paused = false;
+      return;
+    }
 
     const subscribeUpdateMessage = {
       type: MessageType.SUBSCRIBE_UPDATE as const,

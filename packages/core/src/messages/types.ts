@@ -1909,6 +1909,10 @@ export interface RequestUpdateMessageDraft18 {
   type: MessageTypeDraft18.REQUEST_UPDATE;
   requestId: bigint;
   forwardState: boolean;
+  /** SUBSCRIPTION_FILTER (§10.2.9) replacing the subscription's filter */
+  filter?: SubscriptionFilterDraft18;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
   parameters?: Map<number, Uint8Array>;
 }
 
