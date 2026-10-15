@@ -136,6 +136,7 @@ import {
   applyRangeFilters,
   assertNotReservedNamespace,
   buildTrackProperties,
+  disallowedUpdateParameter,
   encodeDraft18AuthBytes,
   encodeRequestAuthTokenBytes,
   encodeTokenBytes,
@@ -1789,6 +1790,14 @@ export class MOQTSession {
     switch (message.type) {
       case MessageTypeDraft18.REQUEST_UPDATE: {
         if (!this.acceptPeerRequestId(message.requestId)) {
+          break;
+        }
+        const target = request?.kind ?? this.incomingRequestKinds.get(requestId) ?? 'unknown';
+        const disallowed = disallowedUpdateParameter(message, target, this.isDraft22 ? 'draft-22' : 'draft-18');
+        if (disallowed !== undefined) {
+          const reason = `Parameter 0x${disallowed.toString(16)} cannot update a ${target} request`;
+          log.error(reason);
+          void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
           break;
         }
 

@@ -22,6 +22,7 @@ import {
   FetchTypeDraft18,
   LocationFilterTypeDraft22,
   RequestParameterDraft18,
+  RequestParameterDraft22,
   SubscriptionFilterDraft18,
   TrackPropertyDraft18,
   type ConnectionState,
@@ -52,6 +53,76 @@ export function narrowBigIntToNumber(value: bigint, field: string): number {
     );
   }
   return Number(value);
+}
+
+const P18 = RequestParameterDraft18;
+const P22 = RequestParameterDraft22;
+
+/** The parameters a REQUEST_UPDATE may carry, by the request it updates (d22 §9.5; d18 §10.2) */
+const UPDATE_PARAMETERS: Record<'draft-18' | 'draft-22', Record<string, ReadonlySet<number>>> = {
+  'draft-18': {
+    subscription: new Set([
+      P18.OBJECT_DELIVERY_TIMEOUT, P18.AUTHORIZATION_TOKEN, P18.SUBGROUP_DELIVERY_TIMEOUT, P18.FORWARD,
+      P18.SUBSCRIBER_PRIORITY, P18.SUBSCRIPTION_FILTER, P18.NEW_GROUP_REQUEST,
+    ]),
+    fetch: new Set([P18.AUTHORIZATION_TOKEN, P18.SUBSCRIBER_PRIORITY]),
+    'publish-namespace': new Set([P18.AUTHORIZATION_TOKEN]),
+    'subscribe-namespace': new Set([P18.AUTHORIZATION_TOKEN, P18.TRACK_NAMESPACE_PREFIX]),
+    'subscribe-tracks': new Set([P18.AUTHORIZATION_TOKEN, P18.FORWARD, P18.TRACK_NAMESPACE_PREFIX]),
+  },
+  'draft-22': {
+    subscription: new Set([
+      P22.OBJECT_DELIVERY_TIMEOUT, P22.AUTHORIZATION_TOKEN, P22.SUBGROUP_DELIVERY_TIMEOUT, P22.FORWARD,
+      P22.SUBSCRIBER_PRIORITY, P22.LOCATION_FILTER, P22.FILL_PARAMETERS, P22.SUBGROUP_FILTER,
+      P22.OBJECTID_FILTER, P22.PRIORITY_FILTER, P22.OBJECT_PROPERTY_FILTER, P22.NEW_GROUP_REQUEST,
+    ]),
+    fetch: new Set([P22.AUTHORIZATION_TOKEN, P22.SUBSCRIBER_PRIORITY]),
+    'publish-namespace': new Set([P22.AUTHORIZATION_TOKEN]),
+    'subscribe-namespace': new Set([P22.AUTHORIZATION_TOKEN, P22.TRACK_NAMESPACE_PREFIX]),
+    'subscribe-tracks': new Set([
+      P22.AUTHORIZATION_TOKEN, P22.FORWARD, P22.TRACK_PROPERTY_FILTER, P22.TRACK_NAMESPACE_PREFIX,
+    ]),
+  },
+};
+
+/** A request's kind as the REQUEST_UPDATE parameter lists group it: SUBSCRIBE and PUBLISH are both a subscription */
+function updateTarget(kind: string): string {
+  return kind === 'subscribe' || kind === 'publish' ? 'subscription' : kind;
+}
+
+/**
+ * The parameter a REQUEST_UPDATE carries that the request it updates does not
+ * allow, if any: such a parameter closes the session (d22 §9.5, §9.20.1).
+ */
+export function disallowedUpdateParameter(
+  message: {
+    forwardState?: boolean;
+    filter?: number;
+    locationFilter?: unknown;
+    fill?: unknown;
+    rangeFilters?: ReadonlyArray<{ type: number }>;
+    authTokens?: readonly unknown[];
+    parameters?: ReadonlyMap<number, unknown>;
+  },
+  kind: string,
+  draft: 'draft-18' | 'draft-22',
+): number | undefined {
+  const allowed = UPDATE_PARAMETERS[draft][updateTarget(kind)];
+  if (!allowed) {
+    return undefined;
+  }
+
+  const carried: number[] = [...(message.parameters?.keys() ?? [])];
+  if (message.forwardState !== undefined) carried.push(P18.FORWARD);
+  if (message.filter !== undefined) carried.push(P18.SUBSCRIPTION_FILTER);
+  if (message.locationFilter !== undefined) carried.push(P22.LOCATION_FILTER);
+  if (message.fill !== undefined) carried.push(P22.FILL_PARAMETERS);
+  if (message.authTokens?.length) carried.push(P18.AUTHORIZATION_TOKEN);
+  for (const filter of message.rangeFilters ?? []) {
+    carried.push(filter.type);
+  }
+
+  return carried.find((type) => !allowed.has(type));
 }
 
 /**
