@@ -26,21 +26,16 @@ import {
   RequestsBlockedMessage,
   SubscribeMessage,
   SubscribeUpdateMessage,
-  SubscribeOkMessage,
   SubscribeErrorMessage,
   UnsubscribeMessage,
-  PublishDoneMessage,
   PublishMessage,
   PublishOkMessage,
   PublishErrorMessage,
   PublishNamespaceMessage,
-  PublishNamespaceOkMessage,
   PublishNamespaceErrorMessage,
   PublishNamespaceDoneMessage,
   PublishNamespaceCancelMessage,
   SubscribeNamespaceMessage,
-  SubscribeNamespaceOkMessage,
-  SubscribeNamespaceErrorMessage,
   UnsubscribeNamespaceMessage,
   FetchMessage,
   FetchOkMessage,
@@ -63,7 +58,7 @@ describe('MessageCodec', () => {
         const message: ClientSetupMessage = {
           type: MessageType.CLIENT_SETUP,
           supportedVersions: [Version.DRAFT_16],
-          parameters: new Map([
+          parameters: new Map<SetupParameter, number | string | Uint8Array>([
             [SetupParameter.PATH, '/moq'],
             [SetupParameter.MAX_REQUEST_ID, 100],
           ]),
@@ -1055,7 +1050,7 @@ describe('AuthorizationToken', () => {
     const message: ClientSetupMessage = {
       type: MessageType.CLIENT_SETUP,
       supportedVersions: [Version.DRAFT_16],
-      parameters: new Map([
+      parameters: new Map<SetupParameter, number | string | Uint8Array>([
         [SetupParameter.MAX_REQUEST_ID, 100],
         [SetupParameter.AUTHORIZATION_TOKEN, authTokenBytes],
       ]),

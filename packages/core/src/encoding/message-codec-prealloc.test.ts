@@ -26,11 +26,11 @@ import {
 } from '../messages/types.js';
 import { DEFAULT_DRAFT } from '../version/constants.js';
 
-// This suite hard-codes draft-14 message shapes; skip it when the build
+// This suite hard-codes draft-16 message shapes; skip it when the build
 // target is a newer draft (the same MessageCodec entry point routes to a
-// codec that expects different fields, and re-serialising a draft-14 shape
+// codec that expects different fields, and re-serialising a draft-16 shape
 // would be meaningless).
-const IS_LEGACY_DRAFT = DEFAULT_DRAFT === 'draft-14' || DEFAULT_DRAFT === 'draft-16';
+const IS_LEGACY_DRAFT = DEFAULT_DRAFT === 'draft-16';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only shim
 const asAny = (m: unknown) => m as any;
@@ -39,7 +39,7 @@ describe.skipIf(!IS_LEGACY_DRAFT)('MessageCodec.encode / PreallocBufferWriter', 
   it('returns a fully-owned buffer (mutation isolation)', () => {
     const msg: ClientSetupMessage = {
       type: MessageType.CLIENT_SETUP,
-      supportedVersions: [Version.DRAFT_14],
+      supportedVersions: [Version.DRAFT_16],
       parameters: new Map<SetupParameter, number | string | Uint8Array>([
         [SetupParameter.PATH, '/moq'],
       ]),
@@ -59,7 +59,7 @@ describe.skipIf(!IS_LEGACY_DRAFT)('MessageCodec.encode / PreallocBufferWriter', 
   it('is deterministic across successive encodes', () => {
     const msg: ClientSetupMessage = {
       type: MessageType.CLIENT_SETUP,
-      supportedVersions: [Version.DRAFT_14],
+      supportedVersions: [Version.DRAFT_16],
       parameters: new Map<SetupParameter, number | string | Uint8Array>([
         [SetupParameter.PATH, '/moq/some-longer-path-name-to-vary-length'],
       ]),

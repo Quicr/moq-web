@@ -52,9 +52,6 @@ const draft16 = getProtocolCodecForVersion(Version.DRAFT_16);
 const arbAsciiString = (max: number): fc.Arbitrary<string> =>
   fc.string({ minLength: 0, maxLength: max, unit: 'grapheme-ascii' });
 
-const arbBigintU62 = (max = 0xffff_ffffn): fc.Arbitrary<bigint> =>
-  fc.bigInt({ min: 0n, max });
-
 const arbTrackNamespace: fc.Arbitrary<TrackNamespace> = fc.array(arbAsciiString(64), {
   minLength: 1,
   maxLength: 4,

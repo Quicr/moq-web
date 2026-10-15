@@ -15,7 +15,7 @@ import { Draft18MessageCodec, Draft18CodecError, MAX_PARAMETER_COUNT, MAX_STRING
 import { Draft18StreamCodec, Draft18StreamCodecError, MAX_PROPERTIES_LENGTH } from './draft18-stream-codec.js';
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter } from './protocol-codec.js';
-import { MessageTypeDraft18, StreamTypeDraft18 } from '../messages/types.js';
+import { MessageTypeDraft18 } from '../messages/types.js';
 
 // -----------------------------------------------------------------------------
 // Helpers
