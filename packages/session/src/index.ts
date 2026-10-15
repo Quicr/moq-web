@@ -90,6 +90,7 @@ export type {
   RequestOkEvent,
   PublishDoneEvent,
   PublishBlockedEvent,
+  SubscriptionCancelledEvent,
   TrackProperties,
   MessageLogEvent,
   AnnouncedNamespaceInfo,

@@ -44,6 +44,7 @@ export type SessionEventType =
   | 'session-migrated'
   | 'publish-done'
   | 'publish-blocked'
+  | 'subscription-cancelled'
   | 'delivery-timeout'
   | 'stream-reset'
   | 'new-group-request'
@@ -464,6 +465,18 @@ export interface PublishBlockedEvent {
   trackNamespaceSuffix: string[];
   /** Name of the track that could not be published */
   trackName: string;
+}
+
+/**
+ * A subscriber cancelled a subscription we publish, by resetting or
+ * STOP_SENDING its request stream (draft-22 §3.1.2). The publication is gone
+ * and its open streams are reset; stop producing objects for `trackAlias`.
+ */
+export interface SubscriptionCancelledEvent {
+  /** Request ID of the cancelled SUBSCRIBE or PUBLISH */
+  requestId: bigint;
+  /** Track alias that was being published */
+  trackAlias: bigint;
 }
 
 /**

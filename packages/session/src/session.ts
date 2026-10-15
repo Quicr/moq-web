@@ -179,6 +179,7 @@ import type {
   RequestOkEvent,
   PublishDoneEvent,
   PublishBlockedEvent,
+  SubscriptionCancelledEvent,
   DeliveryTimeoutEvent,
   StreamResetEvent,
   NewGroupRequestEvent,
@@ -1616,7 +1617,14 @@ export class MOQTSession {
   private endRequest(requestId: bigint, reason = 'Request stream cancelled'): void {
     const publication = this.publicationManager.getByRequestId(requestId);
     if (publication) {
+      // The publisher resets every open stream of a cancelled subscription (d22 §3.1.2, §11.3.2)
+      void this.resetPublicationStream(
+        publication.trackAlias.toString(),
+        StreamResetErrorCodeDraft18.CANCELLED,
+        'subscription cancelled',
+      ).catch(() => {});
       this.publicationManager.remove(publication.trackAlias);
+      this.emit('subscription-cancelled', { requestId, trackAlias: publication.trackAlias } as SubscriptionCancelledEvent);
     }
     for (const info of this.announcedNamespaces.values()) {
       info.subscribers.delete(requestId);
@@ -5793,6 +5801,12 @@ export class MOQTSession {
     const deliveryMode = publication?.deliveryMode ?? 'stream';
     const audioDeliveryMode = publication?.audioDeliveryMode ?? 'datagram';
 
+    // Nothing is sent for a track no subscription wants, e.g. after it was cancelled
+    if (this.isDraft18 && !publication) {
+      log.debug('sendObject: no publication for track alias', { trackAlias: trackAlias.toString() });
+      return;
+    }
+
     // A paused subscription gets no Objects, though they still exist (d22 §3.1.1)
     if (this.isDraft18 && publication?.forward === 0) {
       this.publicationManager.updateLatest(trackAlias, BigInt(metadata.groupId), BigInt(metadata.objectId));
@@ -6585,6 +6599,7 @@ export class MOQTSession {
   on(event: 'request-ok', handler: (event: RequestOkEvent) => void): () => void;
   on(event: 'publish-done', handler: (event: PublishDoneEvent) => void): () => void;
   on(event: 'publish-blocked', handler: (event: PublishBlockedEvent) => void): () => void;
+  on(event: 'subscription-cancelled', handler: (event: SubscriptionCancelledEvent) => void): () => void;
   on(event: 'session-terminated', handler: (event: SessionTerminatedEvent) => void): () => void;
   on(event: 'session-migrating', handler: (event: SessionMigrationEvent) => void): () => void;
   on(event: 'session-migrated', handler: (event: SessionMigrationEvent) => void): () => void;
