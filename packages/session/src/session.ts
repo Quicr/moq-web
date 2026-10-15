@@ -558,8 +558,14 @@ export class MOQTSession {
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
   /** Request ID to namespace mapping (for draft-16 PUBLISH_NAMESPACE_OK) */
   private announceRequestIdToNamespace = new Map<bigint, string>();
-  /** Next track alias for incoming subscriptions (announce flow) */
+  /** Next track alias for incoming subscriptions (announce flow, draft-14/16) */
   private nextIncomingTrackAlias = BigInt(1000);
+  /**
+   * Next Track Alias for a track we publish on draft-18/22. SUBSCRIBE_OK and
+   * PUBLISH aliases both come from this counter, so two of our tracks never
+   * share one (draft-22 §3.1.3).
+   */
+  private nextPublicationAlias = 0n;
   /**
    * Draft-18 §10.9: map from a peer-initiated requestId to the kind of request
    * we accepted, so we can route a later REQUEST_UPDATE on the same request to
@@ -4429,14 +4435,15 @@ export class MOQTSession {
     // B3 SEC: reject before allocating any request/publication state.
     this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
 
-    // Check for existing subscription with same track name to use its alias.
     // Local counter is small; widen to bigint for wire varint and state keys.
     const requestId = BigInt(this.getNextRequestId());
-    let trackAlias = requestId;
+    let trackAlias = this.isDraft18 ? this.nextPublicationAlias++ : requestId;
     const fullTrackName = [...namespace, trackName].join('/');
 
+    // Draft-14/16: use the alias of an existing subscription to the same track.
+    // A peer's alias is not ours to reuse on draft-18/22 (different alias space).
     const existingSub = this.subscriptionManager.getByTrackName(namespace, trackName);
-    if (existingSub && existingSub.trackAlias !== undefined) {
+    if (!this.isDraft18 && existingSub && existingSub.trackAlias !== undefined) {
       trackAlias = existingSub.trackAlias;
       log.info('Using track alias from existing subscription', {
         trackAlias: trackAlias.toString(),
@@ -5109,7 +5116,7 @@ export class MOQTSession {
 
     // Local counter is small; widen to bigint for wire varint + state keys.
     const requestId = BigInt(this.getNextRequestId());
-    const trackAlias = requestId;
+    const trackAlias = this.isDraft18 ? this.nextPublicationAlias++ : requestId;
     const fullTrackName = [...namespace, trackName].join('/');
 
     log.info('Publishing VOD content', {
@@ -6839,7 +6846,7 @@ export class MOQTSession {
     }
 
     // Assign track alias
-    const trackAlias = BigInt(this.nextIncomingTrackAlias++);
+    const trackAlias = this.nextPublicationAlias++;
 
     // Send SUBSCRIBE_OK with the track alias we'll use on data streams.
     // Advertise §10.2.10 EXPIRES when the announcer configured it — 0 means
