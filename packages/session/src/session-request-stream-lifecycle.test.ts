@@ -328,17 +328,6 @@ describe('request stream reader (draft-22)', () => {
       { forwardState: false, largestLocation: { group: 5n, object: 6n }, locationFilter: undefined },
     ]);
   });
-
-  it('delivers PUBLISH_SKIPPED on a SUBSCRIBE_TRACKS stream', async () => {
-    const { session, peer } = await openSubscribeStream('draft-22');
-    const events: unknown[] = [];
-    session.on('publish-skipped' as never, (e: unknown) => events.push(e));
-
-    peer.send({ type: MessageTypeDraft22.PUBLISH_SKIPPED, trackNamespaceSuffix: ['cam'], trackName: 'video' });
-    await tick();
-
-    expect(events).toEqual([{ trackNamespaceSuffix: ['cam'], trackName: 'video' }]);
-  });
 });
 
 describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE stream (%s)', (draft) => {

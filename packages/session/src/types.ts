@@ -454,13 +454,17 @@ export interface PublishDoneEvent {
 }
 
 /**
- * Draft-18 PUBLISH_BLOCKED event (§10.20). Fired when the publisher
- * cannot continue delivery due to flow control. Consumers can use this
- * to slow down producers or drop non-critical objects.
+ * Draft-18 PUBLISH_BLOCKED event (§10.20). Fired when the publisher of a
+ * SUBSCRIBE_TRACKS cannot PUBLISH a track for lack of streams. The
+ * subscriber can SUBSCRIBE to the track instead.
  */
 export interface PublishBlockedEvent {
-  /** Track alias that is blocked */
-  trackAlias: bigint;
+  /** Request ID of the SUBSCRIBE_TRACKS whose response stream carried it */
+  requestId: bigint;
+  /** Track Namespace Suffix, relative to the SUBSCRIBE_TRACKS prefix */
+  trackNamespaceSuffix: string[];
+  /** Name of the track that could not be published */
+  trackName: string;
 }
 
 /**
@@ -977,6 +981,7 @@ export type RequestUpdateVariant =
   | 'subscribe-namespace'
   | 'publish'
   | 'publish-namespace'
+  | 'subscribe-tracks'
   | 'fetch'
   | 'unknown';
 

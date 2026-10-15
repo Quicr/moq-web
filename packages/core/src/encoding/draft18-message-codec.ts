@@ -1453,15 +1453,19 @@ export class Draft18MessageCodec {
   // ============================================================================
 
   private static encodePublishBlocked(writer: Draft18BufferWriter, message: PublishBlockedMessageDraft18): void {
-    writer.writeVarInt(message.trackAlias);
+    // Track Namespace Suffix | Track Name Length | Track Name
+    encodeTrackNamespace(writer, message.trackNamespaceSuffix);
+    encodeString(writer, message.trackName);
   }
 
   private static decodePublishBlocked(reader: Draft18BufferReader): PublishBlockedMessageDraft18 {
-    const trackAlias = reader.readVarInt();
+    const trackNamespaceSuffix = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_BLOCKED);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH_BLOCKED);
 
     return {
       type: MessageTypeDraft18.PUBLISH_BLOCKED,
-      trackAlias,
+      trackNamespaceSuffix,
+      trackName,
     };
   }
 

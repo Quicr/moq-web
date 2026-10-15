@@ -204,7 +204,8 @@ const arbNamespaceDoneMessage: fc.Arbitrary<NamespaceDoneMessageDraft18> = fc.re
 
 const arbPublishBlockedMessage: fc.Arbitrary<PublishBlockedMessageDraft18> = fc.record({
   type: fc.constant(MessageTypeDraft18.PUBLISH_BLOCKED),
-  trackAlias: arbBigintU62(),
+  trackNamespaceSuffix: arbTrackNamespace,
+  trackName: arbAsciiString(64),
 });
 
 const arbGoAwayMessage: fc.Arbitrary<GoAwayMessageDraft18> = fc.record({
@@ -533,7 +534,8 @@ describe('Draft18MessageCodec fuzz — round-trip identity', () => {
         const encoded = Draft18MessageCodec.encode(msg);
         const [decoded] = Draft18MessageCodec.decode(encoded);
         const d = decoded as PublishBlockedMessageDraft18;
-        expect(d.trackAlias).toBe(msg.trackAlias);
+        expect(d.trackNamespaceSuffix).toEqual(msg.trackNamespaceSuffix);
+        expect(d.trackName).toBe(msg.trackName);
       }),
       { numRuns: 200 },
     );

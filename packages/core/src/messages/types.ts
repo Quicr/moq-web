@@ -1974,12 +1974,14 @@ export interface SubscribeTracksMessageDraft18 {
 }
 
 /**
- * Draft-18 PUBLISH_BLOCKED message
- * Publisher signals it is blocked from sending due to flow control
+ * Draft-18 PUBLISH_BLOCKED message (§10.20)
+ * Publisher signals on the SUBSCRIBE_TRACKS response stream that it cannot
+ * PUBLISH a track; the namespace is relative to the SUBSCRIBE_TRACKS prefix.
  */
 export interface PublishBlockedMessageDraft18 {
   type: MessageTypeDraft18.PUBLISH_BLOCKED;
-  trackAlias: bigint;
+  trackNamespaceSuffix: TrackNamespace;
+  trackName: string;
 }
 
 /**

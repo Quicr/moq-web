@@ -1666,10 +1666,14 @@ export class MOQTSession {
         break;
 
       case MessageTypeDraft18.PUBLISH_BLOCKED:
+        if (this.outgoingRequests.get(requestId)?.kind !== 'subscribe-tracks') {
+          this.closeForUnexpectedMessage(requestId, message);
+          break;
+        }
         if (this.isDraft22) {
-          this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22);
+          this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22, requestId);
         } else {
-          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
+          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18, requestId);
         }
         break;
 
@@ -2769,45 +2773,63 @@ export class MOQTSession {
   }
 
   /**
-   * Send PUBLISH_BLOCKED (draft-18 §10.20).
+   * Send PUBLISH_BLOCKED (draft-18 §10.20) on the response stream of a
+   * peer's SUBSCRIBE_TRACKS: the publisher cannot PUBLISH the track because
+   * the peer allows no more bidirectional streams. There is no reply.
    *
-   * The publisher tells the peer that it cannot open new subgroup streams for
-   * `trackAlias` right now because of transport-level flow control. The peer
-   * is expected to raise its stream limit; there is no reply.
+   * @param requestId - Request ID of the SUBSCRIBE_TRACKS
+   * @param trackNamespaceSuffix - Namespace of the track after the SUBSCRIBE_TRACKS prefix
+   * @param trackName - Name of the track
    */
-  async sendPublishBlocked(trackAlias: bigint | number | string): Promise<void> {
-    if (!this.isDraft18) {
-      throw new Error('sendPublishBlocked() requires draft-18');
+  async sendPublishBlocked(requestId: bigint, trackNamespaceSuffix: string[], trackName: string): Promise<void> {
+    if (!this.isDraft18 || this.isDraft22) {
+      throw new Error('sendPublishBlocked() requires draft-18; draft-22 uses sendPublishSkipped()');
     }
-    const alias = typeof trackAlias === 'bigint' ? trackAlias : BigInt(trackAlias);
     const message: PublishBlockedMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH_BLOCKED,
-      trackAlias: alias,
-    };
-    const bytes = this.codec.encodeControlMessage(message);
-    await this.doSendControl(bytes);
-    log.info('Sent PUBLISH_BLOCKED', { trackAlias: alias.toString() });
-  }
-
-  /**
-   * Send PUBLISH_SKIPPED to indicate the publisher will not send a PUBLISH
-   * for a track matched by SUBSCRIBE_TRACKS (draft-22 §9.19).
-   */
-  async sendPublishSkipped(trackNamespaceSuffix: string[], trackName: string): Promise<void> {
-    if (!this.isDraft22) {
-      throw new Error('sendPublishSkipped() requires draft-22');
-    }
-    const message = {
-      type: 0x0F as any, // MessageTypeDraft22.PUBLISH_SKIPPED
       trackNamespaceSuffix,
       trackName,
     };
-    const bytes = this.codec.encodeControlMessage(message);
-    await this.doSendControl(bytes);
+    await this.writeToSubscribeTracks(requestId, message);
+    log.info('Sent PUBLISH_BLOCKED', { requestId: requestId.toString(), trackName });
+  }
+
+  /**
+   * Send PUBLISH_SKIPPED on the response stream of a peer's SUBSCRIBE_TRACKS:
+   * the publisher will not PUBLISH a matching track (draft-22 §3.6.3, §9.19).
+   *
+   * @param requestId - Request ID of the SUBSCRIBE_TRACKS
+   * @param trackNamespaceSuffix - Namespace of the track after the SUBSCRIBE_TRACKS prefix
+   * @param trackName - Name of the track
+   */
+  async sendPublishSkipped(requestId: bigint, trackNamespaceSuffix: string[], trackName: string): Promise<void> {
+    if (!this.isDraft22) {
+      throw new Error('sendPublishSkipped() requires draft-22');
+    }
+    const message: PublishSkippedMessageDraft22 = {
+      type: MessageTypeDraft22.PUBLISH_SKIPPED,
+      trackNamespaceSuffix,
+      trackName,
+    };
+    await this.writeToSubscribeTracks(requestId, message);
     log.info('Sent PUBLISH_SKIPPED (draft-22)', {
+      requestId: requestId.toString(),
       trackNamespaceSuffix: trackNamespaceSuffix.join('/'),
       trackName,
     });
+  }
+
+  /** Write `message` on the response stream of the peer's SUBSCRIBE_TRACKS `requestId`. */
+  private async writeToSubscribeTracks(
+    requestId: bigint,
+    message: PublishBlockedMessageDraft18 | PublishSkippedMessageDraft22,
+  ): Promise<void> {
+    const stream = this.activeRequestStreams.get(requestId);
+    if (!stream || this.incomingRequestKinds.get(requestId) !== 'subscribe-tracks') {
+      throw new Error(`No SUBSCRIBE_TRACKS request stream for requestId ${requestId.toString()}`);
+    }
+
+    await stream.write(this.codec.encodeControlMessage(message as unknown as ControlMessageDraft18));
   }
 
   /**
@@ -7156,7 +7178,7 @@ export class MOQTSession {
 
     // SUBSCRIBE_TRACKS is a namespace-scoped subscription for track discovery;
     // future REQUEST_UPDATE on this requestId is §10.9.2 namespace-scoped.
-    this.incomingRequestKinds.set(message.requestId, 'subscribe-namespace');
+    this.incomingRequestKinds.set(message.requestId, 'subscribe-tracks');
 
     // Emit incoming-subscribe for each track we publish under this prefix,
     // applying the §10.2.14 narrower prefix filter when supplied.
@@ -7228,7 +7250,7 @@ export class MOQTSession {
       }
     }
 
-    if (kind === 'subscribe-namespace') {
+    if (kind === 'subscribe-namespace' || kind === 'subscribe-tracks') {
       // §10.9.2 — namespace-scoped update; do not touch per-track publications.
       // Draft-22 §9.20.18: an omitted FORWARD leaves the state unchanged
       if (message.forwardState === undefined) {
@@ -7564,17 +7586,25 @@ export class MOQTSession {
   /**
    * Handle incoming PUBLISH_BLOCKED
    */
-  private handleIncomingPublishBlockedDraft18(message: PublishBlockedMessageDraft18): void {
-    log.info('Received PUBLISH_BLOCKED', { trackAlias: message.trackAlias.toString() });
-    this.emit('publish-blocked', { trackAlias: message.trackAlias } as PublishBlockedEvent);
+  private handleIncomingPublishBlockedDraft18(message: PublishBlockedMessageDraft18, requestId?: bigint): void {
+    log.info('Received PUBLISH_BLOCKED', {
+      trackNamespaceSuffix: message.trackNamespaceSuffix.join('/'),
+      trackName: message.trackName,
+    });
+    this.emit('publish-blocked', {
+      requestId,
+      trackNamespaceSuffix: message.trackNamespaceSuffix,
+      trackName: message.trackName,
+    } as PublishBlockedEvent);
   }
 
-  private handleIncomingPublishSkippedDraft22(message: PublishSkippedMessageDraft22): void {
+  private handleIncomingPublishSkippedDraft22(message: PublishSkippedMessageDraft22, requestId?: bigint): void {
     log.info('Received PUBLISH_SKIPPED (draft-22)', {
       trackNamespaceSuffix: message.trackNamespaceSuffix.join('/'),
       trackName: message.trackName,
     });
     this.emit('publish-skipped', {
+      requestId,
       trackNamespaceSuffix: message.trackNamespaceSuffix,
       trackName: message.trackName,
     });

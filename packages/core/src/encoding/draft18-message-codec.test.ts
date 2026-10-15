@@ -1286,7 +1286,8 @@ describe('Draft18MessageCodec', () => {
     it('roundtrips PUBLISH_BLOCKED', () => {
       const message: PublishBlockedMessageDraft18 = {
         type: MessageTypeDraft18.PUBLISH_BLOCKED,
-        trackAlias: 999n,
+        trackNamespaceSuffix: ['a', 'b'],
+        trackName: 't',
       };
 
       const encoded = Draft18MessageCodec.encode(message);
@@ -1294,7 +1295,8 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as PublishBlockedMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.PUBLISH_BLOCKED);
-      expect(d.trackAlias).toBe(999n);
+      expect(d.trackNamespaceSuffix).toEqual(['a', 'b']);
+      expect(d.trackName).toBe('t');
     });
   });
 
@@ -1353,12 +1355,13 @@ describe('Draft18MessageCodec', () => {
       expect(Array.from(encoded)).toEqual(Array.from(expected));
     });
 
-    it('PUBLISH_BLOCKED with small track alias (§10.19)', () => {
-      // Type=0x0F | Length=1 | TrackAlias=5 (vi)
-      const expected = new Uint8Array([0x0f, 0x00, 0x01, 0x05]);
+    it('PUBLISH_BLOCKED carries a Track Namespace Suffix and Track Name (§10.20)', () => {
+      // Type=0x0F | Length=6 | 1 field | len 2 "ab" | name len 1 "t"
+      const expected = new Uint8Array([0x0f, 0x00, 0x06, 0x01, 0x02, 0x61, 0x62, 0x01, 0x74]);
       const encoded = Draft18MessageCodec.encode({
         type: MessageTypeDraft18.PUBLISH_BLOCKED,
-        trackAlias: 5n,
+        trackNamespaceSuffix: ['ab'],
+        trackName: 't',
       });
       expect(Array.from(encoded)).toEqual(Array.from(expected));
     });
