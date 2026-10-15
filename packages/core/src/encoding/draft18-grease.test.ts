@@ -169,6 +169,13 @@ describe('grease and long KVP values', () => {
       expect(Array.from(decoded.objectProperties!.keys())).toEqual([UNKNOWN_EVEN_KEY]);
     });
 
+    it('rejects a property that overruns Properties Length (§8.3)', () => {
+      // Properties Length 3, but the odd-key property claims 5 value bytes
+      const bytes = concat(vi(0), vi(3), vi(1), vi(5), new Uint8Array(5).fill(9), vi(0));
+
+      expect(() => Draft18StreamCodec.decodeObjectHeader(bytes, 0, true)).toThrow(/overruns/);
+    });
+
     it('accepts a property value over 4096 bytes', () => {
       const value = new Uint8Array(LONG_VALUE).fill(5);
       const bytes = header(oddKvp(BigInt(UNKNOWN_ODD_KEY), value));

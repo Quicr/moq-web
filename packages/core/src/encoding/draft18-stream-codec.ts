@@ -98,9 +98,9 @@ export class Draft18StreamCodecError extends Error {
 // =============================================================================
 // Stream Codec Safety Bounds (B2 SEC)
 // =============================================================================
-// Data-stream object headers, datagrams, and fetch objects carry small metadata
-// blocks (properties, KVPs). None of these should legitimately exceed a few KiB
-// on the wire. Any decoded length beyond MAX_PROPERTIES_LENGTH is treated as a
+// Data-stream object headers, datagrams, and fetch objects carry metadata
+// blocks (properties, KVPs) that stay far below MAX_PROPERTIES_LENGTH. Any
+// decoded length beyond it is treated as a
 // malicious peer and rejected before we allocate a buffer or copy bytes.
 export const MAX_PROPERTIES_LENGTH = 1 << 20;
 
@@ -668,6 +668,13 @@ export class Draft18StreamCodec {
         // Odd key: length + bytes
         props.set(key, reader.readBytes(readKvpLength(reader, 'property value length')));
       }
+    }
+
+    // §8.3: the length bounds the sequence, so the last property must end on it
+    if (reader.offset !== endOffset) {
+      throw new Draft18StreamCodecError(
+        `Property overruns Properties Length by ${reader.offset - endOffset} bytes`,
+      );
     }
 
     return props;
