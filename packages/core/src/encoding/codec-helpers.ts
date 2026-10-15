@@ -98,6 +98,51 @@ export function decodeTrackName(reader: Draft18BufferReader, messageType?: Messa
 }
 
 // =============================================================================
+// Key-Value-Pairs (Track Properties, Namespace Parameters)
+// =============================================================================
+
+/** Encode delta-keyed KVPs: even keys carry a varint, odd keys are length-prefixed. */
+export function encodeKeyValuePairs(writer: Draft18BufferWriter, pairs: Map<number, Uint8Array>): void {
+  const sortedEntries = Array.from(pairs.entries()).sort((a, b) => a[0] - b[0]);
+  let previousKey = 0;
+
+  for (const [key, value] of sortedEntries) {
+    writer.writeVarInt(key - previousKey);
+    previousKey = key;
+
+    if (key % 2 === 0) {
+      writer.writeBytes(value);
+    } else {
+      writer.writeVarInt(value.length);
+      writer.writeBytes(value);
+    }
+  }
+}
+
+/** Decode delta-keyed KVPs until the reader is exhausted. */
+export function decodeKeyValuePairsToEnd(reader: Draft18BufferReader): Map<number, Uint8Array> {
+  const pairs = new Map<number, Uint8Array>();
+  let previousKey = 0;
+
+  while (reader.hasMore) {
+    const deltaKey = reader.readVarIntNumber();
+    const key = previousKey + deltaKey;
+    previousKey = key;
+
+    if (key % 2 === 0) {
+      const value = reader.readVarInt();
+      pairs.set(key, MOQTVarInt.encode(value));
+    } else {
+      const length = reader.readVarIntNumber();
+      assertBound(length, MAX_STRING_LENGTH, 'KVP value length');
+      pairs.set(key, reader.readBytes(length));
+    }
+  }
+
+  return pairs;
+}
+
+// =============================================================================
 // Message Framing
 // =============================================================================
 

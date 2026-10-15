@@ -22,6 +22,8 @@ import {
   encodeString,
   decodeString,
   decodeTrackName,
+  encodeKeyValuePairs,
+  decodeKeyValuePairsToEnd,
   encodeFramed,
   decodeFramed,
   MAX_PARAMETER_COUNT,
@@ -88,6 +90,20 @@ export class Draft18CodecError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * Maps raw wire error codes onto a draft's registry (§14 grease: unknown
+ * codes become INTERNAL_ERROR). Draft-22 supplies its own registry.
+ */
+export interface ErrorCodeNormalizers {
+  requestError: (code: number) => number;
+  publishDone: (code: number) => number;
+}
+
+const DRAFT18_NORMALIZERS: ErrorCodeNormalizers = {
+  requestError: normalizeRequestErrorCode,
+  publishDone: normalizePublishDoneErrorCode,
+};
 
 // Re-export bounds constants for backward compatibility (consumers may import from here)
 export { MAX_PARAMETER_COUNT, MAX_STRING_LENGTH, MAX_NAMESPACE_TUPLE_COUNT, MAX_TRACK_NAME_LENGTH, MAX_AUTH_TOKEN_LENGTH } from './codec-helpers.js';
@@ -167,7 +183,11 @@ export class Draft18MessageCodec {
   /**
    * Decode a draft-18 control message from bytes
    */
-  static decode(buffer: Uint8Array, offset = 0): [ControlMessageDraft18, number] {
+  static decode(
+    buffer: Uint8Array,
+    offset = 0,
+    normalizers: ErrorCodeNormalizers = DRAFT18_NORMALIZERS,
+  ): [ControlMessageDraft18, number] {
     // Peek at message type for logging before delegating to decodeFramed
     const [typeValue] = MOQTVarInt.decodeNumber(buffer, offset);
     const messageType = typeValue as MessageTypeDraft18;
@@ -185,7 +205,7 @@ export class Draft18MessageCodec {
         case MessageTypeDraft18.PUBLISH:
           return Draft18MessageCodec.decodePublish(reader);
         case MessageTypeDraft18.REQUEST_ERROR:
-          return Draft18MessageCodec.decodeRequestError(reader);
+          return Draft18MessageCodec.decodeRequestError(reader, normalizers);
         case MessageTypeDraft18.REQUEST_OK:
         case MessageTypeDraft18.PUBLISH_OK: {
           const msg = Draft18MessageCodec.decodeRequestOk(reader);
@@ -201,7 +221,7 @@ export class Draft18MessageCodec {
         case MessageTypeDraft18.TRACK_STATUS:
           return Draft18MessageCodec.decodeTrackStatus(reader);
         case MessageTypeDraft18.PUBLISH_DONE:
-          return Draft18MessageCodec.decodePublishDone(reader);
+          return Draft18MessageCodec.decodePublishDone(reader, normalizers);
         case MessageTypeDraft18.REQUEST_UPDATE:
           return Draft18MessageCodec.decodeRequestUpdate(reader);
         case MessageTypeDraft18.PUBLISH_NAMESPACE:
@@ -619,7 +639,7 @@ export class Draft18MessageCodec {
 
     // Track Properties (KVPs to end)
     if (message.trackProperties) {
-      Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackProperties);
+      encodeKeyValuePairs(writer, message.trackProperties);
     }
   }
 
@@ -649,7 +669,7 @@ export class Draft18MessageCodec {
 
     // Track Properties fill remaining bytes
     const trackProperties = reader.hasMore
-      ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
+      ? decodeKeyValuePairsToEnd(reader)
       : undefined;
 
     return {
@@ -689,7 +709,7 @@ export class Draft18MessageCodec {
 
     // Track Properties (KVPs to end)
     if (message.trackProperties) {
-      Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackProperties);
+      encodeKeyValuePairs(writer, message.trackProperties);
     }
   }
 
@@ -712,7 +732,7 @@ export class Draft18MessageCodec {
 
     // Track Properties (KVPs to end)
     const trackProperties = reader.hasMore
-      ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
+      ? decodeKeyValuePairsToEnd(reader)
       : undefined;
 
     return {
@@ -749,12 +769,15 @@ export class Draft18MessageCodec {
     }
   }
 
-  private static decodeRequestError(reader: Draft18BufferReader): RequestErrorMessageDraft18 {
+  private static decodeRequestError(
+    reader: Draft18BufferReader,
+    normalizers: ErrorCodeNormalizers,
+  ): RequestErrorMessageDraft18 {
     // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
     // §14 grease: an unknown error code MUST be treated as INTERNAL_ERROR for
     // this registry. Normalize immediately so callers see stable enum values.
     const rawErrorCode = reader.readVarIntNumber();
-    const errorCode = normalizeRequestErrorCode(rawErrorCode);
+    const errorCode = normalizers.requestError(rawErrorCode);
     const retryInterval = reader.readVarInt();
     const reasonPhrase = decodeString(reader);
 
@@ -989,7 +1012,7 @@ export class Draft18MessageCodec {
     Draft18MessageCodec.encodeLocation(writer, message.endLocation);
     Draft18MessageCodec.encodeMessageParameters(writer, []);
     if (message.trackProperties) {
-      Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackProperties);
+      encodeKeyValuePairs(writer, message.trackProperties);
     }
   }
 
@@ -1009,7 +1032,7 @@ export class Draft18MessageCodec {
     }
 
     const trackProperties = reader.hasMore
-      ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
+      ? decodeKeyValuePairsToEnd(reader)
       : undefined;
 
     return {
@@ -1089,7 +1112,10 @@ export class Draft18MessageCodec {
     encodeString(writer, message.reasonPhrase ?? '');
   }
 
-  private static decodePublishDone(reader: Draft18BufferReader): PublishDoneMessageDraft18 {
+  private static decodePublishDone(
+    reader: Draft18BufferReader,
+    normalizers: ErrorCodeNormalizers,
+  ): PublishDoneMessageDraft18 {
     const rawStatusCode = reader.readVarInt();
     // §14 grease: unknown PUBLISH_DONE codes MUST be treated as INTERNAL_ERROR
     // (0x0). Registry codes are small; anything outside Number.MAX_SAFE_INTEGER
@@ -1098,7 +1124,7 @@ export class Draft18MessageCodec {
     const normalizedStatusCode: bigint =
       rawStatusCode > BigInt(Number.MAX_SAFE_INTEGER)
         ? 0n
-        : BigInt(normalizePublishDoneErrorCode(Number(rawStatusCode)));
+        : BigInt(normalizers.publishDone(Number(rawStatusCode)));
     const streamCount = reader.readVarInt();
     const reasonPhrase = decodeString(reader);
 
@@ -1234,14 +1260,14 @@ export class Draft18MessageCodec {
   private static encodeNamespaceMessage(writer: Draft18BufferWriter, message: NamespaceMessageDraft18): void {
     encodeTrackNamespace(writer, message.trackNamespace);
     if (message.trackNamespaceParameters) {
-      Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackNamespaceParameters);
+      encodeKeyValuePairs(writer, message.trackNamespaceParameters);
     }
   }
 
   private static decodeNamespaceMessage(reader: Draft18BufferReader): NamespaceMessageDraft18 {
     const trackNamespace = decodeTrackNamespace(reader);
     const trackNamespaceParameters = reader.hasMore
-      ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
+      ? decodeKeyValuePairsToEnd(reader)
       : undefined;
 
     return {
@@ -1453,45 +1479,5 @@ export class Draft18MessageCodec {
         return reader.readBytes(length);
       }
     }
-  }
-
-  private static encodeKeyValuePairs(writer: Draft18BufferWriter, pairs: Map<number, Uint8Array>): void {
-    const sortedEntries = Array.from(pairs.entries()).sort((a, b) => a[0] - b[0]);
-    let previousKey = 0;
-
-    for (const [key, value] of sortedEntries) {
-      writer.writeVarInt(key - previousKey);
-      previousKey = key;
-
-      if (key % 2 === 0) {
-        writer.writeBytes(value);
-      } else {
-        writer.writeVarInt(value.length);
-        writer.writeBytes(value);
-      }
-    }
-  }
-
-
-  private static decodeKeyValuePairsToEnd(reader: Draft18BufferReader): Map<number, Uint8Array> {
-    const pairs = new Map<number, Uint8Array>();
-    let previousKey = 0;
-
-    while (reader.hasMore) {
-      const deltaKey = reader.readVarIntNumber();
-      const key = previousKey + deltaKey;
-      previousKey = key;
-
-      if (key % 2 === 0) {
-        const value = reader.readVarInt();
-        pairs.set(key, MOQTVarInt.encode(value));
-      } else {
-        const length = reader.readVarIntNumber();
-        assertBound(length, MAX_STRING_LENGTH, 'KVP value length');
-        pairs.set(key, reader.readBytes(length));
-      }
-    }
-
-    return pairs;
   }
 }

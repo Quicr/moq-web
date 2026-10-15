@@ -288,12 +288,14 @@ export type {
   PublishStateNotifyMessageDraft22,
   PublishSkippedMessageDraft22,
   GoAwayMessageDraft22,
-  SubscribeOkMessageDraft22,
   FetchMessageDraft22,
   LocationFilterDraft22,
   SubscribeMessageDraft22,
-  FetchOkMessageDraft22,
-  RequestOkMessageDraft22,
+  FillParametersDraft22,
+  PublishMessageDraft22,
+  RequestUpdateMessageDraft22,
+  TrackStatusMessageDraft22,
+  SubscribeTracksMessageDraft22,
 } from './messages/types.js';
 
 // Type guards
@@ -370,6 +372,7 @@ export {
   normalizePublishDoneErrorCode,
   normalizeSessionErrorCode,
   normalizeStreamResetErrorCode,
+  normalizeSessionErrorCodeDraft22,
 } from './encoding/grease.js';
 
 // Draft-18 §13.3.1 authorization-token replay protection

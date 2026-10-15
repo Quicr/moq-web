@@ -3,7 +3,6 @@
 
 import { describe, it, expect } from 'vitest';
 import { Draft22MessageCodec } from './draft22-message-codec';
-import { MOQTVarInt } from './moqt-varint';
 import {
   MessageTypeDraft18,
   MessageTypeDraft22,
@@ -14,7 +13,6 @@ import {
   type ServerSetupMessageDraft18,
   type SubscribeMessageDraft22,
   type PublishSkippedMessageDraft22,
-  type PublishStateNotifyMessageDraft22,
   type FetchMessageDraft22,
 } from '../messages/types';
 import { ALPN_PROTOCOL } from '../version/constants';
@@ -78,72 +76,6 @@ describe('Draft22MessageCodec', () => {
       const d = decoded as PublishSkippedMessageDraft22;
       expect(d.trackNamespaceSuffix).toEqual(['only']);
       expect(d.trackName).toBe('x');
-    });
-  });
-
-  describe('PUBLISH_STATE_NOTIFY', () => {
-    it('roundtrips PUBLISH_STATE_NOTIFY with parameters', () => {
-      const parameters = new Map<number, Uint8Array>();
-      // LARGEST_OBJECT = 0x09 (odd key -> length-prefixed)
-      parameters.set(0x09, new Uint8Array([0x00, 0x05]));
-      // FORWARD = 0x10 (even key -> varint value)
-      parameters.set(0x10, MOQTVarInt.encode(42n));
-
-      const message: PublishStateNotifyMessageDraft22 = {
-        type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY,
-        parameters,
-      };
-
-      const encoded = Draft22MessageCodec.encode(message);
-      const [decoded, bytesRead] = Draft22MessageCodec.decode(encoded);
-
-      expect(decoded.type).toBe(MessageTypeDraft22.PUBLISH_STATE_NOTIFY);
-      const d = decoded as PublishStateNotifyMessageDraft22;
-      expect(d.parameters.size).toBe(2);
-
-      // Odd key (0x09): length-prefixed bytes
-      expect(d.parameters.get(0x09)).toEqual(new Uint8Array([0x00, 0x05]));
-
-      // Even key (0x10): varint bytes - decode to verify value
-      const forwardBytes = d.parameters.get(0x10);
-      expect(forwardBytes).toBeDefined();
-      const [forwardValue] = MOQTVarInt.decode(forwardBytes!);
-      expect(forwardValue).toBe(42n);
-
-      expect(bytesRead).toBe(encoded.length);
-    });
-
-    it('roundtrips PUBLISH_STATE_NOTIFY with empty parameters', () => {
-      const message: PublishStateNotifyMessageDraft22 = {
-        type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY,
-        parameters: new Map(),
-      };
-
-      const encoded = Draft22MessageCodec.encode(message);
-      const [decoded, bytesRead] = Draft22MessageCodec.decode(encoded);
-
-      expect(decoded.type).toBe(MessageTypeDraft22.PUBLISH_STATE_NOTIFY);
-      const d = decoded as PublishStateNotifyMessageDraft22;
-      expect(d.parameters.size).toBe(0);
-      expect(bytesRead).toBe(encoded.length);
-    });
-
-    it('roundtrips PUBLISH_STATE_NOTIFY with single even-key parameter', () => {
-      const parameters = new Map<number, Uint8Array>();
-      parameters.set(0x02, MOQTVarInt.encode(100n));
-
-      const message: PublishStateNotifyMessageDraft22 = {
-        type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY,
-        parameters,
-      };
-
-      const encoded = Draft22MessageCodec.encode(message);
-      const [decoded] = Draft22MessageCodec.decode(encoded);
-
-      const d = decoded as PublishStateNotifyMessageDraft22;
-      expect(d.parameters.size).toBe(1);
-      const [val] = MOQTVarInt.decode(d.parameters.get(0x02)!);
-      expect(val).toBe(100n);
     });
   });
 

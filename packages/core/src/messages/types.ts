@@ -2025,7 +2025,7 @@ export enum MessageTypeDraft22 {
   FETCH = 0x16,
   FETCH_OK = 0x18,
   PUBLISH = 0x1D,
-  PUBLISH_OK = 0x1E,
+  // 0x1E is reserved in draft-22 (formerly PUBLISH_OK)
   // New in draft-22
   PUBLISH_STATE_NOTIFY = 0x22,
   SUBSCRIBE_NAMESPACE = 0x50,
@@ -2188,11 +2188,14 @@ export interface RequestErrorMessageDraft22 {
 }
 
 /**
- * Draft-22 PUBLISH_STATE_NOTIFY
+ * Draft-22 PUBLISH_STATE_NOTIFY (§9.10): carries only the parameters whose
+ * values changed. Absent means unchanged.
  */
 export interface PublishStateNotifyMessageDraft22 {
   type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY;
-  parameters: Map<number, Uint8Array>;
+  forwardState?: boolean;
+  largestLocation?: Location;
+  locationFilter?: LocationFilterDraft22;
 }
 
 /**
@@ -2214,27 +2217,6 @@ export interface GoAwayMessageDraft22 {
 }
 
 /**
- * Draft-22 SUBSCRIBE_OK uses parameters + track properties (no groupOrder/contentExists)
- */
-export interface SubscribeOkMessageDraft22 {
-  type: MessageTypeDraft22.SUBSCRIBE_OK;
-  trackAlias: bigint;
-  parameters: Map<number, Uint8Array>;
-  trackProperties: Map<number, Uint8Array>;
-}
-
-/**
- * Draft-22 FETCH_OK has End Of Track, End Location, parameters, track properties
- */
-export interface FetchOkMessageDraft22 {
-  type: MessageTypeDraft22.FETCH_OK;
-  endOfTrack: boolean;
-  endLocation: Location;
-  parameters: Map<number, Uint8Array>;
-  trackProperties: Map<number, Uint8Array>;
-}
-
-/**
  * Draft-22 LOCATION_FILTER parameter value (§9.20.9)
  */
 export interface LocationFilterDraft22 {
@@ -2245,8 +2227,26 @@ export interface LocationFilterDraft22 {
 }
 
 /**
- * Draft-22 SUBSCRIBE (§9.7): filter is carried in LOCATION_FILTER and
+ * Draft-22 FILL_PARAMETERS value (§9.20.15): the parameters that differ for
+ * the fill fetch stream. Absent fields take the subscription's value.
+ */
+export interface FillParametersDraft22 {
+  locationFilter?: LocationFilterDraft22;
+  /** FILL_TIMEOUT (§9.20.5) in milliseconds */
+  fillTimeoutMs?: bigint;
+  subscriberPriority?: number;
+  groupOrder?: GroupOrder;
+  /** Range filters (0x25-0x28) as raw value bytes, keyed by parameter type */
+  rangeFilters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 SUBSCRIBE (§9.6): filter is carried in LOCATION_FILTER and
  * pause state in FORWARD. Absent filter means unfiltered.
+ *
+ * `parameters` holds the remaining §9.20 parameters keyed by type. Values are
+ * raw: uint8 as one byte, varint as its encoding, length-prefixed as its
+ * payload, Track Namespace as its encoding.
  */
 export interface SubscribeMessageDraft22 {
   type: MessageTypeDraft22.SUBSCRIBE;
@@ -2255,6 +2255,61 @@ export interface SubscribeMessageDraft22 {
   trackName: string;
   forwardState: boolean;
   locationFilter?: LocationFilterDraft22;
+  fill?: FillParametersDraft22;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 PUBLISH (§9.8). Omitted FORWARD means 1; omitted LARGEST_OBJECT
+ * means no Objects have been published.
+ */
+export interface PublishMessageDraft22 {
+  type: MessageTypeDraft22.PUBLISH;
+  requestId: bigint;
+  trackAlias: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  forwardState: boolean;
+  largestLocation?: Location;
+  locationFilter?: LocationFilterDraft22;
+  parameters?: Map<number, Uint8Array>;
+  trackProperties?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 REQUEST_UPDATE (§9.5). Absent fields leave the request's value
+ * unchanged.
+ */
+export interface RequestUpdateMessageDraft22 {
+  type: MessageTypeDraft22.REQUEST_UPDATE;
+  requestId: bigint;
+  forwardState?: boolean;
+  locationFilter?: LocationFilterDraft22;
+  fill?: FillParametersDraft22;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 TRACK_STATUS (§9.13): AUTHORIZATION_TOKEN and INCLUDE_PROPERTIES
+ * live in `parameters`.
+ */
+export interface TrackStatusMessageDraft22 {
+  type: MessageTypeDraft22.TRACK_STATUS;
+  requestId: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 SUBSCRIBE_TRACKS (§9.18). Omitted FORWARD means 1. Filters, if any,
+ * are range filters in `parameters`.
+ */
+export interface SubscribeTracksMessageDraft22 {
+  type: MessageTypeDraft22.SUBSCRIBE_TRACKS;
+  requestId: bigint;
+  trackNamespacePrefix: TrackNamespace;
+  forwardState: boolean;
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -2276,35 +2331,26 @@ export interface FetchMessageDraft22 {
 }
 
 /**
- * Draft-22 REQUEST_OK has parameters + track properties
- */
-export interface RequestOkMessageDraft22 {
-  type: MessageTypeDraft22.REQUEST_OK;
-  parameters: Map<number, Uint8Array>;
-  trackProperties: Map<number, Uint8Array>;
-}
-
-/**
  * Union of Draft-22 control messages
  */
 export type ControlMessageDraft22 =
   | ClientSetupMessageDraft18  // Setup messages are the same
   | ServerSetupMessageDraft18
   | SubscribeMessageDraft22
-  | SubscribeOkMessageDraft22
-  | PublishMessageDraft18
+  | SubscribeOkMessageDraft18
+  | PublishMessageDraft22
   | PublishDoneMessageDraft22
   | PublishStateNotifyMessageDraft22
   | PublishSkippedMessageDraft22
   | RequestErrorMessageDraft22
-  | RequestOkMessageDraft22
-  | RequestUpdateMessageDraft18
+  | RequestOkMessageDraft18
+  | RequestUpdateMessageDraft22
   | GoAwayMessageDraft22
   | FetchMessageDraft22
-  | FetchOkMessageDraft22
-  | TrackStatusMessageDraft18
+  | FetchOkMessageDraft18
+  | TrackStatusMessageDraft22
   | PublishNamespaceMessageDraft18
   | SubscribeNamespaceMessageDraft18
   | NamespaceMessageDraft18
   | NamespaceDoneMessageDraft18
-  | SubscribeTracksMessageDraft18;
+  | SubscribeTracksMessageDraft22;

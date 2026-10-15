@@ -34,6 +34,7 @@ import {
   SessionErrorCodeDraft18,
   StreamResetErrorCodeDraft18,
   normalizeSessionErrorCode,
+  normalizeSessionErrorCodeDraft22,
   StreamTypeDraft18,
   DatagramTypeDraft18,
   MOQTVarInt,
@@ -102,6 +103,10 @@ import {
   RequestParameterDraft22,
   type FetchMessageDraft22,
   type SubscribeMessageDraft22,
+  type PublishMessageDraft22,
+  type RequestUpdateMessageDraft22,
+  type SubscribeTracksMessageDraft22,
+  type TrackStatusMessageDraft22,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
 } from '@moq-web/core';
@@ -1796,6 +1801,13 @@ export class MOQTSession {
     if (options?.namespacePrefixParam) {
       assertNotReservedNamespace(options.namespacePrefixParam, 'SUBSCRIBE_TRACKS under');
     }
+    // Draft-22 §9.20.20: TRACK_NAMESPACE_PREFIX is only allowed in REQUEST_UPDATE.
+    // A narrower prefix goes in the SUBSCRIBE_TRACKS body instead.
+    if (this.isDraft22 && options?.namespacePrefixParam) {
+      throw new Error(
+        'SUBSCRIBE_TRACKS cannot carry TRACK_NAMESPACE_PREFIX in draft-22; pass the narrower prefix as namespacePrefix',
+      );
+    }
 
     // Local counter is small; widen for wire encode and state.
     const subscriptionId = this.getNextRequestId();
@@ -1811,16 +1823,25 @@ export class MOQTSession {
       mergedParameters.set(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX, encoded);
     }
 
-    const subscribeTracksMessage: SubscribeTracksMessageDraft18 = {
-      type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
-      requestId,
-      trackNamespacePrefix: namespacePrefix,
-      forwardState: options?.forwardState ?? true,
-      filter: options?.filter ?? SubscriptionFilterDraft18.NEXT_GROUP_START,
-      startLocation: options?.startLocation,
-      endGroupDelta: options?.endGroupDelta,
-      parameters: mergedParameters,
-    };
+    // Draft-22 §9.18 has no SUBSCRIPTION_FILTER; filtering is by range filter parameters
+    const subscribeTracksMessage: SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22 = this.isDraft22
+      ? {
+        type: MessageTypeDraft22.SUBSCRIBE_TRACKS,
+        requestId,
+        trackNamespacePrefix: namespacePrefix,
+        forwardState: options?.forwardState ?? true,
+        parameters: mergedParameters,
+      }
+      : {
+        type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+        requestId,
+        trackNamespacePrefix: namespacePrefix,
+        forwardState: options?.forwardState ?? true,
+        filter: options?.filter ?? SubscriptionFilterDraft18.NEXT_GROUP_START,
+        startLocation: options?.startLocation,
+        endGroupDelta: options?.endGroupDelta,
+        parameters: mergedParameters,
+      };
 
     const encoded = this.codec.encodeControlMessage(subscribeTracksMessage);
     log.info('Sent SUBSCRIBE_TRACKS', {
@@ -1904,12 +1925,20 @@ export class MOQTSession {
       extraParams.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(BigInt(val)));
     }
 
-    const updateMessage: RequestUpdateMessageDraft18 = {
-      type: MessageTypeDraft18.REQUEST_UPDATE,
-      requestId: rid,
-      forwardState,
-      parameters: extraParams.size > 0 ? extraParams : undefined,
-    };
+    const updateMessage: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22 = this.isDraft22
+      ? {
+        type: MessageTypeDraft22.REQUEST_UPDATE,
+        requestId: rid,
+        // Draft-22 §9.5: FORWARD is not allowed when updating a FETCH
+        forwardState: this.activeFetches.has(rid) ? undefined : forwardState,
+        parameters: extraParams.size > 0 ? extraParams : undefined,
+      }
+      : {
+        type: MessageTypeDraft18.REQUEST_UPDATE,
+        requestId: rid,
+        forwardState,
+        parameters: extraParams.size > 0 ? extraParams : undefined,
+      };
 
     const bytes = this.codec.encodeControlMessage(updateMessage);
     await stream.write(bytes);
@@ -2592,16 +2621,27 @@ export class MOQTSession {
       priorGroupIdGap: options?.priorGroupIdGap,
       priorObjectIdGap: options?.priorObjectIdGap,
     });
-    const publishMessage: PublishMessageDraft18 = {
-      type: MessageTypeDraft18.PUBLISH,
-      requestId,
-      trackAlias,
-      trackNamespace: namespace,
-      trackName,
-      forwardState: true,
-      largestLocation: { group: 0n, object: 0n },
-      trackProperties,
-    };
+    // Draft-22 §9.20.17: LARGEST_OBJECT is omitted until Objects have been published
+    const publishMessage: PublishMessageDraft18 | PublishMessageDraft22 = this.isDraft22
+      ? {
+        type: MessageTypeDraft22.PUBLISH,
+        requestId,
+        trackAlias,
+        trackNamespace: namespace,
+        trackName,
+        forwardState: true,
+        trackProperties,
+      }
+      : {
+        type: MessageTypeDraft18.PUBLISH,
+        requestId,
+        trackAlias,
+        trackNamespace: namespace,
+        trackName,
+        forwardState: true,
+        largestLocation: { group: 0n, object: 0n },
+        trackProperties,
+      };
 
     const encoded = this.codec.encodeControlMessage(publishMessage);
     const pubHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -3014,11 +3054,15 @@ export class MOQTSession {
       // Draft-18 has no FETCH_CANCEL message; the equivalent is REQUEST_UPDATE
       // with forwardState=false, which terminates delivery for this requestId.
       // The relay resets the fetch data stream in response; fire-and-forget.
-      try {
-        await this.sendRequestUpdate(rid, false, { awaitAck: false });
-        log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel', { requestId: rid.toString() });
-      } catch (err) {
-        log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
+      // Draft-22 cancels by closing the request stream (§6.4.2.3); FORWARD is
+      // not allowed in a FETCH update.
+      if (!this.isDraft22) {
+        try {
+          await this.sendRequestUpdate(rid, false, { awaitAck: false });
+          log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel', { requestId: rid.toString() });
+        } catch (err) {
+          log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
+        }
       }
       await this.closeRequestStream(rid);
     } else {
@@ -3525,7 +3569,7 @@ export class MOQTSession {
 
       case MessageTypeDraft18.PUBLISH: {
         // Server sends PUBLISH to announce a track under the subscribed namespace
-        const pubMsg = message as PublishMessageDraft18;
+        const pubMsg = message as PublishMessageDraft18 | PublishMessageDraft22;
         this.handleIncomingPublishDraft18(pubMsg, new WritableStream()).catch(err => {
           log.error('Error handling PUBLISH from namespace stream', { error: (err as Error).message });
         });
@@ -5487,6 +5531,8 @@ export class MOQTSession {
   on(event: 'message-received', handler: (event: MessageLogEvent) => void): () => void;
   // Forward state events
   on(event: 'forward-state-change', handler: (event: ForwardStateChangeEvent) => void): () => void;
+  on(event: 'forward-paused', handler: (event: { subscriptionRequestId: bigint }) => void): () => void;
+  on(event: 'forward-resumed', handler: (event: { requestId: bigint }) => void): () => void;
   on(event: 'namespace-forward-paused', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'namespace-forward-resumed', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'new-group-request', handler: (event: NewGroupRequestEvent) => void): () => void;
@@ -5661,7 +5707,7 @@ export class MOQTSession {
         break;
 
       case MessageTypeDraft18.REQUEST_UPDATE:
-        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18);
+        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22);
         break;
 
       case MessageTypeDraft18.PUBLISH_BLOCKED:
@@ -5746,7 +5792,7 @@ export class MOQTSession {
           break;
 
         case MessageTypeDraft18.PUBLISH:
-          await this.handleIncomingPublishDraft18(message as PublishMessageDraft18, stream.writable);
+          await this.handleIncomingPublishDraft18(message as PublishMessageDraft18 | PublishMessageDraft22, stream.writable);
           break;
 
         case MessageTypeDraft18.FETCH:
@@ -5754,7 +5800,7 @@ export class MOQTSession {
           break;
 
         case MessageTypeDraft18.TRACK_STATUS:
-          await this.handleIncomingTrackStatusDraft18(message as TrackStatusMessageDraft18, stream.writable);
+          await this.handleIncomingTrackStatusDraft18(message as TrackStatusMessageDraft18 | TrackStatusMessageDraft22, stream.writable);
           break;
 
         case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
@@ -5766,11 +5812,11 @@ export class MOQTSession {
           break;
 
         case MessageTypeDraft18.SUBSCRIBE_TRACKS:
-          await this.handleIncomingSubscribeTracksDraft18(message as SubscribeTracksMessageDraft18, stream.writable);
+          await this.handleIncomingSubscribeTracksDraft18(message as SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22, stream.writable);
           break;
 
         case MessageTypeDraft18.REQUEST_UPDATE:
-          await this.handleIncomingRequestUpdateDraft18(message as RequestUpdateMessageDraft18, stream.writable);
+          await this.handleIncomingRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, stream.writable);
           break;
 
         case MessageTypeDraft18.PUBLISH_DONE:
@@ -5922,7 +5968,7 @@ export class MOQTSession {
    * Handle incoming PUBLISH on bidi stream (we are the subscriber)
    */
   private async handleIncomingPublishDraft18(
-    message: PublishMessageDraft18,
+    message: PublishMessageDraft18 | PublishMessageDraft22,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     const namespace = message.trackNamespace;
@@ -6050,7 +6096,7 @@ export class MOQTSession {
    * omitted when the publication has not yet sent any objects.
    */
   private async handleIncomingTrackStatusDraft18(
-    message: TrackStatusMessageDraft18,
+    message: TrackStatusMessageDraft18 | TrackStatusMessageDraft22,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     log.info('Received TRACK_STATUS', {
@@ -6163,7 +6209,7 @@ export class MOQTSession {
    * Handle incoming SUBSCRIBE_TRACKS on bidi stream
    */
   private async handleIncomingSubscribeTracksDraft18(
-    message: SubscribeTracksMessageDraft18,
+    message: SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     const prefix = message.trackNamespacePrefix.join('/');
@@ -6181,7 +6227,7 @@ export class MOQTSession {
       prefix,
       paramPrefix: paramPrefixStr,
       forwardState: message.forwardState,
-      filter: message.filter,
+      filter: 'filter' in message ? message.filter : undefined,
     });
 
     // Accept with REQUEST_OK
@@ -6217,7 +6263,7 @@ export class MOQTSession {
    * Handle incoming REQUEST_UPDATE on bidi stream
    */
   private async handleIncomingRequestUpdateDraft18(
-    message: RequestUpdateMessageDraft18,
+    message: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22,
     _writable: WritableStream<Uint8Array>
   ): Promise<void> {
     this.dispatchRequestUpdateDraft18(message);
@@ -6233,7 +6279,7 @@ export class MOQTSession {
    * subscription variant, which matches prior behaviour and keeps backward
    * compatibility with peers that don't set up state before updating.
    */
-  private dispatchRequestUpdateDraft18(message: RequestUpdateMessageDraft18): void {
+  private dispatchRequestUpdateDraft18(message: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22): void {
     const requestId = message.requestId;
     const kind = this.incomingRequestKinds.get(requestId) ?? 'unknown';
     log.info('Received REQUEST_UPDATE', {
@@ -6258,7 +6304,7 @@ export class MOQTSession {
         this.emit('new-group-request', {
           requestId,
           value,
-          forwardState: message.forwardState,
+          forwardState: message.forwardState === true,
           ...(targetedPub ? { trackAlias: targetedPub.trackAlias } : {}),
         });
       }
@@ -6266,6 +6312,10 @@ export class MOQTSession {
 
     if (kind === 'subscribe-namespace') {
       // §10.9.2 — namespace-scoped update; do not touch per-track publications.
+      // Draft-22 §9.20.18: an omitted FORWARD leaves the state unchanged
+      if (message.forwardState === undefined) {
+        return;
+      }
       const event: NamespaceForwardEvent = { namespaceRequestId: requestId };
       this.emit(message.forwardState ? 'namespace-forward-resumed' : 'namespace-forward-paused', event);
       return;
@@ -6298,6 +6348,9 @@ export class MOQTSession {
     // doesn't stall the session's other tracks. If we don't have a matching
     // publication (kind === 'unknown'), fall back to the session-wide update
     // for backward compatibility with peers that don't set up state first.
+    if (message.forwardState === undefined) {
+      return;
+    }
     const forward = message.forwardState ? 1 : 0;
     const matched = this.publicationManager.setForwardByRequestId(requestId, forward);
     if (!matched) {
@@ -6480,9 +6533,11 @@ export class MOQTSession {
     // §14 grease: normalize unknown Session Termination codes to
     // INTERNAL_ERROR before emitting. Preserve the raw code on the event so
     // callers with newer registry knowledge can still inspect it if needed.
-    const normalizedCode = this.isDraft18
-      ? normalizeSessionErrorCode(info.closeCode)
-      : info.closeCode;
+    const normalizedCode = this.isDraft22
+      ? normalizeSessionErrorCodeDraft22(info.closeCode)
+      : this.isDraft18
+        ? normalizeSessionErrorCode(info.closeCode)
+        : info.closeCode;
     this._lastCloseCode = normalizedCode;
     this._lastCloseReason = info.reason;
     this.metrics.counter('moq.session.close', 1, {
@@ -6591,10 +6646,14 @@ export class MOQTSession {
 
   private handleIncomingPublishStateNotifyDraft22(message: PublishStateNotifyMessageDraft22): void {
     log.info('Received PUBLISH_STATE_NOTIFY (draft-22)', {
-      paramCount: message.parameters.size,
+      forwardState: message.forwardState,
+      largestLocation: message.largestLocation && `${message.largestLocation.group}/${message.largestLocation.object}`,
+      locationFilter: message.locationFilter?.type,
     });
     this.emit('publish-state-notify', {
-      parameters: message.parameters,
+      forwardState: message.forwardState,
+      largestLocation: message.largestLocation,
+      locationFilter: message.locationFilter,
     });
   }
 
