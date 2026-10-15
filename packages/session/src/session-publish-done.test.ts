@@ -121,6 +121,17 @@ describe.each(['draft-18', 'draft-22'] as const)('%s §9.9 PUBLISH_DONE send pat
     expect(decodeDone(h.session, h.streamWrites[0]).streamCount).toBe(0n);
   });
 
+  it('sets the unknown Stream Count sentinel of the negotiated draft', async () => {
+    const h = makeHarness(draft);
+    (h.internals.publicationManager as unknown as { getByRequestId: () => undefined }).getByRequestId = () => undefined;
+
+    await h.session.sendPublishDone(REQUEST_ID, 0, 0);
+
+    // draft-18 §10.11: 2^62 - 1; draft-22 §9.9: 2^64 - 1
+    const expected = draft === 'draft-18' ? (1n << 62n) - 1n : (1n << 64n) - 1n;
+    expect(decodeDone(h.session, h.streamWrites[0]).streamCount).toBe(expected);
+  });
+
   it('throws when no request stream exists, sending nothing', async () => {
     const h = makeHarness(draft);
 

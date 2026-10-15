@@ -207,8 +207,10 @@ import type {
 
 const log = Logger.create('moqt:session');
 
-/** Draft-22 §9.9 PUBLISH_DONE Stream Count: "publisher cannot give the exact number" (2^64-1). */
-const STREAM_COUNT_UNKNOWN = (1n << 64n) - 1n;
+/** PUBLISH_DONE Stream Count meaning "publisher cannot give the exact number": 2^62-1 in draft-18 §10.11 */
+const STREAM_COUNT_UNKNOWN_DRAFT18 = (1n << 62n) - 1n;
+/** ... and 2^64-1 in draft-22 §9.9 */
+const STREAM_COUNT_UNKNOWN_DRAFT22 = (1n << 64n) - 1n;
 
 /**
  * Draft-22 §9.1.6 MAX_FILTER_RANGES we accept. This endpoint applies no Range
@@ -2476,7 +2478,8 @@ export class MOQTSession {
     // §9.9 Stream Count: streams opened for this publication; unknown if we
     // have no record of the publication.
     const publication = this.publicationManager.getByRequestId(requestId);
-    const streamCount = publication ? BigInt(publication.streamsOpened ?? 0) : STREAM_COUNT_UNKNOWN;
+    const streamCountUnknown = this.isDraft22 ? STREAM_COUNT_UNKNOWN_DRAFT22 : STREAM_COUNT_UNKNOWN_DRAFT18;
+    const streamCount = publication ? BigInt(publication.streamsOpened ?? 0) : streamCountUnknown;
 
     const publishDone: PublishDoneMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH_DONE,
