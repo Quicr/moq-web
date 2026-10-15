@@ -297,6 +297,7 @@ export class Draft22MessageCodec {
       locationFilter: params.locationFilter,
       fill: params.fill,
       rangeFilters: params.rangeFilters,
+      authTokens: params.authTokens,
       parameters: params.parameters,
     };
   }
@@ -335,6 +336,7 @@ export class Draft22MessageCodec {
     encodeParameters(writer, S.FETCH, {
       locationFilter: message.locationFilter,
       rangeFilters: message.rangeFilters,
+      authTokens: message.authTokens,
       parameters,
     });
   }
@@ -362,6 +364,7 @@ export class Draft22MessageCodec {
       locationFilter: params.locationFilter,
       rangeFilters: params.rangeFilters,
       fillTimeoutMs: fillTimeout ? MOQTVarInt.decode(fillTimeout)[0] : undefined,
+      authTokens: params.authTokens,
       parameters: rest.size > 0 ? rest : undefined,
     };
   }
@@ -408,6 +411,7 @@ export class Draft22MessageCodec {
       forwardState: params.forwardState ?? true,
       largestLocation: params.largestLocation,
       locationFilter: params.locationFilter,
+      authTokens: params.authTokens,
       parameters: params.parameters,
       trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
@@ -434,6 +438,7 @@ export class Draft22MessageCodec {
       locationFilter: params.locationFilter,
       fill: params.fill,
       rangeFilters: params.rangeFilters,
+      authTokens: params.authTokens,
       parameters: params.parameters,
     };
   }
@@ -460,6 +465,7 @@ export class Draft22MessageCodec {
       requestId,
       trackNamespace,
       trackName,
+      authTokens: params.authTokens,
       parameters: params.parameters,
     };
   }
@@ -487,6 +493,7 @@ export class Draft22MessageCodec {
       // §9.20.18: FORWARD defaults to 1 when omitted
       forwardState: params.forwardState ?? true,
       rangeFilters: params.rangeFilters,
+      authTokens: params.authTokens,
       parameters: params.parameters,
     };
   }

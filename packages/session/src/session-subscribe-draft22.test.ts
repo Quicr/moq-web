@@ -16,6 +16,9 @@ import {
   MessageTypeDraft18,
   MessageTypeDraft22,
   LocationFilterTypeDraft22,
+  AuthTokenAliasType,
+  RequestParameterDraft22,
+  decodeDraft18AuthToken,
   type SubscribeMessageDraft22,
 } from '@moq-web/core';
 
@@ -106,6 +109,20 @@ describe('draft-22 §9.7 SUBSCRIBE send path', () => {
         startLocation: { group: 0n, object: 0n },
       });
     }
+  });
+
+  it('sends SubscribeOptions.authToken as a vi64 Token in authTokens', async () => {
+    const tokenBytes = new Uint8Array([0xaa, 0xbb]);
+
+    const m = await subscribeAndDecode({ authToken: { tokenBytes, tokenType: 0x63346d } });
+
+    expect(m.authTokens).toHaveLength(1);
+    expect(decodeDraft18AuthToken(m.authTokens![0])).toEqual({
+      aliasType: AuthTokenAliasType.USE_VALUE,
+      tokenType: 0x63346d,
+      tokenValue: tokenBytes,
+    });
+    expect(m.parameters?.has(RequestParameterDraft22.AUTHORIZATION_TOKEN)).toBeFalsy();
   });
 
   it('throws when endGroup < startGroup, sending nothing', async () => {

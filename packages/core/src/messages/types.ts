@@ -2291,6 +2291,8 @@ export interface SubscribeMessageDraft22 {
   locationFilter?: LocationFilterDraft22;
   fill?: FillParametersDraft22;
   rangeFilters?: RangeFilterDraft22[];
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -2307,6 +2309,8 @@ export interface PublishMessageDraft22 {
   forwardState: boolean;
   largestLocation?: Location;
   locationFilter?: LocationFilterDraft22;
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
   parameters?: Map<number, Uint8Array>;
   trackProperties?: Map<number, Uint8Array>;
 }
@@ -2322,18 +2326,22 @@ export interface RequestUpdateMessageDraft22 {
   locationFilter?: LocationFilterDraft22;
   fill?: FillParametersDraft22;
   rangeFilters?: RangeFilterDraft22[];
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
   parameters?: Map<number, Uint8Array>;
 }
 
 /**
  * Draft-22 TRACK_STATUS (§9.13): AUTHORIZATION_TOKEN and INCLUDE_PROPERTIES
- * live in `parameters`.
+ * live in `parameters` and `authTokens`.
  */
 export interface TrackStatusMessageDraft22 {
   type: MessageTypeDraft22.TRACK_STATUS;
   requestId: bigint;
   trackNamespace: TrackNamespace;
   trackName: string;
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -2346,6 +2354,8 @@ export interface SubscribeTracksMessageDraft22 {
   trackNamespacePrefix: TrackNamespace;
   forwardState: boolean;
   rangeFilters?: RangeFilterDraft22[];
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -2364,6 +2374,8 @@ export interface FetchMessageDraft22 {
   /** FILL_TIMEOUT (§9.20.5) in milliseconds */
   fillTimeoutMs?: bigint;
   rangeFilters?: RangeFilterDraft22[];
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
   parameters?: Map<number, Uint8Array>;
 }
 

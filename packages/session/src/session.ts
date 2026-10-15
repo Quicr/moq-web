@@ -3024,11 +3024,10 @@ export class MOQTSession {
   ): Promise<void> {
     const parameters = new Map<number, Uint8Array>();
     addDeliveryTimeoutParams(parameters, options);
-    if (options?.authToken) {
-      parameters.set(
-        RequestParameterDraft18.AUTHORIZATION_TOKEN,
-        encodeDraft18AuthBytes(options.authToken),
-      );
+    const authBytes = options?.authToken ? encodeDraft18AuthBytes(options.authToken) : undefined;
+    // §8.9: draft-22 carries Authorization Tokens in `authTokens`, which may repeat
+    if (authBytes && !this.isDraft22) {
+      parameters.set(RequestParameterDraft18.AUTHORIZATION_TOKEN, authBytes);
     }
     // §7 / §10.2 — advertise subscriber-side scheduling hints when the caller
     // provided them. Publisher schedulers use these to derive `sendOrder`.
@@ -3057,6 +3056,7 @@ export class MOQTSession {
         locationFilter: mapLocationFilter(options),
         fill,
         rangeFilters: options?.rangeFilters?.length ? options.rangeFilters : undefined,
+        authTokens: authBytes ? [authBytes] : undefined,
         parameters,
       };
     } else {
@@ -3562,13 +3562,6 @@ export class MOQTSession {
 
     const groupOrder = options?.groupOrder ?? GroupOrder.ASCENDING;
     const wholeEndGroup = range.endObject === 0;
-    const parameters = new Map<number, Uint8Array>();
-    if (options?.authToken) {
-      parameters.set(
-        RequestParameterDraft22.AUTHORIZATION_TOKEN,
-        encodeDraft18AuthBytes(options.authToken),
-      );
-    }
 
     return {
       type: MessageTypeDraft22.FETCH,
@@ -3588,7 +3581,7 @@ export class MOQTSession {
       // §9.20.5: 0 is meaningful (only immediately available Objects)
       fillTimeoutMs: options?.fillTimeout !== undefined ? BigInt(options.fillTimeout) : undefined,
       rangeFilters: options?.rangeFilters?.length ? options.rangeFilters : undefined,
-      parameters: parameters.size > 0 ? parameters : undefined,
+      authTokens: options?.authToken ? [encodeDraft18AuthBytes(options.authToken)] : undefined,
     };
   }
 

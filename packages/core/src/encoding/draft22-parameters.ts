@@ -9,8 +9,9 @@
  * Nothing is framed by guessing from the parameter type's parity.
  *
  * Parameter values cross this module in two shapes:
- * - typed: FORWARD, LARGEST_OBJECT, LOCATION_FILTER, FILL_PARAMETERS and the
- *   Range Filters (0x25-0x29), which may repeat (§3.3.2)
+ * - typed: FORWARD, LARGEST_OBJECT, LOCATION_FILTER, FILL_PARAMETERS, the
+ *   Range Filters (0x25-0x29), which may repeat (§3.3.2), and Authorization
+ *   Tokens (`authTokens`), which may repeat (§8.9)
  * - raw: everything else, in `parameters`, keyed by type. A raw value is
  *   uint8 as one byte, varint/Location as their encodings, length-prefixed as
  *   its payload, and Track Namespace as its encoding.
@@ -84,8 +85,10 @@ enum ValueKind {
   NAMESPACE,
   LOCATION_FILTER,
   FILL_PARAMETERS,
-  /** §9.20.10-9.20.14: length-prefixed, and the only kind that may repeat */
+  /** §9.20.10-9.20.14: length-prefixed, and may repeat */
   RANGE_FILTER,
+  /** §9.20.2: length-prefixed, and may repeat (§8.9) */
+  AUTH_TOKEN,
 }
 
 interface ParameterSpec {
@@ -112,7 +115,7 @@ const RANGE_FILTER_SCOPES = [S.SUBSCRIBE, S.REQUEST_UPDATE, S.FETCH, S.SUBSCRIBE
 const PARAMETER_SPECS: Record<RequestParameterDraft22, ParameterSpec> = {
   [P.OBJECT_DELIVERY_TIMEOUT]: spec(ValueKind.VARINT, [S.SUBSCRIBE, S.PUBLISH, S.REQUEST_UPDATE]),
   [P.AUTHORIZATION_TOKEN]: spec(
-    ValueKind.LENGTH_PREFIXED,
+    ValueKind.AUTH_TOKEN,
     [
       S.PUBLISH, S.SUBSCRIBE, S.REQUEST_UPDATE, S.SUBSCRIBE_NAMESPACE,
       S.SUBSCRIBE_TRACKS, S.PUBLISH_NAMESPACE, S.TRACK_STATUS, S.FETCH,
@@ -161,6 +164,8 @@ export interface ParameterSetDraft22 {
   locationFilter?: LocationFilterDraft22;
   fill?: FillParametersDraft22;
   rangeFilters?: RangeFilterDraft22[];
+  /** Raw Token structures (§8.9), in wire order */
+  authTokens?: Uint8Array[];
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -213,8 +218,8 @@ function readEntries(reader: Draft18BufferReader, scope: ParameterScopeDraft22, 
     const found = lookupSpec(type, scope);
 
     // Types ascend, so a repeated type always has a delta of 0. Only Range
-    // Filters may repeat (§3.3.2).
-    if (read > 0 && type === previousType && found.kind !== ValueKind.RANGE_FILTER) {
+    // Filters (§3.3.2) and Authorization Tokens (§8.9) may repeat.
+    if (read > 0 && type === previousType && found.kind !== ValueKind.RANGE_FILTER && found.kind !== ValueKind.AUTH_TOKEN) {
       throw violation(`Duplicate parameter ${parameterName(type)} in ${scope}`);
     }
     previousType = type;
@@ -231,6 +236,9 @@ function readEntries(reader: Draft18BufferReader, scope: ParameterScopeDraft22, 
         (result.rangeFilters ??= []).push(filter);
         break;
       }
+      case ValueKind.AUTH_TOKEN:
+        (result.authTokens ??= []).push(readRaw(reader, type, found));
+        break;
       default:
         storeRaw(result, parameters, type, readRaw(reader, type, found));
     }
@@ -291,6 +299,7 @@ function readRaw(reader: Draft18BufferReader, type: number, found: ParameterSpec
       return writer.toUint8Array();
     }
     case ValueKind.LENGTH_PREFIXED:
+    case ValueKind.AUTH_TOKEN:
     case ValueKind.RANGE_FILTER: {
       const length = reader.readVarIntNumber();
       assertBound(length, found.maxLength ?? MAX_VALUE_LENGTH, `${parameterName(type)} value length`);
@@ -397,11 +406,28 @@ function collectEntries(scope: ParameterScopeDraft22, set: ParameterSetDraft22):
     add(type, (w) => writeRaw(w, type, scope, value));
   }
 
-  // §3.3.2: Range Filters may repeat, so they sit outside the one-per-type map
+  // §3.3.2, §8.9: Range Filters and Authorization Tokens may repeat, so they
+  // sit outside the one-per-type map
   const rangeEntries = collectRangeEntries(scope, set.rangeFilters ?? []);
+  const tokenEntries = collectTokenEntries(scope, set.authTokens ?? []);
 
   // The sort is stable, so repeats of a type keep the caller's order
-  return [...entries.values(), ...rangeEntries].sort((a, b) => a.type - b.type);
+  return [...entries.values(), ...rangeEntries, ...tokenEntries].sort((a, b) => a.type - b.type);
+}
+
+function collectTokenEntries(scope: ParameterScopeDraft22, tokens: readonly Uint8Array[]): Entry[] {
+  return tokens.map((token) => {
+    const found = lookupSpec(P.AUTHORIZATION_TOKEN, scope);
+
+    return {
+      type: P.AUTHORIZATION_TOKEN,
+      write: (w) => {
+        assertBound(token.length, found.maxLength ?? MAX_VALUE_LENGTH, 'AUTHORIZATION_TOKEN value length');
+        w.writeVarInt(token.length);
+        w.writeBytes(token);
+      },
+    };
+  });
 }
 
 function collectRangeEntries(scope: ParameterScopeDraft22, filters: readonly RangeFilterDraft22[]): Entry[] {
@@ -443,7 +469,8 @@ function writeRaw(
   if (
     found.kind === ValueKind.LOCATION_FILTER ||
     found.kind === ValueKind.FILL_PARAMETERS ||
-    found.kind === ValueKind.RANGE_FILTER
+    found.kind === ValueKind.RANGE_FILTER ||
+    found.kind === ValueKind.AUTH_TOKEN
   ) {
     throw violation(`${parameterName(type)} must be set through its typed field`);
   }

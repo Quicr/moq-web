@@ -18,6 +18,8 @@ import {
   LocationFilterTypeDraft22,
   FetchTypeDraft18,
   GroupOrder,
+  RequestParameterDraft22,
+  decodeDraft18AuthToken,
   type FetchMessageDraft22,
 } from '@moq-web/core';
 
@@ -61,6 +63,19 @@ async function fetchAndDecode(
 }
 
 describe('draft-22 §9.11 FETCH send path', () => {
+  it('sends FetchOptions.authToken as a vi64 Token in authTokens', async () => {
+    const tokenBytes = new Uint8Array([0x11, 0x22]);
+
+    const m = await fetchAndDecode(
+      { startGroup: 1, startObject: 0, endGroup: 3, endObject: 5 },
+      { authToken: { tokenBytes } },
+    );
+
+    expect(m.authTokens).toHaveLength(1);
+    expect(decodeDraft18AuthToken(m.authTokens![0]).tokenValue).toEqual(tokenBytes);
+    expect(m.parameters?.has(RequestParameterDraft22.AUTHORIZATION_TOKEN)).toBeFalsy();
+  });
+
   it('maps a specific endObject to ABSOLUTE_RANGE without a +1', async () => {
     const m = await fetchAndDecode({ startGroup: 1, startObject: 0, endGroup: 3, endObject: 5 });
 

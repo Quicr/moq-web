@@ -442,12 +442,31 @@ describe('Draft22 §9.20 message parameters', () => {
         trackName: 't',
         subscriberPriority: 128,
         groupOrder: GroupOrder.ASCENDING,
-        parameters: new Map([[0x03, bytes(0xaa, 0xbb)]]),
+        authTokens: [bytes(0xaa, 0xbb)],
       };
 
       const [decoded] = Draft22MessageCodec.decode(Draft22MessageCodec.encode(fetch));
 
-      expect((decoded as FetchMessageDraft22).parameters?.get(0x03)).toEqual(bytes(0xaa, 0xbb));
+      expect((decoded as FetchMessageDraft22).authTokens).toEqual([bytes(0xaa, 0xbb)]);
+      expect((decoded as FetchMessageDraft22).parameters).toBeUndefined();
+    });
+
+    it('allows AUTHORIZATION_TOKEN to repeat (§8.9)', () => {
+      const message: SubscribeMessageDraft22 = {
+        type: MessageTypeDraft22.SUBSCRIBE,
+        requestId: 4n,
+        trackNamespace: ['a'],
+        trackName: 't',
+        forwardState: true,
+        authTokens: [bytes(0xaa), bytes(0xbb, 0xcc)],
+      };
+
+      const encoded = Draft22MessageCodec.encode(message);
+
+      // nparams=3 | AUTH(0x03) 1 aa | AUTH (delta 0) 2 bb cc | FORWARD(+0x0d)=1
+      expect(Array.from(encoded.slice(-10))).toEqual([0x03, 0x03, 0x01, 0xaa, 0x00, 0x02, 0xbb, 0xcc, 0x0d, 0x01]);
+      const [decoded] = Draft22MessageCodec.decode(encoded);
+      expect((decoded as SubscribeMessageDraft22).authTokens).toEqual(message.authTokens);
     });
   });
 
