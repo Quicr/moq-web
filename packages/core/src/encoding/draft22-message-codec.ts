@@ -528,12 +528,7 @@ export class Draft22MessageCodec {
     writer.writeVarInt(message.trackAlias ?? 0n);
 
     // §9.20.17: LARGEST_OBJECT is omitted until Objects have been published
-    const { group, object } = message.largestLocation;
-    const hasObjects = group > 0n || object > 0n;
-    encodeParameters(writer, S.SUBSCRIBE_OK, Draft22MessageCodec.okParameters({
-      expires: message.expires,
-      largestLocation: hasObjects ? message.largestLocation : undefined,
-    }));
+    encodeParameters(writer, S.SUBSCRIBE_OK, Draft22MessageCodec.okParameters(message));
 
     if (message.trackProperties) {
       encodeKeyValuePairs(writer, message.trackProperties);
@@ -549,7 +544,7 @@ export class Draft22MessageCodec {
       type: MessageTypeDraft18.SUBSCRIBE_OK,
       requestId: trackAlias,
       trackAlias,
-      largestLocation: params.largestLocation ?? { group: 0n, object: 0n },
+      largestLocation: params.largestLocation,
       expires: Draft22MessageCodec.decodeExpires(params),
       trackProperties: trackProperties?.size ? trackProperties : undefined,
     };

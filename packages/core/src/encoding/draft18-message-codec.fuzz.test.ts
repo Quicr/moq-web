@@ -406,8 +406,7 @@ describe('Draft18MessageCodec fuzz — round-trip identity', () => {
         const [decoded] = Draft18MessageCodec.decode(encoded);
         const d = decoded as SubscribeOkMessageDraft18;
         expect(d.trackAlias).toBe(msg.trackAlias);
-        expect(d.largestLocation.group).toBe(msg.largestLocation.group);
-        expect(d.largestLocation.object).toBe(msg.largestLocation.object);
+        expect(d.largestLocation).toEqual(msg.largestLocation);
         if (msg.expires !== undefined) {
           expect(d.expires).toBe(msg.expires);
         }

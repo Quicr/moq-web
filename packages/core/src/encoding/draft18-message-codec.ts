@@ -708,15 +708,7 @@ export class Draft18MessageCodec {
         encode: (w) => w.writeVarInt(message.expires!),
       });
     }
-    if (message.largestLocation && (message.largestLocation.group > 0n || message.largestLocation.object > 0n)) {
-      params.push({
-        type: RequestParameterDraft18.LARGEST_OBJECT,
-        encode: (w) => {
-          w.writeVarInt(message.largestLocation.group);
-          w.writeVarInt(message.largestLocation.object);
-        },
-      });
-    }
+    Draft18MessageCodec.pushLargestObject(params, message.largestLocation);
     Draft18MessageCodec.encodeMessageParameters(writer, params);
 
     // Track Properties (KVPs to end)
@@ -725,13 +717,31 @@ export class Draft18MessageCodec {
     }
   }
 
+  /** Add LARGEST_OBJECT (§10.2.11) when Objects have been published */
+  private static pushLargestObject(
+    params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }>,
+    largestLocation: Location | undefined,
+  ): void {
+    if (!largestLocation) {
+      return;
+    }
+
+    params.push({
+      type: RequestParameterDraft18.LARGEST_OBJECT,
+      encode: (w) => {
+        w.writeVarInt(largestLocation.group);
+        w.writeVarInt(largestLocation.object);
+      },
+    });
+  }
+
   private static decodeSubscribeOk(reader: Draft18BufferReader): SubscribeOkMessageDraft18 {
     // Draft-18 SUBSCRIBE_OK: Track Alias | Number of Parameters | Parameters | Track Properties (..)
     const trackAlias = reader.readVarInt();
 
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_OK numParams', MessageTypeDraft18.SUBSCRIBE_OK);
-    let largestLocation: Location = { group: 0n, object: 0n };
+    let largestLocation: Location | undefined;
     let expires: bigint | undefined;
 
     let previousType = 0;
@@ -783,6 +793,7 @@ export class Draft18MessageCodec {
       type: RequestParameterDraft18.FORWARD,
       encode: (w) => { w.writeByte(message.forwardState === false ? 0x00 : 0x01); },
     });
+    Draft18MessageCodec.pushLargestObject(params, message.largestLocation);
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
 
@@ -803,10 +814,16 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH numParams', MessageTypeDraft18.PUBLISH);
     // §10.2.12: an omitted FORWARD is 1
     let forwardState = true;
+    let largestLocation: Location | undefined;
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.PUBLISH, previousType, i);
       previousType = type;
+      if (type === RequestParameterDraft18.LARGEST_OBJECT) {
+        largestLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
+        continue;
+      }
+
       const value = Draft18MessageCodec.readParameterValue(reader, type);
       if (type === RequestParameterDraft18.FORWARD) {
         forwardState = value[0] === 0x01;
@@ -825,7 +842,7 @@ export class Draft18MessageCodec {
       trackNamespace,
       trackName,
       forwardState,
-      largestLocation: { group: 0n, object: 0n },
+      largestLocation,
       trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
   }

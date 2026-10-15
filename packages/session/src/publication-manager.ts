@@ -8,9 +8,16 @@
  */
 
 import { Logger, GroupOrder } from '@moq-web/core';
+import type { Location } from '@moq-web/core';
+import { namespacePrefixMatches } from './session-helpers.js';
 import type { PublicationInfo } from './types.js';
 
 const log = Logger.create('moqt:session:publication-manager');
+
+/** Key of a track: fields stay distinct when they contain the separator. */
+function trackKey(namespace: string[], trackName: string): string {
+  return JSON.stringify([namespace, trackName]);
+}
 
 /**
  * Internal publication state (extends public info)
@@ -75,6 +82,12 @@ export type ForwardStateChangeListener = (trackAlias: bigint, forward: number) =
 export class PublicationManager {
   /** Active publications by track alias (as string for bigint compatibility) */
   private publications = new Map<string, InternalPublication>();
+  /**
+   * Largest Location published on each track, by namespace and name. It
+   * outlives the publications, as the Largest Object of a track is a fact
+   * about the track (draft-22 §9.20.17).
+   */
+  private largestByTrack = new Map<string, { namespace: string[]; largest: Location }>();
   /** Publications by request ID (keyed as string to accommodate bigint varints). */
   private publicationsByRequestId = new Map<string, InternalPublication>();
   /** Pending PUBLISH_OK callbacks (keyed as string, requestId is 62-bit varint). */
@@ -159,8 +172,9 @@ export class PublicationManager {
   }
 
   /**
-   * Record the latest (group, object) tuple sent for a publication. The
-   * TRACK_STATUS handler uses this to fill LARGEST_OBJECT (§10.2.9).
+   * Record the latest (group, object) tuple sent for a publication, and for
+   * its track. The TRACK_STATUS handler uses this to fill LARGEST_OBJECT
+   * (§10.2.9).
    */
   updateLatest(trackAlias: bigint | string, group: bigint, object: bigint): void {
     const pub = this.publications.get(trackAlias.toString());
@@ -171,6 +185,29 @@ export class PublicationManager {
       pub.latestGroup = group;
       pub.latestObject = object;
     }
+
+    const key = trackKey(pub.namespace, pub.trackName);
+    const largest = this.largestByTrack.get(key)?.largest;
+    if (largest === undefined || group > largest.group || (group === largest.group && object > largest.object)) {
+      this.largestByTrack.set(key, { namespace: pub.namespace, largest: { group, object } });
+    }
+  }
+
+  /** Forget the largest Location of every track at or under `namespace`; it was withdrawn. */
+  forgetUnder(namespace: string[]): void {
+    for (const [key, entry] of this.largestByTrack) {
+      if (namespacePrefixMatches(namespace, entry.namespace)) {
+        this.largestByTrack.delete(key);
+      }
+    }
+  }
+
+  /**
+   * The largest Location published on a track, or undefined while nothing
+   * was (draft-22 §9.20.17: LARGEST_OBJECT is omitted then).
+   */
+  largestOf(namespace: string[], trackName: string): Location | undefined {
+    return this.largestByTrack.get(trackKey(namespace, trackName))?.largest;
   }
 
   /**
@@ -192,6 +229,7 @@ export class PublicationManager {
     }
     this.publications.clear();
     this.publicationsByRequestId.clear();
+    this.largestByTrack.clear();
   }
 
   /**

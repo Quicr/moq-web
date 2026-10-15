@@ -1820,9 +1820,7 @@ export class MOQTSession {
         }
 
         this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
-        await this.activeRequestStreams.get(requestId)?.write(
-          this.codec.encodeControlMessage({ type: MessageTypeDraft18.REQUEST_OK, requestId }),
-        );
+        await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(this.updateOk(requestId)));
         break;
       }
 
@@ -1866,6 +1864,21 @@ export class MOQTSession {
       default:
         log.warn('Unhandled message on request stream', { requestId: requestId.toString(), type: message.type });
     }
+  }
+
+  /**
+   * The REQUEST_OK for a REQUEST_UPDATE of the request on stream `requestId`.
+   * It carries LARGEST_OBJECT for a subscription once Objects were published
+   * (draft-22 §9.20.17).
+   */
+  private updateOk(requestId: bigint): RequestOkMessageDraft18 {
+    const publication = this.publicationManager.getByRequestId(requestId);
+
+    return {
+      type: MessageTypeDraft18.REQUEST_OK,
+      requestId,
+      largestLocation: publication && this.publicationManager.largestOf(publication.namespace, publication.trackName),
+    };
   }
 
   /**
@@ -3749,8 +3762,8 @@ export class MOQTSession {
       const relayTrackAlias = subscribeOk.trackAlias ?? subscribeOk.requestId;
       log.info('Received SUBSCRIBE_OK', {
         trackAlias: relayTrackAlias.toString(),
-        largestGroup: subscribeOk.largestLocation.group.toString(),
-        largestObject: subscribeOk.largestLocation.object.toString(),
+        largestGroup: subscribeOk.largestLocation?.group.toString(),
+        largestObject: subscribeOk.largestLocation?.object.toString(),
       });
       const sub = this.subscriptionManager.findByRequestId(requestId);
       if (sub && !this.acceptTrackAlias(relayTrackAlias, sub.namespace, sub.trackName, sub.subscriptionId)) {
@@ -3761,9 +3774,10 @@ export class MOQTSession {
         this.subscriptionManager.updateTrackAlias(sub.subscriptionId, relayTrackAlias);
       }
       if (sub) {
-        const largestGroup = subscribeOk.largestLocation.group;
-        const largestObject = subscribeOk.largestLocation.object;
-        const contentExists = largestGroup > 0n || largestObject > 0n;
+        // An omitted LARGEST_OBJECT means no Object was published; {0, 0} is the first one
+        const largestGroup = subscribeOk.largestLocation?.group ?? 0n;
+        const largestObject = subscribeOk.largestLocation?.object ?? 0n;
+        const contentExists = subscribeOk.largestLocation !== undefined;
         const properties = parseTrackProperties(subscribeOk.trackProperties);
         sub.dynamicGroups = properties?.dynamicGroups === true;
         sub.drainMs = Math.max(
@@ -3813,7 +3827,8 @@ export class MOQTSession {
       priorObjectIdGap: options?.priorObjectIdGap,
       dynamicGroups: options?.dynamicGroups,
     });
-    // Draft-22 §9.20.17: LARGEST_OBJECT is omitted until Objects have been published
+    // LARGEST_OBJECT is omitted until Objects have been published (d22 §9.20.17, d18 §10.2.11)
+    const largestLocation = this.publicationManager.largestOf(namespace, trackName);
     const publishMessage: PublishMessageDraft18 | PublishMessageDraft22 = this.isDraft22
       ? {
         type: MessageTypeDraft22.PUBLISH,
@@ -3822,6 +3837,7 @@ export class MOQTSession {
         trackNamespace: namespace,
         trackName,
         forwardState: true,
+        largestLocation,
         trackProperties,
       }
       : {
@@ -3831,7 +3847,7 @@ export class MOQTSession {
         trackNamespace: namespace,
         trackName,
         forwardState: true,
-        largestLocation: { group: 0n, object: 0n },
+        largestLocation,
         trackProperties,
       };
 
@@ -5061,6 +5077,7 @@ export class MOQTSession {
 
     // Clean up local state
     this.announcedNamespaces.delete(namespaceStr);
+    this.publicationManager.forgetUnder(namespace);
     await this.notifyNamespace(namespace, NamespaceChange.WITHDRAWN);
     log.info('Namespace announcement cancelled', { namespace: namespaceStr });
   }
@@ -7208,7 +7225,7 @@ export class MOQTSession {
       type: MessageTypeDraft18.SUBSCRIBE_OK,
       requestId: message.requestId,
       trackAlias,
-      largestLocation: { group: 0n, object: 0n },
+      largestLocation: this.publicationManager.largestOf(namespace, trackName),
       expires: expires !== undefined ? BigInt(expires) : undefined,
     };
     const responseBytes = this.codec.encodeControlMessage(subscribeOk);

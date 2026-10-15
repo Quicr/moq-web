@@ -1629,7 +1629,8 @@ export interface SubscribeOkMessageDraft18 {
   type: MessageTypeDraft18.SUBSCRIBE_OK;
   requestId: bigint;
   trackAlias?: bigint;
-  largestLocation: Location;
+  /** §10.2.11 LARGEST_OBJECT: omitted until Objects have been published. {0, 0} is a real location. */
+  largestLocation?: Location;
   /** §10.2.10 EXPIRES parameter (ms). `undefined` omits, `0n` means no expiration. */
   expires?: bigint;
   trackProperties?: Map<number, Uint8Array>;
@@ -1645,7 +1646,8 @@ export interface PublishMessageDraft18 {
   trackNamespace: TrackNamespace;
   trackName: string;
   forwardState: boolean;
-  largestLocation: Location;
+  /** §10.2.11 LARGEST_OBJECT: omitted until Objects have been published. {0, 0} is a real location. */
+  largestLocation?: Location;
   trackProperties?: Map<number, Uint8Array>;
 }
 
