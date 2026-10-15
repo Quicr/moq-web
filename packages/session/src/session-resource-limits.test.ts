@@ -14,7 +14,7 @@ import { MOQTransport, SessionErrorCodeDraft18 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 
-type PrivateSession = MOQTSession & {
+type PrivateSession = {
   _state: 'none' | 'setup-sent' | 'ready' | 'closing';
   maxSubscriptions: number;
   maxTracks: number;

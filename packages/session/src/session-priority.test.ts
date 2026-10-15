@@ -41,13 +41,13 @@ interface PrivateSession {
     groupId: number,
   ) => number | undefined;
   publicationManager: {
-    getByRequestId: (id: number) => {
+    getByRequestId: (id: bigint | number) => {
       subscriberPriority?: number;
       subscriberGroupOrder?: GroupOrder;
     } | undefined;
   };
   announcedNamespaces: Map<string, {
-    subscribers: Map<number, { subscriberPriority: number; groupOrder: GroupOrder }>;
+    subscribers: Map<bigint, { subscriberPriority: number; groupOrder: GroupOrder }>;
   }>;
 }
 

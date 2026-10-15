@@ -27,7 +27,7 @@ import { SubscriptionManager, type InternalSubscription } from './subscription-m
 function makeSub(overrides: Partial<InternalSubscription>): InternalSubscription {
   return {
     subscriptionId: 1,
-    requestId: 1,
+    requestId: 1n,
     namespace: ['ns'],
     trackName: 'track',
     trackAlias: 1n,

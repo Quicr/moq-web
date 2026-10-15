@@ -21,7 +21,7 @@ import { MOQTransport, StreamResetErrorCodeDraft18 } from '@moq-web/core';
 import { MOQTSession } from './session.js';
 import type { StreamResetEvent } from './types.js';
 
-type PrivateSession = MOQTSession & {
+type PrivateSession = {
   activeVideoStreams: Map<string, {
     writer?: WritableStreamDefaultWriter<Uint8Array>;
     streamId?: number;
@@ -42,7 +42,7 @@ describe('draft-18 §11.4.3 publisher-side stream-reset event', () => {
   it('emits stream-reset with the requested §15.10.4 code and reason', async () => {
     const session = makeSession();
     const abortSpy = vi.fn().mockResolvedValue(undefined);
-    (session as PrivateSession).activeVideoStreams.set('42', {
+    (session as unknown as PrivateSession).activeVideoStreams.set('42', {
       writer: { abort: abortSpy } as unknown as WritableStreamDefaultWriter<Uint8Array>,
       groupId: 3,
       objectCount: 4,
@@ -73,7 +73,7 @@ describe('draft-18 §11.4.3 publisher-side stream-reset event', () => {
 
   it('emits stream-reset with a code-derived reason when no reason is given', async () => {
     const session = makeSession();
-    (session as PrivateSession).activeVideoStreams.set('7', {
+    (session as unknown as PrivateSession).activeVideoStreams.set('7', {
       writer: { abort: vi.fn().mockResolvedValue(undefined) } as unknown as WritableStreamDefaultWriter<Uint8Array>,
       groupId: 0,
       objectCount: 0,
@@ -110,7 +110,7 @@ describe('draft-18 §11.4.3 publisher-side stream-reset event', () => {
   it('resetPublicationStreamTooFarBehind() short-circuits to §15.10.4 = 0x5', async () => {
     const session = makeSession();
     const abortSpy = vi.fn().mockResolvedValue(undefined);
-    (session as PrivateSession).activeVideoStreams.set('99', {
+    (session as unknown as PrivateSession).activeVideoStreams.set('99', {
       writer: { abort: abortSpy } as unknown as WritableStreamDefaultWriter<Uint8Array>,
       groupId: 5,
       objectCount: 2,

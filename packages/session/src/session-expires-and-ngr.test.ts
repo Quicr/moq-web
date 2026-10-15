@@ -78,11 +78,8 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.10 EXPIRES on outbound SUBSCRIBE_
     const incoming: SubscribeMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE,
       requestId: 3n,
-      trackAlias: 0n,
       trackNamespace: ['ns'],
       trackName: 'video',
-      subscriberPriority: 128,
-      groupOrder: 1,
       forwardState: true,
       filter: 1,
       parameters: undefined,
@@ -116,11 +113,8 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.10 EXPIRES on outbound SUBSCRIBE_
     const incoming: SubscribeMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE,
       requestId: 4n,
-      trackAlias: 0n,
       trackNamespace: ['ns'],
       trackName: 'video',
-      subscriberPriority: 128,
-      groupOrder: 1,
       forwardState: true,
       filter: 1,
       parameters: undefined,
