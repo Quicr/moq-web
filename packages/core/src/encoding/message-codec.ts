@@ -3008,8 +3008,8 @@ export class ObjectCodec {
       };
       const headerBytes = Draft18StreamCodec.encodeObjectHeader(objHeader, hasExtensions);
 
-      if (payload.length === 0 && status !== ObjectStatus.NORMAL) {
-        // payloadLength=0 means Object Status varint follows
+      if (payload.length === 0) {
+        // payloadLength=0 means Object Status varint follows, Normal included
         const statusBytes = MOQTVarInt.encode(status);
         const result = new Uint8Array(headerBytes.length + statusBytes.length);
         result.set(headerBytes);
