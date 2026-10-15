@@ -16,6 +16,8 @@ import {
   RequestParameterDraft18,
   SubscriptionFilterDraft18,
   type ClientSetupMessageDraft18,
+  type PublishDoneMessageDraft18,
+  type RequestErrorMessageDraft18,
   type SubscribeMessageDraft18,
   type SubscribeMessageDraft22,
 } from '../messages/types';
@@ -148,5 +150,62 @@ describe('Track Namespace / Full Track Name limits (§8.7, M-06)', () => {
     };
 
     expect(() => Draft18MessageCodec.encode(message)).toThrow(Draft18CodecError);
+  });
+});
+
+const MAX_REASON_PHRASE = 1024;
+
+function requestErrorWire(reason: Uint8Array): Uint8Array {
+  return encodeFramed(MessageTypeDraft18.REQUEST_ERROR, (w) => {
+    w.writeVarInt(0n); // error code
+    w.writeVarInt(0n); // retry interval
+    w.writeVarInt(reason.length);
+    w.writeBytes(reason);
+  });
+}
+
+describe('Reason Phrase limit (§8.5, M-07)', () => {
+  it('accepts a 1024-byte reason on decode', () => {
+    const [decoded] = Draft18MessageCodec.decode(requestErrorWire(bytesOf(MAX_REASON_PHRASE)));
+
+    expect((decoded as RequestErrorMessageDraft18).reasonPhrase).toHaveLength(MAX_REASON_PHRASE);
+  });
+
+  it('rejects a 1025-byte reason on decode', () => {
+    expect(() => Draft18MessageCodec.decode(requestErrorWire(bytesOf(MAX_REASON_PHRASE + 1)))).toThrow(
+      /Reason Phrase length 1025/,
+    );
+  });
+
+  it('truncates an oversize REQUEST_ERROR reason on encode', () => {
+    const message: RequestErrorMessageDraft18 = {
+      type: MessageTypeDraft18.REQUEST_ERROR,
+      requestId: 0n,
+      errorCode: 0,
+      retryInterval: 0n,
+      reasonPhrase: 'x'.repeat(5000),
+    };
+
+    const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+    expect((decoded as RequestErrorMessageDraft18).reasonPhrase).toHaveLength(MAX_REASON_PHRASE);
+  });
+
+  it('truncates PUBLISH_DONE on a UTF-8 boundary', () => {
+    // 3-byte characters: 1024 bytes would end mid-character
+    const message: PublishDoneMessageDraft18 = {
+      type: MessageTypeDraft18.PUBLISH_DONE,
+      requestId: 0n,
+      finalLocation: { group: 0n, object: 0n },
+      statusCode: 0n,
+      streamCount: 0n,
+      reasonPhrase: '€'.repeat(400),
+    };
+
+    const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+    const reason = (decoded as PublishDoneMessageDraft18).reasonPhrase!;
+
+    expect(reason).not.toContain('\uFFFD');
+    expect(new TextEncoder().encode(reason).length).toBeLessThanOrEqual(MAX_REASON_PHRASE);
   });
 });

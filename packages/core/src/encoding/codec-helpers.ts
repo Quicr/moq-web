@@ -28,6 +28,11 @@ export const MAX_TRACK_NAME_LENGTH = 4096;
 export const MAX_AUTH_TOKEN_LENGTH = 16384;
 /** §8.3: "The maximum length of a value is 2^16-1 bytes." */
 export const MAX_KVP_VALUE_LENGTH = 0xFFFF;
+/** §8.5: Reason Phrase length limit */
+export const MAX_REASON_PHRASE_LENGTH = 1024;
+/** UTF-8 continuation bytes are 10xxxxxx */
+const UTF8_CONTINUATION_MASK = 0xC0;
+const UTF8_CONTINUATION_BITS = 0x80;
 /** §9: Message Length is 16 bits */
 export const MAX_CONTROL_MESSAGE_LENGTH = 0xFFFF;
 /** §10.2.7: SUBSCRIBER_PRIORITY value when the parameter is omitted */
@@ -161,6 +166,35 @@ export function decodeString(reader: Draft18BufferReader, messageType?: MessageT
   assertBound(length, MAX_STRING_LENGTH, 'string length', messageType);
   const bytes = reader.readBytes(length);
   return TD.decode(bytes);
+}
+
+/**
+ * Encode a Reason Phrase. §8.5 caps it at 1024 bytes; a longer diagnostic is
+ * cut on a UTF-8 character boundary rather than failing the message.
+ */
+export function encodeReasonPhrase(writer: Draft18BufferWriter, reason: string): void {
+  const bytes = TE.encode(reason);
+  let end = Math.min(bytes.length, MAX_REASON_PHRASE_LENGTH);
+  while (end < bytes.length && end > 0 && (bytes[end] & UTF8_CONTINUATION_MASK) === UTF8_CONTINUATION_BITS) {
+    end--;
+  }
+
+  writer.writeVarInt(end);
+  writer.writeBytes(bytes.subarray(0, end));
+}
+
+/** Decode a Reason Phrase; §8.5: a length over 1024 bytes closes the session. */
+export function decodeReasonPhrase(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): string {
+  const length = reader.readVarIntNumber();
+  if (length > MAX_REASON_PHRASE_LENGTH) {
+    throw new Draft18CodecError(
+      `Reason Phrase length ${length} exceeds ${MAX_REASON_PHRASE_LENGTH} (PROTOCOL_VIOLATION)`,
+      messageType,
+      'bounds-exceeded',
+    );
+  }
+
+  return TD.decode(reader.readBytes(length));
 }
 
 /**

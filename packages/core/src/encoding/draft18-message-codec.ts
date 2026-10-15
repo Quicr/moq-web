@@ -23,6 +23,8 @@ import {
   encodeString,
   encodeTrackName,
   decodeString,
+  encodeReasonPhrase,
+  decodeReasonPhrase,
   decodeTrackName,
   encodeKeyValuePairs,
   decodeKeyValuePairsToEnd,
@@ -768,7 +770,7 @@ export class Draft18MessageCodec {
     // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
     writer.writeVarInt(message.errorCode);
     writer.writeVarInt(message.retryInterval ?? 0n);
-    encodeString(writer, message.reasonPhrase);
+    encodeReasonPhrase(writer, message.reasonPhrase);
 
     // Redirect is present only when Error Code === REDIRECT (0x34)
     if (message.errorCode === RequestErrorCodeDraft18.REDIRECT) {
@@ -792,7 +794,7 @@ export class Draft18MessageCodec {
     const rawErrorCode = readVarIntSaturating(reader);
     const errorCode = normalizers.requestError(rawErrorCode);
     const retryInterval = reader.readVarInt();
-    const reasonPhrase = decodeString(reader);
+    const reasonPhrase = decodeReasonPhrase(reader, MessageTypeDraft18.REQUEST_ERROR);
 
     const message: RequestErrorMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_ERROR,
@@ -1121,7 +1123,7 @@ export class Draft18MessageCodec {
     // Draft-18: Status Code (vi64) | Stream Count (vi64) | Error Reason (Reason Phrase)
     writer.writeVarInt(message.statusCode ?? 0n);
     writer.writeVarInt(message.streamCount ?? 0n);
-    encodeString(writer, message.reasonPhrase ?? '');
+    encodeReasonPhrase(writer, message.reasonPhrase ?? '');
   }
 
   private static decodePublishDone(
@@ -1138,7 +1140,7 @@ export class Draft18MessageCodec {
         ? 0n
         : BigInt(normalizers.publishDone(Number(rawStatusCode)));
     const streamCount = reader.readVarInt();
-    const reasonPhrase = decodeString(reader);
+    const reasonPhrase = decodeReasonPhrase(reader, MessageTypeDraft18.PUBLISH_DONE);
 
     return {
       type: MessageTypeDraft18.PUBLISH_DONE,
