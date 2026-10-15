@@ -422,16 +422,32 @@ export class MOQTransport {
     const streamReader = stream.getReader();
 
     try {
-      // Read stream type (MOQT varint)
-      const { value: firstChunk, done } = await streamReader.read();
-      if (done || !firstChunk || firstChunk.length === 0) {
-        log.warn('Empty unidirectional stream received');
-        streamReader.releaseLock();
-        return;
+      // Read the stream type (a vi64). It can arrive split across reads, so
+      // keep reading until it decodes (d22 §6.4.1).
+      let firstChunk = new Uint8Array(0);
+      let type: [bigint, number] | undefined;
+      while (!type) {
+        try {
+          type = MOQTVarInt.decode(firstChunk);
+          break;
+        } catch {
+          // Need more bytes
+        }
+
+        const { value, done } = await streamReader.read();
+        if (done || !value) {
+          log.warn('Unidirectional stream ended before its stream type');
+          streamReader.releaseLock();
+          return;
+        }
+
+        const merged = new Uint8Array(firstChunk.length + value.length);
+        merged.set(firstChunk);
+        merged.set(value, firstChunk.length);
+        firstChunk = merged;
       }
 
-      // Decode stream type from first bytes
-      const [streamType, bytesRead] = MOQTVarInt.decode(firstChunk);
+      const [streamType, bytesRead] = type;
       const streamTypeNum = Number(streamType);
 
       log.debug('Draft-18 unidirectional stream received', {
@@ -510,8 +526,9 @@ export class MOQTransport {
         }
         controller.enqueue(value);
       },
-      cancel() {
-        reader.releaseLock();
+      // Reaches the receive stream, so the peer gets STOP_SENDING (d22 §3.4.1)
+      cancel(reason) {
+        return reader.cancel(reason);
       },
     });
   }
