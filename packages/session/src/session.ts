@@ -157,6 +157,7 @@ import { PublicationManager, type InternalPublication } from './publication-mana
 import { ObjectRouter } from './object-router.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 import { IdleActivityTracker } from './idle-activity-tracker.js';
+import { IncomingNamespaceSubscriptions, NamespaceChange } from './incoming-namespace-subscriptions.js';
 import { TransportWorkerClient } from './workers/index.js';
 import {
   JitteredExponentialBackoff,
@@ -622,6 +623,8 @@ export class MOQTSession {
    */
   /** Peer-supplied request IDs are 62-bit varints; key by bigint to preserve precision. */
   private incomingRequestKinds = new Map<bigint, RequestUpdateVariant>();
+  /** SUBSCRIBE_NAMESPACE requests the peer made to us, kept current as our announced set changes (draft-22 §4.2) */
+  private incomingNamespaces = new IncomingNamespaceSubscriptions();
   /** Request IDs the peer has used on its request streams */
   private seenPeerRequestIds = new Set<bigint>();
   /** We sent GOAWAY: requests that arrive from now on are refused (draft-18 §10.4) */
@@ -1735,6 +1738,7 @@ export class MOQTSession {
    * draft-18 §10.18). A stream that never got a response failed the request.
    */
   private endNamespaceSubscription(requestId: bigint): void {
+    this.incomingNamespaces.remove(requestId);
     const request = this.outgoingRequests.get(requestId);
     const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
     if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
@@ -3178,6 +3182,7 @@ export class MOQTSession {
     this.subscriptionManager.clear();
     this.publicationManager.clear();
     this.incomingRequestKinds.clear();
+    this.incomingNamespaces.clear();
     // §8: cancel every pending delivery-timeout so stale timers can't fire
     // after the session is gone.
     this.publisherDeliveryTimeouts.clear();
@@ -4930,6 +4935,7 @@ export class MOQTSession {
       acknowledged: false,
     };
     this.announcedNamespaces.set(namespaceStr, announceInfo);
+    await this.notifyNamespace(namespace, NamespaceChange.ANNOUNCED);
 
     // Local counter is small; widen for wire encode + state maps.
     const requestId = BigInt(this.getNextRequestId());
@@ -5015,6 +5021,7 @@ export class MOQTSession {
       } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
         this.announcedNamespaces.delete(namespaceStr);
+        await this.notifyNamespace(namespace, NamespaceChange.WITHDRAWN);
         await this.closeRequestStream(requestId);
         throw this.rejection('Namespace announcement', error);
       }
@@ -5054,6 +5061,7 @@ export class MOQTSession {
 
     // Clean up local state
     this.announcedNamespaces.delete(namespaceStr);
+    await this.notifyNamespace(namespace, NamespaceChange.WITHDRAWN);
     log.info('Namespace announcement cancelled', { namespace: namespaceStr });
   }
 
@@ -7498,11 +7506,22 @@ export class MOQTSession {
     message: SubscribeNamespaceMessageDraft18,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
-    const prefix = message.trackNamespacePrefix.join('/');
+    const prefix = message.trackNamespacePrefix;
     log.info('Received SUBSCRIBE_NAMESPACE', {
       requestId: message.requestId.toString(),
-      prefix,
+      prefix: prefix.join('/'),
     });
+
+    // Draft-22 §4.2: a prefix that shares a common prefix with an established subscription is refused
+    if (this.incomingNamespaces.overlaps(prefix)) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.PREFIX_OVERLAP,
+        'Prefix overlaps an established SUBSCRIBE_NAMESPACE',
+      );
+      return;
+    }
 
     // Send REQUEST_OK
     const requestOk: RequestOkMessageDraft18 = {
@@ -7511,29 +7530,33 @@ export class MOQTSession {
     };
     const writer = writable.getWriter();
     await writer.write(this.codec.encodeControlMessage(requestOk));
+    writer.releaseLock();
 
     // Remember the kind so a later REQUEST_UPDATE (§10.9.2) routes correctly
     this.incomingRequestKinds.set(message.requestId, 'subscribe-namespace');
 
-    // Send NAMESPACE messages for matching announced namespaces
-    for (const [, announceInfo] of this.announcedNamespaces) {
-      const nsStr = announceInfo.namespace.join('/');
-      if (nsStr.startsWith(prefix)) {
-        const nsMsg: NamespaceMessageDraft18 = {
-          type: MessageTypeDraft18.NAMESPACE,
-          trackNamespace: announceInfo.namespace,
-        };
-        await writer.write(this.codec.encodeControlMessage(nsMsg));
+    // Tell it every matching namespace we announce now, and later changes (§4.2)
+    this.incomingNamespaces.add(message.requestId, prefix);
+    for (const announceInfo of this.announcedNamespaces.values()) {
+      await this.notifyNamespace(announceInfo.namespace, NamespaceChange.ANNOUNCED);
+    }
+  }
+
+  /**
+   * Send NAMESPACE or NAMESPACE_DONE to each SUBSCRIBE_NAMESPACE the change
+   * concerns, as the suffix after its prefix (draft-22 §9.16, §9.17).
+   */
+  private async notifyNamespace(namespace: string[], change: NamespaceChange): Promise<void> {
+    for (const notice of this.incomingNamespaces.record(namespace, change)) {
+      const message: NamespaceMessageDraft18 | NamespaceDoneMessageDraft18 = change === NamespaceChange.ANNOUNCED
+        ? { type: MessageTypeDraft18.NAMESPACE, trackNamespace: notice.suffix }
+        : { type: MessageTypeDraft18.NAMESPACE_DONE, finalNamespace: notice.suffix };
+      try {
+        await this.activeRequestStreams.get(notice.requestId)?.write(this.codec.encodeControlMessage(message));
+      } catch (err) {
+        log.warn('Could not send a namespace change', { requestId: notice.requestId.toString(), error: (err as Error).message });
       }
     }
-
-    // Send NAMESPACE_DONE
-    const nsDone: NamespaceDoneMessageDraft18 = {
-      type: MessageTypeDraft18.NAMESPACE_DONE,
-      finalNamespace: message.trackNamespacePrefix,
-    };
-    await writer.write(this.codec.encodeControlMessage(nsDone));
-    writer.releaseLock();
   }
 
   /**
