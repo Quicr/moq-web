@@ -12,41 +12,9 @@
 
 import { bench, describe } from 'vitest';
 import {
-  encodeTrackNamespaceBytes,
-  decodeTrackNamespaceBytes,
   buildTrackProperties,
   mapSubscribeFilter,
 } from './session-helpers.js';
-
-const shortNs = ['room-1', 'video'];
-const longNs = [
-  'conference',
-  'org.example.large-tenant',
-  'room-a1b2c3d4e5f6',
-  'participant-42',
-  'media',
-  'video',
-];
-
-describe('encodeTrackNamespaceBytes', () => {
-  bench('short namespace (2 tuples)', () => {
-    encodeTrackNamespaceBytes(shortNs);
-  });
-  bench('long namespace (6 tuples)', () => {
-    encodeTrackNamespaceBytes(longNs);
-  });
-});
-
-describe('decodeTrackNamespaceBytes', () => {
-  const shortEncoded = encodeTrackNamespaceBytes(shortNs);
-  const longEncoded = encodeTrackNamespaceBytes(longNs);
-  bench('short namespace roundtrip', () => {
-    decodeTrackNamespaceBytes(shortEncoded);
-  });
-  bench('long namespace roundtrip', () => {
-    decodeTrackNamespaceBytes(longEncoded);
-  });
-});
 
 describe('buildTrackProperties', () => {
   bench('no properties (returns undefined)', () => {

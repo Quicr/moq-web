@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * Draft-18 §10.2.10 EXPIRES / §10.2.13 NEW_GROUP_REQUEST / §10.2.14
- * TRACK_NAMESPACE_PREFIX — end-to-end against a live relay.
+ * Draft-18 §10.2.10 EXPIRES / §10.2.13 NEW_GROUP_REQUEST — end-to-end
+ * against a live relay.
  *
  * The relay is expected to accept the SUBSCRIBE and SUBSCRIBE_TRACKS requests
  * that carry these parameters — we assert wire-level acceptance rather than
@@ -21,7 +21,7 @@ import chatStream from '../profiles/chat-stream.json';
 const MOQT_VERSION = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MOQT_VERSION ?? 'draft-18';
 const isDraft18 = MOQT_VERSION === 'draft-18';
 
-describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST + TRACK_NAMESPACE_PREFIX', () => {
+describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
   let pub: SessionHandle | undefined;
   let sub: SessionHandle | undefined;
 
@@ -87,7 +87,7 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST + TRACK_NAMESPACE_PREFI
     });
   });
 
-  it('subscriber can carry TRACK_NAMESPACE_PREFIX on SUBSCRIBE_TRACKS', async () => {
+  it('subscriber can send SUBSCRIBE_TRACKS for a namespace prefix', async () => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -107,16 +107,14 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST + TRACK_NAMESPACE_PREFI
     await new Promise((r) => setTimeout(r, 250));
 
     try {
-      const subId = await sub.session.subscribeTracks(namespace.slice(0, 1), undefined, {
-        namespacePrefixParam: namespace,
-      });
+      const subId = await sub.session.subscribeTracks(namespace);
       expect(typeof subId).toBe('number');
     } catch (err) {
-      // Some relays reject SUBSCRIBE_TRACKS entirely (draft-18 §10.19), reject
-      // the extra parameter, or simply reset the request stream. The wire-level
-      // encoding is what the codec unit test guarantees; here we only require
-      // that the peer accepts the request bytes without a protocol violation
-      // (session-close) that would suggest our encoding is malformed.
+      // Some relays reject SUBSCRIBE_TRACKS entirely (draft-18 §10.19) or
+      // simply reset the request stream. The wire-level encoding is what the
+      // codec unit test guarantees; here we only require that the peer accepts
+      // the request bytes without a protocol violation (session-close) that
+      // would suggest our encoding is malformed.
       const msg = (err as Error).message ?? '';
       if (
         !/SUBSCRIBE_TRACKS|REQUEST_ERROR|forbidden|not.*allowed|RESET_STREAM|WebTransport/i.test(msg)

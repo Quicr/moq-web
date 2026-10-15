@@ -129,17 +129,16 @@ import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
   Draft18RequestStream,
   RequestStreamEnded,
-  addDeliveryTimeoutParams,
+  addFetchTimeoutParams,
+  addSubscribeTimeoutParams,
   parseDeliveryTimeoutParams,
   assertNoTokenRegister,
   applyRangeFilters,
   assertNotReservedNamespace,
   buildTrackProperties,
-  decodeTrackNamespaceBytes,
   encodeDraft18AuthBytes,
   encodeRequestAuthTokenBytes,
   encodeTokenBytes,
-  encodeTrackNamespaceBytes,
   generateSessionId,
   mapFillParameters,
   mapJoiningFetch,
@@ -2361,9 +2360,6 @@ export class MOQTSession {
    * @param options.filter              SUBSCRIPTION_FILTER variant (default `NEXT_GROUP_START`).
    * @param options.startLocation       Absolute start (required for `ABSOLUTE_START` / `ABSOLUTE_RANGE`).
    * @param options.endGroupDelta       End-group delta (required for `ABSOLUTE_RANGE`).
-   * @param options.namespacePrefixParam §10.2.14 TRACK_NAMESPACE_PREFIX request parameter —
-   *                                    optional narrower prefix carried inside the params map;
-   *                                    supplements the top-level `namespacePrefix`.
    * @param options.parameters          Additional raw KVP request parameters (§10.2).
    */
   async subscribeTracks(
@@ -2374,7 +2370,6 @@ export class MOQTSession {
       filter?: SubscriptionFilterDraft18;
       startLocation?: { group: bigint; object: bigint };
       endGroupDelta?: bigint;
-      namespacePrefixParam?: string[];
       parameters?: Map<number, Uint8Array>;
     }
   ): Promise<number> {
@@ -2385,30 +2380,10 @@ export class MOQTSession {
       throw new Error('Session not ready');
     }
     assertNotReservedNamespace(namespacePrefix, 'SUBSCRIBE_TRACKS under');
-    if (options?.namespacePrefixParam) {
-      assertNotReservedNamespace(options.namespacePrefixParam, 'SUBSCRIBE_TRACKS under');
-    }
-    // Draft-22 §9.20.20: TRACK_NAMESPACE_PREFIX is only allowed in REQUEST_UPDATE.
-    // A narrower prefix goes in the SUBSCRIBE_TRACKS body instead.
-    if (this.isDraft22 && options?.namespacePrefixParam) {
-      throw new Error(
-        'SUBSCRIBE_TRACKS cannot carry TRACK_NAMESPACE_PREFIX in draft-22; pass the narrower prefix as namespacePrefix',
-      );
-    }
 
     // Local counter is small; widen for wire encode and state.
     const subscriptionId = this.getNextRequestId();
     const requestId = BigInt(subscriptionId);
-
-    // §10.2.14 TRACK_NAMESPACE_PREFIX — encoded as a namespace tuple (count |
-    // per-element length-prefixed UTF-8), then packed as the parameter value.
-    // Combine with any caller-supplied `parameters` map so both survive.
-    let mergedParameters = options?.parameters;
-    if (options?.namespacePrefixParam) {
-      const encoded = encodeTrackNamespaceBytes(options.namespacePrefixParam);
-      mergedParameters = new Map(mergedParameters ?? []);
-      mergedParameters.set(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX, encoded);
-    }
 
     // Draft-22 §9.18 has no SUBSCRIPTION_FILTER; filtering is by range filter parameters
     const subscribeTracksMessage: SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22 = this.isDraft22
@@ -2417,7 +2392,7 @@ export class MOQTSession {
         requestId,
         trackNamespacePrefix: namespacePrefix,
         forwardState: options?.forwardState ?? true,
-        parameters: mergedParameters,
+        parameters: options?.parameters,
       }
       : {
         type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
@@ -2427,7 +2402,7 @@ export class MOQTSession {
         filter: options?.filter ?? SubscriptionFilterDraft18.NEXT_GROUP_START,
         startLocation: options?.startLocation,
         endGroupDelta: options?.endGroupDelta,
-        parameters: mergedParameters,
+        parameters: options?.parameters,
       };
 
     const encoded = this.codec.encodeControlMessage(subscribeTracksMessage);
@@ -3402,7 +3377,7 @@ export class MOQTSession {
     fill?: FillParametersDraft22,
   ): Promise<void> {
     const parameters = new Map<number, Uint8Array>();
-    addDeliveryTimeoutParams(parameters, options);
+    addSubscribeTimeoutParams(parameters, options);
     const authBytes = options?.authToken ? encodeDraft18AuthBytes(options.authToken) : undefined;
     // §8.9: draft-22 carries Authorization Tokens in `authTokens`, which may repeat
     if (authBytes && !this.isDraft22) {
@@ -3878,7 +3853,7 @@ export class MOQTSession {
       throw new Error('Joining FETCH requires options.subscribeRequestId');
     }
     const parameters = new Map<number, Uint8Array>();
-    addDeliveryTimeoutParams(parameters, options);
+    addFetchTimeoutParams(parameters, options);
     if (options?.authToken) {
       parameters.set(
         RequestParameterDraft18.AUTHORIZATION_TOKEN,
@@ -7146,18 +7121,9 @@ export class MOQTSession {
   ): Promise<void> {
     const prefix = message.trackNamespacePrefix.join('/');
 
-    // §10.2.14 TRACK_NAMESPACE_PREFIX narrows the top-level prefix. When the
-    // parameter is present and parseable we require publications to match the
-    // narrower tuple; malformed parameters are ignored so we don't drop matches
-    // due to a decoder bug on the peer.
-    const paramPrefixBytes = message.parameters?.get(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX);
-    const paramPrefix = paramPrefixBytes ? decodeTrackNamespaceBytes(paramPrefixBytes) : undefined;
-    const paramPrefixStr = paramPrefix?.join('/');
-
     log.info('Received SUBSCRIBE_TRACKS', {
       requestId: message.requestId.toString(),
       prefix,
-      paramPrefix: paramPrefixStr,
       forwardState: message.forwardState,
       filter: 'filter' in message ? message.filter : undefined,
     });
@@ -7180,12 +7146,10 @@ export class MOQTSession {
     // future REQUEST_UPDATE on this requestId is §10.9.2 namespace-scoped.
     this.incomingRequestKinds.set(message.requestId, 'subscribe-tracks');
 
-    // Emit incoming-subscribe for each track we publish under this prefix,
-    // applying the §10.2.14 narrower prefix filter when supplied.
+    // Emit incoming-subscribe for each track we publish under this prefix.
     for (const [, pub] of this.publicationManager) {
       const pubNs = pub.namespace.join('/');
       if (!pubNs.startsWith(prefix)) continue;
-      if (paramPrefixStr && !pubNs.startsWith(paramPrefixStr)) continue;
       this.emit('incoming-subscribe', {
         requestId: message.requestId,
         namespace: pub.namespace,

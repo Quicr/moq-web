@@ -68,16 +68,6 @@ describe('draft-22 SUBSCRIBE_TRACKS (§9.18)', () => {
     expect(m.forwardState).toBe(false);
     expect(Array.from(m.parameters?.keys() ?? [])).toEqual([RequestParameterDraft22.INCLUDE_PROPERTIES]);
   });
-
-  it('refuses namespacePrefixParam, since TRACK_NAMESPACE_PREFIX is REQUEST_UPDATE only', async () => {
-    const chunks: Uint8Array[] = [];
-    const { session } = makeSession(chunks);
-
-    await expect(
-      session.subscribeTracks(['media'], undefined, { namespacePrefixParam: ['media', 'video'] }),
-    ).rejects.toThrow(/TRACK_NAMESPACE_PREFIX/);
-    expect(chunks).toHaveLength(0);
-  });
 });
 
 describe('draft-22 TRACK_STATUS (§9.13)', () => {

@@ -12,7 +12,6 @@
 import {
   AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
   AuthTokenAliasType,
-  BufferWriter,
   decodeDraft18AuthToken,
   Draft18CodecError,
   isIncompleteDecode,
@@ -56,15 +55,15 @@ export function narrowBigIntToNumber(value: bigint, field: string): number {
 }
 
 /**
- * Draft-18 §10.2 subscriber-side delivery timeouts on SUBSCRIBE/FETCH.
- * Each is an even-key MOQT varint; a value of 0 or undefined omits it.
+ * Subscriber-side timeouts a SUBSCRIBE may carry (d22 §9.20.2-9.20.6, d18
+ * §10.2.3-10.2.6). Each is an even-key MOQT varint; a value of 0 or
+ * undefined omits it.
  */
-export function addDeliveryTimeoutParams(
+export function addSubscribeTimeoutParams(
   parameters: Map<number, Uint8Array>,
   options?: {
     subgroupDeliveryTimeout?: number;
     objectDeliveryTimeout?: number;
-    fillTimeout?: number;
     rendezvousTimeout?: number;
   },
 ): void {
@@ -75,8 +74,19 @@ export function addDeliveryTimeoutParams(
   };
   set(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
   set(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
-  set(RequestParameterDraft18.FILL_TIMEOUT, options.fillTimeout);
   set(RequestParameterDraft18.RENDEZVOUS_TIMEOUT, options.rendezvousTimeout);
+}
+
+/**
+ * The one timeout a draft-18 FETCH may carry: FILL_TIMEOUT (§10.2.5). 0 is
+ * meaningful there ("only what is immediately available"), so it is sent.
+ */
+export function addFetchTimeoutParams(
+  parameters: Map<number, Uint8Array>,
+  options?: { fillTimeout?: number },
+): void {
+  if (options?.fillTimeout === undefined) return;
+  parameters.set(RequestParameterDraft18.FILL_TIMEOUT, MOQTVarInt.encode(BigInt(options.fillTimeout)));
 }
 
 /**
@@ -342,47 +352,6 @@ export function assertNotReservedNamespace(namespace: string[], action: string):
     `Draft-18 §3.2.1: refusing to ${action} under reserved namespace ` +
       `starting with '.': ${JSON.stringify(namespace)}`,
   );
-}
-
-/**
- * Draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX serializer. Encodes a namespace
- * tuple as `varint(count) [varint(len) utf8(field)]*`, matching what the wire
- * codec produces.
- */
-export function encodeTrackNamespaceBytes(namespace: string[]): Uint8Array {
-  const writer = new BufferWriter();
-  writer.writeVarInt(BigInt(namespace.length));
-  const encoder = new TextEncoder();
-  for (const field of namespace) {
-    const bytes = encoder.encode(field);
-    writer.writeVarInt(BigInt(bytes.length));
-    writer.writeBytes(bytes);
-  }
-  return writer.toUint8Array();
-}
-
-/**
- * Inverse of {@link encodeTrackNamespaceBytes}. Returns `undefined` for
- * malformed input rather than throwing — the caller (parameter parser) treats
- * a malformed prefix as best-effort ignored.
- */
-export function decodeTrackNamespaceBytes(bytes: Uint8Array): string[] | undefined {
-  try {
-    const [count, offset0] = MOQTVarInt.decode(bytes);
-    let offset = offset0;
-    const out: string[] = [];
-    const decoder = new TextDecoder();
-    for (let i = 0; i < Number(count); i++) {
-      const [len, next] = MOQTVarInt.decode(bytes.subarray(offset));
-      offset += next;
-      const l = Number(len);
-      out.push(decoder.decode(bytes.subarray(offset, offset + l)));
-      offset += l;
-    }
-    return out;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

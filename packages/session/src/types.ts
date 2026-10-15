@@ -125,18 +125,17 @@ export interface SubscribeOptions {
   /** Per-request authorization token */
   authToken?: RequestAuthToken;
   /**
-   * Draft-18 §10.2 subscriber-side delivery timeouts (ms).
+   * Draft-18/22 subscriber-side timeouts (ms) a SUBSCRIBE may carry.
    *
    * - subgroupDeliveryTimeout — max time to fully deliver a subgroup
    * - objectDeliveryTimeout   — max time to deliver a single object
-   * - fillTimeout             — max time to wait for a missing object
    * - rendezvousTimeout       — max time to wait before a new-subscriber cutover
    *
    * A value of 0 or `undefined` omits the parameter. Draft-16 ignores these.
+   * The wait for a fill is `fill.fillTimeout`; SUBSCRIBE has no FILL_TIMEOUT.
    */
   subgroupDeliveryTimeout?: number;
   objectDeliveryTimeout?: number;
-  fillTimeout?: number;
   rendezvousTimeout?: number;
   /**
    * Fill the subscription with past objects (draft-22 §3.4). Draft-22 sends
@@ -761,13 +760,11 @@ export interface FetchOptions {
   /** Draft-18 joining fetch: group offset (relative) or group id (absolute) */
   joiningStart?: bigint;
   /**
-   * Draft-18 §10.2 subscriber-side delivery timeouts (ms). See
-   * [[SubscribeOptions]] for semantics; ignored for draft-16.
+   * Draft-18/22 FILL_TIMEOUT (ms): how long a relay may wait for objects it
+   * does not have. 0 asks for only what is available now. Ignored for
+   * draft-16. A FETCH carries no delivery or rendezvous timeouts.
    */
-  subgroupDeliveryTimeout?: number;
-  objectDeliveryTimeout?: number;
   fillTimeout?: number;
-  rendezvousTimeout?: number;
   /** Per-request authorization token (draft-18 §10.2.2). */
   authToken?: RequestAuthToken;
   /** Draft-22 Range Filters (§3.3.2); see [[SubscribeOptions.rangeFilters]] */

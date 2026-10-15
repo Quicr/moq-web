@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 /**
- * Draft-18 §10.2.10 EXPIRES, §10.2.13 NEW_GROUP_REQUEST, and §10.2.14
- * TRACK_NAMESPACE_PREFIX at the session layer.
+ * Draft-18 §10.2.10 EXPIRES and §10.2.13 NEW_GROUP_REQUEST at the session
+ * layer.
  *
  * Complements the codec round-trips in `draft18-message-codec.test.ts` — these
  * tests confirm that:
@@ -14,8 +14,7 @@
  *   • Subscriber's `sendRequestUpdate({ newGroupRequest })` puts the parameter
  *     on the REQUEST_UPDATE wire.
  *   • Incoming REQUEST_UPDATE carrying NEW_GROUP_REQUEST emits a typed event.
- *   • `subscribeTracks({ namespacePrefixParam })` encodes the parameter into
- *     the SUBSCRIBE_TRACKS parameter map.
+ *   • `subscribeTracks` passes caller parameters into the SUBSCRIBE_TRACKS.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -315,43 +314,8 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
   });
 });
 
-describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX on SUBSCRIBE_TRACKS', () => {
-  it('encodes namespacePrefixParam as a namespace tuple in the parameter map', async () => {
-    const session = makeSession();
-
-    const chunks: Uint8Array[] = [];
-    (session as unknown as {
-      sendRequestAndWaitResponse: (bytes: Uint8Array, id: number) => Promise<ControlMessageDraft18>;
-    }).sendRequestAndWaitResponse = async (bytes) => {
-      chunks.push(bytes);
-      return { type: MessageTypeDraft18.REQUEST_OK, requestId: 0n } as ControlMessageDraft18;
-    };
-
-    await session.subscribeTracks(['media'], undefined, {
-      namespacePrefixParam: ['media', 'video', 'high'],
-    });
-
-    expect(chunks.length).toBeGreaterThan(0);
-    const [decoded] = Draft18MessageCodec.decode(chunks[0]);
-    const m = decoded as SubscribeTracksMessageDraft18;
-    const paramBytes = m.parameters?.get(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX);
-    expect(paramBytes).toBeDefined();
-
-    // Inline decode of the tuple: count | (len | utf-8)*
-    const [count, off0] = MOQTVarInt.decode(paramBytes!);
-    let offset = off0;
-    const tuple: string[] = [];
-    for (let i = 0; i < Number(count); i++) {
-      const [len, next] = MOQTVarInt.decode(paramBytes!.subarray(offset));
-      offset += next;
-      const l = Number(len);
-      tuple.push(new TextDecoder().decode(paramBytes!.subarray(offset, offset + l)));
-      offset += l;
-    }
-    expect(tuple).toEqual(['media', 'video', 'high']);
-  });
-
-  it('merges namespacePrefixParam with caller-supplied parameters', async () => {
+describe.skipIf(!IS_DRAFT_18)('draft-18 SUBSCRIBE_TRACKS parameters', () => {
+  it('carries caller-supplied parameters', async () => {
     const session = makeSession();
 
     const chunks: Uint8Array[] = [];
@@ -370,13 +334,11 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX on SUBS
     ]);
 
     await session.subscribeTracks(['media'], undefined, {
-      namespacePrefixParam: ['media', 'audio'],
       parameters: extra,
     });
 
     const [decoded] = Draft18MessageCodec.decode(chunks[0]);
     const m = decoded as SubscribeTracksMessageDraft18;
-    expect(m.parameters?.has(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX)).toBe(true);
     expect(m.parameters?.get(passthroughKey)).toEqual(new Uint8Array([0x03, 0x00, 0xde, 0xad]));
   });
 });

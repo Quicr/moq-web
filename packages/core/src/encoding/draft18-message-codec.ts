@@ -160,10 +160,7 @@ const PARAMETER_SCOPES: ReadonlyMap<MessageTypeDraft18, ReadonlySet<number>> = n
   ])],
   [MessageTypeDraft18.PUBLISH_NAMESPACE, new Set([P18.AUTHORIZATION_TOKEN])],
   [MessageTypeDraft18.SUBSCRIBE_NAMESPACE, new Set([P18.AUTHORIZATION_TOKEN])],
-  // TRACK_NAMESPACE_PREFIX is only defined for REQUEST_UPDATE (§10.2.14), but
-  // MOQTSession.subscribeTracks() still sends it here, so it stays accepted
-  // until the sender is fixed.
-  [MessageTypeDraft18.SUBSCRIBE_TRACKS, new Set([P18.AUTHORIZATION_TOKEN, P18.FORWARD, P18.TRACK_NAMESPACE_PREFIX])],
+  [MessageTypeDraft18.SUBSCRIBE_TRACKS, new Set([P18.AUTHORIZATION_TOKEN, P18.FORWARD])],
 ]);
 
 /** §10.2.8 / §10.2.12: uint8 parameters with a restricted range */
@@ -1615,8 +1612,13 @@ export class Draft18MessageCodec {
         decodeDraft18AuthToken(token);
         return token;
       }
+      case RequestParameterDraft18.TRACK_NAMESPACE_PREFIX: {
+        // §10.2.14: a Track Namespace, not a length-prefixed value
+        const writer = new Draft18BufferWriter();
+        encodeTrackNamespace(writer, decodeTrackNamespace(reader, MessageTypeDraft18.REQUEST_UPDATE));
+        return writer.toUint8Array();
+      }
       case RequestParameterDraft18.SUBSCRIPTION_FILTER:
-      case RequestParameterDraft18.TRACK_NAMESPACE_PREFIX:
       default: {
         const length = reader.readVarIntNumber();
         assertBound(length, MAX_STRING_LENGTH, 'parameter value length');

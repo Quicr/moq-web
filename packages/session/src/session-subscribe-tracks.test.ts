@@ -14,7 +14,6 @@ import {
   Draft18MessageCodec,
   MOQTransport,
   MessageTypeDraft18,
-  RequestParameterDraft18,
   SubscriptionFilterDraft18,
   type ControlMessageDraft18,
   type SubscribeTracksMessageDraft18,
@@ -104,27 +103,5 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.19 subscribeTracks() send path', ()
     expect(m.filter).toBe(SubscriptionFilterDraft18.NEXT_GROUP_START);
     expect(m.startLocation).toBeUndefined();
     expect(m.endGroupDelta).toBeUndefined();
-  });
-
-  it('carries pass-through raw parameters (e.g. TRACK_NAMESPACE_PREFIX)', async () => {
-    const session = makeSession();
-    const chunks: Uint8Array[] = [];
-    (session as unknown as {
-      sendRequestAndWaitResponse: (bytes: Uint8Array, id: number) => Promise<ControlMessageDraft18>;
-    }).sendRequestAndWaitResponse = async (bytes) => {
-      chunks.push(bytes);
-      return { type: MessageTypeDraft18.REQUEST_OK, requestId: 0n } as ControlMessageDraft18;
-    };
-
-    const extra = new Map<number, Uint8Array>([
-      [RequestParameterDraft18.TRACK_NAMESPACE_PREFIX, new Uint8Array([0x01, 0x02, 0x03])],
-    ]);
-    await session.subscribeTracks(['ns'], undefined, { parameters: extra });
-
-    const [decoded] = Draft18MessageCodec.decode(chunks[0]);
-    const m = decoded as SubscribeTracksMessageDraft18;
-    expect(m.parameters?.get(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX)).toEqual(
-      new Uint8Array([0x01, 0x02, 0x03]),
-    );
   });
 });

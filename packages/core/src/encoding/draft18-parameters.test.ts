@@ -9,11 +9,12 @@
 import { describe, it, expect } from 'vitest';
 import { Draft18MessageCodec } from './draft18-message-codec';
 import { encodeFramed, encodeString, encodeTrackNamespace } from './codec-helpers';
-import type { Draft18BufferWriter } from './protocol-codec';
+import { Draft18BufferWriter } from './protocol-codec';
 import {
   MessageTypeDraft18,
   RequestParameterDraft18,
   SubscriptionFilterDraft18,
+  type RequestUpdateMessageDraft18,
   type SubscribeMessageDraft18,
 } from '../messages/types';
 
@@ -64,6 +65,34 @@ describe('draft-18 §10.2 parameter validation (M-08)', () => {
     const wire = subscribeWire([[P.AUTHORIZATION_TOKEN, [0x03, 0x03, 0x00, 0xaa]], [0, [0x03, 0x03, 0x00, 0xbb]]]);
 
     expect(() => Draft18MessageCodec.decode(wire)).not.toThrow();
+  });
+
+  it('rejects TRACK_NAMESPACE_PREFIX in SUBSCRIBE_TRACKS (REQUEST_UPDATE only, §10.2.14)', () => {
+    const wire = encodeFramed(MessageTypeDraft18.SUBSCRIBE_TRACKS, (w) => {
+      w.writeVarInt(1n);
+      encodeTrackNamespace(w, ['a']);
+      w.writeVarInt(1);
+      w.writeVarInt(P.TRACK_NAMESPACE_PREFIX);
+      encodeTrackNamespace(w, ['a', 'b']);
+    });
+
+    expect(() => Draft18MessageCodec.decode(wire)).toThrow(/TRACK_NAMESPACE_PREFIX not allowed in SUBSCRIBE_TRACKS/);
+  });
+
+  it('reads TRACK_NAMESPACE_PREFIX in REQUEST_UPDATE as a Track Namespace (§10.2.14)', () => {
+    const wire = encodeFramed(MessageTypeDraft18.REQUEST_UPDATE, (w) => {
+      w.writeVarInt(3n);
+      w.writeVarInt(1);
+      w.writeVarInt(P.TRACK_NAMESPACE_PREFIX);
+      encodeTrackNamespace(w, ['a', 'b']);
+    });
+
+    const [decoded] = Draft18MessageCodec.decode(wire);
+
+    const prefix = (decoded as RequestUpdateMessageDraft18).parameters?.get(P.TRACK_NAMESPACE_PREFIX);
+    const expected = new Draft18BufferWriter();
+    encodeTrackNamespace(expected, ['a', 'b']);
+    expect(prefix).toEqual(expected.toUint8Array());
   });
 
   it('rejects FORWARD outside 0..1', () => {
