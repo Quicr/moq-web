@@ -12,6 +12,7 @@ import {
   Logger,
   ObjectCodec,
   ObjectStatus,
+  ObjectStatusDraft18,
   DEFAULT_DRAFT,
   versionEnumFor,
   getProtocolCodecForVersion,
@@ -373,13 +374,12 @@ export class ObjectRouter {
 
     const decodeStart = nowMs();
     try {
-      const object = this.codec.decodeDatagramObject(data);
+      const { header, payload, status, endOfGroup } = this.decodeDatagram(data);
       this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
         codec: this.codecLabel,
         messageType: 'object_datagram',
       });
       this.metrics.counter('moq.object.datagram.in', 1, { codec: this.codecLabel });
-      const { header, payload } = object;
 
       log.trace('Decoded datagram object', {
         trackAlias: header.trackAlias,
@@ -391,14 +391,26 @@ export class ObjectRouter {
       // Route to subscription
       const subscription = this.subscriptionManager.getByAlias(header.trackAlias);
 
-      if (subscription) {
-        const timestamp = performance.now() * 1000; // microseconds
-        this.deliverObject(subscription, payload, header.groupId, header.objectId, timestamp);
-      } else {
+      if (!subscription) {
         log.warn('Received datagram for unknown track alias', {
           receivedTrackAlias: header.trackAlias.toString(),
           knownAliases: this.subscriptionManager.getKnownAliases(),
         });
+        return;
+      }
+
+      // A status object is a marker, not payload (d22 §11.1.1)
+      if (this.isDraft18 && status !== ObjectStatusDraft18.NORMAL) {
+        this.handleStatusObject(subscription, status, header.groupId, header.objectId);
+        return;
+      }
+
+      const timestamp = performance.now() * 1000; // microseconds
+      this.deliverObject(subscription, payload, header.groupId, header.objectId, timestamp);
+
+      // END_OF_GROUP bit: no object after this one in the group (d22 §11.2.1)
+      if (endOfGroup) {
+        subscription.onEndOfGroup?.(header.groupId);
       }
     } catch (err) {
       this.metrics.counter('moq.codec.decode.errors', 1, {
@@ -407,6 +419,53 @@ export class ObjectRouter {
       });
       log.trace('Error parsing datagram', { error: (err as Error).message });
     }
+  }
+
+  /**
+   * Decode a datagram. Draft-18+ reads it directly so Object Status and
+   * END_OF_GROUP survive; the legacy header has nowhere to carry them.
+   */
+  private decodeDatagram(data: Uint8Array): {
+    header: { trackAlias: number | bigint; groupId: number; objectId: number };
+    payload: Uint8Array;
+    status: number;
+    endOfGroup: boolean;
+  } {
+    if (!this.isDraft18) {
+      const { header, payload } = this.codec.decodeDatagramObject(data);
+      return { header, payload, status: header.objectStatus, endOfGroup: false };
+    }
+
+    const [datagram] = Draft18StreamCodec.decodeObjectDatagram(data);
+    return {
+      header: {
+        trackAlias: datagram.trackAlias,
+        groupId: narrowBigIntToNumber(datagram.groupId, 'Group ID'),
+        objectId: narrowBigIntToNumber(datagram.objectId ?? 0n, 'Object ID'),
+      },
+      payload: datagram.payload?.slice() ?? new Uint8Array(0),
+      status: datagram.objectStatus ?? ObjectStatusDraft18.NORMAL,
+      endOfGroup: datagram.endOfGroup === true,
+    };
+  }
+
+  /**
+   * Apply a non-Normal Object Status (d22 §11.1.1). End of Group closes the
+   * group; End of Track carries no payload and has no consumer yet.
+   */
+  private handleStatusObject(
+    subscription: InternalSubscription | undefined,
+    status: number,
+    groupId: number,
+    objectId: number,
+  ): void {
+    if (status === ObjectStatusDraft18.END_OF_GROUP) {
+      log.info('Received END_OF_GROUP', { groupId, objectId });
+      subscription?.onEndOfGroup?.(groupId);
+      return;
+    }
+
+    log.info('Received object status', { status, groupId, objectId });
   }
 
   /**
@@ -637,6 +696,13 @@ export class ObjectRouter {
                     namespace: s.namespace.join('/'),
                   })),
                 });
+              }
+
+              // Draft-18+: status objects are markers, never payload (d22 §11.1.1)
+              if (this.isDraft18 && (status as number) !== ObjectStatusDraft18.NORMAL) {
+                this.handleStatusObject(subscription, status, subgroupHeader.groupId, objectId);
+                bufferOffset += bytesConsumed;
+                continue;
               }
 
               // Handle END_OF_GROUP signal
