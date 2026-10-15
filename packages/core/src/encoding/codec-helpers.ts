@@ -23,6 +23,8 @@ const TD = new TextDecoder();
 // =============================================================================
 export const MAX_PARAMETER_COUNT = 64;
 export const MAX_STRING_LENGTH = 4096;
+/** §9.2: the New Session URI of a GOAWAY is at most 8,192 bytes */
+export const MAX_GOAWAY_URI_LENGTH = 8192;
 export const MAX_NAMESPACE_TUPLE_COUNT = 32;
 export const MAX_TRACK_NAME_LENGTH = 4096;
 export const MAX_AUTH_TOKEN_LENGTH = 16384;
@@ -161,9 +163,13 @@ export function encodeString(writer: Draft18BufferWriter, str: string): void {
   writer.writeBytes(bytes);
 }
 
-export function decodeString(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): string {
+export function decodeString(
+  reader: Draft18BufferReader,
+  messageType?: MessageTypeDraft18,
+  maxLength = MAX_STRING_LENGTH,
+): string {
   const length = reader.readVarIntNumber();
-  assertBound(length, MAX_STRING_LENGTH, 'string length', messageType);
+  assertBound(length, maxLength, 'string length', messageType);
   const bytes = reader.readBytes(length);
   return TD.decode(bytes);
 }

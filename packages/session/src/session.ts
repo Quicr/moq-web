@@ -623,6 +623,10 @@ export class MOQTSession {
   private goAwaySent = false;
   /** close() has begun, so the transport ending beneath it is expected */
   private closeStarted = false;
+  /** The peer sent its GOAWAY on the control stream (one is allowed, draft-22 §9.2) */
+  private goAwayReceived = false;
+  /** Request streams that already carried the peer's GOAWAY (one each) */
+  private goAwayStreams = new Set<bigint>();
   /** Namespace subscriptions (for subscribe namespace flow) */
   private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
   /** Request ID to namespace subscription mapping */
@@ -1461,6 +1465,7 @@ export class MOQTSession {
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
     this.outgoingRequests.delete(requestId);
+    this.goAwayStreams.delete(requestId);
     this.failPendingUpdates(requestId);
     await stream.close();
   }
@@ -1488,6 +1493,7 @@ export class MOQTSession {
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
     this.outgoingRequests.delete(requestId);
+    this.goAwayStreams.delete(requestId);
     this.failPendingUpdates(requestId);
     await stream.abort(StreamResetErrorCodeDraft18.CANCELLED);
   }
@@ -1639,6 +1645,7 @@ export class MOQTSession {
     }
     this.failSubscription(requestId, reason);
     this.incomingRequestKinds.delete(requestId);
+    this.goAwayStreams.delete(requestId);
     this.endNamespaceSubscription(requestId);
   }
 
@@ -2297,6 +2304,8 @@ export class MOQTSession {
     this.peerSetupSeen = false;
     this.seenPeerRequestIds.clear();
     this.goAwaySent = false;
+    this.goAwayReceived = false;
+    this.goAwayStreams.clear();
     this.closeStarted = false;
     this.setupBuffer = new Uint8Array(0);
     this.setupBufferOffset = 0;
@@ -7614,6 +7623,10 @@ export class MOQTSession {
       streamRequestId: streamRequestId?.toString(),
     });
 
+    if (!this.acceptGoAway(message, streamRequestId)) {
+      return;
+    }
+
     if (uri && streamRequestId === undefined) {
       this._pendingMigrationUri = uri;
     }
@@ -7643,6 +7656,34 @@ export class MOQTSession {
         }
       });
     }
+  }
+
+  /**
+   * One GOAWAY per control stream and per request stream; a second closes the
+   * session (draft-22 §9.2). In draft-18 a control-stream GOAWAY names one of
+   * our Request IDs, so it must have our parity (even) or the session closes
+   * with INVALID_REQUEST_ID (§10.4). Returns whether the GOAWAY is acceptable.
+   */
+  private acceptGoAway(message: GoAwayMessageDraft18, streamRequestId?: bigint): boolean {
+    const isRepeat = streamRequestId === undefined
+      ? this.goAwayReceived
+      : this.goAwayStreams.has(streamRequestId);
+    if (streamRequestId === undefined) {
+      this.goAwayReceived = true;
+    } else {
+      this.goAwayStreams.add(streamRequestId);
+    }
+
+    const wrongParity = message.requestId !== undefined && message.requestId % 2n !== 0n;
+    if (!isRepeat && !wrongParity) {
+      return true;
+    }
+
+    const code = isRepeat ? SessionErrorCodeDraft18.PROTOCOL_VIOLATION : SessionErrorCodeDraft18.INVALID_REQUEST_ID;
+    const reason = isRepeat ? 'More than one GOAWAY' : `GOAWAY Request ID ${message.requestId} has the wrong parity`;
+    void this.close({ code, reason }).catch(() => {});
+
+    return false;
   }
 
   /**

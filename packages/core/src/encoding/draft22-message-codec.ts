@@ -215,6 +215,10 @@ export class Draft22MessageCodec {
         return decodeFramed(buffer, offset, (reader) =>
           Draft22MessageCodec.decodeSubscribeNamespace(reader),
         );
+      case MessageTypeDraft18.GOAWAY:
+        return decodeFramed(buffer, offset, (reader) =>
+          Draft18MessageCodec.decodeGoAway(reader, false) as unknown as ControlMessageDraft22,
+        );
       default: {
         // Delegate to draft-18 for all shared messages
         const [msg, bytesRead] = Draft18MessageCodec.decode(buffer, offset, DRAFT22_NORMALIZERS);

@@ -137,6 +137,55 @@ describe.each(['draft-18', 'draft-22'] as const)('control stream after SETUP (%s
   });
 });
 
+describe.each(['draft-18', 'draft-22'] as const)('received GOAWAY (%s)', (draft) => {
+  const incoming = (session: unknown) => session as unknown as {
+    handleIncomingGoAwayDraft18: (m: unknown, streamRequestId?: bigint) => void;
+  };
+  const goAway = { type: MessageTypeDraft18.GOAWAY, newSessionUri: GOAWAY_URI, timeout: GOAWAY_TIMEOUT_MS };
+  const protocolViolation = expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION });
+
+  it('closes the session on a second GOAWAY on the control stream', () => {
+    const { session, close, goaways } = makeSession(draft);
+
+    incoming(session).handleIncomingGoAwayDraft18(goAway);
+    expect(close).not.toHaveBeenCalled();
+    incoming(session).handleIncomingGoAwayDraft18(goAway);
+
+    expect(close).toHaveBeenCalledWith(protocolViolation);
+    expect(goaways).toHaveLength(1);
+  });
+
+  it('closes the session on a second GOAWAY on one request stream, but allows one per stream', () => {
+    const { session, close } = makeSession(draft);
+
+    incoming(session).handleIncomingGoAwayDraft18(goAway, 0n);
+    incoming(session).handleIncomingGoAwayDraft18(goAway, 2n);
+    expect(close).not.toHaveBeenCalled();
+    incoming(session).handleIncomingGoAwayDraft18(goAway, 0n);
+
+    expect(close).toHaveBeenCalledWith(protocolViolation);
+  });
+
+  it('closes the session with INVALID_REQUEST_ID on a Request ID of the wrong parity (d18 §10.4)', () => {
+    const { session, close } = makeSession(draft);
+
+    incoming(session).handleIncomingGoAwayDraft18({ ...goAway, requestId: 3n });
+
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.INVALID_REQUEST_ID }));
+  });
+
+  it('accepts a New Session URI of 5,000 bytes', async () => {
+    const { internals, session, goaways } = makeSession(draft);
+    const uri = 'https://relay.example/' + 'a'.repeat(5000);
+    internals.handleSetupMessage(internals.codec.encodeSetupStream({ type: MessageTypeDraft18.CLIENT_SETUP }));
+
+    internals.handleSetupMessage(internals.codec.encodeControlMessage({ ...goAway, newSessionUri: uri }));
+
+    expect(goaways[0].newSessionUri).toBe(uri);
+    expect(session.pendingMigrationUri).toBe(uri);
+  });
+});
+
 describe.each(['draft-18', 'draft-22'] as const)('peer control stream end (%s)', (draft) => {
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 

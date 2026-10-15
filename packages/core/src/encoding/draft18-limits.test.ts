@@ -209,3 +209,33 @@ describe('Reason Phrase limit (§8.5, M-07)', () => {
     expect(new TextEncoder().encode(reason).length).toBeLessThanOrEqual(MAX_REASON_PHRASE);
   });
 });
+
+describe('GOAWAY (§9.2)', () => {
+  const MAX_GOAWAY_URI = 8192;
+  const goAway = (uri: string, requestId?: bigint) => Draft18MessageCodec.encode({
+    type: MessageTypeDraft18.GOAWAY,
+    newSessionUri: uri,
+    timeout: 0n,
+    requestId,
+  });
+
+  it('accepts a New Session URI up to 8,192 bytes', () => {
+    const uri = 'https://relay.example/' + 'a'.repeat(5000);
+
+    expect(Draft18MessageCodec.decode(goAway(uri))[0]).toMatchObject({ newSessionUri: uri });
+    expect(() => Draft18MessageCodec.decode(goAway('h'.repeat(MAX_GOAWAY_URI)))).not.toThrow();
+  });
+
+  it('rejects a longer New Session URI as a violation', () => {
+    expect(() => Draft18MessageCodec.decode(goAway('h'.repeat(MAX_GOAWAY_URI + 1)))).toThrow(Draft18CodecError);
+  });
+
+  it('keeps the draft-18 control-stream Request ID', () => {
+    expect(Draft18MessageCodec.decode(goAway('', 4n))[0]).toMatchObject({ requestId: 4n });
+  });
+
+  it('rejects a Request ID in a draft-22 GOAWAY, which dropped the field', () => {
+    expect(() => Draft22MessageCodec.decode(goAway('', 4n))).toThrow(Draft18CodecError);
+    expect(Draft22MessageCodec.decode(goAway(''))[0]).toMatchObject({ timeout: 0n });
+  });
+});

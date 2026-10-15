@@ -39,6 +39,7 @@ import {
   decodeFramed,
   peekMessageType,
   MAX_PARAMETER_COUNT,
+  MAX_GOAWAY_URI_LENGTH,
   MAX_STRING_LENGTH,
   MAX_AUTH_TOKEN_LENGTH,
 } from './codec-helpers.js';
@@ -1146,11 +1147,12 @@ export class Draft18MessageCodec {
     }
   }
 
-  private static decodeGoAway(reader: Draft18BufferReader): GoAwayMessageDraft18 {
+  /** `requestId` is draft-18 only: draft-22 dropped the field (§9.2) */
+  static decodeGoAway(reader: Draft18BufferReader, hasRequestId = true): GoAwayMessageDraft18 {
     // Draft-18 §10.4: New Session URI Length | New Session URI | Timeout (vi) | [Request ID (vi)]
-    const newSessionUri = decodeString(reader);
+    const newSessionUri = decodeString(reader, MessageTypeDraft18.GOAWAY, MAX_GOAWAY_URI_LENGTH);
     const timeout = reader.readVarInt();
-    const requestId = reader.hasMore ? reader.readVarInt() : undefined;
+    const requestId = hasRequestId && reader.hasMore ? reader.readVarInt() : undefined;
 
     return {
       type: MessageTypeDraft18.GOAWAY,
