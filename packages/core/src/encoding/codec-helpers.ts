@@ -9,7 +9,7 @@
  * track namespace tuples, strings, framing, and bounds checking).
  */
 
-import { MOQTVarInt } from './moqt-varint.js';
+import { MOQTVarInt, MOQT_VARINT_MAX } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
 import { Draft18CodecError } from './draft18-message-codec.js';
 import type { AuthorizationToken, MessageTypeDraft18, TrackNamespace } from '../messages/types.js';
@@ -26,6 +26,8 @@ export const MAX_STRING_LENGTH = 4096;
 export const MAX_NAMESPACE_TUPLE_COUNT = 32;
 export const MAX_TRACK_NAME_LENGTH = 4096;
 export const MAX_AUTH_TOKEN_LENGTH = 16384;
+/** §8.3: "The maximum length of a value is 2^16-1 bytes." */
+export const MAX_KVP_VALUE_LENGTH = 0xFFFF;
 
 /**
  * Assert a decoded numeric value is within safety bounds.
@@ -44,6 +46,51 @@ export function assertBound(
       'bounds-exceeded',
     );
   }
+}
+
+// =============================================================================
+// Key-Value-Pair Codepoints
+// =============================================================================
+
+/**
+ * Largest KVP key kept as a number. Grease codepoints (0x7f * N + 0x9D, §13)
+ * mostly lie above it; they are unknown by definition and skipped.
+ */
+export const MAX_SAFE_KEY = BigInt(Number.MAX_SAFE_INTEGER);
+
+/** Read a delta-encoded KVP key as a bigint so grease codepoints survive. */
+export function readKvpKey(reader: Draft18BufferReader, previousKey: bigint): bigint {
+  const key = previousKey + reader.readVarInt();
+  if (key > MOQT_VARINT_MAX) {
+    throw new Draft18CodecError(`KVP key ${key} exceeds 2^64-1`);
+  }
+
+  return key;
+}
+
+/** Read a length-prefixed KVP value length, bounded by §8.3. */
+export function readKvpLength(reader: Draft18BufferReader, what: string): number {
+  const length = reader.readVarIntNumber();
+  assertBound(length, MAX_KVP_VALUE_LENGTH, what);
+
+  return length;
+}
+
+/** Skip the value of an unrepresentable (grease) key: even = vi64, odd = length-prefixed. */
+export function skipKvpValue(reader: Draft18BufferReader, key: bigint): void {
+  if (key % 2n === 0n) {
+    reader.readVarInt();
+    return;
+  }
+
+  reader.readBytes(readKvpLength(reader, 'KVP value length'));
+}
+
+/** Read an integer value, saturating at MAX_SAFE_INTEGER (limits above 2^53 are effectively unbounded). */
+export function readVarIntSaturating(reader: Draft18BufferReader): number {
+  const value = reader.readVarInt();
+
+  return value > MAX_SAFE_KEY ? Number.MAX_SAFE_INTEGER : Number(value);
 }
 
 // =============================================================================
@@ -122,20 +169,23 @@ export function encodeKeyValuePairs(writer: Draft18BufferWriter, pairs: Map<numb
 /** Decode delta-keyed KVPs until the reader is exhausted. */
 export function decodeKeyValuePairsToEnd(reader: Draft18BufferReader): Map<number, Uint8Array> {
   const pairs = new Map<number, Uint8Array>();
-  let previousKey = 0;
+  let previousKey = 0n;
 
   while (reader.hasMore) {
-    const deltaKey = reader.readVarIntNumber();
-    const key = previousKey + deltaKey;
-    previousKey = key;
+    const bigKey = readKvpKey(reader, previousKey);
+    previousKey = bigKey;
 
+    if (bigKey > MAX_SAFE_KEY) {
+      skipKvpValue(reader, bigKey);
+      continue;
+    }
+
+    const key = Number(bigKey);
     if (key % 2 === 0) {
       const value = reader.readVarInt();
       pairs.set(key, MOQTVarInt.encode(value));
     } else {
-      const length = reader.readVarIntNumber();
-      assertBound(length, MAX_STRING_LENGTH, 'KVP value length');
-      pairs.set(key, reader.readBytes(length));
+      pairs.set(key, reader.readBytes(readKvpLength(reader, 'KVP value length')));
     }
   }
 

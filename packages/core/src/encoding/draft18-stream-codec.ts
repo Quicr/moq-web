@@ -14,6 +14,7 @@
 import { Logger } from '../utils/logger.js';
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
+import { MAX_SAFE_KEY, readKvpKey, readKvpLength, skipKvpValue } from './codec-helpers.js';
 import {
   StreamTypeDraft18,
   FetchSubgroupMode,
@@ -101,8 +102,7 @@ export class Draft18StreamCodecError extends Error {
 // blocks (properties, KVPs). None of these should legitimately exceed a few KiB
 // on the wire. Any decoded length beyond MAX_PROPERTIES_LENGTH is treated as a
 // malicious peer and rejected before we allocate a buffer or copy bytes.
-export const MAX_PROPERTIES_LENGTH = 4096;
-export const MAX_PROPERTY_VALUE_LENGTH = 4096;
+export const MAX_PROPERTIES_LENGTH = 1 << 20;
 
 function assertStreamBound(actual: number, limit: number, what: string): void {
   // Reject NaN/negatives from a corrupt varint decode as well as overflows.
@@ -650,22 +650,26 @@ export class Draft18StreamCodec {
 
   private static decodeProperties(reader: Draft18BufferReader, endOffset: number): Map<number, Uint8Array> {
     const props = new Map<number, Uint8Array>();
-    let previousKey = 0;
+    let previousKey = 0n;
 
     while (reader.offset < endOffset) {
-      const deltaKey = reader.readVarIntNumber();
-      const key = previousKey + deltaKey;
-      previousKey = key;
+      const bigKey = readKvpKey(reader, previousKey);
+      previousKey = bigKey;
 
+      // §13: grease codepoints above 2^53 are unknown properties; skip them.
+      if (bigKey > MAX_SAFE_KEY) {
+        skipKvpValue(reader, bigKey);
+        continue;
+      }
+
+      const key = Number(bigKey);
       if (key % 2 === 0) {
         // Even key: value is a single varint
         const value = reader.readVarInt();
         props.set(key, MOQTVarInt.encode(value));
       } else {
         // Odd key: length + bytes
-        const length = reader.readVarIntNumber();
-        assertStreamBound(length, MAX_PROPERTY_VALUE_LENGTH, 'property value length');
-        props.set(key, reader.readBytes(length));
+        props.set(key, reader.readBytes(readKvpLength(reader, 'property value length')));
       }
     }
 

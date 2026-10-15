@@ -24,6 +24,11 @@ import {
   decodeTrackName,
   encodeKeyValuePairs,
   decodeKeyValuePairsToEnd,
+  MAX_SAFE_KEY,
+  readKvpKey,
+  readKvpLength,
+  readVarIntSaturating,
+  skipKvpValue,
   encodeFramed,
   decodeFramed,
   MAX_PARAMETER_COUNT,
@@ -418,13 +423,19 @@ export class Draft18MessageCodec {
     // extensions (e.g. custom auth schemes, feature flags). Even keys carry
     // a varint value; odd keys carry length-prefixed bytes.
     let extensions: Map<number, SetupExtensionValue> | undefined;
-    let previousKey = 0;
+    let previousKey = 0n;
 
     while (reader.offset < endOffset) {
-      const deltaKey = reader.readVarIntNumber();
-      const key = previousKey + deltaKey;
-      previousKey = key;
+      const bigKey = readKvpKey(reader, previousKey);
+      previousKey = bigKey;
 
+      // §13: grease codepoints above 2^53 are unknown options; skip them.
+      if (bigKey > MAX_SAFE_KEY) {
+        skipKvpValue(reader, bigKey);
+        continue;
+      }
+
+      const key = Number(bigKey);
       switch (key) {
         case SetupOptionDraft18.PATH: {
           const length = reader.readVarIntNumber();
@@ -433,7 +444,7 @@ export class Draft18MessageCodec {
           break;
         }
         case SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE:
-          maxAuthTokenCacheSize = reader.readVarIntNumber();
+          maxAuthTokenCacheSize = readVarIntSaturating(reader);
           break;
         case SetupOptionDraft18.AUTHORIZATION_TOKEN: {
           const length = reader.readVarIntNumber();
@@ -450,18 +461,17 @@ export class Draft18MessageCodec {
           break;
         }
         case SetupOptionDraft18.MOQT_IMPLEMENTATION: {
-          const length = reader.readVarIntNumber();
-          assertBound(length, MAX_STRING_LENGTH, 'SETUP MOQT_IMPLEMENTATION length', MessageTypeDraft18.SETUP);
+          const length = readKvpLength(reader, 'SETUP MOQT_IMPLEMENTATION length');
           moqtImplementation = TD.decode(reader.readBytes(length));
           break;
         }
         case 0x06:
           // MAX_FILTER_RANGES (draft-22 §9.1.6)
-          maxFilterRanges = reader.readVarIntNumber();
+          maxFilterRanges = readVarIntSaturating(reader);
           break;
         case 0x08:
           // MAX_REQUEST_UPDATES (draft-22 §9.1.7)
-          maxRequestUpdates = reader.readVarIntNumber();
+          maxRequestUpdates = readVarIntSaturating(reader);
           break;
         default:
           // Unknown option: capture it so the caller can inspect §3.2
@@ -471,8 +481,7 @@ export class Draft18MessageCodec {
           if (key % 2 === 0) {
             extensions.set(key, { varint: reader.readVarInt() });
           } else {
-            const length = reader.readVarIntNumber();
-            assertBound(length, MAX_STRING_LENGTH, 'SETUP extension length', MessageTypeDraft18.SETUP);
+            const length = readKvpLength(reader, 'SETUP extension length');
             const bytes = reader.readBytes(length);
             // Copy so callers can hold on to the slice beyond the decode
             // scratch buffer's lifetime.
@@ -776,7 +785,7 @@ export class Draft18MessageCodec {
     // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
     // §14 grease: an unknown error code MUST be treated as INTERNAL_ERROR for
     // this registry. Normalize immediately so callers see stable enum values.
-    const rawErrorCode = reader.readVarIntNumber();
+    const rawErrorCode = readVarIntSaturating(reader);
     const errorCode = normalizers.requestError(rawErrorCode);
     const retryInterval = reader.readVarInt();
     const reasonPhrase = decodeString(reader);
