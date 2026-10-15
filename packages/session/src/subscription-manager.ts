@@ -33,6 +33,8 @@ export interface InternalSubscription extends SubscriptionInfo {
   objectDeliveryTimeoutMs?: number;
   /** Group order requested at subscribe time; fill streams default to it (draft-22 §3.4) */
   groupOrder?: GroupOrder;
+  /** Ranges held per Range Filter, for the peer's MAX_FILTER_RANGES (draft-22 §9.1.6) */
+  rangeFilterCounts?: Map<string, number>;
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   type ControlMessageDraft18,
   type FillParametersDraft22,
   type LocationFilterDraft22,
+  type RangeFilterDraft22,
   type IProtocolCodec,
   type StreamResetErrorCodeDraft18,
 } from '@moq-web/core';
@@ -236,8 +237,43 @@ export function mapFillParameters(fill: FillOptions): FillParametersDraft22 {
   if (fill.groupOrder !== undefined) {
     parameters.groupOrder = fill.groupOrder;
   }
+  if (fill.rangeFilters?.length) {
+    parameters.rangeFilters = fill.rangeFilters;
+  }
 
   return parameters;
+}
+
+/** Identity of a Range Filter within a request (§3.3.2): type + SetID + Property Type */
+function rangeFilterKey(filter: RangeFilterDraft22): string {
+  return `${filter.type}:${filter.setId}:${filter.propertyType}`;
+}
+
+/**
+ * Ranges held per filter after a REQUEST_UPDATE (§3.3.2, §8.6): a filter
+ * replaces the one with its type, SetID and Property Type; Length 0 (no SetID)
+ * removes every filter of its type; filters not named stay.
+ */
+export function applyRangeFilters(
+  held: ReadonlyMap<string, number>,
+  update: readonly RangeFilterDraft22[],
+): Map<string, number> {
+  const next = new Map(held);
+
+  for (const filter of update) {
+    if (filter.setId !== undefined) {
+      next.set(rangeFilterKey(filter), filter.ranges.length);
+      continue;
+    }
+
+    for (const key of next.keys()) {
+      if (key.startsWith(`${filter.type}:`)) {
+        next.delete(key);
+      }
+    }
+  }
+
+  return next;
 }
 
 /**

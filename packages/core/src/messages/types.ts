@@ -2227,6 +2227,41 @@ export interface LocationFilterDraft22 {
 }
 
 /**
+ * Draft-22 Range Filter parameter types (§3.3.2): 0x25-0x29
+ */
+export type RangeFilterTypeDraft22 =
+  | RequestParameterDraft22.SUBGROUP_FILTER
+  | RequestParameterDraft22.OBJECTID_FILTER
+  | RequestParameterDraft22.PRIORITY_FILTER
+  | RequestParameterDraft22.OBJECT_PROPERTY_FILTER
+  | RequestParameterDraft22.TRACK_PROPERTY_FILTER;
+
+/**
+ * One inclusive Range of a Range Filter (§8.6). Values are absolute; the wire
+ * delta encoding is the codec's business. Only the last Range may omit `end`,
+ * which makes it open-ended.
+ */
+export interface RangeDraft22 {
+  start: bigint;
+  end?: bigint;
+}
+
+/**
+ * Draft-22 Range Filter parameter value (§3.3.2, §9.20.10-9.20.14).
+ *
+ * No `setId` and no `ranges` is the Length 0 form that removes the filter in
+ * REQUEST_UPDATE (§8.6). `propertyType` is only for the Object and Track
+ * Property filters.
+ */
+export interface RangeFilterDraft22 {
+  type: RangeFilterTypeDraft22;
+  /** Filters with the same SetID are AND'd, distinct SetIDs are OR'd (uint8) */
+  setId?: number;
+  propertyType?: bigint;
+  ranges: RangeDraft22[];
+}
+
+/**
  * Draft-22 FILL_PARAMETERS value (§9.20.15): the parameters that differ for
  * the fill fetch stream. Absent fields take the subscription's value.
  */
@@ -2236,8 +2271,7 @@ export interface FillParametersDraft22 {
   fillTimeoutMs?: bigint;
   subscriberPriority?: number;
   groupOrder?: GroupOrder;
-  /** Range filters (0x25-0x28) as raw value bytes, keyed by parameter type */
-  rangeFilters?: Map<number, Uint8Array>;
+  rangeFilters?: RangeFilterDraft22[];
 }
 
 /**
@@ -2256,6 +2290,7 @@ export interface SubscribeMessageDraft22 {
   forwardState: boolean;
   locationFilter?: LocationFilterDraft22;
   fill?: FillParametersDraft22;
+  rangeFilters?: RangeFilterDraft22[];
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -2286,6 +2321,7 @@ export interface RequestUpdateMessageDraft22 {
   forwardState?: boolean;
   locationFilter?: LocationFilterDraft22;
   fill?: FillParametersDraft22;
+  rangeFilters?: RangeFilterDraft22[];
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -2302,14 +2338,14 @@ export interface TrackStatusMessageDraft22 {
 }
 
 /**
- * Draft-22 SUBSCRIBE_TRACKS (§9.18). Omitted FORWARD means 1. Filters, if any,
- * are range filters in `parameters`.
+ * Draft-22 SUBSCRIBE_TRACKS (§9.18). Omitted FORWARD means 1.
  */
 export interface SubscribeTracksMessageDraft22 {
   type: MessageTypeDraft22.SUBSCRIBE_TRACKS;
   requestId: bigint;
   trackNamespacePrefix: TrackNamespace;
   forwardState: boolean;
+  rangeFilters?: RangeFilterDraft22[];
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -2327,6 +2363,7 @@ export interface FetchMessageDraft22 {
   locationFilter?: LocationFilterDraft22;
   /** FILL_TIMEOUT (§9.20.5) in milliseconds */
   fillTimeoutMs?: bigint;
+  rangeFilters?: RangeFilterDraft22[];
   parameters?: Map<number, Uint8Array>;
 }
 

@@ -13,6 +13,7 @@ import {
   LocationFilterTypeDraft22,
   MessageTypeDraft18,
   MessageTypeDraft22,
+  RequestParameterDraft22,
   type ControlMessageDraft22,
   type FetchMessageDraft22,
   type PublishMessageDraft22,
@@ -307,7 +308,7 @@ describe('Draft22 §9.20 message parameters', () => {
         fill: {
           subscriberPriority: 7,
           groupOrder: GroupOrder.DESCENDING,
-          rangeFilters: new Map([[0x25, bytes(0x01, 0x00, 0x0a)]]), // SUBGROUP_FILTER
+          rangeFilters: [{ type: RequestParameterDraft22.SUBGROUP_FILTER, setId: 1, ranges: [{ start: 0n, end: 10n }] }],
         },
       };
       const encoded = Draft22MessageCodec.encode(full);

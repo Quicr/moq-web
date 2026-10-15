@@ -292,6 +292,9 @@ export type {
   LocationFilterDraft22,
   SubscribeMessageDraft22,
   FillParametersDraft22,
+  RangeDraft22,
+  RangeFilterDraft22,
+  RangeFilterTypeDraft22,
   PublishMessageDraft22,
   RequestUpdateMessageDraft22,
   TrackStatusMessageDraft22,
@@ -361,6 +364,7 @@ export type { IProtocolCodec, ProtocolCodecCapabilities } from './encoding/proto
 
 // Draft-18 message codec
 export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
+export { countRanges, validateRangeFilters, INVALID_FILTER_CODE } from './encoding/draft22-range-filter.js';
 
 // Draft-22 message codec (delegates to Draft18MessageCodec for shared messages)
 export { Draft22MessageCodec } from './encoding/draft22-message-codec.js';

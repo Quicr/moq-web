@@ -231,14 +231,13 @@ describe('Draft22MessageCodec', () => {
       expect(roundtrip(message).parameters?.get(0x35)).toEqual(new Uint8Array([1]));
     });
 
-    it('roundtrips SUBGROUP_FILTER in parameters', () => {
-      const rangeData = new Uint8Array([0x01, 0x00, 0x0A]); // SetID=1, range data
+    it('refuses a SUBGROUP_FILTER passed as a raw parameter', () => {
       const message: SubscribeMessageDraft22 = {
         ...baseSubscribe(),
-        parameters: new Map([[0x25, rangeData]]), // SUBGROUP_FILTER
+        parameters: new Map([[0x25, new Uint8Array([0x01, 0x00, 0x0A])]]), // SUBGROUP_FILTER
       };
 
-      expect(roundtrip(message).parameters?.get(0x25)).toEqual(rangeData);
+      expect(() => Draft22MessageCodec.encode(message)).toThrow(/typed field/);
     });
   });
 

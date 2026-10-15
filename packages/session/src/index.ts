@@ -45,6 +45,7 @@
 // Main session class
 export { MOQTSession } from './session.js';
 export type { MOQTSessionConfig, SessionDiagnostics } from './session.js';
+export { RequestRejectedError } from './request-rejected-error.js';
 
 // Reconnect / backoff policy (B10 Ops)
 export {

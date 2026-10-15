@@ -103,8 +103,12 @@ import {
   MessageTypeDraft22,
   LocationFilterTypeDraft22,
   RequestParameterDraft22,
+  RequestErrorCodeDraft22,
+  countRanges,
+  validateRangeFilters,
   type FetchMessageDraft22,
   type FillParametersDraft22,
+  type RangeFilterDraft22,
   type SubscribeMessageDraft22,
   type PublishMessageDraft22,
   type RequestUpdateMessageDraft22,
@@ -118,6 +122,7 @@ import {
   Draft18RequestStream,
   RequestStreamEnded,
   addDeliveryTimeoutParams,
+  applyRangeFilters,
   assertNotReservedNamespace,
   buildTrackProperties,
   decodeTrackNamespaceBytes,
@@ -133,6 +138,7 @@ import {
   narrowBigIntToNumber,
   sessionStateToConnectionState,
 } from './session-helpers.js';
+import { RequestRejectedError } from './request-rejected-error.js';
 import { streamResetReason } from './stream-reset-reason.js';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
@@ -200,6 +206,19 @@ const log = Logger.create('moqt:session');
 
 /** Draft-22 §9.9 PUBLISH_DONE Stream Count: "publisher cannot give the exact number" (2^64-1). */
 const STREAM_COUNT_UNKNOWN = (1n << 64n) - 1n;
+
+/**
+ * Draft-22 §9.1.6 MAX_FILTER_RANGES we accept. This endpoint applies no Range
+ * Filters, so it never advertises the option and keeps the default, 0.
+ */
+const OWN_MAX_FILTER_RANGES = 0;
+
+/** The parts of an incoming draft-22 request that carry Range Filters (§3.3.2) */
+interface RangeFilteredRequest {
+  requestId: bigint;
+  rangeFilters?: readonly RangeFilterDraft22[];
+  fill?: FillParametersDraft22;
+}
 
 /** Request types that stay open once accepted (draft-22 §6.4.2). */
 const ACCEPTED_REQUEST_TYPES: ReadonlySet<number> = new Set([
@@ -535,6 +554,8 @@ export class MOQTSession {
   private _implementationString?: string;
   /** Peer's MAX_REQUEST_UPDATES from SETUP (draft-22 §9.1.7). 0 = unlimited. */
   private peerMaxRequestUpdates = 0;
+  /** Peer's MAX_FILTER_RANGES from SETUP (draft-22 §9.1.6). Default 0: no Range Filters. */
+  private peerMaxFilterRanges = 0;
   /**
    * REQUEST_UPDATEs awaiting their REQUEST_OK / REQUEST_ERROR, oldest first,
    * keyed by the request stream's Request ID (draft-22 §9.5, draft-18 §10.9).
@@ -1454,13 +1475,26 @@ export class MOQTSession {
    */
   private async dispatchStreamMessage(requestId: bigint, message: ControlMessageDraft18): Promise<void> {
     switch (message.type) {
-      case MessageTypeDraft18.REQUEST_UPDATE:
-        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
+      case MessageTypeDraft18.REQUEST_UPDATE: {
         // Draft-22 §9.5: exactly one REQUEST_OK or REQUEST_ERROR per update.
+        // Ranges are over our MAX_FILTER_RANGES (§9.1.6), so the update is refused unapplied.
+        if (this.exceedsOwnFilterRanges(message as RangeFilteredRequest)) {
+          const refusal: RequestErrorMessageDraft18 = {
+            type: MessageTypeDraft18.REQUEST_ERROR,
+            requestId,
+            errorCode: RequestErrorCodeDraft22.INVALID_FILTER,
+            reasonPhrase: 'Range filters not supported (MAX_FILTER_RANGES 0)',
+          };
+          await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(refusal));
+          break;
+        }
+
+        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
         await this.activeRequestStreams.get(requestId)?.write(
           this.codec.encodeControlMessage({ type: MessageTypeDraft18.REQUEST_OK, requestId }),
         );
         break;
+      }
 
       case MessageTypeDraft18.REQUEST_OK:
       case MessageTypeDraft18.REQUEST_ERROR:
@@ -1518,8 +1552,10 @@ export class MOQTSession {
     const err = response as RequestErrorMessageDraft18;
     this.pendingRequestUpdates.delete(requestId);
     for (const update of pending) {
-      update.reject(new Error(
+      update.reject(new RequestRejectedError(
         `REQUEST_UPDATE failed for requestId=${requestId.toString()}: ${err.reasonPhrase} (code ${err.errorCode})`,
+        err.errorCode,
+        err.reasonPhrase,
       ));
     }
   }
@@ -2178,11 +2214,20 @@ export class MOQTSession {
    * `fill` (draft-22 §9.5.1) requests a fill fetch stream (§3.4) for the
    * subscription; the new Request ID routes that stream's objects to it, and
    * FORWARD is left out (unchanged).
+   *
+   * `rangeFilters` (draft-22 §3.3.2) replace the subscription's filters of the
+   * same type and SetID; a filter with no SetID and no Ranges removes every
+   * filter of its type. FORWARD is left out for these too.
    */
   async sendRequestUpdate(
     subscriptionRequestId: bigint | number,
     forwardState: boolean,
-    options?: { awaitAck?: boolean; newGroupRequest?: boolean | number; fill?: FillParametersDraft22 },
+    options?: {
+      awaitAck?: boolean;
+      newGroupRequest?: boolean | number;
+      fill?: FillParametersDraft22;
+      rangeFilters?: RangeFilterDraft22[];
+    },
   ): Promise<void> {
     if (!this.isDraft18) {
       throw new Error('sendRequestUpdate() requires draft-18');
@@ -2202,6 +2247,14 @@ export class MOQTSession {
       throw new Error(`MAX_REQUEST_UPDATES limit exceeded for request ${rid.toString()}`);
     }
 
+    // Draft-22 §9.1.6: refuse Ranges over the peer's limit before queueing anything.
+    const filteredSubscription = this.subscriptionManager.findByRequestId(rid);
+    const rangeFilterCounts = this.planRangeFilters(
+      filteredSubscription?.rangeFilterCounts ?? new Map(),
+      options?.rangeFilters,
+      options?.fill?.rangeFilters,
+    );
+
     // §10.2.13 NEW_GROUP_REQUEST — subscriber asks the publisher to cut a new
     // group. The wire value is a varint; `true` sends 1 (any nonzero triggers).
     const extraParams = new Map<number, Uint8Array>();
@@ -2217,8 +2270,9 @@ export class MOQTSession {
         type: MessageTypeDraft22.REQUEST_UPDATE,
         requestId: updateId,
         // Draft-22 §9.5: FORWARD is not allowed when updating a FETCH
-        forwardState: this.activeFetches.has(rid) || options?.fill ? undefined : forwardState,
+        forwardState: this.activeFetches.has(rid) || options?.fill || options?.rangeFilters ? undefined : forwardState,
         fill: options?.fill,
+        rangeFilters: options?.rangeFilters,
         parameters: extraParams.size > 0 ? extraParams : undefined,
       }
       : {
@@ -2249,6 +2303,9 @@ export class MOQTSession {
       this.dropFillStream(updateId);
       this.failPendingUpdates(rid);
       throw err;
+    }
+    if (filteredSubscription) {
+      filteredSubscription.rangeFilterCounts = rangeFilterCounts;
     }
     log.info('Sent REQUEST_UPDATE', {
       subscriptionRequestId: rid.toString(),
@@ -2301,6 +2358,27 @@ export class MOQTSession {
       awaitAck: false,
       fill: mapFillParameters(fill),
     });
+  }
+
+  /**
+   * Change the Range Filters of a subscription (draft-22 §3.3.2) with a
+   * REQUEST_UPDATE. A filter replaces the one with its type and SetID; one
+   * with no SetID and no Ranges removes every filter of its type. Rejects
+   * with [[RequestRejectedError]] when the peer answers REQUEST_ERROR.
+   *
+   * @param subscriptionId - Subscription to update
+   * @param rangeFilters - Filters to replace or remove
+   */
+  async updateRangeFilters(subscriptionId: number, rangeFilters: RangeFilterDraft22[]): Promise<void> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+    const subscription = this.subscriptionManager.get(subscriptionId);
+    if (!subscription) {
+      throw new Error(`updateRangeFilters: no subscription ${subscriptionId}`);
+    }
+
+    await this.sendRequestUpdate(subscription.requestId, true, { rangeFilters });
   }
 
   /** Draft-18 §10.12.2: the fill is a Joining FETCH of the subscription. */
@@ -2759,6 +2837,42 @@ export class MOQTSession {
   }
 
   /**
+   * Check the Range Filters of one outgoing request before anything is sent
+   * (draft-22 §3.3.2): the draft must be 22, the filters valid, and the Ranges
+   * within the peer's MAX_FILTER_RANGES (§9.1.6) counting those `held` stays
+   * with, plus the `fill` stream's. Returns what is held once `update` applies.
+   */
+  private planRangeFilters(
+    held: ReadonlyMap<string, number>,
+    update?: readonly RangeFilterDraft22[],
+    fill?: readonly RangeFilterDraft22[],
+  ): Map<string, number> {
+    const next = applyRangeFilters(held, update ?? []);
+    if (!update?.length && !fill?.length) {
+      return next;
+    }
+
+    if (!this.isDraft22) {
+      throw new Error(`Range filters require draft-22 (§3.3.2), not ${this._draft}`);
+    }
+    for (const filters of [update ?? [], fill ?? []]) {
+      validateRangeFilters(filters);
+      if (filters.some((filter) => filter.type === RequestParameterDraft22.TRACK_PROPERTY_FILTER)) {
+        throw new Error('TRACK_PROPERTY_FILTER only applies to SUBSCRIBE_TRACKS (§3.3.2)');
+      }
+    }
+
+    const total = countRanges(fill ?? []) +[...next.values()].reduce((sum, count) => sum + count, 0);
+    if (total > this.peerMaxFilterRanges) {
+      throw new Error(
+        `${total} filter Ranges exceed the peer's MAX_FILTER_RANGES ${this.peerMaxFilterRanges} (§9.1.6)`,
+      );
+    }
+
+    return next;
+  }
+
+  /**
    * Subscribe to a track
    *
    * @param namespace - Track namespace
@@ -2782,6 +2896,9 @@ export class MOQTSession {
 
     // B3 SEC: reject before allocating any request/subscription state.
     this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
+
+    // Refuse Range Filters the draft or the peer's MAX_FILTER_RANGES can't take (§9.1.6).
+    const rangeFilterCounts = this.planRangeFilters(new Map(), options?.rangeFilters, options?.fill?.rangeFilters);
 
     // Refuse a fill this draft can't express before allocating any state.
     const fill = this.isDraft18 ? options?.fill : undefined;
@@ -2822,6 +2939,7 @@ export class MOQTSession {
       subgroupDeliveryTimeoutMs: options?.subgroupDeliveryTimeout,
       objectDeliveryTimeoutMs: options?.objectDeliveryTimeout,
       groupOrder: options?.groupOrder,
+      rangeFilterCounts,
     };
     this.subscriptionManager.add(subscription);
 
@@ -2935,6 +3053,7 @@ export class MOQTSession {
         forwardState: true,
         locationFilter: mapLocationFilter(options),
         fill,
+        rangeFilters: options?.rangeFilters?.length ? options.rangeFilters : undefined,
         parameters,
       };
     } else {
@@ -3009,7 +3128,11 @@ export class MOQTSession {
       });
       this.dropFillStream(requestId);
       await this.closeRequestStream(requestId);
-      throw new Error(`SUBSCRIBE failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      throw new RequestRejectedError(
+        `SUBSCRIBE failed: ${error.reasonPhrase} (code ${error.errorCode})`,
+        error.errorCode,
+        error.reasonPhrase,
+      );
     }
   }
 
@@ -3187,6 +3310,7 @@ export class MOQTSession {
       throw new Error('Session not ready');
     }
     assertNotReservedNamespace(namespace, 'FETCH from');
+    this.planRangeFilters(new Map(), options?.rangeFilters);
 
     // Local counter is a small `number` (starts at 0/1, +2 per draft-16/18 request).
     // Widen to `bigint` immediately so downstream state, wire encode, and callback
@@ -3460,6 +3584,7 @@ export class MOQTSession {
       },
       // §9.20.5: 0 is meaningful (only immediately available Objects)
       fillTimeoutMs: options?.fillTimeout !== undefined ? BigInt(options.fillTimeout) : undefined,
+      rangeFilters: options?.rangeFilters?.length ? options.rangeFilters : undefined,
       parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
@@ -6035,6 +6160,7 @@ export class MOQTSession {
           if ((serverSetup as any).maxRequestUpdates !== undefined) {
             this.peerMaxRequestUpdates = (serverSetup as any).maxRequestUpdates;
           }
+          this.peerMaxFilterRanges = serverSetup.maxFilterRanges ?? 0;
           log.debug('Received SERVER_SETUP', {
             version: serverSetup.selectedVersion,
             role: serverSetup.role,
@@ -6323,6 +6449,10 @@ export class MOQTSession {
       trackName,
     });
 
+    if (await this.rejectRangeFilters(message, writable)) {
+      return;
+    }
+
     // B3 SEC: peer-initiated draft-18 subscribe creates a publication for
     // this subscriber; gate on maxTracks before accepting.
     try {
@@ -6529,6 +6659,10 @@ export class MOQTSession {
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     log.info('Received FETCH', { requestId: message.requestId.toString() });
+    if (await this.rejectRangeFilters(message, writable)) {
+      return;
+    }
+
     // For now, respond with REQUEST_ERROR since we don't cache objects
     await this.sendRequestErrorOnStream(
       writable,
@@ -6679,6 +6813,10 @@ export class MOQTSession {
       forwardState: message.forwardState,
       filter: 'filter' in message ? message.filter : undefined,
     });
+
+    if (await this.rejectRangeFilters(message as RangeFilteredRequest, writable)) {
+      return;
+    }
 
     // Accept with REQUEST_OK
     const requestOk: RequestOkMessageDraft18 = {
@@ -7118,6 +7256,34 @@ export class MOQTSession {
       largestLocation: message.largestLocation,
       locationFilter: message.locationFilter,
     });
+  }
+
+  /**
+   * Draft-22 §9.1.6: we advertise no MAX_FILTER_RANGES, so the peer's limit is
+   * the default 0 and any Range exceeds it. §3.3.2 and §9.1.6 require
+   * REQUEST_ERROR INVALID_FILTER for that; no Range Filter is ever applied.
+   */
+  private exceedsOwnFilterRanges(message: RangeFilteredRequest): boolean {
+    const ranges = countRanges(message.rangeFilters ?? []) + countRanges(message.fill?.rangeFilters ?? []);
+
+    return ranges > OWN_MAX_FILTER_RANGES;
+  }
+
+  /** Answer a new request carrying Range Filters with INVALID_FILTER. Returns whether it did. */
+  private async rejectRangeFilters(message: RangeFilteredRequest, writable: WritableStream<Uint8Array>): Promise<boolean> {
+    if (!this.exceedsOwnFilterRanges(message)) {
+      return false;
+    }
+
+    log.warn('Rejecting request with Range Filters', { requestId: message.requestId.toString() });
+    await this.sendRequestErrorOnStream(
+      writable,
+      message.requestId,
+      RequestErrorCodeDraft22.INVALID_FILTER,
+      'Range filters not supported (MAX_FILTER_RANGES 0)',
+    );
+
+    return true;
   }
 
   /**

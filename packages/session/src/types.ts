@@ -9,7 +9,7 @@
  * any media-specific dependencies.
  */
 
-import type { GroupOrder, FetchTypeDraft18 } from '@moq-web/core';
+import type { GroupOrder, FetchTypeDraft18, RangeFilterDraft22 } from '@moq-web/core';
 
 /**
  * Session state
@@ -144,6 +144,13 @@ export interface SubscribeOptions {
    * FETCH (§10.12.2). Ignored on draft-14/16, which have no fill.
    */
   fill?: FillOptions;
+  /**
+   * Draft-22 Range Filters (§3.3.2): only Objects matching them are sent.
+   * Needs a peer MAX_FILTER_RANGES large enough for every Range (§9.1.6);
+   * `subscribe()` throws before sending otherwise, and on any other draft.
+   * TRACK_PROPERTY_FILTER is for SUBSCRIBE_TRACKS and is refused.
+   */
+  rangeFilters?: RangeFilterDraft22[];
 }
 
 /**
@@ -175,6 +182,8 @@ export interface FillOptions {
   priority?: number;
   /** Group order of the fill stream */
   groupOrder?: GroupOrder;
+  /** Draft-22 Range Filters of the fill stream (§3.3.2); see [[SubscribeOptions.rangeFilters]] */
+  rangeFilters?: RangeFilterDraft22[];
 }
 
 /**
@@ -757,6 +766,8 @@ export interface FetchOptions {
   rendezvousTimeout?: number;
   /** Per-request authorization token (draft-18 §10.2.2). */
   authToken?: RequestAuthToken;
+  /** Draft-22 Range Filters (§3.3.2); see [[SubscribeOptions.rangeFilters]] */
+  rangeFilters?: RangeFilterDraft22[];
 }
 
 /**

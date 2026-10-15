@@ -9,7 +9,8 @@
  * Nothing is framed by guessing from the parameter type's parity.
  *
  * Parameter values cross this module in two shapes:
- * - typed: FORWARD, LARGEST_OBJECT, LOCATION_FILTER and FILL_PARAMETERS
+ * - typed: FORWARD, LARGEST_OBJECT, LOCATION_FILTER, FILL_PARAMETERS and the
+ *   Range Filters (0x25-0x29), which may repeat (§3.3.2)
  * - raw: everything else, in `parameters`, keyed by type. A raw value is
  *   uint8 as one byte, varint/Location as their encodings, length-prefixed as
  *   its payload, and Track Namespace as its encoding.
@@ -25,6 +26,7 @@ import {
   MAX_PARAMETER_COUNT,
   MAX_AUTH_TOKEN_LENGTH,
 } from './codec-helpers.js';
+import { decodeRangeFilter, encodeRangeFilter, validateRangeFilters } from './draft22-range-filter.js';
 import {
   GroupOrder,
   LocationFilterTypeDraft22,
@@ -32,6 +34,8 @@ import {
   type FillParametersDraft22,
   type Location,
   type LocationFilterDraft22,
+  type RangeFilterDraft22,
+  type RangeFilterTypeDraft22,
 } from '../messages/types.js';
 
 const P = RequestParameterDraft22;
@@ -80,6 +84,8 @@ enum ValueKind {
   NAMESPACE,
   LOCATION_FILTER,
   FILL_PARAMETERS,
+  /** §9.20.10-9.20.14: length-prefixed, and the only kind that may repeat */
+  RANGE_FILTER,
 }
 
 interface ParameterSpec {
@@ -134,11 +140,11 @@ const PARAMETER_SPECS: Record<RequestParameterDraft22, ParameterSpec> = {
     { allowedValues: [GroupOrder.ASCENDING, GroupOrder.DESCENDING] },
   ),
   [P.FILL_PARAMETERS]: spec(ValueKind.FILL_PARAMETERS, [S.SUBSCRIBE, S.REQUEST_UPDATE]),
-  [P.SUBGROUP_FILTER]: spec(ValueKind.LENGTH_PREFIXED, RANGE_FILTER_SCOPES),
-  [P.OBJECTID_FILTER]: spec(ValueKind.LENGTH_PREFIXED, RANGE_FILTER_SCOPES),
-  [P.PRIORITY_FILTER]: spec(ValueKind.LENGTH_PREFIXED, RANGE_FILTER_SCOPES),
-  [P.OBJECT_PROPERTY_FILTER]: spec(ValueKind.LENGTH_PREFIXED, RANGE_FILTER_SCOPES),
-  [P.TRACK_PROPERTY_FILTER]: spec(ValueKind.LENGTH_PREFIXED, [S.REQUEST_UPDATE, S.SUBSCRIBE_TRACKS]),
+  [P.SUBGROUP_FILTER]: spec(ValueKind.RANGE_FILTER, RANGE_FILTER_SCOPES),
+  [P.OBJECTID_FILTER]: spec(ValueKind.RANGE_FILTER, RANGE_FILTER_SCOPES),
+  [P.PRIORITY_FILTER]: spec(ValueKind.RANGE_FILTER, RANGE_FILTER_SCOPES),
+  [P.OBJECT_PROPERTY_FILTER]: spec(ValueKind.RANGE_FILTER, RANGE_FILTER_SCOPES),
+  [P.TRACK_PROPERTY_FILTER]: spec(ValueKind.RANGE_FILTER, [S.REQUEST_UPDATE, S.SUBSCRIBE_TRACKS]),
   [P.NEW_GROUP_REQUEST]: spec(ValueKind.VARINT, [S.SUBSCRIBE, S.REQUEST_UPDATE]),
   [P.TRACK_NAMESPACE_PREFIX]: spec(ValueKind.NAMESPACE, [S.REQUEST_UPDATE]),
   [P.INCLUDE_PROPERTIES]: spec(
@@ -154,6 +160,7 @@ export interface ParameterSetDraft22 {
   largestLocation?: Location;
   locationFilter?: LocationFilterDraft22;
   fill?: FillParametersDraft22;
+  rangeFilters?: RangeFilterDraft22[];
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -203,13 +210,15 @@ function readEntries(reader: Draft18BufferReader, scope: ParameterScopeDraft22, 
   for (let read = 0; read < count; read++) {
     const type = previousType + reader.readVarIntNumber();
 
-    // Types ascend, so a repeated type always has a delta of 0
-    if (read > 0 && type === previousType) {
+    const found = lookupSpec(type, scope);
+
+    // Types ascend, so a repeated type always has a delta of 0. Only Range
+    // Filters may repeat (§3.3.2).
+    if (read > 0 && type === previousType && found.kind !== ValueKind.RANGE_FILTER) {
       throw violation(`Duplicate parameter ${parameterName(type)} in ${scope}`);
     }
     previousType = type;
 
-    const found = lookupSpec(type, scope);
     switch (found.kind) {
       case ValueKind.LOCATION_FILTER:
         result.locationFilter = decodeLocationFilter(reader);
@@ -217,6 +226,11 @@ function readEntries(reader: Draft18BufferReader, scope: ParameterScopeDraft22, 
       case ValueKind.FILL_PARAMETERS:
         result.fill = decodeFill(reader);
         break;
+      case ValueKind.RANGE_FILTER: {
+        const filter = decodeRangeFilter(type as RangeFilterTypeDraft22, readRaw(reader, type, found));
+        (result.rangeFilters ??= []).push(filter);
+        break;
+      }
       default:
         storeRaw(result, parameters, type, readRaw(reader, type, found));
     }
@@ -276,7 +290,8 @@ function readRaw(reader: Draft18BufferReader, type: number, found: ParameterSpec
 
       return writer.toUint8Array();
     }
-    case ValueKind.LENGTH_PREFIXED: {
+    case ValueKind.LENGTH_PREFIXED:
+    case ValueKind.RANGE_FILTER: {
       const length = reader.readVarIntNumber();
       assertBound(length, found.maxLength ?? MAX_VALUE_LENGTH, `${parameterName(type)} value length`);
 
@@ -305,8 +320,6 @@ function decodeFill(reader: Draft18BufferReader): FillParametersDraft22 {
   return setToFill(set);
 }
 
-const RANGE_FILTER_TYPES = [P.SUBGROUP_FILTER, P.OBJECTID_FILTER, P.PRIORITY_FILTER, P.OBJECT_PROPERTY_FILTER];
-
 function setToFill(set: ParameterSetDraft22): FillParametersDraft22 {
   const fill: FillParametersDraft22 = {};
   const raw = set.parameters;
@@ -330,15 +343,8 @@ function setToFill(set: ParameterSetDraft22): FillParametersDraft22 {
     fill.groupOrder = order[0];
   }
 
-  const rangeFilters = new Map<number, Uint8Array>();
-  for (const type of RANGE_FILTER_TYPES) {
-    const value = raw?.get(type);
-    if (value) {
-      rangeFilters.set(type, value);
-    }
-  }
-  if (rangeFilters.size > 0) {
-    fill.rangeFilters = rangeFilters;
+  if (set.rangeFilters) {
+    fill.rangeFilters = set.rangeFilters;
   }
 
   return fill;
@@ -391,7 +397,29 @@ function collectEntries(scope: ParameterScopeDraft22, set: ParameterSetDraft22):
     add(type, (w) => writeRaw(w, type, scope, value));
   }
 
-  return Array.from(entries.values()).sort((a, b) => a.type - b.type);
+  // §3.3.2: Range Filters may repeat, so they sit outside the one-per-type map
+  const rangeEntries = collectRangeEntries(scope, set.rangeFilters ?? []);
+
+  // The sort is stable, so repeats of a type keep the caller's order
+  return [...entries.values(), ...rangeEntries].sort((a, b) => a.type - b.type);
+}
+
+function collectRangeEntries(scope: ParameterScopeDraft22, filters: readonly RangeFilterDraft22[]): Entry[] {
+  validateRangeFilters(filters);
+
+  return filters.map((filter) => {
+    lookupSpec(filter.type, scope);
+    const value = encodeRangeFilter(filter);
+
+    return {
+      type: filter.type,
+      write: (w) => {
+        assertBound(value.length, MAX_VALUE_LENGTH, `${parameterName(filter.type)} value length`);
+        w.writeVarInt(value.length);
+        w.writeBytes(value);
+      },
+    };
+  });
 }
 
 function writeEntries(writer: Draft18BufferWriter, entries: Entry[]): void {
@@ -412,7 +440,11 @@ function writeRaw(
 ): void {
   const found = lookupSpec(type, scope);
 
-  if (found.kind === ValueKind.LOCATION_FILTER || found.kind === ValueKind.FILL_PARAMETERS) {
+  if (
+    found.kind === ValueKind.LOCATION_FILTER ||
+    found.kind === ValueKind.FILL_PARAMETERS ||
+    found.kind === ValueKind.RANGE_FILTER
+  ) {
     throw violation(`${parameterName(type)} must be set through its typed field`);
   }
 
@@ -450,7 +482,7 @@ function encodeFill(writer: Draft18BufferWriter, fill: FillParametersDraft22): v
 }
 
 function fillToSet(fill: FillParametersDraft22): ParameterSetDraft22 {
-  const parameters = new Map<number, Uint8Array>(fill.rangeFilters ?? []);
+  const parameters = new Map<number, Uint8Array>();
 
   if (fill.fillTimeoutMs !== undefined) {
     parameters.set(P.FILL_TIMEOUT, MOQTVarInt.encode(fill.fillTimeoutMs));
@@ -463,7 +495,7 @@ function fillToSet(fill: FillParametersDraft22): ParameterSetDraft22 {
     parameters.set(P.GROUP_ORDER, new Uint8Array([fill.groupOrder]));
   }
 
-  return { locationFilter: fill.locationFilter, parameters };
+  return { locationFilter: fill.locationFilter, rangeFilters: fill.rangeFilters, parameters };
 }
 
 function assertUint8(value: number, name: string): void {

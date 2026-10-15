@@ -296,6 +296,7 @@ export class Draft22MessageCodec {
       forwardState: params.forwardState ?? true,
       locationFilter: params.locationFilter,
       fill: params.fill,
+      rangeFilters: params.rangeFilters,
       parameters: params.parameters,
     };
   }
@@ -331,7 +332,11 @@ export class Draft22MessageCodec {
       parameters.set(P.FILL_TIMEOUT, MOQTVarInt.encode(message.fillTimeoutMs));
     }
 
-    encodeParameters(writer, S.FETCH, { locationFilter: message.locationFilter, parameters });
+    encodeParameters(writer, S.FETCH, {
+      locationFilter: message.locationFilter,
+      rangeFilters: message.rangeFilters,
+      parameters,
+    });
   }
 
   private static decodeFetch(reader: Draft18BufferReader): FetchMessageDraft22 {
@@ -355,6 +360,7 @@ export class Draft22MessageCodec {
       subscriberPriority: priority ? priority[0] : DEFAULT_SUBSCRIBER_PRIORITY,
       groupOrder: order ? order[0] : GroupOrder.ASCENDING,
       locationFilter: params.locationFilter,
+      rangeFilters: params.rangeFilters,
       fillTimeoutMs: fillTimeout ? MOQTVarInt.decode(fillTimeout)[0] : undefined,
       parameters: rest.size > 0 ? rest : undefined,
     };
@@ -427,6 +433,7 @@ export class Draft22MessageCodec {
       forwardState: params.forwardState,
       locationFilter: params.locationFilter,
       fill: params.fill,
+      rangeFilters: params.rangeFilters,
       parameters: params.parameters,
     };
   }
@@ -479,6 +486,7 @@ export class Draft22MessageCodec {
       trackNamespacePrefix,
       // §9.20.18: FORWARD defaults to 1 when omitted
       forwardState: params.forwardState ?? true,
+      rangeFilters: params.rangeFilters,
       parameters: params.parameters,
     };
   }
