@@ -2304,6 +2304,10 @@ export class MOQTSession {
     this.setState('setup');
 
     // A new connection starts a new control stream (migrate() runs setup() again).
+    // Request IDs restart at 0 on a new connection (draft-22 §6.4.2.1)
+    if (this.isDraft18) {
+      this.nextRequestId = 0;
+    }
     this.peerSetupSeen = false;
     this.seenPeerRequestIds.clear();
     this.goAwaySent = false;
@@ -7248,8 +7252,9 @@ export class MOQTSession {
 
     this.incomingRequestKinds.set(message.requestId, 'publish');
 
-    // Register as subscription for object routing
-    const subscriptionId = this.getNextRequestId();
+    // Register as subscription for object routing. The peer's Request ID (odd) is unique
+    // among our own subscription IDs (even) and spends none of ours (d22 §6.4.2.1).
+    const subscriptionId = narrowBigIntToNumber(message.requestId, 'PUBLISH.requestId');
     const subscription: InternalSubscription = {
       subscriptionId,
       requestId: message.requestId,
