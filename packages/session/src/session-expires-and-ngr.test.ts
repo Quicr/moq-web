@@ -129,6 +129,19 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.10 EXPIRES on outbound SUBSCRIBE_
   });
 });
 
+/** Register our subscription `requestId` with the state NEW_GROUP_REQUEST depends on */
+function addSubscription(session: MOQTSession, requestId: bigint, state: { dynamicGroups?: boolean; largestGroup?: number }): void {
+  (session as unknown as { subscriptionManager: { add: (s: unknown) => void } }).subscriptionManager.add({
+    subscriptionId: Number(requestId),
+    requestId,
+    namespace: ['ns'],
+    trackName: 't',
+    trackAlias: requestId,
+    paused: false,
+    ...state,
+  });
+}
+
 describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
   it("subscriber's sendRequestUpdate({ newGroupRequest: true }) encodes the parameter", async () => {
     const session = makeSession();
@@ -143,6 +156,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     };
     (session as unknown as { activeRequestStreams: Map<bigint, typeof fakeStream> })
       .activeRequestStreams.set(7n, fakeStream);
+    addSubscription(session, 7n, { dynamicGroups: true, largestGroup: 41 });
 
     await session.sendRequestUpdate(7, true, { awaitAck: false, newGroupRequest: true });
 
@@ -153,9 +167,39 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     expect(update.forwardState).toBe(true);
     const ngrBytes = update.parameters?.get(RequestParameterDraft18.NEW_GROUP_REQUEST);
     expect(ngrBytes).toBeDefined();
-    // `true` is normalised to varint(1).
+    // `true` sends the largest Group known plus 1 (§9.20.19)
     const [decodedValue] = MOQTVarInt.decode(ngrBytes!);
-    expect(decodedValue).toBe(1n);
+    expect(decodedValue).toBe(42n);
+  });
+
+  it('sends 0 when no Group is known yet', async () => {
+    const session = makeSession();
+    const chunks: Uint8Array[] = [];
+    (session as unknown as { activeRequestStreams: Map<bigint, unknown> }).activeRequestStreams.set(
+      13n,
+      { write: async (bytes: Uint8Array) => { chunks.push(bytes); } },
+    );
+    addSubscription(session, 13n, { dynamicGroups: true });
+
+    await session.sendRequestUpdate(13n, true, { awaitAck: false, newGroupRequest: true });
+
+    const [decoded] = Draft18MessageCodec.decode(chunks[0]);
+    const update = decoded as RequestUpdateMessageDraft18;
+    expect(MOQTVarInt.decode(update.parameters!.get(RequestParameterDraft18.NEW_GROUP_REQUEST)!)[0]).toBe(0n);
+  });
+
+  it('refuses a track without DYNAMIC_GROUPS (§9.20.19)', async () => {
+    const session = makeSession();
+    const chunks: Uint8Array[] = [];
+    (session as unknown as { activeRequestStreams: Map<bigint, unknown> }).activeRequestStreams.set(
+      15n,
+      { write: async (bytes: Uint8Array) => { chunks.push(bytes); } },
+    );
+    addSubscription(session, 15n, { largestGroup: 3 });
+
+    await expect(session.sendRequestUpdate(15n, true, { awaitAck: false, newGroupRequest: true })).rejects.toThrow(/DYNAMIC_GROUPS/);
+
+    expect(chunks).toHaveLength(0);
   });
 
   it('numeric newGroupRequest overrides the default varint value', async () => {
@@ -171,6 +215,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     };
     (session as unknown as { activeRequestStreams: Map<bigint, typeof fakeStream> })
       .activeRequestStreams.set(9n, fakeStream);
+    addSubscription(session, 9n, { dynamicGroups: true });
 
     await session.sendRequestUpdate(9n, true, { awaitAck: false, newGroupRequest: 42 });
 
@@ -288,29 +333,46 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     });
   });
 
-  it('does not emit new-group-request when parameter value is zero', async () => {
-    const session = makeSession();
-    (session as unknown as { incomingRequestKinds: Map<number, string> })
-      .incomingRequestKinds.set(23, 'subscribe');
+  describe('acts on a value that asks for a new Group (§9.20.19)', () => {
+    const request = (value: bigint, latestGroup?: bigint) => {
+      const session = makeSession();
+      (session as unknown as { publicationManager: { add: (p: unknown) => void } }).publicationManager.add({
+        trackAlias: 8n,
+        namespace: ['ns'],
+        trackName: 'video',
+        priority: 128,
+        deliveryMode: 'stream',
+        requestId: 23n,
+        cleanupHandlers: [],
+        forward: 1,
+        latestGroup,
+      });
+      const events: NewGroupRequestEvent[] = [];
+      session.on('new-group-request', (e) => events.push(e));
 
-    const events: NewGroupRequestEvent[] = [];
-    session.on('new-group-request', (e) => events.push(e));
+      (session as unknown as {
+        dispatchRequestUpdateDraft18: (m: RequestUpdateMessageDraft18) => void;
+      }).dispatchRequestUpdateDraft18({
+        type: MessageTypeDraft18.REQUEST_UPDATE,
+        requestId: 23n,
+        parameters: new Map([[RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(value)]]),
+      });
 
-    const params = new Map<number, Uint8Array>();
-    params.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(0n));
-
-    const incoming: RequestUpdateMessageDraft18 = {
-      type: MessageTypeDraft18.REQUEST_UPDATE,
-      requestId: 23n,
-      forwardState: true,
-      parameters: params,
+      return events;
     };
 
-    (session as unknown as {
-      dispatchRequestUpdateDraft18: (m: RequestUpdateMessageDraft18) => void;
-    }).dispatchRequestUpdateDraft18(incoming);
+    it('emits for 0, which means the subscriber knows no Group', () => {
+      expect(request(0n, 5n)).toHaveLength(1);
+    });
 
-    expect(events).toHaveLength(0);
+    it('emits for a value above the current Group', () => {
+      expect(request(6n, 5n)).toHaveLength(1);
+    });
+
+    it('ignores a value that is not above the current Group', () => {
+      expect(request(5n, 5n)).toHaveLength(0);
+      expect(request(2n, 5n)).toHaveLength(0);
+    });
   });
 });
 

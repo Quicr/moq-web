@@ -28,6 +28,10 @@ export interface InternalSubscription extends SubscriptionInfo {
   groupOrder?: GroupOrder;
   /** Ranges held per Range Filter, for the peer's MAX_FILTER_RANGES (draft-22 §9.1.6) */
   rangeFilterCounts?: Map<string, number>;
+  /** The track has DYNAMIC_GROUPS=1, so NEW_GROUP_REQUEST is allowed (draft-22 §9.20.19) */
+  dynamicGroups?: boolean;
+  /** Largest Group ID known: from SUBSCRIBE_OK or PUBLISH, then every object delivered */
+  largestGroup?: number;
 }
 
 /**

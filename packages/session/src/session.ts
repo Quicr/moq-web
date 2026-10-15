@@ -862,6 +862,9 @@ export class MOQTSession {
     this.maxRequestId = configuredMax !== undefined && configuredMax > 0 ? configuredMax : 1000;
 
     this.objectRouter = new ObjectRouter(this.subscriptionManager, (sub, data, groupId, objectId, timestamp) => {
+      if (sub.largestGroup === undefined || groupId > sub.largestGroup) {
+        sub.largestGroup = groupId;
+      }
       this.emit('object', {
         subscriptionId: sub.subscriptionId,
         trackAlias: sub.trackAlias ?? BigInt(0),
@@ -2702,12 +2705,17 @@ export class MOQTSession {
       options?.fill?.rangeFilters,
     );
 
-    // §10.2.13 NEW_GROUP_REQUEST — subscriber asks the publisher to cut a new
-    // group. The wire value is a varint; `true` sends 1 (any nonzero triggers).
+    // §9.20.19 NEW_GROUP_REQUEST — subscriber asks the publisher to cut a new group.
+    // The value is the largest Group ID the subscriber knows plus 1, or 0 when it knows none;
+    // `true` computes it. Only for a track that has DYNAMIC_GROUPS=1.
     const extraParams = new Map<number, Uint8Array>();
-    if (options?.newGroupRequest !== undefined && options.newGroupRequest !== false) {
-      const val = typeof options.newGroupRequest === 'number' ? options.newGroupRequest : 1;
-      extraParams.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(BigInt(val)));
+    const newGroup = options?.newGroupRequest;
+    if (newGroup !== undefined && newGroup !== false) {
+      if (!filteredSubscription?.dynamicGroups) {
+        throw new Error(`NEW_GROUP_REQUEST needs a track with DYNAMIC_GROUPS=1 (requestId=${rid.toString()})`);
+      }
+      const value = typeof newGroup === 'number' ? BigInt(newGroup) : BigInt((filteredSubscription.largestGroup ?? -1) + 1);
+      extraParams.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(value));
     }
 
     // Each REQUEST_UPDATE consumes a Request ID (draft-22 §6.4.2.1, draft-18 §10.1).
@@ -3672,6 +3680,8 @@ export class MOQTSession {
         const largestGroup = subscribeOk.largestLocation.group;
         const largestObject = subscribeOk.largestLocation.object;
         const contentExists = largestGroup > 0n || largestObject > 0n;
+        sub.dynamicGroups = parseTrackProperties(subscribeOk.trackProperties)?.dynamicGroups === true;
+        sub.largestGroup = contentExists ? narrowBigIntToNumber(largestGroup, 'SUBSCRIBE_OK.largestGroup') : undefined;
         this.emit('subscribe-ok', {
           subscriptionId: sub.subscriptionId,
           requestId,
@@ -3715,6 +3725,7 @@ export class MOQTSession {
       groupOrder: options?.groupOrder,
       priorGroupIdGap: options?.priorGroupIdGap,
       priorObjectIdGap: options?.priorObjectIdGap,
+      dynamicGroups: options?.dynamicGroups,
     });
     // Draft-22 §9.20.17: LARGEST_OBJECT is omitted until Objects have been published
     const publishMessage: PublishMessageDraft18 | PublishMessageDraft22 = this.isDraft22
@@ -7253,6 +7264,7 @@ export class MOQTSession {
       // Draft-22 §3.1.1: the PUBLISH sets the initial state. Our draft-18 PUBLISH_OK sets it to 1.
       paused: this.isDraft22 && message.forwardState === false,
       onObject: matchingSubscription.onObject,
+      dynamicGroups: parseTrackProperties(message.trackProperties)?.dynamicGroups === true,
     };
     this.subscriptionManager.add(subscription);
 
@@ -7529,8 +7541,9 @@ export class MOQTSession {
       } catch {
         value = BigInt(ngrBytes[0] ?? 0);
       }
-      if (value !== 0n) {
-        const targetedPub = this.publicationManager.getByRequestId(requestId);
+      // §9.20.19: act on 0 ("no Group information") or a value above the current Group
+      const targetedPub = this.publicationManager.getByRequestId(requestId);
+      if (value === 0n || targetedPub?.latestGroup === undefined || value > targetedPub.latestGroup) {
         this.emit('new-group-request', {
           requestId,
           value,

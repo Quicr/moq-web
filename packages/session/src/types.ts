@@ -224,6 +224,12 @@ export interface PublishOptions {
    * omits the property.
    */
   priorObjectIdGap?: number;
+  /**
+   * Advertise DYNAMIC_GROUPS=1 on the PUBLISH (draft-18 §12.6, draft-22 §10.5):
+   * this publisher starts a new Group when a subscriber sends NEW_GROUP_REQUEST
+   * (`new-group-request` event). Subscribers may only send it for such tracks.
+   */
+  dynamicGroups?: boolean;
 }
 
 /**

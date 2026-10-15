@@ -367,6 +367,7 @@ export function buildTrackProperties(options?: {
   groupOrder?: number;
   priorGroupIdGap?: number;
   priorObjectIdGap?: number;
+  dynamicGroups?: boolean;
 }): Map<number, Uint8Array> | undefined {
   if (!options) return undefined;
   const props = new Map<number, Uint8Array>();
@@ -392,6 +393,9 @@ export function buildTrackProperties(options?: {
       TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER,
       MOQTVarInt.encode(BigInt(options.groupOrder)),
     );
+  }
+  if (options.dynamicGroups) {
+    props.set(TrackPropertyDraft18.DYNAMIC_GROUPS, MOQTVarInt.encode(1n));
   }
   setNonNegative(TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, options.priorGroupIdGap);
   setNonNegative(TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP, options.priorObjectIdGap);

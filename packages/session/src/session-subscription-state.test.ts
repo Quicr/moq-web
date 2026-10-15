@@ -13,6 +13,9 @@ import {
   MOQTransport,
   MessageTypeDraft18,
   MessageTypeDraft22,
+  MOQTVarInt,
+  RequestParameterDraft18,
+  TrackPropertyDraft18,
   PublishDoneErrorCodeDraft18,
   RequestErrorCodeDraft18,
   SessionErrorCodeDraft18,
@@ -58,14 +61,16 @@ function makeSession(draft: Draft) {
 function ourStream(session: MOQTSession, internals: Internals) {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const cancelled = vi.fn();
+  const written: Uint8Array[] = [];
   (session as unknown as { transport: { createRequestStream: unknown } }).transport.createRequestStream =
     vi.fn().mockResolvedValue({
       readable: new ReadableStream<Uint8Array>({ start: (c) => { controller = c; }, cancel: cancelled }),
-      writable: new WritableStream<Uint8Array>(),
+      writable: new WritableStream<Uint8Array>({ write: (chunk) => { written.push(chunk); } }),
     });
 
   return {
     cancelled,
+    written,
     send: (m: unknown) => controller.enqueue(internals.codec.encodeControlMessage(m)),
     fin: () => controller.close(),
     reset: () => controller.error(new Error('reset')),
@@ -128,6 +133,25 @@ describe.each(['draft-18', 'draft-22'] as const)('subscriber state (%s)', (draft
     await expect(session.subscribe(['ns'], 't')).rejects.toBeInstanceOf(RequestRejectedError);
 
     expect(session.getSubscriptions()).toHaveLength(0);
+  });
+
+  it('asks for a new Group with the largest known plus 1, only on a DYNAMIC_GROUPS track', async () => {
+    const { session, internals } = makeSession(draft);
+    const stream = ourStream(session, internals);
+    stream.send({
+      ...subscribeOk(),
+      largestLocation: { group: 9n, object: 2n },
+      trackProperties: new Map([[TrackPropertyDraft18.DYNAMIC_GROUPS, MOQTVarInt.encode(1n)]]),
+    });
+    const subscriptionId = await session.subscribe(['ns'], 't');
+
+    await session.sendRequestUpdate(OWN_REQUEST_ID, true, { newGroupRequest: true, awaitAck: false });
+
+    const update = internals.codec.decodeControlMessage(stream.written[stream.written.length - 1])[0] as unknown as {
+      parameters: Map<number, Uint8Array>;
+    };
+    expect(MOQTVarInt.decode(update.parameters.get(RequestParameterDraft18.NEW_GROUP_REQUEST)!)[0]).toBe(10n);
+    expect(session.getSubscription(subscriptionId)).toBeDefined();
   });
 
   describe.each([['FIN', 'closed'], ['reset', 'reset']] as const)('when the stream ends by %s before PUBLISH_DONE', (_name, how) => {

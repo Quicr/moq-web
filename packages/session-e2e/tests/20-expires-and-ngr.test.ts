@@ -71,6 +71,7 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
       deliveryTimeout: track.deliveryTimeout,
       deliveryMode: track.delivery,
       skipForwardWait: true,
+      dynamicGroups: true,
     });
 
     await new Promise((r) => setTimeout(r, 250));
@@ -79,7 +80,7 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
     const info = sub.session.getSubscription(subscriptionId);
     expect(info).toBeDefined();
 
-    // Send REQUEST_UPDATE with NEW_GROUP_REQUEST=1. Some relays may not
+    // Send REQUEST_UPDATE with NEW_GROUP_REQUEST (no Group known yet, so 0). Some relays may not
     // acknowledge it; awaitAck: false keeps the test resilient to that.
     await sub.session.sendRequestUpdate(info!.requestId, true, {
       newGroupRequest: true,

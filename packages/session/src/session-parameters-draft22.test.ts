@@ -115,6 +115,9 @@ describe('draft-22 REQUEST_UPDATE (§9.5)', () => {
     const { session, internals } = makeSession([]);
     const writes: Uint8Array[] = [];
     withStream(internals, 5n, writes);
+    (session as unknown as { subscriptionManager: { add: (s: unknown) => void } }).subscriptionManager.add({
+      subscriptionId: 1, requestId: 5n, namespace: ['ns'], trackName: 't', paused: false, dynamicGroups: true,
+    });
 
     await session.sendRequestUpdate(5n, false, { awaitAck: false, newGroupRequest: 3 });
 
