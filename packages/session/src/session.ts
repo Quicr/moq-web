@@ -1560,7 +1560,10 @@ export class MOQTSession {
     }
 
     request.answered = true;
-    if (response.type === successResponseType(request.kind) || response.type === MessageTypeDraft18.REQUEST_ERROR) {
+    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      return this.acceptRedirect(response as RequestErrorMessageDraft18, request.kind);
+    }
+    if (response.type === successResponseType(request.kind)) {
       return true;
     }
 
@@ -1655,6 +1658,22 @@ export class MOQTSession {
     this.incomingRequestKinds.delete(requestId);
     this.goAwayStreams.delete(requestId);
     this.endNamespaceSubscription(requestId);
+  }
+
+  /**
+   * A Redirect for a namespace-scoped request names no Track, so a Track Name
+   * in it closes the session (draft-22 §9.4.1). Returns whether it was fine.
+   */
+  private acceptRedirect(error: RequestErrorMessageDraft18, kind: OutgoingRequestKind): boolean {
+    const isNamespaceScoped = kind === 'subscribe-namespace' || kind === 'publish-namespace' || kind === 'subscribe-tracks';
+    if (!isNamespaceScoped || !error.redirect?.trackName) {
+      return true;
+    }
+
+    const reason = `Redirect for a ${kind} request names Track ${error.redirect.trackName}`;
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+
+    return false;
   }
 
   /**
@@ -1877,13 +1896,32 @@ export class MOQTSession {
     if (subscriptionId !== undefined) {
       this.namespaceSubscriptions.delete(subscriptionId);
     }
+    const rejected = this.rejection('SUBSCRIBE_NAMESPACE', error);
     this.emit('namespace-error', {
       kind: 'subscribe-namespace',
       namespace: subscription?.namespacePrefix ?? [],
       errorCode: error.errorCode,
       reasonPhrase: error.reasonPhrase,
       requestId: Number(requestId),
+      retryAfterMs: rejected.retryAfterMs,
+      redirect: rejected.redirect,
     });
+  }
+
+  /**
+   * Turn a REQUEST_ERROR into the error to throw or report. The Retry Interval
+   * is the wait plus one, and 0 means do not retry (draft-22 §9.4.2).
+   */
+  private rejection(what: string, error: RequestErrorMessageDraft18, detail = ''): RequestRejectedError {
+    const interval = error.retryInterval ?? 0n;
+
+    return new RequestRejectedError(
+      `${what} failed${detail}: ${error.reasonPhrase} (code ${error.errorCode})`,
+      error.errorCode,
+      error.reasonPhrase,
+      interval > 0n ? Number(interval - 1n) : undefined,
+      error.redirect,
+    );
   }
 
   /** A NAMESPACE on our SUBSCRIBE_NAMESPACE stream; the wire carries the suffix after our prefix (draft-22 §9.16). */
@@ -1955,11 +1993,7 @@ export class MOQTSession {
     const err = response as RequestErrorMessageDraft18;
     this.pendingRequestUpdates.delete(requestId);
     for (const update of pending) {
-      update.reject(new RequestRejectedError(
-        `REQUEST_UPDATE failed for requestId=${requestId.toString()}: ${err.reasonPhrase} (code ${err.errorCode})`,
-        err.errorCode,
-        err.reasonPhrase,
-      ));
+      update.reject(this.rejection('REQUEST_UPDATE', err, ` for requestId=${requestId.toString()}`));
     }
   }
 
@@ -2547,7 +2581,7 @@ export class MOQTSession {
 
       if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
-        throw new Error(`TRACK_STATUS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+        throw this.rejection('TRACK_STATUS', error);
       }
 
       const ok = response as RequestOkMessageDraft18;
@@ -2646,7 +2680,7 @@ export class MOQTSession {
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
       await this.closeRequestStream(requestId);
-      throw new Error(`SUBSCRIBE_TRACKS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      throw this.rejection('SUBSCRIBE_TRACKS', error);
     }
 
     // Store the namespace subscription for incoming PUBLISH messages
@@ -3726,11 +3760,7 @@ export class MOQTSession {
         reasonPhrase: error.reasonPhrase,
       });
       await this.closeRequestStream(requestId);
-      throw new RequestRejectedError(
-        `SUBSCRIBE failed: ${error.reasonPhrase} (code ${error.errorCode})`,
-        error.errorCode,
-        error.reasonPhrase,
-      );
+      throw this.rejection('SUBSCRIBE', error);
     }
   }
 
@@ -3808,7 +3838,7 @@ export class MOQTSession {
         reasonPhrase: error.reasonPhrase,
       });
       await this.closeRequestStream(requestId);
-      throw new Error(`PUBLISH failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      throw this.rejection('PUBLISH', error);
     }
   }
 
@@ -4075,10 +4105,13 @@ export class MOQTSession {
       this.activeFetches.delete(requestId);
       this.objectRouter.clearFetchGroupOrder(requestId);
       await this.closeRequestStream(requestId);
+      const rejected = this.rejection('FETCH', error);
       this.emit('fetch-error', {
         requestId,
         errorCode: error.errorCode,
         reason: error.reasonPhrase,
+        retryAfterMs: rejected.retryAfterMs,
+        redirect: rejected.redirect,
       } as FetchErrorEvent);
     } else {
       log.warn('Unexpected response to FETCH', {
@@ -4958,7 +4991,7 @@ export class MOQTSession {
         const error = response as RequestErrorMessageDraft18;
         this.announcedNamespaces.delete(namespaceStr);
         await this.closeRequestStream(requestId);
-        throw new Error(`Namespace announcement failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+        throw this.rejection('Namespace announcement', error);
       }
     } else {
       throw new Error('No transport available');

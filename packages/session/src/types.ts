@@ -10,6 +10,7 @@
  */
 
 import type { GroupOrder, FetchTypeDraft18, RangeFilterDraft22 } from '@moq-web/core';
+import type { RequestRedirect } from './request-rejected-error.js';
 
 /**
  * Session state
@@ -428,6 +429,10 @@ export interface NamespaceErrorEvent {
   reasonPhrase: string;
   /** Draft-16 request id (62-bit varint), when available. */
   requestId?: bigint;
+  /** Minimum wait before retrying, in ms; undefined when the peer says not to retry (draft-22 §9.4.2) */
+  retryAfterMs?: number;
+  /** Where to retry, for a REDIRECT error (draft-22 §9.4.1) */
+  redirect?: RequestRedirect;
 }
 
 /**
@@ -888,6 +893,10 @@ export interface FetchErrorEvent {
   errorCode: number;
   /** Error reason */
   reason: string;
+  /** Minimum wait before retrying, in ms; undefined when the peer says not to retry (draft-22 §9.4.2) */
+  retryAfterMs?: number;
+  /** Where to retry, for a REDIRECT error (draft-22 §9.4.1) */
+  redirect?: RequestRedirect;
 }
 
 // ============================================================================
