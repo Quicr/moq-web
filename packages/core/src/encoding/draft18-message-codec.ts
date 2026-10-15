@@ -17,6 +17,7 @@ import {
 } from './grease.js';
 import {
   assertBound,
+  assertControlLength,
   encodeTrackNamespace,
   decodeTrackNamespace,
   encodeString,
@@ -274,6 +275,7 @@ export class Draft18MessageCodec {
     const payloadWriter = new Draft18BufferWriter();
     Draft18MessageCodec.encodeSetup(payloadWriter, message);
     const payload = payloadWriter.toUint8Array();
+    assertControlLength(payload.length);
     const result = new Uint8Array(2 + payload.length);
     result[0] = (payload.length >> 8) & 0xFF;
     result[1] = payload.length & 0xFF;

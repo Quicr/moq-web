@@ -28,6 +28,8 @@ export const MAX_TRACK_NAME_LENGTH = 4096;
 export const MAX_AUTH_TOKEN_LENGTH = 16384;
 /** §8.3: "The maximum length of a value is 2^16-1 bytes." */
 export const MAX_KVP_VALUE_LENGTH = 0xFFFF;
+/** §9: Message Length is 16 bits */
+export const MAX_CONTROL_MESSAGE_LENGTH = 0xFFFF;
 /** §10.2.7: SUBSCRIBER_PRIORITY value when the parameter is omitted */
 export const DEFAULT_SUBSCRIBER_PRIORITY = 128;
 
@@ -286,6 +288,17 @@ function readAuthToken(reader: Draft18BufferReader): AuthorizationToken {
 // Message Framing
 // =============================================================================
 
+/** Reject a body that the 16-bit Message Length cannot represent (§9). */
+export function assertControlLength(length: number): void {
+  if (length > MAX_CONTROL_MESSAGE_LENGTH) {
+    throw new Draft18CodecError(
+      `Control message body ${length} exceeds ${MAX_CONTROL_MESSAGE_LENGTH} bytes`,
+      undefined,
+      'bounds-exceeded',
+    );
+  }
+}
+
 /**
  * Encode a control message with the standard framing:
  *   Message Type (MOQT varint) | Message Length (16-bit BE) | Payload
@@ -297,6 +310,7 @@ export function encodeFramed(
   const payloadWriter = new Draft18BufferWriter();
   encodePayload(payloadWriter);
   const payload = payloadWriter.toUint8Array();
+  assertControlLength(payload.length);
 
   const typeBytes = MOQTVarInt.encode(BigInt(messageType));
   const result = new Uint8Array(typeBytes.length + 2 + payload.length);
