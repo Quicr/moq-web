@@ -23,6 +23,7 @@ import {
   MOQTVarInt,
   MessageTypeDraft18,
   MessageTypeDraft22,
+  RequestParameterDraft18,
   type ControlMessageDraft18,
   type FetchObjectDraft18,
   type FetchMessageDraft18,
@@ -202,6 +203,14 @@ describe('draft-22 §3.4 fill: SUBSCRIBE', () => {
     });
 
     expect(internals.objectRouter.fetchGroupOrders.get(requestId)).toBe(GroupOrder.DESCENDING);
+  });
+
+  it('sends GROUP_ORDER so the fill decodes in the order the subscription uses (§3.4, §9.20.8)', async () => {
+    const { peer, internals, requestId } = await subscribeWith('draft-22', { fill: { lastGroups: 1 } });
+
+    const message = Draft22MessageCodec.decode(peer.written[0])[0] as SubscribeMessageDraft22;
+    expect(message.parameters?.get(RequestParameterDraft18.GROUP_ORDER)).toEqual(new Uint8Array([1]));
+    expect(internals.objectRouter.fetchGroupOrders.get(requestId)).toBe(GroupOrder.ASCENDING);
   });
 
   it('rejects an inexpressible fill before sending anything', async () => {

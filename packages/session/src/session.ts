@@ -3056,12 +3056,12 @@ export class MOQTSession {
         new Uint8Array([Math.max(0, Math.min(0xff, Math.floor(options.priority)))]),
       );
     }
-    if (options?.groupOrder !== undefined) {
-      parameters.set(
-        RequestParameterDraft18.GROUP_ORDER,
-        new Uint8Array([options.groupOrder === GroupOrder.DESCENDING ? 2 : 1]),
-      );
-    }
+    // §9.20.8: always sent, so a fill stream (which can arrive before
+    // SUBSCRIBE_OK) decodes Group ID Delta in an order we know.
+    parameters.set(
+      RequestParameterDraft18.GROUP_ORDER,
+      new Uint8Array([options?.groupOrder === GroupOrder.DESCENDING ? 2 : 1]),
+    );
 
     // §9.20.9: draft-22 carries the filter as LOCATION_FILTER, with different type values
     let subscribeMessage: SubscribeMessageDraft18 | SubscribeMessageDraft22;
