@@ -600,6 +600,8 @@ export interface AnnouncedNamespaceInfo {
   options: AnnounceOptions;
   /** Whether announce was acknowledged by relay */
   acknowledged: boolean;
+  /** Request ID of the PUBLISH_NAMESPACE request stream (draft-18/22) */
+  requestId?: bigint;
 }
 
 /**

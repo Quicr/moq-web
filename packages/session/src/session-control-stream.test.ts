@@ -167,10 +167,10 @@ describe.each(['draft-18', 'draft-22'] as const)('malformed request stream messa
     (session as unknown as { transport: { createRequestStream: unknown } }).transport.createRequestStream =
       vi.fn().mockResolvedValue(streamOf(MALFORMED_SUBSCRIBE_OK));
     const send = (internals as unknown as {
-      sendRequestAndWaitResponse: (b: Uint8Array, id: bigint) => Promise<unknown>;
+      sendRequestAndWaitResponse: (b: Uint8Array, id: bigint, kind: string) => Promise<unknown>;
     }).sendRequestAndWaitResponse.bind(internals);
 
-    await send(Uint8Array.of(0), 0n).catch(() => {});
+    await send(Uint8Array.of(0), 0n, 'subscribe').catch(() => {});
 
     expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
   });

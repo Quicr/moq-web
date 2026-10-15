@@ -34,6 +34,7 @@ import {
   RequestParameterDraft18,
   RequestErrorCode,
   RequestErrorCodeDraft18,
+  TrackStatusCode,
   PublishDoneErrorCodeDraft18,
   SessionErrorCodeDraft18,
   Draft18CodecError,
@@ -249,6 +250,37 @@ const ACCEPTED_REQUEST_TYPES: ReadonlySet<number> = new Set([
   MessageTypeDraft18.PUBLISH_NAMESPACE,
   MessageTypeDraft18.SUBSCRIBE_TRACKS,
 ]);
+
+/** The requests we send, each on its own bidi stream (draft-22 §6.3). */
+type OutgoingRequestKind =
+  | 'subscribe'
+  | 'publish'
+  | 'fetch'
+  | 'track-status'
+  | 'publish-namespace'
+  | 'subscribe-namespace'
+  | 'subscribe-tracks';
+
+/** What a request we sent has seen so far, keyed by its Request ID. */
+interface OutgoingRequest {
+  kind: OutgoingRequestKind;
+  /** The first response arrived (draft-22 §3.1, §3.6, §4.2) */
+  answered: boolean;
+  /** SUBSCRIBE_NAMESPACE: suffixes announced by NAMESPACE and not yet ended by NAMESPACE_DONE (§4.2) */
+  announced: Set<string>;
+}
+
+/** The response that answers each kind of request, besides REQUEST_ERROR (draft-22 §3.1, §3.2, §9.3). */
+function successResponseType(kind: OutgoingRequestKind): MessageTypeDraft18 {
+  switch (kind) {
+    case 'subscribe':
+      return MessageTypeDraft18.SUBSCRIBE_OK;
+    case 'fetch':
+      return MessageTypeDraft18.FETCH_OK;
+    default:
+      return MessageTypeDraft18.REQUEST_OK;
+  }
+}
 
 /** A REQUEST_UPDATE waiting for its REQUEST_OK / REQUEST_ERROR (draft-22 §9.5, draft-18 §10.9). */
 interface PendingRequestUpdate {
@@ -1272,6 +1304,9 @@ export class MOQTSession {
    */
   private activeRequestStreams = new Map<bigint, Draft18RequestStream>();
 
+  /** The requests we sent that still have a stream, by Request ID. */
+  private outgoingRequests = new Map<bigint, OutgoingRequest>();
+
   /**
    * Open a new per-request bidi stream, write the initial request bytes, and
    * return a handle that supports sending more messages (e.g. REQUEST_UPDATE)
@@ -1279,7 +1314,8 @@ export class MOQTSession {
    */
   private async openRequestStream(
     requestId: bigint,
-    initialEncoded: Uint8Array
+    initialEncoded: Uint8Array,
+    kind: OutgoingRequestKind,
   ): Promise<Draft18RequestStream> {
     const existing = this.activeRequestStreams.get(requestId);
     if (existing) {
@@ -1342,6 +1378,7 @@ export class MOQTSession {
     }
 
     this.activeRequestStreams.set(requestId, stream);
+    this.outgoingRequests.set(requestId, { kind, answered: false, announced: new Set() });
     await stream.write(initialEncoded);
     return stream;
   }
@@ -1353,6 +1390,7 @@ export class MOQTSession {
     const stream = this.activeRequestStreams.get(requestId);
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
+    this.outgoingRequests.delete(requestId);
     this.failPendingUpdates(requestId);
     await stream.close();
   }
@@ -1379,6 +1417,7 @@ export class MOQTSession {
     const stream = this.activeRequestStreams.get(requestId);
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
+    this.outgoingRequests.delete(requestId);
     this.failPendingUpdates(requestId);
     await stream.abort(StreamResetErrorCodeDraft18.CANCELLED);
   }
@@ -1401,11 +1440,15 @@ export class MOQTSession {
    */
   private async sendRequestAndWaitResponse(
     encoded: Uint8Array,
-    requestId: bigint
+    requestId: bigint,
+    kind: OutgoingRequestKind,
   ): Promise<ControlMessageDraft18> {
-    const stream = await this.openRequestStream(requestId, encoded);
+    const stream = await this.openRequestStream(requestId, encoded, kind);
     try {
       const response = await stream.readMessage();
+      if (!this.acceptFirstResponse(requestId, response)) {
+        throw new Error(`Unexpected first response, message type ${response.type}`);
+      }
       // §6.4.2.3: a REQUEST_ERROR ends the request; anything else may be
       // followed by more messages (PUBLISH_DONE, REQUEST_OK, ...).
       if (response.type !== MessageTypeDraft18.REQUEST_ERROR) {
@@ -1418,6 +1461,29 @@ export class MOQTSession {
       await this.closeRequestStream(requestId);
       throw err;
     }
+  }
+
+  /**
+   * Check the first message on the stream of a request we sent. Only the
+   * request's own response or a REQUEST_ERROR may come first; anything else
+   * closes the session (draft-22 §3.6, §4.2; draft-18 §10.18, §10.19).
+   * Returns whether the message was acceptable.
+   */
+  private acceptFirstResponse(requestId: bigint, response: ControlMessageDraft18): boolean {
+    const request = this.outgoingRequests.get(requestId);
+    if (!request) {
+      return true;
+    }
+
+    request.answered = true;
+    if (response.type === successResponseType(request.kind) || response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      return true;
+    }
+
+    const reason = `Message type ${response.type} cannot answer a ${request.kind} request`;
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+
+    return false;
   }
 
   /**
@@ -1448,6 +1514,7 @@ export class MOQTSession {
           await this.closeRequestStream(requestId);
           return;
         }
+        this.endNamespaceSubscription(requestId);
         if (this.publicationManager.getByRequestId(requestId) === undefined) {
           await this.closeRequestStream(requestId);
         }
@@ -1499,6 +1566,42 @@ export class MOQTSession {
       }
     }
     this.incomingRequestKinds.delete(requestId);
+    this.endNamespaceSubscription(requestId);
+  }
+
+  /**
+   * A SUBSCRIBE_NAMESPACE response stream ended by FIN or reset: treat each
+   * active namespace as done and forget the subscription (draft-22 §4.2.2,
+   * draft-18 §10.18). A stream that never got a response failed the request.
+   */
+  private endNamespaceSubscription(requestId: bigint): void {
+    const request = this.outgoingRequests.get(requestId);
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
+      return;
+    }
+
+    const subscription = this.namespaceSubscriptions.get(subscriptionId);
+    this.namespaceSubscriptionByRequestId.delete(requestId);
+    this.namespaceSubscriptions.delete(subscriptionId);
+    if (!request.answered) {
+      this.emit('namespace-error', {
+        kind: 'subscribe-namespace',
+        namespace: subscription?.namespacePrefix ?? [],
+        errorCode: RequestErrorCodeDraft18.INTERNAL_ERROR,
+        reasonPhrase: 'Stream ended before a response',
+        requestId: Number(requestId),
+      });
+      return;
+    }
+
+    for (const key of request.announced) {
+      this.emit('namespace-done', {
+        namespaceSubscriptionId: subscriptionId,
+        namespace: [...(subscription?.namespacePrefix ?? []), ...(JSON.parse(key) as string[])],
+      });
+    }
+    request.announced.clear();
   }
 
   /**
@@ -1507,6 +1610,14 @@ export class MOQTSession {
    * REQUEST_UPDATE, for its own new ID.
    */
   private async dispatchStreamMessage(requestId: bigint, message: ControlMessageDraft18): Promise<void> {
+    // A SUBSCRIBE_NAMESPACE stream is read from the start, so its first
+    // message is checked here (draft-22 §4.2).
+    const request = this.outgoingRequests.get(requestId);
+    const isFirstResponse = request !== undefined && !request.answered;
+    if (isFirstResponse && !this.acceptFirstResponse(requestId, message)) {
+      return;
+    }
+
     switch (message.type) {
       case MessageTypeDraft18.REQUEST_UPDATE: {
         // Draft-22 §9.5: exactly one REQUEST_OK or REQUEST_ERROR per update.
@@ -1531,7 +1642,19 @@ export class MOQTSession {
 
       case MessageTypeDraft18.REQUEST_OK:
       case MessageTypeDraft18.REQUEST_ERROR:
+        if (isFirstResponse) {
+          this.settleNamespaceSubscription(requestId, message);
+          break;
+        }
         this.settleRequestUpdate(requestId, message);
+        break;
+
+      case MessageTypeDraft18.NAMESPACE:
+        this.handleNamespaceMessage(requestId, message as NamespaceMessageDraft18);
+        break;
+
+      case MessageTypeDraft18.NAMESPACE_DONE:
+        this.handleNamespaceDone(requestId, message as NamespaceDoneMessageDraft18);
         break;
 
       case MessageTypeDraft18.PUBLISH_DONE:
@@ -1557,6 +1680,79 @@ export class MOQTSession {
       default:
         log.warn('Unhandled message on request stream', { requestId: requestId.toString(), type: message.type });
     }
+  }
+
+  /** The response to our SUBSCRIBE_NAMESPACE (draft-22 §4.2). */
+  private settleNamespaceSubscription(requestId: bigint, response: ControlMessageDraft18): void {
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    const subscription = subscriptionId !== undefined ? this.namespaceSubscriptions.get(subscriptionId) : undefined;
+    if (response.type !== MessageTypeDraft18.REQUEST_ERROR) {
+      const expires = (response as RequestOkMessageDraft18).expires;
+      log.info('Namespace subscription accepted', { subscriptionId, requestId: requestId.toString() });
+      this.emit('request-ok', {
+        requestId,
+        requestKind: 'subscribe-namespace',
+        expiresMs: expires !== undefined ? Number(expires) : undefined,
+      } as RequestOkEvent);
+      return;
+    }
+
+    const error = response as RequestErrorMessageDraft18;
+    log.error('Namespace subscription rejected', { errorCode: error.errorCode, reasonPhrase: error.reasonPhrase });
+    this.namespaceSubscriptionByRequestId.delete(requestId);
+    if (subscriptionId !== undefined) {
+      this.namespaceSubscriptions.delete(subscriptionId);
+    }
+    this.emit('namespace-error', {
+      kind: 'subscribe-namespace',
+      namespace: subscription?.namespacePrefix ?? [],
+      errorCode: error.errorCode,
+      reasonPhrase: error.reasonPhrase,
+      requestId: Number(requestId),
+    });
+  }
+
+  /** A NAMESPACE on our SUBSCRIBE_NAMESPACE stream; the wire carries the suffix after our prefix (draft-22 §9.16). */
+  private handleNamespaceMessage(requestId: bigint, message: NamespaceMessageDraft18): void {
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    const request = this.outgoingRequests.get(requestId);
+    if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
+      this.closeForUnexpectedMessage(requestId, message);
+      return;
+    }
+
+    request.announced.add(JSON.stringify(message.trackNamespace));
+    const prefix = this.namespaceSubscriptions.get(subscriptionId)?.namespacePrefix ?? [];
+    const namespace = [...prefix, ...message.trackNamespace];
+    log.info('Received NAMESPACE announcement', { namespace: namespace.join('/'), subscriptionId });
+    this.emit('namespace-announced', { namespaceSubscriptionId: subscriptionId, namespace });
+  }
+
+  /** A NAMESPACE_DONE before its NAMESPACE closes the session (draft-22 §4.2). */
+  private handleNamespaceDone(requestId: bigint, message: NamespaceDoneMessageDraft18): void {
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    const request = this.outgoingRequests.get(requestId);
+    if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
+      this.closeForUnexpectedMessage(requestId, message);
+      return;
+    }
+
+    if (!request.announced.delete(JSON.stringify(message.finalNamespace))) {
+      this.closeForUnexpectedMessage(requestId, message);
+      return;
+    }
+
+    const prefix = this.namespaceSubscriptions.get(subscriptionId)?.namespacePrefix ?? [];
+    const namespace = [...prefix, ...message.finalNamespace];
+    log.info('Received NAMESPACE_DONE', { namespace: namespace.join('/'), subscriptionId });
+    this.emit('namespace-done', { namespaceSubscriptionId: subscriptionId, namespace });
+  }
+
+  /** The peer sent a message its role or the request's kind does not allow (draft-22 Table 5). */
+  private closeForUnexpectedMessage(requestId: bigint, message: ControlMessageDraft18): void {
+    const reason = `Message type ${message.type} is not allowed on request ${requestId.toString()}`;
+    log.error(reason);
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
   }
 
   /**
@@ -2074,10 +2270,12 @@ export class MOQTSession {
    *
    * @param namespace - Track namespace
    * @param trackName - Track name
+   * @param timeoutMs - Cancel the request and reject after this long; waits indefinitely when omitted
    */
   async trackStatus(
     namespace: string[],
     trackName: string,
+    timeoutMs?: number,
   ): Promise<TrackStatusResult> {
     if (!this.isDraft18) {
       throw new Error('trackStatus() requires draft-18');
@@ -2105,8 +2303,14 @@ export class MOQTSession {
       trackName,
     });
 
+    let timedOut = false;
+    const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+      timedOut = true;
+      void this.abortRequestStream(requestId);
+    }, timeoutMs);
+
     try {
-      const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+      const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'track-status');
 
       if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
@@ -2133,7 +2337,13 @@ export class MOQTSession {
         latestObject: result.latestObject?.toString(),
       });
       return result;
+    } catch (err) {
+      if (timedOut) {
+        throw new Error(`TRACK_STATUS request ${requestId.toString()} timed out after ${timeoutMs}ms`);
+      }
+      throw err;
     } finally {
+      clearTimeout(timer);
       await this.closeRequestStream(requestId);
     }
   }
@@ -2222,7 +2432,7 @@ export class MOQTSession {
       prefix: namespacePrefix.join('/'),
     });
 
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'subscribe-tracks');
 
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
@@ -3224,7 +3434,7 @@ export class MOQTSession {
     });
     this.emitMessageSent('SUBSCRIBE', encoded.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
 
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'subscribe');
 
     if (response.type === MessageTypeDraft18.SUBSCRIBE_OK) {
       const subscribeOk = response as SubscribeOkMessageDraft18;
@@ -3327,7 +3537,7 @@ export class MOQTSession {
       length: encoded.length,
     });
 
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'publish');
 
     if (response.type === MessageTypeDraft18.REQUEST_OK) {
       const ok = response as RequestOkMessageDraft18;
@@ -3563,7 +3773,7 @@ export class MOQTSession {
     });
     this.emitMessageSent('FETCH', encoded.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId: requestId.toString(), range });
 
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'fetch');
 
     if (response.type === MessageTypeDraft18.FETCH_OK) {
       const fetchOk = response as _FetchOkMessageDraft18;
@@ -3817,6 +4027,19 @@ export class MOQTSession {
       throw new Error('Session not ready');
     }
 
+    if (this.isDraft18) {
+      // Draft-22 §9.13: TRACK_STATUS has its own request stream and a REQUEST_OK reply.
+      const status = await this.trackStatus(namespace, trackName, timeoutMs);
+
+      return {
+        type: MessageType.TRACK_STATUS_OK,
+        requestId: status.requestId,
+        statusCode: status.latestGroup === undefined ? TrackStatusCode.NOT_YET_BEGUN : TrackStatusCode.IN_PROGRESS,
+        lastGroupId: status.latestGroup,
+        lastObjectId: status.latestObject,
+      };
+    }
+
     // Local counter is small; widen to bigint for wire varint + state map key.
     const requestId = BigInt(this.getNextRequestId());
 
@@ -3901,7 +4124,7 @@ export class MOQTSession {
 
     if (this.isDraft18) {
       // Draft-18: Send SUBSCRIBE_NAMESPACE on per-request bidi stream
-      await this.subscribeNamespaceDraft18(requestId, namespacePrefix, subscriptionId);
+      await this.subscribeNamespaceDraft18(requestId, namespacePrefix);
     } else {
       // Build SUBSCRIBE_NAMESPACE message
       const message = {
@@ -4036,15 +4259,13 @@ export class MOQTSession {
   }
 
   /**
-   * Draft-18: Subscribe to namespace on per-request bidi stream
+   * Draft-18: Subscribe to namespace on per-request bidi stream. Its response
+   * and NAMESPACE messages are read like any other request stream.
    */
   private async subscribeNamespaceDraft18(
     requestId: bigint,
     namespacePrefix: string[],
-    subscriptionId: number
   ): Promise<void> {
-    const prefixStr = namespacePrefix.join('/');
-
     const subscribeNsMessage: SubscribeNamespaceMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
       requestId,
@@ -4052,212 +4273,10 @@ export class MOQTSession {
     };
 
     const encoded = this.codec.encodeControlMessage(subscribeNsMessage);
+    const stream = await this.openRequestStream(requestId, encoded, 'subscribe-namespace');
+    log.info('Sent SUBSCRIBE_NAMESPACE', { namespacePrefix: namespacePrefix.join('/'), requestId: requestId.toString() });
 
-    if (this.useWorker && this.transportWorker) {
-      const streamId = await this.transportWorker.createBidiStream();
-      this.transportWorker.writeStream(streamId, encoded);
-      log.info('Sent SUBSCRIBE_NAMESPACE via worker', { namespacePrefix: prefixStr, requestId: requestId.toString(), streamId });
-
-      // Create a ReadableStream for the bidi response
-      const readable = new ReadableStream<Uint8Array>({
-        start: (controller) => {
-          this.incomingBidiControllers.set(streamId, controller);
-        },
-      });
-      this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
-      this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
-        log.error('Error reading namespace subscription stream', { error: (err as Error).message });
-      });
-    } else if (this.transport) {
-      const { readable, writable } = await this.transport.createRequestStream();
-      const writer = writable.getWriter();
-      await writer.write(encoded);
-      writer.releaseLock();
-      log.info('Sent SUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr, requestId: requestId.toString() });
-
-      this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
-        log.error('Error reading namespace subscription stream', { error: (err as Error).message });
-      });
-    } else {
-      throw new Error('No transport available');
-    }
-  }
-
-  /**
-   * Read namespace subscription responses
-   */
-  private async readNamespaceSubscriptionStreamDraft18(
-    readable: ReadableStream<Uint8Array>,
-    subscriptionId: number
-  ): Promise<void> {
-    const reader = readable.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-    let offset = 0;
-
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!value || value.length === 0) continue;
-
-        chunks.push(value);
-        totalLength += value.length;
-
-        const availableBytes = totalLength - offset;
-        if (availableBytes === 0) continue;
-
-        // Build buffer from chunks
-        let buffer: Uint8Array;
-        if (chunks.length === 1 && offset === 0) {
-          buffer = chunks[0];
-        } else {
-          buffer = new Uint8Array(availableBytes);
-          let writePos = 0;
-          let skip = offset;
-          for (const chunk of chunks) {
-            if (skip >= chunk.length) { skip -= chunk.length; continue; }
-            const src = skip > 0 ? chunk.subarray(skip) : chunk;
-            buffer.set(src, writePos);
-            writePos += src.length;
-            skip = 0;
-          }
-        }
-
-        // Decode messages
-        let consumed = 0;
-        while (consumed < buffer.length) {
-          try {
-            const view = buffer.subarray(consumed);
-            const [message, bytesRead] = this.codec.decodeControlMessage(view, 0, this.metrics);
-            consumed += bytesRead;
-
-            log.info('Received message on namespace subscription stream', {
-              type: MessageTypeDraft18[message.type],
-              subscriptionId,
-            });
-
-            this.routeMessageDraft18(message as ControlMessageDraft18, subscriptionId);
-          } catch (err) {
-            const msg = (err as Error).message ?? '';
-            if (/incomplete|buffer|underflow/i.test(msg)) {
-              break;
-            }
-            throw err;
-          }
-        }
-
-        offset += consumed;
-        if (offset > 4096) {
-          const remaining = totalLength - offset;
-          if (remaining === 0) {
-            chunks.length = 0; totalLength = 0; offset = 0;
-          } else {
-            const leftover = buffer.subarray(consumed);
-            chunks.length = 0;
-            chunks.push(new Uint8Array(leftover));
-            totalLength = leftover.length;
-            offset = 0;
-          }
-        }
-      }
-    } catch (err) {
-      log.error('Namespace subscription stream error', { error: (err as Error).message });
-    } finally {
-      reader.releaseLock();
-    }
-  }
-
-  /**
-   * Route a draft-18 message received on a namespace subscription stream
-   */
-  private routeMessageDraft18(message: ControlMessageDraft18, subscriptionId: number): void {
-    switch (message.type) {
-      case MessageTypeDraft18.REQUEST_OK: {
-        const ok = message as RequestOkMessageDraft18;
-        const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
-        const sub = this.namespaceSubscriptions.get(subscriptionId);
-        log.info('Namespace subscription accepted', {
-          subscriptionId,
-          requestId: sub?.requestId,
-          expiresMs,
-        });
-        if (sub) {
-          this.emit('request-ok', {
-            requestId: sub.requestId,
-            requestKind: 'subscribe-namespace',
-            expiresMs,
-          } as RequestOkEvent);
-        }
-        break;
-      }
-
-      case MessageTypeDraft18.REQUEST_ERROR: {
-        const error = message as RequestErrorMessageDraft18;
-        log.error('Namespace subscription rejected', {
-          errorCode: error.errorCode,
-          reasonPhrase: error.reasonPhrase,
-        });
-        const failedSub = this.namespaceSubscriptions.get(subscriptionId);
-        this.namespaceSubscriptions.delete(subscriptionId);
-        this.emit('namespace-error', {
-          kind: 'subscribe-namespace',
-          namespace: failedSub?.namespacePrefix ?? [],
-          errorCode: error.errorCode,
-          reasonPhrase: error.reasonPhrase,
-          requestId: Number(error.requestId),
-        });
-        break;
-      }
-
-      case MessageTypeDraft18.NAMESPACE: {
-        const nsMsg = message as NamespaceMessageDraft18;
-        const subscription = this.namespaceSubscriptions.get(subscriptionId);
-        // Wire carries the suffix relative to the subscribed prefix; the
-        // absolute namespace is prefix ++ suffix.
-        const absolute = subscription
-          ? [...subscription.namespacePrefix, ...nsMsg.trackNamespace]
-          : nsMsg.trackNamespace;
-        log.info('Received NAMESPACE announcement', {
-          namespace: absolute.join('/'),
-          subscriptionId,
-        });
-        this.emit('namespace-announced', {
-          namespaceSubscriptionId: subscriptionId,
-          namespace: absolute,
-        });
-        break;
-      }
-
-      case MessageTypeDraft18.NAMESPACE_DONE: {
-        const nsDone = message as NamespaceDoneMessageDraft18;
-        const subscription = this.namespaceSubscriptions.get(subscriptionId);
-        const absolute = subscription
-          ? [...subscription.namespacePrefix, ...nsDone.finalNamespace]
-          : nsDone.finalNamespace;
-        log.info('Received NAMESPACE_DONE', {
-          namespace: absolute.join('/'),
-          subscriptionId,
-        });
-        this.emit('namespace-done', {
-          namespaceSubscriptionId: subscriptionId,
-          namespace: absolute,
-        });
-        break;
-      }
-
-      case MessageTypeDraft18.PUBLISH: {
-        // Server sends PUBLISH to announce a track under the subscribed namespace
-        const pubMsg = message as PublishMessageDraft18 | PublishMessageDraft22;
-        this.handleIncomingPublishDraft18(pubMsg, new WritableStream()).catch(err => {
-          log.error('Error handling PUBLISH from namespace stream', { error: (err as Error).message });
-        });
-        break;
-      }
-
-      default:
-        log.warn('Unhandled message on namespace subscription stream', { type: message.type });
-    }
+    void this.readRequestStream(requestId, stream);
   }
 
   /**
@@ -4275,18 +4294,23 @@ export class MOQTSession {
     const prefixStr = subscription.namespacePrefix.join('/');
     log.info('Unsubscribing from namespace', { namespacePrefix: prefixStr });
 
-    // Send UNSUBSCRIBE_NAMESPACE
-    const message = {
-      type: MessageType.UNSUBSCRIBE_NAMESPACE as const,
-      namespacePrefix: subscription.namespacePrefix,
-    };
+    if (this.isDraft18) {
+      // Draft-22 §4.2, draft-18 §6.1: cancelled by ending the request stream.
+      await this.abortRequestStream(subscription.requestId);
+    } else {
+      // Send UNSUBSCRIBE_NAMESPACE
+      const message = {
+        type: MessageType.UNSUBSCRIBE_NAMESPACE as const,
+        namespacePrefix: subscription.namespacePrefix,
+      };
 
-    try {
-      const bytes = this.codec.encodeControlMessage(message);
-      await this.doSendControl(bytes);
-      log.info('Sent UNSUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr });
-    } catch (err) {
-      log.error('Failed to send UNSUBSCRIBE_NAMESPACE', { error: (err as Error).message });
+      try {
+        const bytes = this.codec.encodeControlMessage(message);
+        await this.doSendControl(bytes);
+        log.info('Sent UNSUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr });
+      } catch (err) {
+        log.error('Failed to send UNSUBSCRIBE_NAMESPACE', { error: (err as Error).message });
+      }
     }
 
     // Clean up
@@ -4625,11 +4649,12 @@ export class MOQTSession {
     };
 
     const encoded = this.codec.encodeControlMessage(publishNsMessage);
+    announceInfo.requestId = requestId;
 
     if ((this.useWorker && this.transportWorker) || this.transport) {
       log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId: requestId.toString() });
 
-      const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+      const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'publish-namespace');
       if (response.type === MessageTypeDraft18.REQUEST_OK) {
         const ok = response as RequestOkMessageDraft18;
         const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
@@ -4668,13 +4693,18 @@ export class MOQTSession {
 
     log.info('Cancelling namespace announcement', { namespace: namespaceStr });
 
-    // Send PUBLISH_NAMESPACE_CANCEL
-    const cancelMessage = {
-      type: MessageType.PUBLISH_NAMESPACE_CANCEL,
-      namespace,
-    };
-    const bytes = this.codec.encodeControlMessage(cancelMessage as ControlMessage);
-    await this.doSendControl(bytes);
+    if (this.isDraft18 && announceInfo.requestId !== undefined) {
+      // Draft-22 §4.1, draft-18 §6.2: withdrawn by cancelling the request.
+      await this.abortRequestStream(announceInfo.requestId);
+    } else if (!this.isDraft18) {
+      // Send PUBLISH_NAMESPACE_CANCEL
+      const cancelMessage = {
+        type: MessageType.PUBLISH_NAMESPACE_CANCEL,
+        namespace,
+      };
+      const bytes = this.codec.encodeControlMessage(cancelMessage as ControlMessage);
+      await this.doSendControl(bytes);
+    }
 
     // Clean up local state
     this.announcedNamespaces.delete(namespaceStr);

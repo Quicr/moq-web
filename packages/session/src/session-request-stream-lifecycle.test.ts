@@ -49,7 +49,7 @@ interface Internals {
   nextRequestId: number;
   getNextRequestId: () => number;
   doSendControl: (b: Uint8Array) => Promise<void>;
-  sendRequestAndWaitResponse: (b: Uint8Array, id: bigint) => Promise<ControlMessageDraft18>;
+  sendRequestAndWaitResponse: (b: Uint8Array, id: bigint, kind: string) => Promise<ControlMessageDraft18>;
   processIncomingBidiStream: (s: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }) => Promise<void>;
   abortRequestStream: (id: bigint) => Promise<void>;
   handleWorkerIncomingBidiStream: (streamId: number) => void;
@@ -113,7 +113,7 @@ async function openSubscribeStream(draft: Draft) {
     trackAlias: 1n,
     largestLocation: { group: 0n, object: 0n },
   });
-  await internals.sendRequestAndWaitResponse(FIRST_BYTES, REQUEST_ID);
+  await internals.sendRequestAndWaitResponse(FIRST_BYTES, REQUEST_ID, 'subscribe');
 
   return { session, internals, peer };
 }
@@ -514,8 +514,13 @@ describe.each(['draft-18', 'draft-22'] as const)('unknown message type (%s)', (d
     const { session, internals } = makeSession(draft);
     const close = vi.spyOn(session, 'close').mockResolvedValue(undefined);
     const peer = installPeerStream(session);
-    peer.send({ type: MessageTypeDraft18.REQUEST_OK, requestId: 0n });
-    await internals.sendRequestAndWaitResponse(FIRST_BYTES, REQUEST_ID);
+    peer.send({
+      type: MessageTypeDraft18.SUBSCRIBE_OK,
+      requestId: REQUEST_ID,
+      trackAlias: 1n,
+      largestLocation: { group: 0n, object: 0n },
+    });
+    await internals.sendRequestAndWaitResponse(FIRST_BYTES, REQUEST_ID, 'subscribe');
 
     peer.sendRaw(unknown);
     await tick();
