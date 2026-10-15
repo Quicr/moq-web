@@ -818,7 +818,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it.skipIf(DEFAULT_DRAFT === 'draft-18')('decodes standard MOQT subgroup header (0x04)', () => {
+    it.skipIf(DEFAULT_DRAFT === 'draft-18' || DEFAULT_DRAFT === 'draft-22')('decodes standard MOQT subgroup header (0x04)', () => {
       // Manually construct a standard MOQT subgroup header
       // Standard MOQT format: type(varint) + trackAlias(varint) + groupId(varint) + subgroupId(varint) + publisherPriority(varint)
       const buffer = new Uint8Array([
