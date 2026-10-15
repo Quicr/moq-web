@@ -211,3 +211,25 @@ describe.each(['draft-18', 'draft-22'] as const)('later messages on a request st
     expect(internals.publicationManager.getByRequestId(PEER_REQUEST_ID)?.forward).toBe(PAUSED);
   });
 });
+
+describe.each(['draft-18', 'draft-22'] as const)('duplicate responses (%s)', (draft) => {
+  it('close the session on a second SUBSCRIBE_OK', async () => {
+    const { session, internals, close } = makeSession(draft);
+    const { send } = await openOurStream(session, internals, subscribeOk, () => session.subscribe(['ns'], 't'));
+
+    send(subscribeOk);
+    await tick();
+
+    expect(close).toHaveBeenCalledWith(violation);
+  });
+
+  it('close the session on a second REQUEST_OK when no REQUEST_UPDATE is pending', async () => {
+    const { session, internals, close } = makeSession(draft);
+    const { send } = await openOurStream(session, internals, requestOk, () => session.announceNamespace(['room']));
+
+    send(requestOk);
+    await tick();
+
+    expect(close).toHaveBeenCalledWith(violation);
+  });
+});

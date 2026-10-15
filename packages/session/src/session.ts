@@ -1979,7 +1979,8 @@ export class MOQTSession {
   private settleRequestUpdate(requestId: bigint, response: ControlMessageDraft18): void {
     const pending = this.pendingRequestUpdates.get(requestId);
     if (!pending || pending.length === 0) {
-      log.warn('Response with no REQUEST_UPDATE pending', { requestId: requestId.toString(), type: response.type });
+      // A second response to a request, or one to no update, breaks "exactly one" (d22 §3.1, §9.5)
+      this.closeForUnexpectedMessage(response, `request ${requestId.toString()}, which has no REQUEST_UPDATE pending`);
       return;
     }
 
