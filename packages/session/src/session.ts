@@ -771,27 +771,6 @@ export class MOQTSession {
       } as SubscribeStatsEvent);
     }, this._draft, this.metrics);
 
-    // §8: surface subscriber-side delivery deadline expiries to consumers.
-    this.objectRouter.setDeliveryTimeoutCallback((sub, reason, resetCode, detail) => {
-      log.warn('Delivery timeout expired (subscriber)', {
-        subscriptionId: sub.subscriptionId,
-        trackAlias: sub.trackAlias?.toString(),
-        reason,
-        resetCode,
-        ...detail,
-      });
-      this.emit('delivery-timeout', {
-        side: 'subscriber',
-        reason,
-        resetCode,
-        trackAlias: sub.trackAlias,
-        subscriptionId: sub.subscriptionId,
-        groupId: detail.groupId,
-        subgroupId: detail.subgroupId,
-        objectId: detail.objectId,
-      } as DeliveryTimeoutEvent);
-    });
-
     // Draft-18 §11.4.3: surface peer-initiated subgroup stream resets. We
     // only fire this for aborts where WebTransport gave us a numeric
     // streamErrorCode; §8 delivery-timeouts flow through the callback above.
@@ -2641,7 +2620,6 @@ export class MOQTSession {
     this.incomingRequestKinds.clear();
     // §8: cancel every pending delivery-timeout so stale timers can't fire
     // after the session is gone.
-    this.objectRouter.clearDeliveryTimeouts();
     this.publisherDeliveryTimeouts.clear();
 
     // Close underlying transport with the draft-18 session termination code.
@@ -2958,8 +2936,6 @@ export class MOQTSession {
       paused: false,
       onObject,
       onEndOfGroup,
-      subgroupDeliveryTimeoutMs: options?.subgroupDeliveryTimeout,
-      objectDeliveryTimeoutMs: options?.objectDeliveryTimeout,
       groupOrder: options?.groupOrder,
       rangeFilterCounts,
     };

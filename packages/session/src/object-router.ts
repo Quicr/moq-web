@@ -36,7 +36,6 @@ import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 import { narrowBigIntToNumber } from './session-helpers.js';
 import { streamResetReason } from './stream-reset-reason.js';
-import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 
 /**
  * High-resolution timestamp for decode-duration histograms. Falls back to
@@ -119,30 +118,6 @@ export type FetchEndOfGroupCallback = (
 export type FetchStreamCloseCallback = (requestId: bigint) => void;
 
 /**
- * Extract the track-alias string from a §8 timer key. Keys are shaped
- * `sg:${alias}:...` or `obj:${alias}:...`.
- */
-function parseAliasFromTimerKey(key: string): string | undefined {
-  const parts = key.split(':');
-  if (parts.length < 2) return undefined;
-  return parts[1];
-}
-
-/**
- * Callback fired when a §8 subscriber-side delivery deadline elapses. Carries
- * the subscription that owns the stream, the reason (`subgroup`/`object`),
- * and the §15.10.4 reset code the peer expects. The router cancels the
- * underlying stream reader itself; consumers use this hook to surface the
- * event to the UI (or unwind an application-layer decoder).
- */
-export type DeliveryTimeoutCallback = (
-  subscription: InternalSubscription,
-  reason: DeliveryTimeoutReason,
-  resetCode: StreamResetErrorCodeDraft18,
-  detail: { groupId?: number; subgroupId?: number; objectId?: number },
-) => void;
-
-/**
  * Callback fired when a subgroup stream is reset by the peer (draft-18
  * §11.4.3). WebTransport surfaces the QUIC RESET_STREAM as a
  * `WebTransportError` with `streamErrorCode`; we forward that raw code so the
@@ -163,52 +138,7 @@ export class ObjectRouter {
   private onFetchObject?: FetchObjectCallback;
   private onFetchEndOfGroup?: FetchEndOfGroupCallback;
   private onFetchStreamClose?: FetchStreamCloseCallback;
-  private onDeliveryTimeout?: DeliveryTimeoutCallback;
   private onStreamReset?: StreamResetCallback;
-
-  /**
-   * §8 delivery-timeout tracker. Keys look like
-   * `sg:${trackAlias}:${groupId}:${subgroupId}` for subgroups and
-   * `obj:${trackAlias}:${groupId}:${subgroupId}:${objectId}` for individual
-   * objects. On expiry we mark the key in `pendingExpirations` so the
-   * reader loop can bail at the next boundary, and — critically — cancel
-   * the associated active reader so a stalled `reader.read()` wakes up.
-   */
-  private timeoutTracker = new DeliveryTimeoutTracker((key, reason, resetCode) => {
-    this.pendingExpirations.set(key, { reason, resetCode });
-    const trackAliasKey = parseAliasFromTimerKey(key);
-    if (trackAliasKey === undefined) return;
-    const reader = this.activeReaders.get(trackAliasKey);
-    if (reader) {
-      // Detach mapping first so a re-entrant cancel doesn't loop.
-      this.activeReaders.delete(trackAliasKey);
-      try { void reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT)); } catch { /* ignore */ }
-    }
-    // Fire the consumer callback synchronously — the pending-expirations
-    // path is a belt-and-braces safety net for readers that are already
-    // mid-decode when the deadline fires.
-    const sub = this.subscriptionManager.getByAlias(trackAliasKey);
-    if (sub && this.onDeliveryTimeout) {
-      const [, aliasStr, gStr, sgStr, oStr] = key.split(':');
-      const detail: { groupId?: number; subgroupId?: number; objectId?: number } = {};
-      if (gStr !== undefined) detail.groupId = Number(gStr);
-      if (sgStr !== undefined) detail.subgroupId = Number(sgStr);
-      if (oStr !== undefined) detail.objectId = Number(oStr);
-      void aliasStr; // alias is already resolved via subscription
-      this.onDeliveryTimeout(sub, reason, resetCode, detail);
-    }
-  });
-  private pendingExpirations = new Map<
-    string,
-    { reason: DeliveryTimeoutReason; resetCode: StreamResetErrorCodeDraft18 }
-  >();
-  /**
-   * Active stream readers keyed by track alias so the timeout tracker can
-   * cancel them when a deadline elapses. Populated by handleIncomingStream
-   * once the subgroup header is decoded (before that we don't know which
-   * subscription owns the stream).
-   */
-  private activeReaders = new Map<string, ReadableStreamDefaultReader<Uint8Array>>();
 
   private readonly _draft: DraftVersion;
   /** Decodes with the session's draft, not the build-time default */
@@ -271,24 +201,12 @@ export class ObjectRouter {
     this.codecLabel = (draft === 'draft-18' || draft === 'draft-22') ? 'draft-18' : draft;
   }
 
-  /** Register the callback fired when a §8 delivery deadline elapses. */
-  setDeliveryTimeoutCallback(cb: DeliveryTimeoutCallback): void {
-    this.onDeliveryTimeout = cb;
-  }
-
   /**
    * Register the callback fired when a peer resets an incoming subgroup
-   * stream (draft-18 §11.4.3 / §15.10.4). §8 deadline-driven resets are
-   * routed through {@link setDeliveryTimeoutCallback} instead, so this hook
-   * only fires for peer-initiated aborts.
+   * stream (draft-18 §11.4.3 / §15.10.4).
    */
   setStreamResetCallback(cb: StreamResetCallback): void {
     this.onStreamReset = cb;
-  }
-
-  /** Test-only accessor for the internal tracker. */
-  get deliveryTimeoutTracker(): DeliveryTimeoutTracker {
-    return this.timeoutTracker;
   }
 
   /**
@@ -563,12 +481,6 @@ export class ObjectRouter {
                 hasExtensions,
               });
 
-              // Arm §8 subgroup-delivery timer if the subscription requested one.
-              this.armSubgroupTimer(subgroupHeader);
-              // Register the reader so an expiring timer can cancel it if
-              // it's blocked in reader.read().
-              this.activeReaders.set(subgroupHeader.trackAlias.toString(), reader);
-
               bufferOffset += headerBytes;
             } catch (decodeErr) {
               this.metrics.counter('moq.codec.decode.errors', 1, {
@@ -659,12 +571,6 @@ export class ObjectRouter {
             });
           }
           while (bufferOffset < buffer.length) {
-            // §8 delivery-timeout: if the subgroup or object deadline expired
-            // while we were waiting for bytes, bail out before decoding.
-            if (this.consumeExpiredTimer(subgroupHeader, previousObjectId)) {
-              try { await reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT)); } catch { /* ignore */ }
-              return;
-            }
             const decodeStart = nowMs();
             try {
               const view = buffer.subarray(bufferOffset);
@@ -674,9 +580,6 @@ export class ObjectRouter {
                 messageType: 'stream_object',
               });
               this.metrics.counter('moq.object.stream.in', 1, { codec: this.codecLabel });
-              // §8: this object arrived — cancel its per-object timer, then
-              // arm the next one before we do delivery.
-              this.disarmObjectTimer(subgroupHeader, objectId);
               previousObjectId = objectId; // Update for next delta decode
               objectCount++;
 
@@ -740,12 +643,6 @@ export class ObjectRouter {
                 });
               }
 
-              // Arm the *next* object's per-object timer now that we've
-              // delivered objectId. Speculative — the next object may never
-              // arrive if this was the last one in the subgroup; it'll be
-              // cleared when the stream closes.
-              this.armObjectTimer(subgroupHeader, objectId + 1);
-
               bufferOffset += bytesConsumed;
             } catch (decodeErr) {
               this.metrics.counter('moq.codec.decode.errors', 1, {
@@ -776,11 +673,6 @@ export class ObjectRouter {
               });
               subscription.onEndOfGroup(subgroupHeader.groupId);
             }
-          }
-          // §8: subgroup finished cleanly — cancel its pending timers so a
-          // leftover per-object deadline can't fire spuriously.
-          if (subgroupHeader) {
-            this.disarmSubgroupTimers(subgroupHeader, previousObjectId);
           }
           log.info('Stream ended', {
             totalBytesReceived,
@@ -1395,86 +1287,5 @@ export class ObjectRouter {
       throw new Error('FETCH: Group ID Delta underflows below 0 (d18 §11.4.4.1, d22 §11.4.1.1, PROTOCOL_VIOLATION)');
     }
     return groupId;
-  }
-
-  // ─── §8 delivery-timeout helpers ────────────────────────────────────────
-
-  private subgroupKey(h: { trackAlias: number | bigint; groupId: number; subgroupId: number }): string {
-    return `sg:${h.trackAlias.toString()}:${h.groupId}:${h.subgroupId}`;
-  }
-
-  private objectKey(
-    h: { trackAlias: number | bigint; groupId: number; subgroupId: number },
-    objectId: number,
-  ): string {
-    return `obj:${h.trackAlias.toString()}:${h.groupId}:${h.subgroupId}:${objectId}`;
-  }
-
-  private armSubgroupTimer(h: { trackAlias: number | bigint; groupId: number; subgroupId: number }): void {
-    const sub = this.subscriptionManager.getByAlias(h.trackAlias);
-    if (!sub) return;
-    const ms = sub.subgroupDeliveryTimeoutMs;
-    if (!ms || ms <= 0) return;
-    this.timeoutTracker.arm(this.subgroupKey(h), 'subgroup', ms);
-    // Also arm the first-object deadline speculatively (objectId = 0). If
-    // objects arrive in a different order we correct in the object branch.
-    this.armObjectTimer(h, 0);
-  }
-
-  private armObjectTimer(
-    h: { trackAlias: number | bigint; groupId: number; subgroupId: number },
-    objectId: number,
-  ): void {
-    const sub = this.subscriptionManager.getByAlias(h.trackAlias);
-    if (!sub) return;
-    const ms = sub.objectDeliveryTimeoutMs;
-    if (!ms || ms <= 0) return;
-    this.timeoutTracker.arm(this.objectKey(h, objectId), 'object', ms);
-  }
-
-  private disarmObjectTimer(
-    h: { trackAlias: number | bigint; groupId: number; subgroupId: number },
-    objectId: number,
-  ): void {
-    this.timeoutTracker.disarm(this.objectKey(h, objectId));
-  }
-
-  private disarmSubgroupTimers(
-    h: { trackAlias: number | bigint; groupId: number; subgroupId: number },
-    lastObjectId: number,
-  ): void {
-    this.timeoutTracker.disarm(this.subgroupKey(h));
-    // Objects we know about — leave a small window of speculative timers to
-    // disarm as well (we armed obj = lastObjectId + 1 speculatively).
-    for (let i = 0; i <= lastObjectId + 1; i++) {
-      this.timeoutTracker.disarm(this.objectKey(h, i));
-    }
-    this.activeReaders.delete(h.trackAlias.toString());
-  }
-
-  /**
-   * Consume any expiration marker that landed while we were awaiting data.
-   * The tracker callback already invokes `onDeliveryTimeout` and cancels the
-   * reader; this helper just clears the marker so a downstream re-decode
-   * doesn't observe a stale flag.
-   */
-  private consumeExpiredTimer(
-    h: { trackAlias: number | bigint; groupId: number; subgroupId: number },
-    previousObjectId: number,
-  ): boolean {
-    if (this.pendingExpirations.size === 0) return false;
-    const sgKey = this.subgroupKey(h);
-    const objKey = this.objectKey(h, previousObjectId + 1);
-    const hit = this.pendingExpirations.has(sgKey) || this.pendingExpirations.has(objKey);
-    if (!hit) return false;
-    this.pendingExpirations.delete(sgKey);
-    this.pendingExpirations.delete(objKey);
-    return true;
-  }
-
-  /** Cancel every pending §8 timer (e.g. on session close). */
-  clearDeliveryTimeouts(): void {
-    this.timeoutTracker.clear();
-    this.pendingExpirations.clear();
   }
 }
