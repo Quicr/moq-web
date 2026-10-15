@@ -70,10 +70,9 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.2 AUTHORIZATION_TOKEN wiring', ()
         requestId: number,
         namespace: string[],
         trackName: string,
-        trackAlias: bigint,
         options: { authToken: { tokenBytes: Uint8Array; tokenType?: number } },
       ) => Promise<void>;
-    }).subscribeDraft18(0, ['ns'], 'track', 0n, {
+    }).subscribeDraft18(0, ['ns'], 'track', {
       authToken: { tokenBytes, tokenType: 0x63346d },
     });
 
@@ -130,10 +129,9 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.2 AUTHORIZATION_TOKEN wiring', ()
         requestId: number,
         namespace: string[],
         trackName: string,
-        trackAlias: bigint,
         options?: object,
       ) => Promise<void>;
-    }).subscribeDraft18(0, ['ns'], 'track', 0n, {});
+    }).subscribeDraft18(0, ['ns'], 'track', {});
 
     const [decoded] = Draft18MessageCodec.decode(chunks[0]);
     const m = decoded as SubscribeMessageDraft18;

@@ -1571,11 +1571,12 @@ export class MOQTSession {
           return;
         }
         if (!(err instanceof RequestStreamEnded)) {
-          this.endRequest(requestId);
+          this.endRequest(requestId, 'Request stream reset');
           await this.closeRequestStream(requestId);
           return;
         }
         this.endNamespaceSubscription(requestId);
+        this.failSubscription(requestId, 'Request stream closed before PUBLISH_DONE');
         if (this.publicationManager.getByRequestId(requestId) === undefined) {
           await this.closeRequestStream(requestId);
         }
@@ -1612,7 +1613,7 @@ export class MOQTSession {
    * delivery for it stops: its publication and, for an accepted PUBLISH,
    * the subscription it created.
    */
-  private endRequest(requestId: bigint): void {
+  private endRequest(requestId: bigint, reason = 'Request stream cancelled'): void {
     const publication = this.publicationManager.getByRequestId(requestId);
     if (publication) {
       this.publicationManager.remove(publication.trackAlias);
@@ -1620,14 +1621,60 @@ export class MOQTSession {
     for (const info of this.announcedNamespaces.values()) {
       info.subscribers.delete(requestId);
     }
-    if (this.incomingRequestKinds.get(requestId) === 'publish') {
-      const subscription = this.subscriptionManager.findByRequestId(requestId);
-      if (subscription) {
-        this.subscriptionManager.remove(subscription.subscriptionId);
-      }
-    }
+    this.failSubscription(requestId, reason);
     this.incomingRequestKinds.delete(requestId);
     this.endNamespaceSubscription(requestId);
+  }
+
+  /**
+   * The stream of a subscription we hold ended, by FIN before PUBLISH_DONE or
+   * by reset, so the request failed (draft-22 §3.1.2, §6.4.2.2). Drop the
+   * subscription and report it as ended.
+   */
+  private failSubscription(requestId: bigint, reason: string): void {
+    const subscription = this.subscriptionManager.findByRequestId(requestId);
+    if (!subscription) {
+      return;
+    }
+
+    this.subscriptionManager.remove(subscription.subscriptionId);
+    log.warn('Subscription failed', { requestId: requestId.toString(), reason });
+    this.emit('publish-done', {
+      requestId,
+      subscriptionId: subscription.subscriptionId,
+      finalGroupId: 0,
+      finalObjectId: 0,
+      statusCode: PublishDoneErrorCodeDraft18.INTERNAL_ERROR,
+      reasonPhrase: reason,
+    } as PublishDoneEvent);
+  }
+
+  /**
+   * A publisher's Track Alias must not already name a different Track with an
+   * Established subscription; if it does the session closes with
+   * DUPLICATE_TRACK_ALIAS (draft-22 §3.1.3, draft-18 §11.1). Subscriptions to
+   * the same Track may share one. Returns whether the alias is acceptable.
+   */
+  private acceptTrackAlias(
+    trackAlias: bigint,
+    namespace: string[],
+    trackName: string,
+    ownSubscriptionId?: number,
+  ): boolean {
+    const fullName = JSON.stringify([...namespace, trackName]);
+    const clash = this.subscriptionManager.getAllByAlias(trackAlias).find((other) => (
+      other.subscriptionId !== ownSubscriptionId
+      && JSON.stringify([...other.namespace, other.trackName]) !== fullName
+    ));
+    if (!clash) {
+      return true;
+    }
+
+    const reason = `Track Alias ${trackAlias.toString()} already names another track`;
+    log.error(reason);
+    void this.close({ code: SessionErrorCodeDraft18.DUPLICATE_TRACK_ALIAS, reason }).catch(() => {});
+
+    return false;
   }
 
   /**
@@ -3401,7 +3448,9 @@ export class MOQTSession {
     // Local counter is small; widen for wire encode and state maps.
     const subscriptionId = this.getNextRequestId();
     const requestId = BigInt(subscriptionId);
-    const trackAlias = requestId;
+    // Draft-14/16: the subscriber chooses the alias. Draft-18/22: the publisher does, in
+    // SUBSCRIBE_OK or PUBLISH, so there is none until then (d22 §3.1.3).
+    const trackAlias = this.isDraft18 ? undefined : requestId;
 
     const fullTrackNameForLog = [...namespace, trackName].join('/');
     log.info('Subscribing', {
@@ -3410,7 +3459,6 @@ export class MOQTSession {
       trackName,
       fullTrackName: fullTrackNameForLog,
       subscriptionId,
-      trackAlias: trackAlias.toString(),
       isDraft18: this.isDraft18,
     });
 
@@ -3436,10 +3484,17 @@ export class MOQTSession {
       }
 
       // Draft-18: Send SUBSCRIBE on a new bidirectional stream
-      await this.subscribeDraft18(requestId, namespace, trackName, trackAlias, options, fillParameters);
+      try {
+        await this.subscribeDraft18(requestId, namespace, trackName, options, fillParameters);
 
-      if (fill && !this.isDraft22) {
-        await this.requestFill(subscriptionId, fill);
+        if (fill && !this.isDraft22) {
+          await this.requestFill(subscriptionId, fill);
+        }
+      } catch (err) {
+        // A failed SUBSCRIBE leaves nothing behind (d22 §3.1.2)
+        this.subscriptionManager.remove(subscriptionId);
+        this.dropFillStream(requestId);
+        throw err;
       }
     } else {
       // Draft-16 exposes only LATEST_GROUP and ABSOLUTE_START on the wire. Any
@@ -3459,7 +3514,7 @@ export class MOQTSession {
       const subscribeMessage: SubscribeMessage = {
         type: MessageType.SUBSCRIBE,
         requestId,
-        trackAlias,
+        trackAlias: trackAlias!,
         fullTrackName: { namespace, trackName },
         subscriberPriority: options?.priority ?? 128,
         groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
@@ -3483,11 +3538,11 @@ export class MOQTSession {
       await this.doSendControl(subscribeBytes);
       log.info('Sent SUBSCRIBE message', {
         requestId: requestId.toString(),
-        trackAlias: trackAlias.toString(),
+        trackAlias: trackAlias!.toString(),
         namespace: namespace.join('/'),
         trackName,
       });
-      this.emitMessageSent('SUBSCRIBE', subscribeBytes.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
+      this.emitMessageSent('SUBSCRIBE', subscribeBytes.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias!.toString() });
     }
 
     log.info('Subscription started', { subscriptionId });
@@ -3501,7 +3556,6 @@ export class MOQTSession {
     requestId: bigint,
     namespace: string[],
     trackName: string,
-    trackAlias: bigint,
     options?: SubscribeOptions,
     fill?: FillParametersDraft22,
   ): Promise<void> {
@@ -3562,13 +3616,12 @@ export class MOQTSession {
     const subHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent SUBSCRIBE', {
       requestId: requestId.toString(),
-      trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
       hex: subHex,
       length: encoded.length,
     });
-    this.emitMessageSent('SUBSCRIBE', encoded.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
+    this.emitMessageSent('SUBSCRIBE', encoded.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString() });
 
     const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'subscribe');
 
@@ -3577,19 +3630,16 @@ export class MOQTSession {
       const relayTrackAlias = subscribeOk.trackAlias ?? subscribeOk.requestId;
       log.info('Received SUBSCRIBE_OK', {
         trackAlias: relayTrackAlias.toString(),
-        localTrackAlias: trackAlias.toString(),
         largestGroup: subscribeOk.largestLocation.group.toString(),
         largestObject: subscribeOk.largestLocation.object.toString(),
       });
       const sub = this.subscriptionManager.findByRequestId(requestId);
-      // Update subscription's track alias to match what relay assigned
-      if (sub && relayTrackAlias !== trackAlias) {
+      if (sub && !this.acceptTrackAlias(relayTrackAlias, sub.namespace, sub.trackName, sub.subscriptionId)) {
+        throw new Error(`SUBSCRIBE_OK reuses Track Alias ${relayTrackAlias.toString()}`);
+      }
+      // The publisher's alias is what its data streams carry
+      if (sub) {
         this.subscriptionManager.updateTrackAlias(sub.subscriptionId, relayTrackAlias);
-        log.info('Updated subscription trackAlias', {
-          subscriptionId: sub.subscriptionId,
-          oldAlias: trackAlias.toString(),
-          newAlias: relayTrackAlias.toString(),
-        });
       }
       if (sub) {
         const largestGroup = subscribeOk.largestLocation.group;
@@ -3612,7 +3662,6 @@ export class MOQTSession {
         errorCode: error.errorCode,
         reasonPhrase: error.reasonPhrase,
       });
-      this.dropFillStream(requestId);
       await this.closeRequestStream(requestId);
       throw new RequestRejectedError(
         `SUBSCRIBE failed: ${error.reasonPhrase} (code ${error.errorCode})`,
@@ -6922,6 +6971,17 @@ export class MOQTSession {
       return;
     }
 
+    // Draft-18 §5.1: at most one subscription per Track and role (d22 allows several)
+    if (!this.isDraft22 && this.publicationManager.getByTrackName(namespace, trackName)) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.DUPLICATE_SUBSCRIPTION,
+        'Track already has a subscriber',
+      );
+      return;
+    }
+
     // Assign track alias
     const trackAlias = this.nextPublicationAlias++;
 
@@ -7054,6 +7114,13 @@ export class MOQTSession {
       return;
     }
 
+    if (!this.acceptTrackAlias(message.trackAlias, namespace, trackName)) {
+      return;
+    }
+    if (!this.isDraft22 && !(await this.resolveDuplicatePublish(message, writable))) {
+      return;
+    }
+
     // Send REQUEST_OK to accept. §10.2.10 EXPIRES carries the namespace
     // subscription's expiry hint when set.
     const expires = matchingSubscription.expires;
@@ -7105,6 +7172,39 @@ export class MOQTSession {
     } as IncomingPublishEvent);
 
     log.info('Accepted PUBLISH', { trackAlias: message.trackAlias.toString(), fullTrackName: fullTrackNameStr });
+  }
+
+  /**
+   * Draft-18 §5.1: an endpoint has at most one subscription per Track and role.
+   * A PUBLISH for a Track we already hold Established is refused with
+   * DUPLICATE_SUBSCRIPTION; for one our own SUBSCRIBE is still Pending on, that
+   * SUBSCRIBE ends first. Returns whether the PUBLISH may go on.
+   */
+  private async resolveDuplicatePublish(
+    message: PublishMessageDraft18 | PublishMessageDraft22,
+    writable: WritableStream<Uint8Array>,
+  ): Promise<boolean> {
+    const existing = this.subscriptionManager.getByTrackName(message.trackNamespace, message.trackName);
+    if (!existing) {
+      return true;
+    }
+
+    if (existing.trackAlias === undefined) {
+      await this.abortRequestStream(existing.requestId);
+      this.subscriptionManager.remove(existing.subscriptionId);
+      this.dropFillStream(existing.requestId);
+
+      return true;
+    }
+
+    await this.sendRequestErrorOnStream(
+      writable,
+      message.requestId,
+      RequestErrorCodeDraft18.DUPLICATE_SUBSCRIPTION,
+      'Already subscribed to this track',
+    );
+
+    return false;
   }
 
   /**
