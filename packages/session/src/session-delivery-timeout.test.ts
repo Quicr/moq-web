@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { MOQTransport, StreamResetErrorCodeDraft18 } from '@moq-web/core';
+import { MOQTransport, StreamResetErrorCodeDraft18, type DraftVersion } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 import type { DeliveryTimeoutEvent } from './types.js';
@@ -34,15 +34,15 @@ interface PrivateSession {
   doCloseStream: (info: { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }) => Promise<void>;
 }
 
-function makeSession(): { session: MOQTSession; transport: MOQTransport } {
-  const transport = new MOQTransport();
+function makeSession(draft: DraftVersion = 'draft-16'): { session: MOQTSession; transport: MOQTransport } {
+  const transport = new MOQTransport({ draft });
   (transport as unknown as { close: typeof transport.close }).close = vi.fn().mockResolvedValue(undefined);
   const session = new MOQTSession(transport);
   (session as unknown as { _state: string })._state = 'ready';
   return { session, transport };
 }
 
-describe('§8 publisher-side delivery-timeout enforcement', () => {
+describe('§8 publisher-side delivery-timeout enforcement (draft-16 stream-per-object)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -75,12 +75,10 @@ describe('§8 publisher-side delivery-timeout enforcement', () => {
     priv.doWriteStream = vi.fn().mockImplementation(() => new Promise<void>(() => { /* stall */ }));
     priv.doCloseStream = closeSpy;
 
-    // Draft-16/17 send one stream per object; give resetPublicationStream a stream to abort.
-    if (session.draft === 'draft-16' || session.draft === 'draft-17') {
-      priv.activeVideoStreams.set('7', {
-        writer, streamId: 100, groupId: 0, objectCount: 0, previousObjectId: -1, hasExtensions: false,
-      });
-    }
+    // Track the stream so resetPublicationStream has something to abort.
+    priv.activeVideoStreams.set('7', {
+      writer, streamId: 100, groupId: 0, objectCount: 0, previousObjectId: -1, hasExtensions: false,
+    });
 
     const timeoutEvents: DeliveryTimeoutEvent[] = [];
     session.on('delivery-timeout', (ev) => timeoutEvents.push(ev as DeliveryTimeoutEvent));

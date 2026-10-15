@@ -79,6 +79,28 @@ export function addDeliveryTimeoutParams(
 }
 
 /**
+ * Delivery timeouts a subscriber sent as message parameters (d22 §5.2, d18
+ * §8). Each is an even-key vi64 in milliseconds; 0 or absent means none.
+ */
+export function parseDeliveryTimeoutParams(
+  params: Map<number, Uint8Array> | undefined,
+): { subgroupMs?: number; objectMs?: number } {
+  const read = (key: number): number | undefined => {
+    const bytes = params?.get(key);
+    if (!bytes || bytes.length === 0) {
+      return undefined;
+    }
+    const ms = MOQTVarInt.decodeNumber(bytes)[0];
+    return ms > 0 ? ms : undefined;
+  };
+
+  return {
+    subgroupMs: read(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT),
+    objectMs: read(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT),
+  };
+}
+
+/**
  * Draft-18 §10.2.9 SUBSCRIPTION_FILTER mapping.
  *
  * Translates the string-form `SubscribeOptions.filterType` (plus its start/end

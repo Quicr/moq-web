@@ -15,6 +15,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { MOQTransport, SessionErrorCodeDraft18, StreamResetErrorCodeDraft18 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
+import { streamResetReason } from './stream-reset-reason.js';
 
 // Type-narrow helper to poke at private state without polluting the public API.
 type PrivateSession = {
@@ -84,7 +85,7 @@ describe('session.resetPublicationStream()', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('aborts the underlying writer with a code-derived reason string', async () => {
+  it('aborts the underlying writer with the reset code', async () => {
     const { session } = makeSession();
     const abortSpy = vi.fn().mockResolvedValue(undefined);
     const fakeWriter = { abort: abortSpy } as unknown as WritableStreamDefaultWriter<Uint8Array>;
@@ -99,13 +100,12 @@ describe('session.resetPublicationStream()', () => {
     await session.resetPublicationStream('alias-1', StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT);
 
     expect(abortSpy).toHaveBeenCalledTimes(1);
-    const passedReason = abortSpy.mock.calls[0][0] as string;
-    expect(passedReason).toContain(String(StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT));
+    expect(abortSpy).toHaveBeenCalledWith(streamResetReason(StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT));
     // Ensures the map entry is drained so a follow-up reset is a no-op.
     expect((session as unknown as PrivateSession).activeVideoStreams.has('alias-1')).toBe(false);
   });
 
-  it('forwards a caller-supplied reason string verbatim', async () => {
+  it('puts the code on the wire, not the caller-supplied reason string', async () => {
     const { session } = makeSession();
     const abortSpy = vi.fn().mockResolvedValue(undefined);
     (session as unknown as PrivateSession).activeVideoStreams.set('alias-2', {
@@ -122,7 +122,7 @@ describe('session.resetPublicationStream()', () => {
       'subscriber lagged past 3 groups',
     );
 
-    expect(abortSpy).toHaveBeenCalledWith('subscriber lagged past 3 groups');
+    expect(abortSpy).toHaveBeenCalledWith(streamResetReason(StreamResetErrorCodeDraft18.TOO_FAR_BEHIND));
   });
 
   it('does not throw when writer.abort() itself rejects (stream already gone)', async () => {

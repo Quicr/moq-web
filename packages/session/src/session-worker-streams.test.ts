@@ -156,4 +156,24 @@ describe.each(['draft-18', 'draft-22'] as const)('worker data streams (%s)', (dr
       code: StreamResetErrorCodeDraft18.CANCELLED,
     });
   });
+
+  it('resets a publication stream with its code, not a FIN', async () => {
+    const { session, posted } = makeSession(draft);
+    (session as unknown as { activeVideoStreams: Map<string, unknown> }).activeVideoStreams.set('9', {
+      streamId: BIDI_STREAM,
+      groupId: 1,
+      objectCount: 1,
+      previousObjectId: 0,
+      hasExtensions: false,
+    });
+
+    await session.resetPublicationStream('9', StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT);
+
+    expect(posted).toContainEqual({
+      type: 'abort-stream',
+      streamId: BIDI_STREAM,
+      code: StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT,
+    });
+    expect(posted.some((message) => message.type === 'close-stream')).toBe(false);
+  });
 });

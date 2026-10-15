@@ -126,6 +126,7 @@ import {
   Draft18RequestStream,
   RequestStreamEnded,
   addDeliveryTimeoutParams,
+  parseDeliveryTimeoutParams,
   assertNoTokenRegister,
   applyRangeFilters,
   assertNotReservedNamespace,
@@ -226,6 +227,9 @@ const STREAM_COUNT_UNKNOWN_DRAFT22 = (1n << 64n) - 1n;
  * Filters, so it never advertises the option and keeps the default, 0.
  */
 const OWN_MAX_FILTER_RANGES = 0;
+
+/** Delivery timeout the draft-14/16 PUBLISH advertised when the app set none */
+const LEGACY_DELIVERY_TIMEOUT_MS = 5000;
 
 /** The parts of an incoming draft-22 request that carry Range Filters (§3.3.2) */
 interface RangeFilteredRequest {
@@ -447,6 +451,8 @@ export class MOQTSession {
    * `sendObjectViaStream` / `sendObjectWithGOP` know when to arm timers.
    */
   private publisherTimeoutConfig = new Map<string, { subgroupDeliveryTimeoutMs?: number }>();
+  /** Draft-18/22 subgroup streams with a FIN pending commit, by timer key */
+  private finishingStreams = new Map<string, { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }>();
   /** Transport event cleanup handlers */
   private transportCleanup: Array<() => void> = [];
 
@@ -2689,6 +2695,93 @@ export class MOQTSession {
   // ─── §8 publisher-side delivery-timeout helpers ─────────────────────────
 
   /**
+   * Effective delivery timeout of a publication: the smaller of the track's
+   * and the subscriber's non-zero values (d22 §5.2); none when neither is set.
+   */
+  private effectiveTimeoutMs(trackAlias: bigint | string, kind: 'subgroup' | 'object'): number | undefined {
+    const publication = this.publicationManager.get(trackAlias);
+    const trackMs = kind === 'subgroup'
+      ? this.publisherTimeoutConfig.get(trackAlias.toString())?.subgroupDeliveryTimeoutMs
+      : undefined;
+    const subscriberMs = kind === 'subgroup'
+      ? publication?.subscriberSubgroupTimeoutMs
+      : publication?.subscriberObjectTimeoutMs;
+    const set = [trackMs, subscriberMs].filter((ms): ms is number => ms !== undefined && ms > 0);
+
+    return set.length > 0 ? Math.min(...set) : undefined;
+  }
+
+  /**
+   * Reset a data stream with a Stream Reset Code so it reaches the peer as
+   * RESET_STREAM (d22 §11.3.2, §12.5).
+   */
+  private async abortStreamHandle(
+    stream: { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number },
+    code: StreamResetErrorCodeDraft18,
+  ): Promise<void> {
+    if (stream.writer) {
+      await stream.writer.abort(streamResetReason(code));
+    } else if (stream.streamId !== undefined && this.transportWorker) {
+      this.transportWorker.abortStream(stream.streamId, code);
+    }
+  }
+
+  /**
+   * Start the SUBGROUP_DELIVERY_TIMEOUT of a subgroup whose FIN is about to be
+   * written (d22 §5.2: it starts once all its objects are published). Returns
+   * the key to disarm once the stream is committed, or undefined if none applies.
+   */
+  private armFinishTimer(
+    aliasKey: string,
+    stream: { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number; groupId: number },
+  ): string | undefined {
+    const ms = this.isDraft18 ? this.effectiveTimeoutMs(aliasKey, 'subgroup') : undefined;
+    if (ms === undefined) {
+      return undefined;
+    }
+
+    const key = `pub-fin:${aliasKey}:${stream.groupId}:0`;
+    this.finishingStreams.set(key, stream);
+    this.publisherDeliveryTimeouts.arm(key, 'subgroup', ms);
+    return key;
+  }
+
+  private disarmFinishTimer(key: string | undefined): void {
+    if (key === undefined) {
+      return;
+    }
+    this.publisherDeliveryTimeouts.disarm(key);
+    this.finishingStreams.delete(key);
+  }
+
+  /**
+   * An object that waited longer than OBJECT_DELIVERY_TIMEOUT before reaching
+   * the transport must not be sent (d22 §5.2). The caller resets its stream.
+   */
+  private objectExpired(trackAlias: bigint, receivedAt: number): boolean {
+    const ms = this.effectiveTimeoutMs(trackAlias, 'object');
+    return ms !== undefined && performance.now() - receivedAt > ms;
+  }
+
+  /** Record an expired object: its group gets no new stream, and the app hears of it. */
+  private noteObjectExpired(trackAlias: bigint, metadata: ObjectMetadata): void {
+    const publication = this.publicationManager.get(trackAlias);
+    if (publication) {
+      publication.expiredGroup = metadata.groupId;
+    }
+
+    this.emit('delivery-timeout', {
+      side: 'publisher',
+      reason: 'object',
+      resetCode: StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT,
+      trackAlias,
+      groupId: metadata.groupId,
+      subgroupId: 0,
+      objectId: metadata.objectId,
+    } as DeliveryTimeoutEvent);
+  }
+
+  /**
    * Arm a subgroup-delivery deadline for an outgoing publisher stream.
    *
    * Returns the timer key if a timer was armed (so the caller can disarm it
@@ -2719,9 +2812,10 @@ export class MOQTSession {
     reason: DeliveryTimeoutReason,
     resetCode: StreamResetErrorCodeDraft18,
   ): void {
-    // Keys are `pub-sg:${alias}:${groupId}:${subgroupId}`.
+    // Keys are `pub-sg:${alias}:${groupId}:${subgroupId}` (draft-16/17, from
+    // stream open) or `pub-fin:...` (draft-18/22, from the subgroup's FIN).
     const parts = key.split(':');
-    if (parts[0] !== 'pub-sg' || parts.length < 4) return;
+    if ((parts[0] !== 'pub-sg' && parts[0] !== 'pub-fin') || parts.length < 4) return;
     const aliasKey = parts[1];
     const groupId = Number(parts[2]);
     const subgroupId = Number(parts[3]);
@@ -2734,15 +2828,22 @@ export class MOQTSession {
       resetCode,
     });
 
-    // Best-effort abort — if a GOP stream is still open for this alias, tear
-    // it down with the §15.10.4 DELIVERY_TIMEOUT reset code. If no stream is
-    // open, resetPublicationStream is a no-op.
-    void this.resetPublicationStream(aliasKey, resetCode, 'delivery-timeout').catch((err) => {
-      log.debug('resetPublicationStream on timeout failed', {
-        aliasKey,
-        error: (err as Error).message,
+    // A finished subgroup whose FIN was not committed in time: reset that stream
+    const finishing = this.finishingStreams.get(key);
+    if (finishing) {
+      this.finishingStreams.delete(key);
+      void this.abortStreamHandle(finishing, resetCode).catch(() => { /* already gone */ });
+    } else if (parts[0] === 'pub-sg') {
+      // Best-effort abort — if a GOP stream is still open for this alias, tear
+      // it down with the §15.10.4 DELIVERY_TIMEOUT reset code. If no stream is
+      // open, resetPublicationStream is a no-op.
+      void this.resetPublicationStream(aliasKey, resetCode, 'delivery-timeout').catch((err) => {
+        log.debug('resetPublicationStream on timeout failed', {
+          aliasKey,
+          error: (err as Error).message,
+        });
       });
-    });
+    }
 
     this.emit('delivery-timeout', {
       side: 'publisher',
@@ -2769,15 +2870,7 @@ export class MOQTSession {
     const codeName = StreamResetErrorCodeDraft18[code] ?? 'UNKNOWN';
     const abortReason = reason ?? `stream-reset code=${code} (${codeName})`;
     try {
-      if (existing.writer) {
-        await existing.writer.abort(abortReason);
-      } else if (existing.streamId !== undefined && this.transportWorker) {
-        // The worker's close-stream path swallows the STOP_SENDING/RESET_STREAM
-        // errors from writer.close(); using it here surfaces the same behavior
-        // for aborts. A dedicated abort-stream RPC can follow if we ever need
-        // to propagate the numeric code down to the QUIC layer.
-        this.transportWorker.closeStream(existing.streamId);
-      }
+      await this.abortStreamHandle(existing, code);
       log.info('Reset publication stream', {
         trackAlias,
         code,
@@ -4284,7 +4377,8 @@ export class MOQTSession {
       });
     }
     const priority = options?.priority ?? 128;
-    const deliveryTimeout = options?.deliveryTimeout ?? 5000;
+    // Draft-18/22 enforce and advertise only what the app set (d22 §5.2)
+    const deliveryTimeout = options?.deliveryTimeout ?? (this.isDraft18 ? 0 : LEGACY_DELIVERY_TIMEOUT_MS);
     const deliveryMode = options?.deliveryMode ?? 'stream';
     const audioDeliveryMode = options?.audioDeliveryMode ?? 'datagram';
 
@@ -5664,6 +5758,17 @@ export class MOQTSession {
     priority: number
   ): Promise<void> {
     const aliasKey = trackAlias.toString();
+    const receivedAt = performance.now();
+
+    // After an object timeout the subgroup is not reopened (d22 §5.2)
+    if (this.publicationManager.get(trackAlias)?.expiredGroup === metadata.groupId) {
+      log.debug('Dropping object of a subgroup reset for a delivery timeout', {
+        trackAlias: aliasKey,
+        groupId: metadata.groupId,
+        objectId: metadata.objectId,
+      });
+      return;
+    }
 
     try {
       let existing = this.activeVideoStreams.get(aliasKey);
@@ -5673,7 +5778,13 @@ export class MOQTSession {
       }
 
       if (!existing) {
-        await this.openSubgroupWithObject(trackAlias, data, metadata, priority);
+        await this.openSubgroupWithObject(trackAlias, data, metadata, priority, receivedAt);
+        return;
+      }
+
+      if (this.objectExpired(trackAlias, receivedAt)) {
+        await this.resetPublicationStream(aliasKey, StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT, 'delivery-timeout');
+        this.noteObjectExpired(trackAlias, metadata);
         return;
       }
 
@@ -5705,7 +5816,7 @@ export class MOQTSession {
         });
         this.activeVideoStreams.delete(aliasKey);
         this.decrementOpenStreamCount();
-        await this.openSubgroupWithObject(trackAlias, data, metadata, priority);
+        await this.openSubgroupWithObject(trackAlias, data, metadata, priority, receivedAt);
       }
     } catch (err) {
       log.error('Failed to send subgroup object', {
@@ -5728,7 +5839,8 @@ export class MOQTSession {
     trackAlias: bigint,
     data: Uint8Array,
     metadata: ObjectMetadata,
-    priority: number
+    priority: number,
+    receivedAt: number
   ): Promise<void> {
     const publication = this.publicationManager.get(trackAlias);
     const reopened = publication?.lastStreamGroup === metadata.groupId;
@@ -5736,9 +5848,16 @@ export class MOQTSession {
       publication.lastStreamGroup = metadata.groupId;
     }
 
-    this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
     const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
     const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
+
+    // Opening the stream may have taken longer than the object may wait
+    if (this.objectExpired(trackAlias, receivedAt)) {
+      await this.abortStreamHandle(streamInfo, StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT).catch(() => {});
+      this.decrementOpenStreamCount();
+      this.noteObjectExpired(trackAlias, metadata);
+      return;
+    }
 
     const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
       trackAlias,
@@ -6036,6 +6155,7 @@ export class MOQTSession {
     if (existing) {
       // §8: stream is closing cleanly — cancel the pending deadline.
       this.publisherDeliveryTimeouts.disarm(`pub-sg:${trackAlias}:${existing.groupId}:0`);
+      const finishKey = this.armFinishTimer(trackAlias, existing);
       try {
         await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
         // OPS-hi 1: fires per group boundary — demoted from .info to .debug.
@@ -6049,6 +6169,8 @@ export class MOQTSession {
           trackAlias,
           error: (err as Error).message,
         });
+      } finally {
+        this.disarmFinishTimer(finishKey);
       }
       this.activeVideoStreams.delete(trackAlias);
     }
@@ -6671,6 +6793,12 @@ export class MOQTSession {
     const sched = parseSubscriberSchedulingParams(message.parameters);
     const subscriberPriority = sched.subscriberPriority ?? 128;
     const subscriberGroupOrder = sched.groupOrder ?? GroupOrder.ASCENDING;
+    // The subscriber's delivery timeouts (d22 §5.2) bound ours
+    const timeouts = parseDeliveryTimeoutParams(message.parameters);
+    const subscriberTimeouts = {
+      subscriberSubgroupTimeoutMs: timeouts.subgroupMs,
+      subscriberObjectTimeoutMs: timeouts.objectMs,
+    };
 
     // Create publication entry
     const publication: InternalPublication = {
@@ -6685,6 +6813,7 @@ export class MOQTSession {
       forward: 1,
       subscriberPriority,
       subscriberGroupOrder,
+      ...subscriberTimeouts,
     };
     this.publicationManager.add(publication);
 
@@ -7100,6 +7229,16 @@ export class MOQTSession {
           if (sched.groupOrder !== undefined) sub.groupOrder = sched.groupOrder;
           break;
         }
+      }
+    }
+
+    // §5.2: new delivery timeouts replace the subscriber's earlier ones
+    const timeouts = parseDeliveryTimeoutParams(message.parameters);
+    if (timeouts.subgroupMs !== undefined || timeouts.objectMs !== undefined) {
+      const pub = this.publicationManager.getByRequestId(requestId);
+      if (pub) {
+        pub.subscriberSubgroupTimeoutMs = timeouts.subgroupMs ?? pub.subscriberSubgroupTimeoutMs;
+        pub.subscriberObjectTimeoutMs = timeouts.objectMs ?? pub.subscriberObjectTimeoutMs;
       }
     }
 
