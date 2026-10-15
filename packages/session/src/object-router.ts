@@ -13,6 +13,8 @@ import {
   ObjectCodec,
   ObjectStatus,
   DEFAULT_DRAFT,
+  versionEnumFor,
+  getProtocolCodecForVersion,
   DataStreamType,
   GroupOrder,
   BufferReader,
@@ -24,7 +26,9 @@ import {
   StreamResetErrorCodeDraft18,
   normalizeStreamResetErrorCode,
   type DraftVersion,
+  type IProtocolCodec,
   type MetricsSink,
+  type Version,
 } from '@moq-web/core';
 import type { FetchDecoderState, FetchObjectDraft18 } from '@moq-web/core';
 import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
@@ -206,6 +210,8 @@ export class ObjectRouter {
   private activeReaders = new Map<string, ReadableStreamDefaultReader<Uint8Array>>();
 
   private readonly _draft: DraftVersion;
+  /** Decodes with the session's draft, not the build-time default */
+  private readonly codec: IProtocolCodec;
   private get isDraft18(): boolean {
     return this._draft === 'draft-18' || this._draft === 'draft-22';
   }
@@ -258,6 +264,7 @@ export class ObjectRouter {
     metrics: MetricsSink = new NoopMetricsSink(),
   ) {
     this._draft = draft;
+    this.codec = getProtocolCodecForVersion(versionEnumFor(draft) as Version);
     this.metrics = metrics;
     // Router-level metrics use `draft-18` as the umbrella label because the
     // shared `ObjectCodec` entrypoints delegate to `Draft18StreamCodec` under
@@ -366,7 +373,7 @@ export class ObjectRouter {
 
     const decodeStart = nowMs();
     try {
-      const object = ObjectCodec.decodeDatagramObject(data);
+      const object = this.codec.decodeDatagramObject(data);
       this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
         codec: this.codecLabel,
         messageType: 'object_datagram',
@@ -484,7 +491,7 @@ export class ObjectRouter {
 
             const decodeStart = nowMs();
             try {
-              [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = ObjectCodec.decodeSubgroupHeader(bufferView);
+              [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = this.codec.decodeSubgroupHeader(bufferView);
               this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
                 codec: this.codecLabel,
                 messageType: 'subgroup_header',
@@ -553,7 +560,7 @@ export class ObjectRouter {
 
             const decodeStart = nowMs();
             try {
-              [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = ObjectCodec.decodeSubgroupHeader(bufferView);
+              [subgroupHeader, headerBytes, endOfGroup, hasExtensions] = this.codec.decodeSubgroupHeader(bufferView);
               this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
                 codec: this.codecLabel,
                 messageType: 'subgroup_header',
@@ -605,7 +612,7 @@ export class ObjectRouter {
             const decodeStart = nowMs();
             try {
               const view = buffer.subarray(bufferOffset);
-              const [objectId, payload, status, bytesConsumed] = ObjectCodec.decodeStreamObject(view, 0, hasExtensions, previousObjectId);
+              const [objectId, payload, status, bytesConsumed] = this.codec.decodeStreamObject(view, 0, hasExtensions, previousObjectId);
               this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
                 codec: this.codecLabel,
                 messageType: 'stream_object',
@@ -774,7 +781,7 @@ export class ObjectRouter {
     const streamType = data[0] & 0x3f;
 
     if (streamType === 0x01) {
-      const object = ObjectCodec.decodeDatagramObject(data);
+      const object = this.codec.decodeDatagramObject(data);
       const { header, payload } = object;
 
       log.info('Decoded datagram-style stream object', {
