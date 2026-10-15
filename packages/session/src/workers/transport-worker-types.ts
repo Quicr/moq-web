@@ -90,6 +90,7 @@ export type TransportWorkerResponse =
   | { type: 'incoming-bidi-stream'; streamId: number }
   | { type: 'stream-data'; streamId: number; data: Uint8Array }
   | { type: 'stream-closed'; streamId: number }
+  | { type: 'stream-reset'; streamId: number; code?: number; message?: string }
   | { type: 'stream-send-stopped'; streamId: number }
   | { type: 'metric'; metric: TransportWorkerMetricEvent }
   | { type: 'error'; message: string; code?: number };

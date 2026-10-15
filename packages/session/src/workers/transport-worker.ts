@@ -41,6 +41,8 @@ let localDisconnectInitiated = false;
 const outgoingStreams = new Map<number, StreamInfo>();
 // Receive sides of bidi streams, so abortStream can STOP_SENDING them
 const bidiReaders = new Map<number, ReadableStreamDefaultReader<Uint8Array>>();
+// Receive sides of incoming data streams, so abortStream can STOP_SENDING them
+const incomingReaders = new Map<number, ReadableStreamDefaultReader<Uint8Array>>();
 let nextStreamId = 0;
 
 /**
@@ -332,18 +334,35 @@ async function listenForIncomingStreams(): Promise<void> {
 async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): Promise<void> {
   const reader = stream.getReader();
   try {
-    const { value: firstChunk, done } = await reader.read();
-    if (done || !firstChunk || firstChunk.length === 0) {
-      console.log('[transport-worker] Draft-18 incoming stream: empty or done', { done, length: firstChunk?.length });
-      reader.releaseLock();
-      return;
+    // The stream type is a vi64 that can arrive split across reads (d22 §6.4.1)
+    let firstChunk = new Uint8Array(0);
+    let type: [bigint, number] | undefined;
+    while (!type) {
+      try {
+        type = MOQTVarInt.decode(firstChunk);
+        break;
+      } catch {
+        // Need more bytes
+      }
+
+      const { value, done } = await reader.read();
+      if (done || !value) {
+        console.log('[transport-worker] Draft-18 incoming stream ended before its stream type');
+        reader.releaseLock();
+        return;
+      }
+
+      const merged = new Uint8Array(firstChunk.length + value.length);
+      merged.set(firstChunk);
+      merged.set(value, firstChunk.length);
+      firstChunk = merged;
     }
 
     const hex = Array.from(firstChunk.subarray(0, Math.min(32, firstChunk.length)))
       .map(b => b.toString(16).padStart(2, '0')).join(' ');
     console.log('[transport-worker] Draft-18 incoming uni stream first bytes', { length: firstChunk.length, hex });
 
-    const [streamType, bytesRead] = MOQTVarInt.decode(firstChunk);
+    const [streamType, bytesRead] = type;
     const streamTypeNum = Number(streamType);
     console.log('[transport-worker] Draft-18 stream type decoded', { streamType: `0x${streamTypeNum.toString(16)}`, bytesRead, isSetup: streamTypeNum === StreamTypeDraft18.SETUP });
 
@@ -362,6 +381,11 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
         if (d) break;
         respond({ type: 'setup-message', data: value }, [value.buffer]);
       }
+    } else if (streamTypeNum === StreamTypeDraft18.PADDING) {
+      // d22 §11.5.1: the receiver MUST discard everything on a padding stream
+      while (!(await reader.read()).done) {
+        // discard
+      }
     } else {
       // Data stream (subgroup) — forward full chunk including stream type byte
       // (object router's decodeSubgroupHeader reads stream type as first field)
@@ -374,14 +398,29 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
       const firstLen = firstChunk.length;
       metric('counter', 'moq.transport.bytes_in', firstLen);
       respond({ type: 'stream-data', streamId, data: firstChunk }, [firstChunk.buffer]);
+      incomingReaders.set(streamId, reader);
       // Continue forwarding data
       let totalForwarded = firstLen;
-      while (true) {
-        const { value, done: d } = await reader.read();
-        if (d) break;
-        totalForwarded += value.length;
-        metric('counter', 'moq.transport.bytes_in', value.length);
-        respond({ type: 'stream-data', streamId, data: value }, [value.buffer]);
+      try {
+        while (true) {
+          const { value, done: d } = await reader.read();
+          if (d) break;
+          totalForwarded += value.length;
+          metric('counter', 'moq.transport.bytes_in', value.length);
+          respond({ type: 'stream-data', streamId, data: value }, [value.buffer]);
+        }
+      } catch (err) {
+        // A peer RESET_STREAM ends the stream; the main thread must hear of it (d22 §3.2.4)
+        metric('counter', 'moq.transport.stream.closed', 1, { direction: 'inbound', reason: 'reset' });
+        respond({
+          type: 'stream-reset',
+          streamId,
+          code: (err as { streamErrorCode?: number }).streamErrorCode,
+          message: (err as Error).message,
+        });
+        return;
+      } finally {
+        incomingReaders.delete(streamId);
       }
       console.log('[transport-worker] Data stream ended', { streamId, totalForwarded });
       metric('counter', 'moq.transport.stream.closed', 1, { direction: 'inbound' });
@@ -709,11 +748,12 @@ async function writeStream(
 }
 
 /**
- * Abort a bidi request stream: STOP_SENDING the receive side and
- * RESET_STREAM the send side (draft-22 §6.4.2.3).
+ * Abort a stream: STOP_SENDING its receive side and RESET_STREAM its send
+ * side, whichever it has (draft-22 §3.4.1, §6.4.2.3).
  */
 async function abortStream(streamId: number, code: StreamResetErrorCodeDraft18): Promise<void> {
-  const reader = bidiReaders.get(streamId);
+  const reader = bidiReaders.get(streamId) ?? incomingReaders.get(streamId);
+  incomingReaders.delete(streamId);
   if (reader) {
     await reader.cancel(streamResetReason(code)).catch(() => {});
   }

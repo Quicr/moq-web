@@ -145,7 +145,7 @@ import {
   sessionStateToConnectionState,
 } from './session-helpers.js';
 import { RequestRejectedError } from './request-rejected-error.js';
-import { streamResetReason } from './stream-reset-reason.js';
+import { streamResetCode, streamResetReason } from './stream-reset-reason.js';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
 import { ObjectRouter } from './object-router.js';
@@ -1160,6 +1160,11 @@ export class MOQTSession {
       this.handleWorkerStreamClosed(streamId);
     });
 
+    // Peer RESET_STREAM on an incoming data stream
+    this.transportWorker.on('stream-reset', ({ streamId, code, message }) => {
+      this.handleWorkerStreamReset(streamId, code, message);
+    });
+
     // Error handler
     this.transportWorker.on('error', ({ message }) => {
       console.error('[MOQT] Worker transport error:', message);
@@ -1226,6 +1231,17 @@ export class MOQTSession {
       try { controller.close(); } catch { /* already closed */ }
       this.incomingBidiControllers.delete(streamId);
     }
+  }
+
+  /**
+   * Handle a peer reset of an incoming data stream: fail the router's read the
+   * way WebTransport does, with the reset code on the error.
+   */
+  private handleWorkerStreamReset(streamId: number, code?: number, message?: string): void {
+    this.workerStreamBuffers.delete(streamId);
+    const reader = this.workerStreamReaders.get(streamId);
+    this.workerStreamReaders.delete(streamId);
+    reader?.controller.error(Object.assign(new Error(message ?? 'Received RESET_STREAM'), { streamErrorCode: code }));
   }
 
   /** Controllers for bidi streams (incoming and outgoing request streams) */
@@ -1572,6 +1588,11 @@ export class MOQTSession {
       start: (controller) => {
         this.incomingBidiControllers.set(streamId, controller);
       },
+      // STOP_SENDING / RESET_STREAM for the peer (d22 §6.4.2.3), done in the worker
+      cancel: (reason) => {
+        this.incomingBidiControllers.delete(streamId);
+        this.transportWorker?.abortStream(streamId, streamResetCode(reason));
+      },
     });
 
     // Create a WritableStream that sends data back via worker
@@ -1588,6 +1609,9 @@ export class MOQTSession {
       },
       close: () => {
         this.transportWorker!.writeStream(streamId, new Uint8Array(0), true);
+      },
+      abort: (reason) => {
+        this.transportWorker?.abortStream(streamId, streamResetCode(reason));
       },
     });
 
@@ -1738,6 +1762,12 @@ export class MOQTSession {
       const stream = new ReadableStream<Uint8Array>({
         start(c) {
           controller = c;
+        },
+        // STOP_SENDING for the peer (d22 §3.4.1), done in the worker
+        cancel: (reason) => {
+          this.workerStreamReaders.delete(streamId);
+          this.workerStreamBuffers.delete(streamId);
+          this.transportWorker?.abortStream(streamId, streamResetCode(reason));
         },
       });
       this.workerStreamReaders.set(streamId, { controller: controller!, stream });

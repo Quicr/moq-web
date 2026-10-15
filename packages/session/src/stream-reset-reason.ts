@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
-import type { StreamResetErrorCodeDraft18 } from '@moq-web/core';
+import { StreamResetErrorCodeDraft18 } from '@moq-web/core';
 
 /**
  * Build the reason for `writer.abort()` (RESET_STREAM) or `reader.cancel()`
@@ -15,4 +15,17 @@ export function streamResetReason(code: StreamResetErrorCodeDraft18): unknown {
   }
 
   return new WebTransportError('', { streamErrorCode: code });
+}
+
+/**
+ * The Stream Reset Code a `reader.cancel()` / `writer.abort()` reason carries:
+ * the inverse of {@link streamResetReason}. A reason without one is CANCELLED.
+ */
+export function streamResetCode(reason: unknown): number {
+  if (typeof reason === 'number') {
+    return reason;
+  }
+
+  const code = (reason as { streamErrorCode?: unknown } | null | undefined)?.streamErrorCode;
+  return typeof code === 'number' ? code : StreamResetErrorCodeDraft18.CANCELLED;
 }
