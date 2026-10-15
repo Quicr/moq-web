@@ -372,7 +372,7 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE stream (%s)
   it('answers each REQUEST_UPDATE with one REQUEST_OK on the same stream (§9.5)', async () => {
     const { internals, peer } = await acceptSubscribe();
 
-    peer.send(pauseUpdate, pauseUpdate);
+    peer.send(pauseUpdate, { ...pauseUpdate, requestId: PEER_UPDATE_ID + 2n });
     await tick();
 
     expect(peer.written).toHaveLength(3);

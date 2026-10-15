@@ -1690,6 +1690,10 @@ export class MOQTSession {
 
     switch (message.type) {
       case MessageTypeDraft18.REQUEST_UPDATE: {
+        if (!this.acceptPeerRequestId(message.requestId)) {
+          break;
+        }
+
         // Draft-22 §9.5: exactly one REQUEST_OK or REQUEST_ERROR per update.
         // Ranges are over our MAX_FILTER_RANGES (§9.1.6), so the update is refused unapplied.
         if (this.exceedsOwnFilterRanges(message as RangeFilteredRequest)) {
@@ -2206,6 +2210,8 @@ export class MOQTSession {
 
     // A new connection starts a new control stream (migrate() runs setup() again).
     this.peerSetupSeen = false;
+    this.seenPeerRequestIds.clear();
+    this.goAwaySent = false;
     this.setupBuffer = new Uint8Array(0);
     this.setupBufferOffset = 0;
     this.pendingSetupMessages = [];
@@ -2330,6 +2336,24 @@ export class MOQTSession {
     this.goAwaySent = true;
     this.setState('closing');
     log.info('Sent GOAWAY', { newSessionUri, timeoutMs: timeoutMs.toString() });
+  }
+
+  /**
+   * A peer Request ID must have the server's parity (odd, we are the client)
+   * and must be new, or the session closes with INVALID_REQUEST_ID
+   * (draft-22 §6.4.2.1, draft-18 §10.1). Returns whether it was acceptable.
+   */
+  private acceptPeerRequestId(requestId: bigint): boolean {
+    if (requestId % 2n === 1n && !this.seenPeerRequestIds.has(requestId)) {
+      this.seenPeerRequestIds.add(requestId);
+      return true;
+    }
+
+    const reason = `Invalid peer Request ID ${requestId.toString()}`;
+    log.error(reason);
+    void this.close({ code: SessionErrorCodeDraft18.INVALID_REQUEST_ID, reason }).catch(() => {});
+
+    return false;
   }
 
   /**
@@ -6744,13 +6768,13 @@ export class MOQTSession {
 
       assertNoTokenRegister(message);
 
-      const peerRequestId = (message as { requestId?: bigint }).requestId;
-      if (peerRequestId !== undefined) {
-        this.seenPeerRequestIds.add(peerRequestId);
+      const peerRequestId = (message as { requestId: bigint }).requestId;
+      if (!this.acceptPeerRequestId(peerRequestId)) {
+        return;
       }
 
       // After our GOAWAY a request is refused, not served (draft-18 §10.4, draft-22 §9.2)
-      if (this.goAwaySent && peerRequestId !== undefined && PEER_REQUEST_TYPES.has(message.type)) {
+      if (this.goAwaySent) {
         await this.sendRequestErrorOnStream(
           handlerWritable,
           peerRequestId,
