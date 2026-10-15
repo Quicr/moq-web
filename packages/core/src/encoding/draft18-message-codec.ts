@@ -24,6 +24,7 @@ import {
   decodeTrackName,
   encodeKeyValuePairs,
   decodeKeyValuePairsToEnd,
+  DEFAULT_SUBSCRIBER_PRIORITY,
   MAX_SAFE_KEY,
   readKvpKey,
   readKvpLength,
@@ -912,12 +913,10 @@ export class Draft18MessageCodec {
 
     // Parameters (count-prefixed)
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
-    if (message.subscriberPriority !== 0) {
-      params.push({
-        type: RequestParameterDraft18.SUBSCRIBER_PRIORITY,
-        encode: (w) => w.writeByte(message.subscriberPriority),
-      });
-    }
+    params.push({
+      type: RequestParameterDraft18.SUBSCRIBER_PRIORITY,
+      encode: (w) => w.writeByte(message.subscriberPriority),
+    });
     if (message.groupOrder) {
       params.push({
         type: RequestParameterDraft18.GROUP_ORDER,
@@ -981,7 +980,8 @@ export class Draft18MessageCodec {
     // Parameters
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'FETCH numParams', MessageTypeDraft18.FETCH);
-    let subscriberPriority = 0;
+    // §10.2.7: omitted SUBSCRIBER_PRIORITY is 128
+    let subscriberPriority = DEFAULT_SUBSCRIBER_PRIORITY;
     let groupOrder = GroupOrder.ASCENDING as GroupOrder;
     const parameters = new Map<number, Uint8Array>();
     let previousType = 0;

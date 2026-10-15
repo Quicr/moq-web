@@ -28,6 +28,8 @@ export const MAX_TRACK_NAME_LENGTH = 4096;
 export const MAX_AUTH_TOKEN_LENGTH = 16384;
 /** §8.3: "The maximum length of a value is 2^16-1 bytes." */
 export const MAX_KVP_VALUE_LENGTH = 0xFFFF;
+/** §10.2.7: SUBSCRIBER_PRIORITY value when the parameter is omitted */
+export const DEFAULT_SUBSCRIBER_PRIORITY = 128;
 
 /**
  * Assert a decoded numeric value is within safety bounds.

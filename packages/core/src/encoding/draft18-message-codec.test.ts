@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec';
 import { MOQTVarInt } from './moqt-varint';
+import { encodeFramed, encodeString, encodeTrackNamespace } from './codec-helpers';
 import {
   MessageTypeDraft18,
   Version,
@@ -597,6 +598,42 @@ describe('Draft18MessageCodec', () => {
       expect(d.trackName).toBe('history');
       expect(d.startLocation).toEqual({ group: 0n, object: 0n });
       expect(d.endLocation).toEqual({ group: 100n, object: 50n });
+    });
+
+    it('keeps SUBSCRIBER_PRIORITY 0 on the wire (§10.2.7)', () => {
+      const message: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 22n,
+        fetchType: FetchTypeDraft18.STANDALONE,
+        joiningFlag: false,
+        trackNamespace: ['ns'],
+        trackName: 't',
+        subscriberPriority: 0,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 1n, object: 0n },
+      };
+
+      const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+      expect((decoded as FetchMessageDraft18).subscriberPriority).toBe(0);
+    });
+
+    it('decodes an omitted SUBSCRIBER_PRIORITY as 128 (§10.2.7)', () => {
+      const wire = encodeFramed(MessageTypeDraft18.FETCH, (w) => {
+        w.writeVarInt(22n); // request id
+        w.writeVarInt(BigInt(FetchTypeDraft18.STANDALONE));
+        encodeTrackNamespace(w, ['ns']);
+        encodeString(w, 't');
+        for (const value of [0n, 0n, 1n, 0n]) {
+          w.writeVarInt(value); // start and end locations
+        }
+        w.writeVarInt(0n); // no parameters
+      });
+
+      const [decoded] = Draft18MessageCodec.decode(wire);
+
+      expect((decoded as FetchMessageDraft18).subscriberPriority).toBe(128);
     });
 
     it('roundtrips JOINING_RELATIVE fetch (type 0x2)', () => {

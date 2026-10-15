@@ -29,6 +29,7 @@ import {
   encodeString,
   decodeTrackName,
   encodeKeyValuePairs,
+  DEFAULT_SUBSCRIBER_PRIORITY,
   decodeKeyValuePairsToEnd,
   encodeFramed,
   decodeFramed,
@@ -63,9 +64,6 @@ import {
   type PublishNamespaceMessageDraft18,
   type SubscribeNamespaceMessageDraft18,
 } from '../messages/types.js';
-
-/** §9.20: SUBSCRIBER_PRIORITY default when the parameter is omitted */
-const DEFAULT_SUBSCRIBER_PRIORITY = 128;
 
 /** Table 5: 0x1E is reserved in draft-22 (draft-18 PUBLISH_OK) */
 const RESERVED_MESSAGE_TYPE = 0x1e;
