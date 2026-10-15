@@ -9,6 +9,7 @@
 
 import { Logger, GroupOrder } from '@moq-web/core';
 import type { Location } from '@moq-web/core';
+import type { LocationRange } from './location-filter.js';
 import { namespacePrefixMatches } from './session-helpers.js';
 import type { PublicationInfo } from './types.js';
 
@@ -51,6 +52,8 @@ export interface InternalPublication extends PublicationInfo {
   /** Subscriber's delivery timeouts in ms, from its SUBSCRIBE or REQUEST_UPDATE (d22 §5.2) */
   subscriberSubgroupTimeoutMs?: number;
   subscriberObjectTimeoutMs?: number;
+  /** The Locations the subscriber asked for, resolved when its filter was processed (d22 §3.3.1) */
+  filter?: LocationRange;
   /** Group whose subgroup stream was reset for an object timeout: it gets no new stream (d22 §5.2) */
   expiredGroup?: number;
 }

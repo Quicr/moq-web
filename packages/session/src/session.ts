@@ -116,6 +116,7 @@ import {
   validateRangeFilters,
   type FetchMessageDraft22,
   type FillParametersDraft22,
+  type Location,
   type RangeFilterDraft22,
   type SubscribeMessageDraft22,
   type PublishMessageDraft22,
@@ -157,6 +158,7 @@ import { PublicationManager, type InternalPublication } from './publication-mana
 import { ObjectRouter } from './object-router.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 import { IdleActivityTracker } from './idle-activity-tracker.js';
+import { compareLocations, resolveLocationFilter, resolveSubscriptionFilter, WHOLE_TRACK, type LocationRange } from './location-filter.js';
 import { IncomingNamespaceSubscriptions, NamespaceChange } from './incoming-namespace-subscriptions.js';
 import { TransportWorkerClient } from './workers/index.js';
 import {
@@ -1821,6 +1823,7 @@ export class MOQTSession {
 
         this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
         await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(this.updateOk(requestId)));
+        await this.fillForUpdate(requestId, message as unknown as RequestUpdateMessageDraft22);
         break;
       }
 
@@ -1864,6 +1867,16 @@ export class MOQTSession {
       default:
         log.warn('Unhandled message on request stream', { requestId: requestId.toString(), type: message.type });
     }
+  }
+
+  /** FILL_PARAMETERS in a REQUEST_UPDATE of a subscription we publish (draft-22 §3.4.1) */
+  private async fillForUpdate(requestId: bigint, update: RequestUpdateMessageDraft22): Promise<void> {
+    const publication = this.publicationManager.getByRequestId(requestId);
+    if (!this.isDraft22 || !update.fill || !publication || this.incomingRequestKinds.get(requestId) !== 'subscribe') {
+      return;
+    }
+
+    await this.openFillStream(update.requestId, publication, update.fill);
   }
 
   /**
@@ -7203,6 +7216,8 @@ export class MOQTSession {
       return;
     }
 
+    const largestLocation = this.publicationManager.largestOf(namespace, trackName);
+
     // Draft-18 §5.1: at most one subscription per Track and role (d22 allows several)
     if (!this.isDraft22 && this.publicationManager.getByTrackName(namespace, trackName)) {
       await this.sendRequestErrorOnStream(
@@ -7225,7 +7240,7 @@ export class MOQTSession {
       type: MessageTypeDraft18.SUBSCRIBE_OK,
       requestId: message.requestId,
       trackAlias,
-      largestLocation: this.publicationManager.largestOf(namespace, trackName),
+      largestLocation,
       expires: expires !== undefined ? BigInt(expires) : undefined,
     };
     const responseBytes = this.codec.encodeControlMessage(subscribeOk);
@@ -7261,6 +7276,7 @@ export class MOQTSession {
       cleanupHandlers: [],
       // The subscriber sets the initial Forward State (d22 §3.1.1, d18 §5.1)
       forward: message.forwardState === false ? 0 : 1,
+      filter: this.subscribeRange(message, largestLocation),
       subscriberPriority,
       subscriberGroupOrder,
       ...subscriberTimeouts,
@@ -7290,6 +7306,56 @@ export class MOQTSession {
     } as IncomingSubscribeEvent);
 
     log.info('Accepted SUBSCRIBE', { trackAlias: trackAlias.toString(), fullTrackName: fullTrackNameStr });
+
+    if (this.isDraft22) {
+      const { fill } = message as unknown as SubscribeMessageDraft22;
+      if (fill) {
+        await this.openFillStream(message.requestId, publication, fill);
+      }
+    }
+  }
+
+  /** The Locations a SUBSCRIBE selects, resolved against the Largest Object now (d22 §3.3.1, d18 §5.1.2). */
+  private subscribeRange(message: SubscribeMessageDraft18, largest: Location | undefined): LocationRange {
+    if (this.isDraft22) {
+      return resolveLocationFilter((message as unknown as SubscribeMessageDraft22).locationFilter, largest);
+    }
+
+    return resolveSubscriptionFilter(message.filter, message.startLocation, message.endGroupDelta, largest);
+  }
+
+  /**
+   * Serve FILL_PARAMETERS (draft-22 §3.4, §3.4.1). We keep no object cache,
+   * so the fill fails: the fill fetch stream is opened with the Request ID of
+   * the SUBSCRIBE or REQUEST_UPDATE and reset right after its FETCH_HEADER.
+   * Nothing is opened for a paused subscription or an empty fill range, one
+   * that is empty or starts after the Largest Object.
+   */
+  private async openFillStream(
+    requestId: bigint,
+    publication: InternalPublication,
+    fill: FillParametersDraft22,
+  ): Promise<void> {
+    const largest = this.publicationManager.largestOf(publication.namespace, publication.trackName);
+    if (publication.forward === 0 || largest === undefined) {
+      return;
+    }
+
+    const range = fill.locationFilter ? resolveLocationFilter(fill.locationFilter, largest) : publication.filter ?? WHOLE_TRACK;
+    if (compareLocations(range.start, largest) > 0) {
+      return;
+    }
+
+    try {
+      const stream = await this.doCreateStream();
+      publication.streamsOpened = (publication.streamsOpened ?? 0) + 1;
+      await this.doWriteStream(stream, this.codec.encodeFetchHeader({ requestId }));
+      await this.abortStreamHandle(stream, StreamResetErrorCodeDraft18.INTERNAL_ERROR);
+      this.decrementOpenStreamCount();
+      log.info('Reset a fill stream: no objects are kept', { requestId: requestId.toString() });
+    } catch (err) {
+      log.warn('Could not open a fill stream', { requestId: requestId.toString(), error: (err as Error).message });
+    }
   }
 
   /**
