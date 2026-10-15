@@ -848,8 +848,11 @@ export interface FetchCompleteEvent {
 export interface FetchStreamCompleteEvent {
   /** 62-bit varint fetch request ID */
   requestId: bigint;
-  /** Last group ID received on this stream (bounded to number; see FetchRange). */
-  lastGroupId: number;
+  /**
+   * Last group ID received on this stream (bounded to number; see FetchRange).
+   * Absent when the stream carried no objects.
+   */
+  lastGroupId?: number;
 }
 
 /**

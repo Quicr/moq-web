@@ -117,21 +117,11 @@ export type FetchObjectCallback = (
 ) => void;
 
 /**
- * Callback for FETCH stream end-of-group.
- *
- * `requestId` is a 62-bit varint; `groupId` is bounded-number (see the
- * FetchObjectCallback note above).
- */
-export type FetchEndOfGroupCallback = (
-  requestId: bigint,
-  groupId: number
-) => void;
-
-/**
  * Callback for a FETCH data stream that ended (FIN, reset or cancelled),
- * with the Request ID from its FETCH_HEADER.
+ * with the Request ID from its FETCH_HEADER and the last Group ID received,
+ * if any object arrived (bounded-number; see the FetchObjectCallback note).
  */
-export type FetchStreamCloseCallback = (requestId: bigint) => void;
+export type FetchStreamCloseCallback = (requestId: bigint, lastGroupId?: number) => void;
 
 /**
  * Callback fired on a data-plane protocol violation, with the reason. The
@@ -158,7 +148,6 @@ export type StreamResetCallback = (
  */
 export class ObjectRouter {
   private onFetchObject?: FetchObjectCallback;
-  private onFetchEndOfGroup?: FetchEndOfGroupCallback;
   private onFetchStreamClose?: FetchStreamCloseCallback;
   private onStreamReset?: StreamResetCallback;
   private onViolation?: ViolationCallback;
@@ -194,6 +183,9 @@ export class ObjectRouter {
    * stream ends; the cap bounds ones whose stream never arrives.
    */
   private cancelledFetches = new Set<bigint>();
+
+  /** Group ID of the last object received on each in-flight FETCH stream */
+  private fetchLastGroups = new Map<bigint, number>();
 
   /**
    * Metrics sink for per-object decode observability (Wave 3 Track I).
@@ -292,13 +284,6 @@ export class ObjectRouter {
     if (!reader) return;
     this.fetchReaders.delete(requestId);
     try { void reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.CANCELLED)); } catch { /* ignore */ }
-  }
-
-  /**
-   * Set the FETCH end-of-group callback
-   */
-  setFetchEndOfGroupCallback(callback: FetchEndOfGroupCallback): void {
-    this.onFetchEndOfGroup = callback;
   }
 
   /**
@@ -1139,7 +1124,9 @@ export class ObjectRouter {
     } finally {
       this.fetchReaders.delete(requestId);
       this.cancelledFetches.delete(requestId);
-      this.onFetchStreamClose?.(requestId);
+      const lastGroupId = this.fetchLastGroups.get(requestId);
+      this.fetchLastGroups.delete(requestId);
+      this.onFetchStreamClose?.(requestId, lastGroupId);
     }
   }
 
@@ -1213,10 +1200,6 @@ export class ObjectRouter {
       if (bufferOffset >= buffer.length) {
         if (done) {
           log.info('FETCH stream complete', { requestId: requestId.toString(), objectCount, totalBytesReceived });
-          // Notify end of last group if we received any objects
-          if (objectCount > 0 && this.onFetchEndOfGroup && decoderState.previousGroupId >= 0) {
-            this.onFetchEndOfGroup(requestId, decoderState.previousGroupId);
-          }
           break;
         }
         continue;
@@ -1239,6 +1222,7 @@ export class ObjectRouter {
         this.metrics.counter('moq.object.fetch.in', 1, { codec: this.codecLabel });
         objectCount++;
         bufferOffset += result.bytesConsumed;
+        this.fetchLastGroups.set(requestId, result.groupId);
 
         log.info('Decoded FETCH object', {
           requestId: requestId.toString(),
@@ -1316,7 +1300,6 @@ export class ObjectRouter {
     let prevSubgroupId: bigint | undefined;
     let prevObjectId: bigint | undefined;
     let prevPriority: number | undefined;
-    let lastGroupIdEmitted: bigint | undefined;
     const groupOrder = this.fetchGroupOrders.get(requestId) ?? GroupOrder.ASCENDING;
 
     const ensureBytes = async (): Promise<boolean> => {
@@ -1497,12 +1480,7 @@ export class ObjectRouter {
       const groupIdN = narrowBigIntToNumber(groupId, 'FETCH Group ID');
       const objectIdN = narrowBigIntToNumber(objectId, 'FETCH Object ID');
 
-      // Emit end-of-group when the group changes (but not on the very first
-      // object). We track the last-emitted group so we don't re-signal.
-      if (lastGroupIdEmitted !== undefined && groupId !== lastGroupIdEmitted && this.onFetchEndOfGroup) {
-        this.onFetchEndOfGroup(requestId, Number(lastGroupIdEmitted));
-      }
-      lastGroupIdEmitted = groupId;
+      this.fetchLastGroups.set(requestId, groupIdN);
 
       log.info('Decoded draft-18 FETCH object', {
         requestId: requestId.toString(),
@@ -1526,9 +1504,6 @@ export class ObjectRouter {
     }
 
     log.info('Draft-18 FETCH stream complete', { requestId: requestId.toString(), objectCount, totalBytesReceived });
-    if (objectCount > 0 && this.onFetchEndOfGroup && lastGroupIdEmitted !== undefined) {
-      this.onFetchEndOfGroup(requestId, Number(lastGroupIdEmitted));
-    }
   }
 
   private endOfRangeKind(marker: FetchObjectEndOfRange): string {

@@ -93,17 +93,6 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH cancel (%s)
     expect(onCancel).toHaveBeenCalledWith(StreamResetErrorCodeDraft18.CANCELLED);
   });
 
-  it('does not report end-of-group for a cancelled fetch', async () => {
-    const router = new ObjectRouter(new SubscriptionManager(), undefined, draft);
-    const onEndOfGroup = vi.fn();
-    router.setFetchEndOfGroupCallback(onEndOfGroup);
-    router.setFetchObjectCallback((requestId) => router.cancelFetchStream(requestId));
-
-    await router.handleIncomingStream(endlessFetch(() => {}));
-
-    expect(onEndOfGroup).not.toHaveBeenCalled();
-  });
-
   it('cancels a fetch stream that arrives after its request was cancelled', async () => {
     const router = new ObjectRouter(new SubscriptionManager(), undefined, draft);
     const onCancel = vi.fn();

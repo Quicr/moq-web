@@ -822,18 +822,15 @@ export class MOQTSession {
       } as FetchObjectEvent);
     });
 
-    // Set up FETCH end-of-group callback - fires when FETCH stream completes
-    this.objectRouter.setFetchEndOfGroupCallback((requestId, groupId) => {
-      log.info('FETCH stream complete (all data received)', { requestId, lastGroupId: groupId });
-      this.emit('fetch-stream-complete', {
-        requestId,
-        lastGroupId: groupId,
-      });
-    });
-
     // A reset or cancelled fill stream leaves its subscription alone (draft-22 §3.4.1).
-    this.objectRouter.setFetchStreamCloseCallback((requestId) => {
-      this.fillStreams.delete(requestId);
+    // Any other FETCH stream ending, by FIN or reset, completes the fetch (§3.2.4).
+    this.objectRouter.setFetchStreamCloseCallback((requestId, lastGroupId) => {
+      if (this.fillStreams.delete(requestId)) {
+        return;
+      }
+
+      log.info('FETCH stream ended', { requestId, lastGroupId });
+      this.emit('fetch-stream-complete', { requestId, lastGroupId });
     });
 
     // Set up forward state change listener to emit events for MediaSession
