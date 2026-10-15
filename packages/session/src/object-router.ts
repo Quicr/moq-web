@@ -300,8 +300,10 @@ export class ObjectRouter {
   handleDatagram(data: Uint8Array): void {
     log.trace('Received datagram', { size: data.length });
 
-    // Check first byte to filter out misrouted stream data
-    if (data.length > 0) {
+    // Check first byte to filter out misrouted stream data. Draft-18+ is
+    // exempt: there 0x04 is the ZERO_OBJECT_ID Type Flags value (§11.2.1)
+    // and the datagram decoder validates Type Flags itself.
+    if (!this.isDraft18 && data.length > 0) {
       const firstByte = data[0];
       // OBJECT_DATAGRAM = 0x01, SUBGROUP types = 0x04, 0x10, 0x11, 0x12
       if (firstByte !== 0x01 && (firstByte === 0x04 || (firstByte >= 0x10 && firstByte <= 0x12))) {
