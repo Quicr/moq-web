@@ -22,9 +22,11 @@ import {
   type ControlMessageDraft18,
   type LocationFilterDraft22,
   type IProtocolCodec,
+  type StreamResetErrorCodeDraft18,
 } from '@moq-web/core';
 import { base64urlDecode, C4M_TOKEN_TYPE, coseSign1Encode } from '@moq-web/cat';
 import type { RequestAuthToken, SessionState } from './types.js';
+import { streamResetReason } from './stream-reset-reason.js';
 
 /** Draft-18 subscription filter shape used by the SUBSCRIBE builder. */
 export type Location = { group: bigint; object: bigint };
@@ -393,6 +395,7 @@ export class Draft18RequestStream {
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   private readonly writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>;
   private readonly closeFn: () => void | Promise<void>;
+  private readonly abortFn: (code: StreamResetErrorCodeDraft18) => void | Promise<void>;
   private readonly codec: IProtocolCodec;
   private pending: Uint8Array = new Uint8Array(0);
   private eof = false;
@@ -402,11 +405,13 @@ export class Draft18RequestStream {
     readable: ReadableStream<Uint8Array>,
     writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>,
     closeFn: () => void | Promise<void>,
+    abortFn: (code: StreamResetErrorCodeDraft18) => void | Promise<void>,
   ) {
     this.codec = codec;
     this.reader = readable.getReader();
     this.writeFn = writeFn;
     this.closeFn = closeFn;
+    this.abortFn = abortFn;
   }
 
   async write(data: Uint8Array): Promise<void> {
@@ -462,6 +467,23 @@ export class Draft18RequestStream {
     }
     try {
       await this.closeFn();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Cancel the request: STOP_SENDING on the receive side and RESET_STREAM on
+   * the send side (draft-22 §6.4.2.3).
+   */
+  async abort(code: StreamResetErrorCodeDraft18): Promise<void> {
+    try {
+      await this.reader.cancel(streamResetReason(code));
+    } catch {
+      /* ignore */
+    }
+    try {
+      await this.abortFn(code);
     } catch {
       /* ignore */
     }

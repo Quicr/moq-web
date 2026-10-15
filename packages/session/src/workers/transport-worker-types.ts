@@ -52,7 +52,8 @@ export type TransportWorkerRequest =
   | { type: 'create-stream'; id: number }
   | { type: 'create-bidi-stream'; id: number }
   | { type: 'write-stream'; streamId: number; data: Uint8Array; close?: boolean }
-  | { type: 'close-stream'; streamId: number };
+  | { type: 'close-stream'; streamId: number }
+  | { type: 'abort-stream'; streamId: number; code: number };
 
 /**
  * A single metric event forwarded from the transport worker to the main

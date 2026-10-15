@@ -16,7 +16,8 @@ import type {
   StreamInfo,
   TransportWorkerMetricEvent,
 } from './transport-worker-types.js';
-import { alpnProtocolFor, DEFAULT_DRAFT, MOQTVarInt, StreamTypeDraft18, type DraftVersion } from '@moq-web/core';
+import { alpnProtocolFor, DEFAULT_DRAFT, MOQTVarInt, StreamTypeDraft18, type DraftVersion, type StreamResetErrorCodeDraft18 } from '@moq-web/core';
+import { streamResetReason } from '../stream-reset-reason.js';
 
 // Worker state
 let transport: WebTransport | null = null;
@@ -38,6 +39,8 @@ let localDisconnectInitiated = false;
 
 // Stream management
 const outgoingStreams = new Map<number, StreamInfo>();
+// Receive sides of bidi streams, so abortStream can STOP_SENDING them
+const bidiReaders = new Map<number, ReadableStreamDefaultReader<Uint8Array>>();
 let nextStreamId = 0;
 
 /**
@@ -608,6 +611,7 @@ async function createBidiStream(requestId: number): Promise<void> {
  */
 async function readBidiStream(streamId: number, readable: ReadableStream<Uint8Array>): Promise<void> {
   const reader = readable.getReader();
+  bidiReaders.set(streamId, reader);
   try {
     while (true) {
       const { value, done } = await reader.read();
@@ -620,6 +624,7 @@ async function readBidiStream(streamId: number, readable: ReadableStream<Uint8Ar
   } catch (err) {
     log('Bidi stream read error', err);
   } finally {
+    bidiReaders.delete(streamId);
     reader.releaseLock();
     metric('counter', 'moq.transport.stream.closed', 1, { direction: 'inbound-bidi' });
     respond({ type: 'stream-closed', streamId });
@@ -686,6 +691,26 @@ async function writeStream(
 }
 
 /**
+ * Abort a bidi request stream: STOP_SENDING the receive side and
+ * RESET_STREAM the send side (draft-22 §6.4.2.3).
+ */
+async function abortStream(streamId: number, code: StreamResetErrorCodeDraft18): Promise<void> {
+  const reader = bidiReaders.get(streamId);
+  if (reader) {
+    await reader.cancel(streamResetReason(code)).catch(() => {});
+  }
+
+  const streamInfo = outgoingStreams.get(streamId);
+  if (streamInfo) {
+    outgoingStreams.delete(streamId);
+    await streamInfo.writer.abort(streamResetReason(code)).catch(() => {});
+    metric('counter', 'moq.transport.stream.closed', 1, { direction: 'outbound', reason: 'reset' });
+  }
+
+  respond({ type: 'stream-closed', streamId });
+}
+
+/**
  * Close stream
  */
 async function closeStream(streamId: number): Promise<void> {
@@ -746,6 +771,9 @@ self.onmessage = async (event: MessageEvent<TransportWorkerRequest>): Promise<vo
       break;
     case 'close-stream':
       await closeStream(msg.streamId);
+      break;
+    case 'abort-stream':
+      await abortStream(msg.streamId, msg.code);
       break;
   }
 };

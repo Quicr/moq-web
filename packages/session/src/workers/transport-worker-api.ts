@@ -188,6 +188,13 @@ export class TransportWorkerClient {
   }
 
   /**
+   * Abort a bidi request stream (STOP_SENDING + RESET_STREAM)
+   */
+  abortStream(streamId: number, code: number): void {
+    this.post({ type: 'abort-stream', streamId, code });
+  }
+
+  /**
    * Register event handler
    */
   on(type: 'state-change', handler: (data: { state: TransportState }) => void): void;

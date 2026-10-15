@@ -28,6 +28,7 @@ import {
 import type { FetchDecoderState, FetchObjectDraft18 } from '@moq-web/core';
 import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
+import { streamResetReason } from './stream-reset-reason.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 
 /**
@@ -60,6 +61,9 @@ function classifyRouterDecodeError(err: unknown): string {
 }
 
 const log = Logger.create('moqt:session:object-router');
+
+/** Cap on cancelled FETCH ids awaiting a stream that may never arrive */
+const MAX_CANCELLED_FETCHES = 256;
 
 /**
  * Callback for received objects
@@ -161,7 +165,7 @@ export class ObjectRouter {
     if (reader) {
       // Detach mapping first so a re-entrant cancel doesn't loop.
       this.activeReaders.delete(trackAliasKey);
-      try { void reader.cancel('DELIVERY_TIMEOUT'); } catch { /* ignore */ }
+      try { void reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT)); } catch { /* ignore */ }
     }
     // Fire the consumer callback synchronously — the pending-expirations
     // path is a belt-and-braces safety net for readers that are already
@@ -205,6 +209,19 @@ export class ObjectRouter {
    * Group ID Delta). Absent means ascending; cleared when the stream ends.
    */
   private fetchGroupOrders = new Map<bigint, GroupOrder>();
+
+  /**
+   * Readers of FETCH data streams being decoded, so a cancel can STOP_SENDING
+   * them (§3.2.4). Cleared when the stream ends.
+   */
+  private fetchReaders = new Map<bigint, ReadableStreamDefaultReader<Uint8Array>>();
+
+  /**
+   * FETCH request IDs cancelled by the subscriber. Stops delivery for an
+   * in-flight stream and cancels one that arrives late. Entries go when the
+   * stream ends; the cap bounds ones whose stream never arrives.
+   */
+  private cancelledFetches = new Set<bigint>();
 
   /**
    * Metrics sink for per-object decode observability (Wave 3 Track I).
@@ -285,6 +302,22 @@ export class ObjectRouter {
    */
   clearFetchGroupOrder(requestId: bigint): void {
     this.fetchGroupOrders.delete(requestId);
+  }
+
+  /**
+   * Cancel a FETCH's data stream (§3.2.4): stop delivering and STOP_SENDING
+   * it now, or on sight if it hasn't arrived yet.
+   */
+  cancelFetchStream(requestId: bigint): void {
+    this.cancelledFetches.add(requestId);
+    if (this.cancelledFetches.size > MAX_CANCELLED_FETCHES) {
+      this.cancelledFetches.delete(this.cancelledFetches.values().next().value as bigint);
+    }
+
+    const reader = this.fetchReaders.get(requestId);
+    if (!reader) return;
+    this.fetchReaders.delete(requestId);
+    try { void reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.CANCELLED)); } catch { /* ignore */ }
   }
 
   /**
@@ -547,7 +580,7 @@ export class ObjectRouter {
             // §8 delivery-timeout: if the subgroup or object deadline expired
             // while we were waiting for bytes, bail out before decoding.
             if (this.consumeExpiredTimer(subgroupHeader, previousObjectId)) {
-              try { await reader.cancel('DELIVERY_TIMEOUT'); } catch { /* ignore */ }
+              try { await reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT)); } catch { /* ignore */ }
               return;
             }
             const decodeStart = nowMs();
@@ -848,6 +881,29 @@ export class ObjectRouter {
       }
     }
 
+    // Cancelled before the stream arrived: STOP_SENDING it on sight
+    if (this.cancelledFetches.delete(requestId)) {
+      log.info('Cancelling FETCH stream for cancelled request', { requestId: requestId.toString() });
+      try { await reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.CANCELLED)); } catch { /* ignore */ }
+      return;
+    }
+
+    this.fetchReaders.set(requestId, reader);
+    try {
+      await this.decodeFetchStream(reader, buffer, bufferOffset, done, requestId);
+    } finally {
+      this.fetchReaders.delete(requestId);
+      this.cancelledFetches.delete(requestId);
+    }
+  }
+
+  private async decodeFetchStream(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    buffer: Uint8Array,
+    bufferOffset: number,
+    done: boolean,
+    requestId: bigint,
+  ): Promise<void> {
     log.info('Handling FETCH stream', {
       requestId: requestId.toString(),
       initialBufferSize: buffer.length,
@@ -903,6 +959,9 @@ export class ObjectRouter {
           bufferOffset = 0;
         }
       }
+
+      // Cancelled (§3.2.4): the reader was cancelled, drop what's left
+      if (this.cancelledFetches.has(requestId)) return;
 
       // Check if we have data to process
       if (bufferOffset >= buffer.length) {
@@ -1033,6 +1092,9 @@ export class ObjectRouter {
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
+      // Cancelled (§3.2.4): the reader was cancelled, drop what's left
+      if (this.cancelledFetches.has(requestId)) return;
+
       if (bufferOffset >= buffer.length) {
         if (done) break;
         await ensureBytes();

@@ -127,6 +127,7 @@ import {
   narrowBigIntToNumber,
   sessionStateToConnectionState,
 } from './session-helpers.js';
+import { streamResetReason } from './stream-reset-reason.js';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
 import { ObjectRouter } from './object-router.js';
@@ -1199,6 +1200,10 @@ export class MOQTSession {
         () => {
           try { worker.closeStream(streamId); } catch { /* ignore */ }
           this.incomingBidiControllers.delete(streamId);
+        },
+        (code) => {
+          try { worker.abortStream(streamId, code); } catch { /* ignore */ }
+          this.incomingBidiControllers.delete(streamId);
         }
       );
     } else if (this.transport) {
@@ -1216,6 +1221,9 @@ export class MOQTSession {
         async () => {
           try { await writer.close(); } catch { /* already closed */ }
           try { writer.releaseLock(); } catch { /* ignore */ }
+        },
+        async (code) => {
+          try { await writer.abort(streamResetReason(code)); } catch { /* already closed */ }
         }
       );
     } else {
@@ -1235,6 +1243,17 @@ export class MOQTSession {
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
     await stream.close();
+  }
+
+  /**
+   * Cancel and forget a per-request bidi stream: RESET_STREAM the send side
+   * and STOP_SENDING the receive side (draft-22 §6.4.2.3, draft-18 §3.3.2).
+   */
+  private async abortRequestStream(requestId: bigint): Promise<void> {
+    const stream = this.activeRequestStreams.get(requestId);
+    if (!stream) return;
+    this.activeRequestStreams.delete(requestId);
+    await stream.abort(StreamResetErrorCodeDraft18.CANCELLED);
   }
 
   /**
@@ -2690,7 +2709,11 @@ export class MOQTSession {
 
     log.info('Unsubscribing', { subscriptionId });
 
-    if (this.isDraft18) {
+    if (this.isDraft22) {
+      // Draft-22 §3.1: the subscriber terminates a subscription by
+      // STOP_SENDING (§6.4.2.3); no REQUEST_UPDATE.
+      await this.abortRequestStream(subscription.requestId);
+    } else if (this.isDraft18) {
       // Draft-18: Send REQUEST_UPDATE with forwardState=false to unsubscribe.
       // Fire-and-forget: the relay resets the data streams on cancel and
       // may close the bidi without a REQUEST_OK.
@@ -3050,12 +3073,15 @@ export class MOQTSession {
 
     log.info('Cancelling fetch', { requestId: rid.toString() });
 
+    // Stop delivery and STOP_SENDING the data stream, now or when it arrives
+    this.objectRouter.cancelFetchStream(rid);
+
     if (this.isDraft18) {
       // Draft-18 has no FETCH_CANCEL message; the equivalent is REQUEST_UPDATE
       // with forwardState=false, which terminates delivery for this requestId.
       // The relay resets the fetch data stream in response; fire-and-forget.
-      // Draft-22 cancels by closing the request stream (§6.4.2.3); FORWARD is
-      // not allowed in a FETCH update.
+      // Draft-22 cancels by aborting the request stream (§3.2.4, §6.4.2.3);
+      // FORWARD is not allowed in a FETCH update.
       if (!this.isDraft22) {
         try {
           await this.sendRequestUpdate(rid, false, { awaitAck: false });
@@ -3064,7 +3090,7 @@ export class MOQTSession {
           log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
         }
       }
-      await this.closeRequestStream(rid);
+      await this.abortRequestStream(rid);
     } else {
       // Draft-14/16 send a dedicated FETCH_CANCEL message.
       const cancelMessage: FetchCancelMessage = {
@@ -6658,7 +6684,7 @@ export class MOQTSession {
   }
 
   /**
-   * Send REQUEST_ERROR on a bidi stream
+   * Reject a new request: send REQUEST_ERROR on its bidi stream and FIN it
    */
   private async sendRequestErrorOnStream(
     writable: WritableStream<Uint8Array>,
@@ -6674,6 +6700,8 @@ export class MOQTSession {
     };
     const writer = writable.getWriter();
     await writer.write(this.codec.encodeControlMessage(errorMsg));
+    // §6.4.2.3: a rejection is REQUEST_ERROR followed by a FIN
+    await writer.close();
     writer.releaseLock();
   }
 

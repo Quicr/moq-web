@@ -28,7 +28,7 @@ import { MOQTSession } from './session.js';
 interface Internals {
   sendRequestAndWaitResponse: (bytes: Uint8Array) => Promise<unknown>;
   closeRequestStream: (id: bigint) => Promise<void>;
-  activeRequestStreams: Map<bigint, { write: (b: Uint8Array) => Promise<void> }>;
+  activeRequestStreams: Map<bigint, { write: (b: Uint8Array) => Promise<void>; abort: () => Promise<void> }>;
   activeFetches: Map<bigint, unknown>;
   publishDraft18: (...args: unknown[]) => Promise<void>;
   handleTransportClosed: (info: { closeCode: number; reason: string; remote: boolean }) => void;
@@ -117,6 +117,7 @@ describe('draft-22 REQUEST_UPDATE (§9.5)', () => {
       write: async (b: Uint8Array) => {
         writes.push(b);
       },
+      abort: async () => {},
     });
   }
 
