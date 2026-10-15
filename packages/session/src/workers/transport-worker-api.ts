@@ -153,12 +153,12 @@ export class TransportWorkerClient {
    * Create unidirectional stream
    * @returns Promise resolving to stream ID
    */
-  async createStream(): Promise<number> {
+  async createStream(options?: { sendOrder?: number }): Promise<number> {
     const id = ++this.streamRequestId;
 
     return new Promise((resolve) => {
       this.pendingStreamCreations.set(id, resolve);
-      this.post({ type: 'create-stream', id });
+      this.post({ type: 'create-stream', id, sendOrder: options?.sendOrder });
     });
   }
 

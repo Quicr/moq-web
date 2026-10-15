@@ -142,7 +142,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §7 SUBSCRIBE parameters land on publica
 });
 
 describe.skipIf(!IS_DRAFT_18)('draft-18 §10.9.1 REQUEST_UPDATE re-priorities in flight', () => {
-  it('updates subscriberPriority/groupOrder on the matching publication', async () => {
+  it('updates subscriberPriority, but not the group order, of the matching publication', async () => {
     const session = makeSession();
     const priv = session as unknown as PrivateSession;
     await announceForTest(session, ['room']);
@@ -167,7 +167,8 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.9.1 REQUEST_UPDATE re-priorities in
 
     const pub = priv.publicationManager.getByRequestId(7);
     expect(pub?.subscriberPriority).toBe(16);
-    expect(pub?.subscriberGroupOrder).toBe(GroupOrder.DESCENDING);
+    // The group order of an existing subscription cannot be changed (d22 §5.1.1)
+    expect(pub?.subscriberGroupOrder).toBe(GroupOrder.ASCENDING);
   });
 });
 

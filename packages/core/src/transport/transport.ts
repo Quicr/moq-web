@@ -40,6 +40,7 @@ import {
 } from '../version/constants.js';
 import { MOQTVarInt } from '../encoding/moqt-varint.js';
 import { StreamTypeDraft18 } from '../messages/types.js';
+import { SendOrder } from './send-order.js';
 
 const log = Logger.create('moqt:transport');
 
@@ -315,7 +316,7 @@ export class MOQTransport {
       if (this.isDraft18) {
         // Draft-18: Setup uses pair of unidirectional streams with 0x2F00 type
         // Create outgoing setup stream
-        const setupStream = await this.transport.createUnidirectionalStream();
+        const setupStream = await this.transport.createUnidirectionalStream({ sendOrder: SendOrder.CONTROL });
         this.setupWriter = setupStream.getWriter();
 
         // Write stream type (0x2F00 as MOQT varint)
@@ -703,7 +704,7 @@ export class MOQTransport {
     }
 
     log.debug('Creating bidirectional request stream');
-    const stream = await this.transport.createBidirectionalStream();
+    const stream = await this.transport.createBidirectionalStream({ sendOrder: SendOrder.REQUEST });
     return {
       readable: stream.readable,
       writable: stream.writable,

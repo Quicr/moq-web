@@ -16,7 +16,7 @@ import type {
   StreamInfo,
   TransportWorkerMetricEvent,
 } from './transport-worker-types.js';
-import { alpnProtocolFor, DEFAULT_DRAFT, MOQTVarInt, StreamTypeDraft18, type DraftVersion, type StreamResetErrorCodeDraft18 } from '@moq-web/core';
+import { alpnProtocolFor, DEFAULT_DRAFT, MOQTVarInt, SendOrder, StreamTypeDraft18, type DraftVersion, type StreamResetErrorCodeDraft18 } from '@moq-web/core';
 import { streamResetReason } from '../stream-reset-reason.js';
 
 // Worker state
@@ -147,7 +147,7 @@ async function connect(config: TransportWorkerConfig): Promise<void> {
 
     if (isDraft18()) {
       // Draft-18: Setup uses unidirectional stream with 0x2F00 type prefix
-      const setupStream = await transport.createUnidirectionalStream();
+      const setupStream = await transport.createUnidirectionalStream({ sendOrder: SendOrder.CONTROL });
       log('Draft-18 setup stream created', { streamId: (setupStream as any).id ?? (setupStream as any).streamId ?? 'unknown' });
       setupWriter = setupStream.getWriter();
       log('Draft-18 setup stream established');
@@ -596,14 +596,14 @@ async function sendDatagram(data: Uint8Array): Promise<void> {
 /**
  * Create outgoing unidirectional stream
  */
-async function createStream(requestId: number): Promise<void> {
+async function createStream(requestId: number, sendOrder?: number): Promise<void> {
   if (!transport) {
     respond({ type: 'error', message: 'Not connected' });
     return;
   }
 
   try {
-    const stream = await transport.createUnidirectionalStream();
+    const stream = await transport.createUnidirectionalStream(sendOrder !== undefined ? { sendOrder } : undefined);
     const streamId = nextStreamId++;
     const writer = stream.getWriter();
 
@@ -643,7 +643,7 @@ async function createBidiStream(requestId: number): Promise<void> {
   }
 
   try {
-    const stream = await transport.createBidirectionalStream();
+    const stream = await transport.createBidirectionalStream(isDraft18() ? { sendOrder: SendOrder.REQUEST } : undefined);
     const streamId = nextStreamId++;
     const writer = stream.writable.getWriter();
 
@@ -819,7 +819,7 @@ self.onmessage = async (event: MessageEvent<TransportWorkerRequest>): Promise<vo
       await sendDatagram(msg.data);
       break;
     case 'create-stream':
-      await createStream(msg.id);
+      await createStream(msg.id, msg.sendOrder);
       break;
     case 'create-bidi-stream':
       await createBidiStream(msg.id);

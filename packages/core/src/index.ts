@@ -480,6 +480,7 @@ export {
 
 // WebTransport wrapper
 export { MOQTransport } from './transport/transport.js';
+export { SendOrder } from './transport/send-order.js';
 
 export type {
   TransportState,

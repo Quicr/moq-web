@@ -49,7 +49,7 @@ export type TransportWorkerRequest =
   | { type: 'disconnect'; code?: number; reason?: string }
   | { type: 'send-control'; data: Uint8Array }
   | { type: 'send-datagram'; data: Uint8Array }
-  | { type: 'create-stream'; id: number }
+  | { type: 'create-stream'; id: number; sendOrder?: number }
   | { type: 'create-bidi-stream'; id: number }
   | { type: 'write-stream'; streamId: number; data: Uint8Array; close?: boolean }
   | { type: 'close-stream'; streamId: number }

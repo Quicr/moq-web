@@ -176,4 +176,27 @@ describe.each(['draft-18', 'draft-22'] as const)('worker data streams (%s)', (dr
     });
     expect(posted.some((message) => message.type === 'close-stream')).toBe(false);
   });
+
+  it('opens object streams with a sendOrder in worker mode', async () => {
+    const { session, posted, deliver, tick } = makeSession(draft);
+    (session as unknown as { _state: string })._state = 'ready';
+    (session as unknown as { publicationManager: { add(p: unknown): void } }).publicationManager.add({
+      trackAlias: TRACK_ALIAS,
+      namespace: ['ns'],
+      trackName: 'track',
+      priority: 128,
+      deliveryMode: 'stream',
+      requestId: REQUEST_ID,
+      cleanupHandlers: [],
+      forward: 1,
+    });
+
+    const sending = session.sendObject(TRACK_ALIAS, new Uint8Array([1]), { groupId: 1, objectId: 0, type: 'data' });
+    await tick();
+    const create = posted.find((message) => message.type === 'create-stream')!;
+    deliver({ type: 'stream-created', id: create.id, streamId: FETCH_STREAM });
+    await sending;
+
+    expect(typeof create.sendOrder).toBe('number');
+  });
 });

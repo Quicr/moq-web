@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MOQTVarInt, StreamResetErrorCodeDraft18, StreamTypeDraft18 } from '@moq-web/core';
+import { MOQTVarInt, SendOrder, StreamResetErrorCodeDraft18, StreamTypeDraft18 } from '@moq-web/core';
 
 import { streamResetReason } from '../stream-reset-reason.js';
 
@@ -21,8 +21,13 @@ const WIDE_FETCH_TYPE = [0x80, StreamTypeDraft18.FETCH_HEADER];
 
 type Posted = Record<string, unknown>;
 
+type StreamOptions = { sendOrder?: number } | undefined;
+
 interface Harness {
   posted: Posted[];
+  /** Options each created unidirectional / bidirectional stream was opened with */
+  uniOptions: StreamOptions[];
+  bidiOptions: StreamOptions[];
   /** Hands the worker an incoming unidirectional stream */
   openStream(source: UnderlyingDefaultSource<Uint8Array>): void;
   send(message: Record<string, unknown>): Promise<void>;
@@ -34,6 +39,8 @@ async function startWorker(): Promise<Harness> {
   vi.stubGlobal('self', self);
 
   let incoming!: ReadableStreamDefaultController<ReadableStream<Uint8Array>>;
+  const uniOptions: StreamOptions[] = [];
+  const bidiOptions: StreamOptions[] = [];
   class StubWebTransport {
     ready = Promise.resolve();
     closed = new Promise<never>(() => {});
@@ -44,7 +51,14 @@ async function startWorker(): Promise<Harness> {
       },
     });
     incomingBidirectionalStreams = new ReadableStream({});
-    createUnidirectionalStream = async () => new WritableStream<Uint8Array>();
+    createUnidirectionalStream = async (options?: StreamOptions) => {
+      uniOptions.push(options);
+      return new WritableStream<Uint8Array>();
+    };
+    createBidirectionalStream = async (options?: StreamOptions) => {
+      bidiOptions.push(options);
+      return { readable: new ReadableStream<Uint8Array>({}), writable: new WritableStream<Uint8Array>() };
+    };
     close() {}
   }
   vi.stubGlobal('WebTransport', StubWebTransport);
@@ -59,6 +73,8 @@ async function startWorker(): Promise<Harness> {
 
   return {
     posted,
+    uniOptions,
+    bidiOptions,
     send,
     openStream: (source) => incoming.enqueue(new ReadableStream<Uint8Array>(source)),
   };
@@ -154,5 +170,16 @@ describe('transport worker incoming unidirectional streams', () => {
     await worker.send({});
 
     expect(worker.posted.filter((m) => m.type === 'incoming-stream' || m.type === 'stream-data')).toEqual([]);
+  });
+
+  it('opens the setup stream, request streams and object streams with their priorities', async () => {
+    const worker = await startWorker();
+    const objectSendOrder = 123;
+
+    await worker.send({ type: 'create-stream', id: 1, sendOrder: objectSendOrder });
+    await worker.send({ type: 'create-bidi-stream', id: 2 });
+
+    expect(worker.uniOptions).toEqual([{ sendOrder: SendOrder.CONTROL }, { sendOrder: objectSendOrder }]);
+    expect(worker.bidiOptions).toEqual([{ sendOrder: SendOrder.REQUEST }]);
   });
 });

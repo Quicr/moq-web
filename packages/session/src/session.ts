@@ -43,6 +43,7 @@ import {
   StreamTypeDraft18,
   DatagramTypeDraft18,
   MOQTVarInt,
+  SendOrder,
   SetupParameter,
   SubscriptionFilterDraft18,
   ObjectExtension,
@@ -1006,9 +1007,7 @@ export class MOQTSession {
     this.openStreamCount++;
     try {
       if (this.useWorker) {
-        // The worker path does not yet plumb sendOrder — main-thread streams get
-        // §7 priority scheduling today; worker streams inherit the browser default.
-        const streamId = await this.transportWorker!.createStream();
+        const streamId = await this.transportWorker!.createStream(opts);
         return { streamId };
       } else {
         const stream = await this.transport!.createUnidirectionalStream(opts);
@@ -2949,7 +2948,8 @@ export class MOQTSession {
     const payload = new Uint8Array(typeBytes.length + bytes);
     payload.set(typeBytes);
     // Remaining bytes are already zero-initialized by the Uint8Array constructor.
-    const streamInfo = await this.doCreateStream();
+    // §11.5: padding goes after all control and Object data
+    const streamInfo = await this.doCreateStream({ sendOrder: SendOrder.PADDING });
     await this.doWriteStream(streamInfo, payload, /* close */ true);
   }
 
@@ -7219,23 +7219,22 @@ export class MOQTSession {
       return;
     }
 
-    // §7 / §10.9.1 — if the update carries new SUBSCRIBER_PRIORITY or
-    // GROUP_ORDER, mirror them onto the matching publication and the
-    // announced-subscriber entry. The spec says a best effort SHOULD be made
-    // to apply the change to objects not yet scheduled; we update state so
-    // future streams pick up the new values via `computeSendOrder`.
+    // §7 / §10.9.1 — if the update carries a new SUBSCRIBER_PRIORITY, mirror
+    // it onto the matching publication and the announced-subscriber entry. The
+    // spec says a best effort SHOULD be made to apply the change to objects not
+    // yet scheduled; we update state so future streams pick up the new value
+    // via `computeSendOrder`. A GROUP_ORDER in the update is ignored: the group
+    // order of an existing subscription cannot be changed (d22 §5.1.1).
     const sched = parseSubscriberSchedulingParams(message.parameters);
-    if (sched.subscriberPriority !== undefined || sched.groupOrder !== undefined) {
+    if (sched.subscriberPriority !== undefined) {
       const pub = this.publicationManager.getByRequestId(requestId);
       if (pub) {
-        if (sched.subscriberPriority !== undefined) pub.subscriberPriority = sched.subscriberPriority;
-        if (sched.groupOrder !== undefined) pub.subscriberGroupOrder = sched.groupOrder;
+        pub.subscriberPriority = sched.subscriberPriority;
       }
       for (const info of this.announcedNamespaces.values()) {
         const sub = info.subscribers.get(requestId);
         if (sub) {
-          if (sched.subscriberPriority !== undefined) sub.subscriberPriority = sched.subscriberPriority;
-          if (sched.groupOrder !== undefined) sub.groupOrder = sched.groupOrder;
+          sub.subscriberPriority = sched.subscriberPriority;
           break;
         }
       }
