@@ -12,7 +12,7 @@
  *   - `keepaliveIntervalMs`: on outbound silence past this threshold, emit
  *     a §11.5 padding datagram so the peer's QUIC idle timer resets.
  *   - `idleTimeoutMs`: on *any-direction* silence past this threshold,
- *     close the session locally with CONTROL_MESSAGE_TIMEOUT and emit a
+ *     close the session locally with NO_ERROR and emit a
  *     `session-terminated` event so consumers can react.
  *
  * The tests use vitest's fake timers to advance the idle-tick interval
@@ -155,12 +155,12 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §13.6.1 idle-connection subsystem', () 
     expect(internals.idleTracker.closePending).toBe(true);
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(closeSpy).toHaveBeenCalledWith({
-      code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+      code: SessionErrorCodeDraft18.NO_ERROR,
       reason: 'idle timeout',
     });
 
     expect(events).toHaveLength(1);
-    expect(events[0].code).toBe(SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT);
+    expect(events[0].code).toBe(SessionErrorCodeDraft18.NO_ERROR);
     expect(events[0].remote).toBe(false);
     expect(events[0].reason).toMatch(/idle timeout/);
   });

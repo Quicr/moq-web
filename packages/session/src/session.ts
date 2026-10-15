@@ -554,7 +554,7 @@ export class MOQTSession {
    * frames to keep the QUIC connection alive". WebTransport doesn't expose
    * PING, so we approximate it by sending a §11.5 padding datagram, and we
    * offer a mirror-image application-idle timer that closes the session
-   * with §15.10.3 CONTROL_MESSAGE_TIMEOUT if neither side has spoken for
+   * with NO_ERROR if neither side has spoken for
    * `idleTimeoutMs`.
    *
    * Both cadences are opt-in via `configureIdle()`. When disabled the
@@ -814,14 +814,14 @@ export class MOQTSession {
         // idle path is a policy decision by *this* endpoint that consumers
         // should see explicitly.
         this.emit('session-terminated', {
-          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+          code: SessionErrorCodeDraft18.NO_ERROR,
           reason: `idle timeout (${sinceMs}ms)`,
           remote: false,
         } as SessionTerminatedEvent);
-        // CONTROL_MESSAGE_TIMEOUT (§15.10.3 / SessionErrorCodeDraft18 0x11)
-        // is the closest spec code for "the peer stopped talking to us."
+        // Going idle is an ordinary end, not a violation. CONTROL_MESSAGE_TIMEOUT means
+        // the peer took too long to answer a control message (d22 §12.2).
         this.close({
-          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+          code: SessionErrorCodeDraft18.NO_ERROR,
           reason: 'idle timeout',
         }).catch(() => {/* best effort */});
       },
@@ -2273,8 +2273,8 @@ export class MOQTSession {
    *     datagram to reset the peer's idle timer. Omit or set to 0 to
    *     disable.
    *   - `idleTimeoutMs` — if *no* activity in either direction has been
-   *     seen for this many ms, close the session with §15.10.3
-   *     `CONTROL_MESSAGE_TIMEOUT`. Omit or set to 0 to disable.
+   *     seen for this many ms, close the session with `NO_ERROR`. Omit or set to
+   *     0 to disable.
    *
    * May be called before or after `setup()`. Calling it while `ready` will
    * reconfigure the running timer.
