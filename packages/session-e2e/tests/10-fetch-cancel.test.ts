@@ -18,6 +18,11 @@ import { generateChat } from '../lib/chat-generator.js';
 import chatStream from '../profiles/chat-stream.json';
 import chatDatagram from '../profiles/chat-datagram.json';
 
+// Enough data that a local relay can't drain the whole range before the
+// cancel lands (the profile's 30 x 64 B arrives in a single burst).
+const CANCEL_MESSAGES = 600;
+const CANCEL_SIZE_BYTES = 2048;
+
 describe.each([
   ['chat-stream', chatStream as Profile],
   ['chat-datagram', chatDatagram as Profile],
@@ -39,7 +44,8 @@ describe.each([
 
     const namespace = makeNamespace(profile, `fcancel-${label}`);
     const perGroup = track.payload.objectsPerGroup ?? 10;
-    const messages = Array.from(generateChat(track.payload));
+    const payload = { ...track.payload, messages: CANCEL_MESSAGES, sizeBytes: CANCEL_SIZE_BYTES };
+    const messages = Array.from(generateChat(payload));
     const lastGroup = messages[messages.length - 1]?.groupId ?? 0;
 
     pub = await makeSession(profile);
@@ -67,6 +73,11 @@ describe.each([
       fetchFailed = `code=${evt.errorCode} reason=${evt.reason}`;
     });
 
+    // Resolve on the first object so the cancel goes out immediately rather
+    // than after a polling interval.
+    let onFirstObject!: () => void;
+    const firstObject = new Promise<void>((r) => { onFirstObject = r; });
+
     const requestId = await sub.session.fetch(
       namespace,
       track.name,
@@ -74,13 +85,13 @@ describe.each([
       {},
       () => {
         received++;
+        if (received === 1) {
+          onFirstObject();
+        }
       },
     );
 
-    const deadline = Date.now() + 5_000;
-    while (received < 1 && !fetchFailed && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    await Promise.race([firstObject, new Promise((r) => setTimeout(r, 5_000))]);
     errorOff();
 
     if (fetchFailed) {
