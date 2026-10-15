@@ -19,6 +19,8 @@
 import {
   MOQTransport,
   MessageCodec,
+  AuthTokenAliasType,
+  encodeDraft18AuthToken,
   MessageType,
   MessageTypeDraft18,
   Version,
@@ -126,6 +128,7 @@ import {
   assertNotReservedNamespace,
   buildTrackProperties,
   decodeTrackNamespaceBytes,
+  encodeDraft18AuthBytes,
   encodeRequestAuthTokenBytes,
   encodeTokenBytes,
   encodeTrackNamespaceBytes,
@@ -1905,8 +1908,8 @@ export class MOQTSession {
       let setupAuthToken: Uint8Array | undefined;
       if (this.authToken) {
         const tokenBytes = encodeTokenBytes(this.authToken, this.authTokenType);
-        setupAuthToken = MessageCodec.encodeAuthorizationToken({
-          aliasType: 3, // USE_VALUE — inline, no caching
+        setupAuthToken = encodeDraft18AuthToken({
+          aliasType: AuthTokenAliasType.USE_VALUE, // inline, no caching
           tokenType: this.authTokenType,
           tokenValue: tokenBytes,
         });
@@ -3024,7 +3027,7 @@ export class MOQTSession {
     if (options?.authToken) {
       parameters.set(
         RequestParameterDraft18.AUTHORIZATION_TOKEN,
-        encodeRequestAuthTokenBytes(options.authToken),
+        encodeDraft18AuthBytes(options.authToken),
       );
     }
     // §7 / §10.2 — advertise subscriber-side scheduling hints when the caller
@@ -3511,7 +3514,7 @@ export class MOQTSession {
     if (options?.authToken) {
       parameters.set(
         RequestParameterDraft18.AUTHORIZATION_TOKEN,
-        encodeRequestAuthTokenBytes(options.authToken),
+        encodeDraft18AuthBytes(options.authToken),
       );
     }
     return {
@@ -3563,7 +3566,7 @@ export class MOQTSession {
     if (options?.authToken) {
       parameters.set(
         RequestParameterDraft22.AUTHORIZATION_TOKEN,
-        encodeRequestAuthTokenBytes(options.authToken),
+        encodeDraft18AuthBytes(options.authToken),
       );
     }
 

@@ -7,13 +7,13 @@
  * SUBSCRIBE and FETCH accept a per-request `authToken` in the caller-facing
  * options bag. These tests capture the encoded request bytes and confirm the
  * codec-decoded parameter map carries the token payload verbatim, so a peer
- * can validate the token via `MessageCodec.decodeAuthorizationToken()`.
+ * can validate the token via `decodeDraft18AuthToken()`.
  */
 
 import { describe, it, expect, vi } from 'vitest';
 import {
   Draft18MessageCodec,
-  MessageCodec,
+  decodeDraft18AuthToken,
   MOQTransport,
   MessageTypeDraft18,
   RequestParameterDraft18,
@@ -83,7 +83,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.2 AUTHORIZATION_TOKEN wiring', ()
     const paramBytes = m.parameters!.get(RequestParameterDraft18.AUTHORIZATION_TOKEN);
     expect(paramBytes).toBeDefined();
 
-    const token = MessageCodec.decodeAuthorizationToken(paramBytes!);
+    const token = decodeDraft18AuthToken(paramBytes!);
     expect(token.aliasType).toBe(3); // USE_VALUE
     expect(token.tokenType).toBe(0x63346d);
     expect(token.tokenValue).toEqual(tokenBytes);
@@ -117,7 +117,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.2 AUTHORIZATION_TOKEN wiring', ()
     const m = decoded as FetchMessageDraft18;
     const paramBytes = m.parameters!.get(RequestParameterDraft18.AUTHORIZATION_TOKEN);
     expect(paramBytes).toBeDefined();
-    const token = MessageCodec.decodeAuthorizationToken(paramBytes!);
+    const token = decodeDraft18AuthToken(paramBytes!);
     expect(token.tokenValue).toEqual(tokenBytes);
   });
 

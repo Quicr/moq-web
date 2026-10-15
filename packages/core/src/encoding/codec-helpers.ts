@@ -12,7 +12,7 @@
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
 import { Draft18CodecError } from './draft18-message-codec.js';
-import type { MessageTypeDraft18, TrackNamespace } from '../messages/types.js';
+import type { AuthorizationToken, MessageTypeDraft18, TrackNamespace } from '../messages/types.js';
 
 // Module-level singletons shared across helpers
 const TE = new TextEncoder();
@@ -140,6 +140,94 @@ export function decodeKeyValuePairsToEnd(reader: Draft18BufferReader): Map<numbe
   }
 
   return pairs;
+}
+
+// =============================================================================
+// Authorization Token (§8.9)
+// =============================================================================
+
+/** Token structure Alias Type code points (§8.9). */
+export enum AuthTokenAliasType {
+  DELETE = 0,
+  REGISTER = 1,
+  USE_ALIAS = 2,
+  USE_VALUE = 3,
+}
+
+/**
+ * Encode a Token structure: Alias Type (vi64) | [Token Alias (vi64)] |
+ * [Token Type (vi64)] | [Token Value (..)]. Unlike the draft-14/16 token,
+ * every integer is a MOQT vi64.
+ */
+export function encodeDraft18AuthToken(token: AuthorizationToken): Uint8Array {
+  if (token.aliasType < AuthTokenAliasType.DELETE || token.aliasType > AuthTokenAliasType.USE_VALUE) {
+    throw new Draft18CodecError(`Unknown auth token aliasType: ${token.aliasType}`);
+  }
+
+  const hasAlias = token.aliasType !== AuthTokenAliasType.USE_VALUE;
+  const hasValue = token.aliasType === AuthTokenAliasType.REGISTER ||
+    token.aliasType === AuthTokenAliasType.USE_VALUE;
+
+  const writer = new Draft18BufferWriter();
+  writer.writeVarInt(token.aliasType);
+
+  if (hasAlias) {
+    if (token.tokenAlias === undefined) {
+      throw new Draft18CodecError('tokenAlias required for this aliasType');
+    }
+    writer.writeVarInt(token.tokenAlias);
+  }
+
+  if (hasValue) {
+    if (token.tokenType === undefined || !token.tokenValue) {
+      throw new Draft18CodecError('tokenType and tokenValue required for this aliasType');
+    }
+    writer.writeVarInt(token.tokenType);
+    writer.writeBytes(token.tokenValue);
+  }
+
+  return writer.toUint8Array();
+}
+
+/** Decode a Token structure (see {@link encodeDraft18AuthToken}). */
+export function decodeDraft18AuthToken(data: Uint8Array): AuthorizationToken {
+  try {
+    return readAuthToken(new Draft18BufferReader(data));
+  } catch (error) {
+    if (error instanceof Draft18CodecError) {
+      throw error;
+    }
+    throw new Draft18CodecError(`Undecodable auth token: ${(error as Error).message}`);
+  }
+}
+
+function readAuthToken(reader: Draft18BufferReader): AuthorizationToken {
+  const aliasType = reader.readVarIntNumber();
+
+  switch (aliasType) {
+    case AuthTokenAliasType.DELETE:
+    case AuthTokenAliasType.USE_ALIAS: {
+      const tokenAlias = reader.readVarIntNumber();
+      if (reader.hasMore) {
+        throw new Draft18CodecError('Unexpected Token Type/Value for this aliasType');
+      }
+      return { aliasType, tokenAlias };
+    }
+
+    case AuthTokenAliasType.REGISTER: {
+      const tokenAlias = reader.readVarIntNumber();
+      const tokenType = reader.readVarIntNumber();
+      return { aliasType, tokenAlias, tokenType, tokenValue: reader.readBytes(reader.remaining).slice() };
+    }
+
+    case AuthTokenAliasType.USE_VALUE: {
+      const tokenType = reader.readVarIntNumber();
+      return { aliasType, tokenType, tokenValue: reader.readBytes(reader.remaining).slice() };
+    }
+
+    default:
+      throw new Draft18CodecError(`Unknown auth token aliasType: ${aliasType}`);
+  }
 }
 
 // =============================================================================

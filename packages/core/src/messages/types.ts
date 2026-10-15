@@ -1580,7 +1580,7 @@ export interface ServerSetupMessageDraft18 {
   maxAuthTokenCacheSize?: number;
   /**
    * Raw AUTHORIZATION_TOKEN option bytes from the peer's SETUP (§10.2.2).
-   * Decode via `MessageCodec.decodeAuthorizationToken()` to inspect
+   * Decode via `decodeDraft18AuthToken()` to inspect
    * `aliasType` / `tokenType` / `tokenValue`.
    */
   authToken?: Uint8Array;

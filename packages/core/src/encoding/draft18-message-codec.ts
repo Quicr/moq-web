@@ -439,7 +439,7 @@ export class Draft18MessageCodec {
           const length = reader.readVarIntNumber();
           assertBound(length, MAX_AUTH_TOKEN_LENGTH, 'SETUP AUTHORIZATION_TOKEN length', MessageTypeDraft18.SETUP);
           // Copy so callers can hold onto the token past the decode buffer's
-          // lifetime; downstream code decodes via MessageCodec.decodeAuthorizationToken.
+          // lifetime; downstream code decodes via decodeDraft18AuthToken.
           authToken = new Uint8Array(reader.readBytes(length));
           break;
         }

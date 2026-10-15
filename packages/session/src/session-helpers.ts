@@ -10,8 +10,10 @@
  */
 
 import {
+  AuthTokenAliasType,
   BufferWriter,
   ConnectionStateMachine as _ConnectionStateMachine,
+  encodeDraft18AuthToken,
   MessageCodec,
   MOQTVarInt,
   FetchTypeDraft18,
@@ -501,6 +503,18 @@ export function encodeRequestAuthTokenBytes(authToken: RequestAuthToken): Uint8A
   return MessageCodec.encodeAuthorizationToken({
     aliasType: 3,
     tokenType,
+    tokenValue: authToken.tokenBytes,
+  });
+}
+
+/**
+ * Draft-18/22 variant of {@link encodeRequestAuthTokenBytes}: the §8.9 Token
+ * structure uses MOQT vi64 integers instead of QUIC varints.
+ */
+export function encodeDraft18AuthBytes(authToken: RequestAuthToken): Uint8Array {
+  return encodeDraft18AuthToken({
+    aliasType: AuthTokenAliasType.USE_VALUE,
+    tokenType: authToken.tokenType ?? C4M_TOKEN_TYPE,
     tokenValue: authToken.tokenBytes,
   });
 }

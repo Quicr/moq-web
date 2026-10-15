@@ -364,6 +364,11 @@ export type { IProtocolCodec, ProtocolCodecCapabilities } from './encoding/proto
 
 // Draft-18 message codec
 export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
+export {
+  AuthTokenAliasType,
+  decodeDraft18AuthToken,
+  encodeDraft18AuthToken,
+} from './encoding/codec-helpers.js';
 export { countRanges, validateRangeFilters, INVALID_FILTER_CODE } from './encoding/draft22-range-filter.js';
 
 // Draft-22 message codec (delegates to Draft18MessageCodec for shared messages)
