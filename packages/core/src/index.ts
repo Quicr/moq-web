@@ -328,8 +328,8 @@ export {
   MOQT_VARINT_MAX_4BYTE,
   MOQT_VARINT_MAX_5BYTE,
   MOQT_VARINT_MAX_6BYTE,
+  MOQT_VARINT_MAX_7BYTE,
   MOQT_VARINT_MAX_8BYTE,
-  MOQT_VARINT_INVALID_PATTERN,
 } from './encoding/moqt-varint.js';
 
 // VarInt codec abstraction (switchable between QUIC and MOQT)

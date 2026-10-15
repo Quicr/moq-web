@@ -15,9 +15,9 @@ import {
   MOQT_VARINT_MAX_4BYTE,
   MOQT_VARINT_MAX_5BYTE,
   MOQT_VARINT_MAX_6BYTE,
+  MOQT_VARINT_MAX_7BYTE,
   MOQT_VARINT_MAX_8BYTE,
   MOQT_VARINT_MAX,
-  MOQT_VARINT_INVALID_PATTERN,
 } from './moqt-varint';
 
 describe('MOQTVarInt', () => {
@@ -56,8 +56,13 @@ describe('MOQTVarInt', () => {
       expect(MOQTVarInt.encodedLength(MOQT_VARINT_MAX_6BYTE)).toBe(6);
     });
 
+    it('returns 7 for values up to 2^49-1', () => {
+      expect(MOQTVarInt.encodedLength(MOQT_VARINT_MAX_6BYTE + 1n)).toBe(7);
+      expect(MOQTVarInt.encodedLength(MOQT_VARINT_MAX_7BYTE)).toBe(7);
+    });
+
     it('returns 8 for values up to 2^56-1', () => {
-      expect(MOQTVarInt.encodedLength(MOQT_VARINT_MAX_6BYTE + 1n)).toBe(8);
+      expect(MOQTVarInt.encodedLength(MOQT_VARINT_MAX_7BYTE + 1n)).toBe(8);
       expect(MOQTVarInt.encodedLength(MOQT_VARINT_MAX_8BYTE)).toBe(8);
     });
 
@@ -144,6 +149,17 @@ describe('MOQTVarInt', () => {
       const [decoded, bytesRead] = MOQTVarInt.decode(encoded);
       expect(decoded).toBe(value);
       expect(bytesRead).toBe(6);
+    });
+
+    it('roundtrips 7-byte values', () => {
+      const value = 151288809941952n;
+      const encoded = MOQTVarInt.encode(value);
+      // Draft-22 Table 4: 0xfc8998abc66bc0
+      expect(Array.from(encoded)).toEqual([0xfc, 0x89, 0x98, 0xab, 0xc6, 0x6b, 0xc0]);
+      const [decoded, bytesRead] = MOQTVarInt.decode(encoded);
+      expect(decoded).toBe(value);
+      expect(bytesRead).toBe(7);
+      expect(MOQTVarInt.encode(MOQT_VARINT_MAX_7BYTE)[0]).toBe(0xfd);
     });
 
     it('roundtrips 8-byte values', () => {
@@ -233,17 +249,16 @@ describe('MOQTVarInt', () => {
       expect(MOQTVarInt.lengthFromFirstByte(0b11111111)).toBe(9);
     });
 
-    it('throws for invalid pattern 0xFC', () => {
-      expect(() => MOQTVarInt.lengthFromFirstByte(MOQT_VARINT_INVALID_PATTERN)).toThrow(
-        MOQTVarIntError
-      );
+    it('returns 7 for 1111110x first bytes', () => {
+      expect(MOQTVarInt.lengthFromFirstByte(0b11111100)).toBe(7);
+      expect(MOQTVarInt.lengthFromFirstByte(0b11111101)).toBe(7);
     });
   });
 
-  describe('invalid pattern detection', () => {
-    it('throws on decode of invalid 0xFC pattern', () => {
-      const buffer = new Uint8Array([MOQT_VARINT_INVALID_PATTERN, 0, 0, 0, 0, 0, 0, 0]);
-      expect(() => MOQTVarInt.decode(buffer)).toThrow('PROTOCOL_VIOLATION');
+  describe('non-minimal encodings', () => {
+    it('decodes a small value in the 7-byte form', () => {
+      const buffer = new Uint8Array([0xfc, 0, 0, 0, 0, 0, 0x05]);
+      expect(MOQTVarInt.decode(buffer)).toEqual([5n, 7]);
     });
   });
 
