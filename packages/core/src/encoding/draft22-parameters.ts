@@ -17,14 +17,14 @@
  *   its payload, and Track Namespace as its encoding.
  */
 
-import { MOQTVarInt } from './moqt-varint.js';
+import { MOQTVarInt, MOQT_VARINT_MAX } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
 import { Draft18CodecError } from './draft18-message-codec.js';
 import {
   assertBound,
   encodeTrackNamespace,
   decodeTrackNamespace,
-  MAX_PARAMETER_COUNT,
+  MAX_CONTROL_MESSAGE_LENGTH,
   MAX_AUTH_TOKEN_LENGTH,
 } from './codec-helpers.js';
 import { decodeRangeFilter, encodeRangeFilter, validateRangeFilters } from './draft22-range-filter.js';
@@ -201,8 +201,9 @@ function lookupSpec(type: number, scope: ParameterScopeDraft22): ParameterSpec {
 
 /** Decode `Number of Parameters | Parameters` for a message */
 export function decodeParameters(reader: Draft18BufferReader, scope: ParameterScopeDraft22): ParameterSetDraft22 {
+  // §9.20: the count is not limited; the 2^16-1 byte message bounds it (each parameter takes 2+ bytes)
   const count = reader.readVarIntNumber();
-  assertBound(count, MAX_PARAMETER_COUNT, `${scope} numParams`);
+  assertBound(count, MAX_CONTROL_MESSAGE_LENGTH, `${scope} numParams`);
 
   return readEntries(reader, scope, count);
 }
@@ -566,6 +567,16 @@ function encodeLocationFilter(writer: Draft18BufferWriter, filter: LocationFilte
   }
 }
 
+/** §9.20.9: a Group ID past 2^64-1 closes the session */
+function readEndGroupDelta(reader: Draft18BufferReader, startGroup: bigint): bigint {
+  const delta = reader.readVarInt();
+  if (startGroup + delta > MOQT_VARINT_MAX) {
+    throw violation('LOCATION_FILTER end Group exceeds 2^64-1');
+  }
+
+  return delta;
+}
+
 function decodeLocationFilter(reader: Draft18BufferReader): LocationFilterDraft22 {
   const type = reader.readVarIntNumber();
 
@@ -579,11 +590,11 @@ function decodeLocationFilter(reader: Draft18BufferReader): LocationFilterDraft2
       return { type, startLocation: { group: reader.readVarInt(), object: reader.readVarInt() } };
     case LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END: {
       const startLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
-      return { type, startLocation, endGroupDelta: reader.readVarInt() };
+      return { type, startLocation, endGroupDelta: readEndGroupDelta(reader, startLocation.group) };
     }
     case LocationFilterTypeDraft22.ABSOLUTE_RANGE: {
       const startLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
-      const endGroupDelta = reader.readVarInt();
+      const endGroupDelta = readEndGroupDelta(reader, startLocation.group);
       return { type, startLocation, endGroupDelta, endObject: reader.readVarInt() };
     }
     default:

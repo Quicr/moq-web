@@ -579,7 +579,11 @@ export class Draft22MessageCodec {
   }
 
   private static decodeFetchOk(reader: Draft18BufferReader): FetchOkMessageDraft18 {
-    const endOfTrack = reader.readByte() !== 0;
+    const endOfTrackByte = reader.readByte();
+    if (endOfTrackByte > 1) {
+      throw new Draft18CodecError(`Invalid End Of Track ${endOfTrackByte} (PROTOCOL_VIOLATION)`);
+    }
+    const endOfTrack = endOfTrackByte === 1;
     const endLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
     decodeParameters(reader, S.FETCH_OK);
     const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;

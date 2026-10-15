@@ -560,10 +560,64 @@ describe('Draft22 §9.20 message parameters', () => {
       expect(decoded).toMatchObject({ endOfTrack: true, endLocation: { group: 4n, object: 5n } });
     });
 
+    it('rejects an End Of Track other than 0 or 1', () => {
+      const wire = bytes(0x18, 0x00, 0x04, 0x02, 0x04, 0x05, 0x00);
+
+      expect(() => Draft22MessageCodec.decode(wire)).toThrow(/End Of Track 2.*PROTOCOL_VIOLATION/);
+    });
+
     it('rejects any parameter, since none are defined', () => {
       const wireBad = bytes(0x18, 0x00, 0x06, 0x01, 0x04, 0x05, 0x01, 0x08, 0x01);
 
       expect(() => Draft22MessageCodec.decode(wireBad)).toThrow(/EXPIRES.*FETCH_OK.*PROTOCOL_VIOLATION/);
+    });
+  });
+
+  describe('parameter count and location filter limits (§9.20, §9.20.9)', () => {
+    const subscribe = (fields: Partial<SubscribeMessageDraft22>): SubscribeMessageDraft22 => ({
+      type: MessageTypeDraft22.SUBSCRIBE,
+      requestId: 4n,
+      trackNamespace: ['a'],
+      trackName: 't',
+      forwardState: true,
+      ...fields,
+    });
+
+    it('does not cap the number of parameters at 64', () => {
+      const rangeFilters = Array.from({ length: 70 }, (_, setId) => ({
+        type: RequestParameterDraft22.SUBGROUP_FILTER,
+        setId,
+        ranges: [{ start: 0n, end: 10n }],
+      }));
+
+      const [decoded] = Draft22MessageCodec.decode(Draft22MessageCodec.encode(subscribe({ rangeFilters })));
+
+      expect((decoded as SubscribeMessageDraft22).rangeFilters).toHaveLength(70);
+    });
+
+    it('rejects an end Group past 2^64-1', () => {
+      const locationFilter = {
+        type: LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END,
+        startLocation: { group: (1n << 64n) - 1n, object: 0n },
+        endGroupDelta: 1n,
+      };
+
+      const wire = Draft22MessageCodec.encode(subscribe({ locationFilter }));
+
+      expect(() => Draft22MessageCodec.decode(wire)).toThrow(/end Group.*PROTOCOL_VIOLATION/);
+    });
+
+    it('accepts an end Group of exactly 2^64-1', () => {
+      const locationFilter = {
+        type: LocationFilterTypeDraft22.ABSOLUTE_RANGE,
+        startLocation: { group: (1n << 64n) - 2n, object: 0n },
+        endGroupDelta: 1n,
+        endObject: 0n,
+      };
+
+      const [decoded] = Draft22MessageCodec.decode(Draft22MessageCodec.encode(subscribe({ locationFilter })));
+
+      expect((decoded as SubscribeMessageDraft22).locationFilter).toEqual(locationFilter);
     });
   });
 
