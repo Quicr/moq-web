@@ -3365,21 +3365,10 @@ export class MOQTSession {
 
     await this.endFillStreams(subscriptionId);
 
-    if (this.isDraft22) {
-      // Draft-22 §3.1: the subscriber terminates a subscription by
-      // STOP_SENDING (§6.4.2.3); no REQUEST_UPDATE.
+    if (this.isDraft18) {
+      // Draft-22 §3.1, draft-18 §5.1: the subscriber terminates a subscription
+      // by STOP_SENDING (§6.4.2.3); a FORWARD=0 update only pauses it.
       await this.abortRequestStream(subscription.requestId);
-    } else if (this.isDraft18) {
-      // Draft-18: Send REQUEST_UPDATE with forwardState=false to unsubscribe.
-      // Fire-and-forget: the relay resets the data streams on cancel and
-      // may close the bidi without a REQUEST_OK.
-      try {
-        await this.sendRequestUpdate(subscription.requestId, false, { awaitAck: false });
-      } catch (err) {
-        log.error('Failed to send REQUEST_UPDATE for unsubscribe', { error: (err as Error).message });
-      }
-      // Terminate the per-request bidi stream now that the subscription is gone.
-      await this.closeRequestStream(subscription.requestId);
     } else {
       // Draft-14/16: Send UNSUBSCRIBE message
       const unsubscribeMessage = {

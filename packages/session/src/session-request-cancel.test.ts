@@ -94,9 +94,9 @@ describe('cancelFetch REQUEST_UPDATE', () => {
   });
 });
 
-describe('unsubscribe (draft-22)', () => {
-  it('aborts the request stream without a REQUEST_UPDATE (§3.1: STOP_SENDING)', async () => {
-    const session = makeSession('draft-22');
+describe.each(['draft-18', 'draft-22'] as const)('unsubscribe (%s)', (draft) => {
+  it('aborts the request stream without a REQUEST_UPDATE (d22 §3.1, d18 §5.1: STOP_SENDING)', async () => {
+    const session = makeSession(draft);
     const stream = fakeRequestStream();
     internals(session).activeRequestStreams.set(REQUEST_ID, stream);
     const sendRequestUpdate = vi.fn().mockResolvedValue(undefined);
