@@ -178,6 +178,13 @@ export class ObjectRouter {
   private fetchReaders = new Map<bigint, ReadableStreamDefaultReader<Uint8Array>>();
 
   /**
+   * Readers of subgroup streams being decoded, by Track Alias, so deleting a
+   * subscription can STOP_SENDING them (draft-22 §9.9). Cleared when each
+   * stream ends.
+   */
+  private subgroupReaders = new Map<string, Set<ReadableStreamDefaultReader<Uint8Array>>>();
+
+  /**
    * FETCH request IDs cancelled by the subscriber. Stops delivery for an
    * in-flight stream and cancels one that arrives late. Entries go when the
    * stream ends; the cap bounds ones whose stream never arrives.
@@ -284,6 +291,19 @@ export class ObjectRouter {
     if (!reader) return;
     this.fetchReaders.delete(requestId);
     try { void reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.CANCELLED)); } catch { /* ignore */ }
+  }
+
+  /**
+   * STOP_SENDING every subgroup stream of a track still being read, when its
+   * subscription state is deleted (draft-22 §9.9).
+   */
+  cancelSubgroupStreams(trackAlias: bigint): void {
+    const readers = this.subgroupReaders.get(trackAlias.toString());
+    if (!readers) return;
+    this.subgroupReaders.delete(trackAlias.toString());
+    for (const reader of readers) {
+      try { void reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.CANCELLED)); } catch { /* ignore */ }
+    }
   }
 
   /**
@@ -455,6 +475,7 @@ export class ObjectRouter {
     // Hoisted so a peer RESET_STREAM caught below can still report which
     // subgroup was in flight.
     let subgroup: { trackAlias: number | bigint; groupId: number; subgroupId: number } | null = null;
+    let aliasKey: string | undefined;
 
     let buffer = new Uint8Array(0);
     let offset = 0;
@@ -539,6 +560,10 @@ export class ObjectRouter {
         subgroupId: narrowBigIntToNumber(header.subgroupId ?? 0n, 'Subgroup ID'),
       };
       log.info('Decoded subgroup header', { ...subgroup, endOfGroup: header.endOfGroup === true });
+      aliasKey = header.trackAlias.toString();
+      const readers = this.subgroupReaders.get(aliasKey) ?? new Set();
+      readers.add(reader);
+      this.subgroupReaders.set(aliasKey, readers);
 
       const hasProperties = header.hasProperties === true;
       let previousObjectId = -1;
@@ -609,6 +634,10 @@ export class ObjectRouter {
         return;
       }
       this.reportStreamError(err, subgroup);
+    } finally {
+      if (aliasKey !== undefined) {
+        this.subgroupReaders.get(aliasKey)?.delete(reader);
+      }
     }
   }
 

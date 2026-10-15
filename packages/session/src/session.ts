@@ -629,6 +629,8 @@ export class MOQTSession {
   private closeStarted = false;
   /** Closes the session when our GOAWAY's Timeout ends with requests open */
   private goAwayTimer?: ReturnType<typeof setTimeout>;
+  /** Subscriptions waiting out their drain time after PUBLISH_DONE, by subscription ID */
+  private retireTimers = new Map<number, ReturnType<typeof setTimeout>>();
   /** The peer sent its GOAWAY on the control stream (one is allowed, draft-22 §9.2) */
   private goAwayReceived = false;
   /** Request streams that already carried the peer's GOAWAY (one each) */
@@ -1687,7 +1689,7 @@ export class MOQTSession {
       return;
     }
 
-    this.subscriptionManager.remove(subscription.subscriptionId);
+    this.deleteSubscriptionState(subscription);
     log.warn('Subscription failed', { requestId: requestId.toString(), reason });
     this.emit('publish-done', {
       requestId,
@@ -3122,6 +3124,10 @@ export class MOQTSession {
     const reason = options?.reason ?? 'Normal closure';
     this.closeStarted = true;
     clearTimeout(this.goAwayTimer);
+    for (const timer of this.retireTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.retireTimers.clear();
     this._lastCloseReason = reason;
     this._lastCloseCode = code;
     this.metrics.counter('moq.session.close', 1, {
@@ -3569,6 +3575,7 @@ export class MOQTSession {
       onEndOfGroup,
       groupOrder: options?.groupOrder,
       rangeFilterCounts,
+      drainMs: Math.max(options?.subgroupDeliveryTimeout ?? 0, options?.objectDeliveryTimeout ?? 0),
     };
     this.subscriptionManager.add(subscription);
 
@@ -3740,7 +3747,13 @@ export class MOQTSession {
         const largestGroup = subscribeOk.largestLocation.group;
         const largestObject = subscribeOk.largestLocation.object;
         const contentExists = largestGroup > 0n || largestObject > 0n;
-        sub.dynamicGroups = parseTrackProperties(subscribeOk.trackProperties)?.dynamicGroups === true;
+        const properties = parseTrackProperties(subscribeOk.trackProperties);
+        sub.dynamicGroups = properties?.dynamicGroups === true;
+        sub.drainMs = Math.max(
+          sub.drainMs ?? 0,
+          properties?.subgroupDeliveryTimeoutMs ?? 0,
+          properties?.objectDeliveryTimeoutMs ?? 0,
+        );
         sub.largestGroup = contentExists ? narrowBigIntToNumber(largestGroup, 'SUBSCRIBE_OK.largestGroup') : undefined;
         this.emit('subscribe-ok', {
           subscriptionId: sub.subscriptionId,
@@ -3879,7 +3892,7 @@ export class MOQTSession {
     }
 
     // Remove from manager
-    this.subscriptionManager.remove(subscriptionId);
+    this.deleteSubscriptionState(subscription);
     log.info('Unsubscribed', { subscriptionId });
   }
 
@@ -7325,6 +7338,10 @@ export class MOQTSession {
       paused: this.isDraft22 && message.forwardState === false,
       onObject: matchingSubscription.onObject,
       dynamicGroups: parseTrackProperties(message.trackProperties)?.dynamicGroups === true,
+      drainMs: Math.max(
+        parseTrackProperties(message.trackProperties)?.subgroupDeliveryTimeoutMs ?? 0,
+        parseTrackProperties(message.trackProperties)?.objectDeliveryTimeoutMs ?? 0,
+      ),
     };
     this.subscriptionManager.add(subscription);
 
@@ -7699,9 +7716,41 @@ export class MOQTSession {
     } as PublishDoneEvent);
 
     if (sub) {
-      this.subscriptionManager.remove(sub.subscriptionId);
-      log.info('Subscription removed after PUBLISH_DONE', { subscriptionId: sub.subscriptionId });
+      this.retireSubscription(sub, message.streamCount);
     }
+  }
+
+  /**
+   * PUBLISH_DONE ends a subscription, but objects can still be inbound through
+   * prioritization or loss, so its routing stays for the larger of the
+   * delivery timeouts. Nothing is awaited when it names no streams or no
+   * timeout applies (draft-22 §9.9, §3.1.3).
+   */
+  private retireSubscription(subscription: InternalSubscription, streamCount: bigint | undefined): void {
+    const drainMs = subscription.drainMs ?? 0;
+    if (drainMs <= 0 || streamCount === 0n) {
+      this.deleteSubscriptionState(subscription);
+
+      return;
+    }
+
+    this.retireTimers.set(subscription.subscriptionId, setTimeout(() => {
+      this.deleteSubscriptionState(subscription);
+    }, drainMs));
+    log.info('Subscription draining after PUBLISH_DONE', { subscriptionId: subscription.subscriptionId, drainMs });
+  }
+
+  /**
+   * Delete a subscription's state and STOP_SENDING the streams still inbound
+   * for it (draft-22 §9.9).
+   */
+  private deleteSubscriptionState(subscription: InternalSubscription): void {
+    clearTimeout(this.retireTimers.get(subscription.subscriptionId));
+    this.retireTimers.delete(subscription.subscriptionId);
+    if (subscription.trackAlias !== undefined && this.isDraft18) {
+      this.objectRouter.cancelSubgroupStreams(subscription.trackAlias);
+    }
+    this.subscriptionManager.remove(subscription.subscriptionId);
   }
 
   /**

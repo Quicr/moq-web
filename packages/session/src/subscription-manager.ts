@@ -32,6 +32,11 @@ export interface InternalSubscription extends SubscriptionInfo {
   dynamicGroups?: boolean;
   /** Largest Group ID known: from SUBSCRIBE_OK or PUBLISH, then every object delivered */
   largestGroup?: number;
+  /**
+   * The larger of the delivery timeouts that apply (ms): how long objects may still be
+   * inbound after PUBLISH_DONE (draft-22 §9.9)
+   */
+  drainMs?: number;
 }
 
 /**
