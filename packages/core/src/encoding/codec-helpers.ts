@@ -101,10 +101,21 @@ export function readVarIntSaturating(reader: Draft18BufferReader): number {
 // Track Namespace / String Helpers
 // =============================================================================
 
+/** Total byte length of a Track Namespace: the sum of its field lengths (§8.7) */
+function namespaceLength(namespace: TrackNamespace): number {
+  return namespace.reduce((total, field) => total + TE.encode(field).length, 0);
+}
+
 export function encodeTrackNamespace(writer: Draft18BufferWriter, namespace: TrackNamespace): void {
+  assertBound(namespace.length, MAX_NAMESPACE_TUPLE_COUNT, 'TrackNamespace tuple count');
+  assertBound(namespaceLength(namespace), MAX_TRACK_NAME_LENGTH, 'TrackNamespace length');
+
   writer.writeVarInt(namespace.length);
   for (const field of namespace) {
     const bytes = TE.encode(field);
+    if (bytes.length === 0) {
+      throw new Draft18CodecError('TrackNamespace Field length 0 (PROTOCOL_VIOLATION)');
+    }
     writer.writeVarInt(bytes.length);
     writer.writeBytes(bytes);
   }
@@ -114,13 +125,29 @@ export function decodeTrackNamespace(reader: Draft18BufferReader, messageType?: 
   const count = reader.readVarIntNumber();
   assertBound(count, MAX_NAMESPACE_TUPLE_COUNT, 'TrackNamespace tuple count', messageType);
   const namespace: string[] = [];
+  let total = 0;
   for (let i = 0; i < count; i++) {
     const length = reader.readVarIntNumber();
+    // §8.7: an empty field, or a Track Namespace over 4,096 bytes, closes the session
+    if (length === 0) {
+      throw new Draft18CodecError('TrackNamespace Field length 0 (PROTOCOL_VIOLATION)', messageType);
+    }
     assertBound(length, MAX_STRING_LENGTH, 'TrackNamespace field length', messageType);
+    total += length;
+    assertBound(total, MAX_TRACK_NAME_LENGTH, 'TrackNamespace length', messageType);
     const bytes = reader.readBytes(length);
     namespace.push(TD.decode(bytes));
   }
   return namespace;
+}
+
+/** Encode a Track Name; §8.7 limits the Full Track Name (namespace + name) to 4,096 bytes. */
+export function encodeTrackName(writer: Draft18BufferWriter, name: string, namespace: TrackNamespace): void {
+  const bytes = TE.encode(name);
+  assertBound(namespaceLength(namespace) + bytes.length, MAX_TRACK_NAME_LENGTH, 'Full Track Name length');
+
+  writer.writeVarInt(bytes.length);
+  writer.writeBytes(bytes);
 }
 
 export function encodeString(writer: Draft18BufferWriter, str: string): void {
@@ -137,13 +164,21 @@ export function decodeString(reader: Draft18BufferReader, messageType?: MessageT
 }
 
 /**
- * Decode a Track Name (§10.7) — same wire format as decodeString but caps at
- * MAX_TRACK_NAME_LENGTH (which happens to equal MAX_STRING_LENGTH today, but
- * is a distinct semantic bound so we tag errors appropriately).
+ * Decode a Track Name. §8.7 bounds the Full Track Name: the namespace field
+ * lengths plus the name length may not exceed MAX_TRACK_NAME_LENGTH.
  */
-export function decodeTrackName(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): string {
+export function decodeTrackName(
+  reader: Draft18BufferReader,
+  messageType?: MessageTypeDraft18,
+  namespace: TrackNamespace = [],
+): string {
   const length = reader.readVarIntNumber();
-  assertBound(length, MAX_TRACK_NAME_LENGTH, 'TrackName length', messageType);
+  assertBound(
+    namespaceLength(namespace) + length,
+    MAX_TRACK_NAME_LENGTH,
+    'Full Track Name length',
+    messageType,
+  );
   const bytes = reader.readBytes(length);
   return TD.decode(bytes);
 }

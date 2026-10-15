@@ -27,6 +27,7 @@ import {
   encodeTrackNamespace,
   decodeTrackNamespace,
   encodeString,
+  encodeTrackName,
   decodeTrackName,
   encodeKeyValuePairs,
   DEFAULT_SUBSCRIBER_PRIORITY,
@@ -282,7 +283,7 @@ export class Draft22MessageCodec {
   private static decodeSubscribeDraft22(reader: Draft18BufferReader): SubscribeMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader);
-    const trackName = decodeTrackName(reader);
+    const trackName = decodeTrackName(reader, undefined, trackNamespace);
     const params = decodeParameters(reader, S.SUBSCRIBE);
 
     return {
@@ -307,7 +308,7 @@ export class Draft22MessageCodec {
     return encodeFramed(MessageTypeDraft22.SUBSCRIBE, (w) => {
       w.writeVarInt(message.requestId);
       encodeTrackNamespace(w, message.trackNamespace);
-      encodeString(w, message.trackName);
+      encodeTrackName(w, message.trackName, message.trackNamespace);
 
       // FORWARD is always sent (forwardState is not optional here); the
       // omitted default (1) would unpause
@@ -322,7 +323,7 @@ export class Draft22MessageCodec {
   private static encodeFetch(writer: Draft18BufferWriter, message: FetchMessageDraft22): void {
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
 
     const parameters = new Map(message.parameters);
     parameters.set(P.SUBSCRIBER_PRIORITY, new Uint8Array([message.subscriberPriority]));
@@ -342,7 +343,7 @@ export class Draft22MessageCodec {
   private static decodeFetch(reader: Draft18BufferReader): FetchMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.FETCH);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH, trackNamespace);
     const params = decodeParameters(reader, S.FETCH);
 
     // Parameters FETCH carries as fields; the rest stay in `parameters`
@@ -381,7 +382,7 @@ export class Draft22MessageCodec {
     // Request ID | Track Namespace | Track Name | Track Alias | Parameters | Track Properties
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
     writer.writeVarInt(message.trackAlias);
     encodeParameters(writer, S.PUBLISH, message);
 
@@ -394,7 +395,7 @@ export class Draft22MessageCodec {
   private static decodePublish(reader: Draft18BufferReader): PublishMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH, trackNamespace);
     const trackAlias = reader.readVarInt();
     const params = decodeParameters(reader, S.PUBLISH);
     const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;
@@ -448,14 +449,14 @@ export class Draft22MessageCodec {
   private static encodeTrackStatus(writer: Draft18BufferWriter, message: TrackStatusMessageDraft22): void {
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
     encodeParameters(writer, S.TRACK_STATUS, message);
   }
 
   private static decodeTrackStatus(reader: Draft18BufferReader): TrackStatusMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.TRACK_STATUS);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS, trackNamespace);
     const params = decodeParameters(reader, S.TRACK_STATUS);
 
     return {

@@ -115,7 +115,8 @@ const arbAsciiString = (max: number): fc.Arbitrary<string> =>
 const arbBigintU62 = (max = 0xffff_ffffn): fc.Arbitrary<bigint> =>
   fc.bigInt({ min: 0n, max });
 
-const arbTrackNamespace = fc.array(arbAsciiString(64), {
+// §8.7: a Track Namespace Field has at least one byte.
+const arbTrackNamespace = fc.array(fc.string({ minLength: 1, maxLength: 64, unit: 'grapheme-ascii' }), {
   minLength: 1,
   maxLength: 4,
 });

@@ -21,6 +21,7 @@ import {
   encodeTrackNamespace,
   decodeTrackNamespace,
   encodeString,
+  encodeTrackName,
   decodeString,
   decodeTrackName,
   encodeKeyValuePairs,
@@ -515,7 +516,7 @@ export class Draft18MessageCodec {
     // Draft-18 SUBSCRIBE: Request ID | Track Namespace | Track Name | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
 
     // Build parameters list including subscription filter
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
@@ -578,7 +579,7 @@ export class Draft18MessageCodec {
   private static decodeSubscribe(reader: Draft18BufferReader): SubscribeMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.SUBSCRIBE);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.SUBSCRIBE, trackNamespace);
 
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE numParams', MessageTypeDraft18.SUBSCRIBE);
@@ -702,7 +703,7 @@ export class Draft18MessageCodec {
     // Draft-18 PUBLISH: Request ID | Track Namespace | Track Name | Track Alias | Num Params | Params | Track Properties
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
     writer.writeVarInt(message.trackAlias);
 
     // Message Parameters (count-prefixed)
@@ -728,7 +729,7 @@ export class Draft18MessageCodec {
   private static decodePublish(reader: Draft18BufferReader): PublishMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH, trackNamespace);
     const trackAlias = reader.readVarInt();
 
     // Message Parameters (count-prefixed)
@@ -908,7 +909,7 @@ export class Draft18MessageCodec {
       // Standalone fetch (type 0x1)
       writer.writeVarInt(BigInt(FetchTypeDraft18.STANDALONE));
       encodeTrackNamespace(writer, message.trackNamespace!);
-      encodeString(writer, message.trackName!);
+      encodeTrackName(writer, message.trackName!, message.trackNamespace!);
       Draft18MessageCodec.encodeLocation(writer, message.startLocation);
       Draft18MessageCodec.encodeLocation(writer, message.endLocation);
     }
@@ -970,7 +971,7 @@ export class Draft18MessageCodec {
 
     if (fetchType === FetchTypeDraft18.STANDALONE) {
       trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.FETCH);
-      trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH);
+      trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH, trackNamespace);
       startLocation = Draft18MessageCodec.decodeLocation(reader);
       endLocation = Draft18MessageCodec.decodeLocation(reader);
     } else {
@@ -1086,14 +1087,14 @@ export class Draft18MessageCodec {
     // Same format as SUBSCRIBE: Request ID | Track Namespace | Track Name | Num Params | Params
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
     Draft18MessageCodec.encodeMessageParameters(writer, []);
   }
 
   private static decodeTrackStatus(reader: Draft18BufferReader): TrackStatusMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.TRACK_STATUS);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS, trackNamespace);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'TRACK_STATUS numParams', MessageTypeDraft18.TRACK_STATUS);
     let previousType = 0;
