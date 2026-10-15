@@ -216,9 +216,6 @@ export class ObjectRouter {
   private get isDraft18(): boolean {
     return this._draft === 'draft-18' || this._draft === 'draft-22';
   }
-  private get isDraft22(): boolean {
-    return this._draft === 'draft-22';
-  }
   private get isDraft16(): boolean {
     return this._draft === 'draft-16' || this._draft === 'draft-17';
   }
@@ -1148,8 +1145,9 @@ export class ObjectRouter {
    * absolute for the first object on the stream); subgroup ID follows the
    * subgroupMode enum (ZERO/PRIOR/PRIOR_PLUS_ONE/EXPLICIT). Priority is
    * inherited when the PRIORITY bit is clear. Payload length is a varint
-   * (spec §11.4.4.1). Special flag values 0x8C / 0x10C encode End-of-Range
-   * markers (§11.4.4.2) and MUST NOT update the prior-object context.
+   * (spec §11.4.4.1). Special flag values 0x8C / 0x10C / 0x20C encode
+   * End-of-Range markers (§11.4.4.2); their Group/Object ID become the prior
+   * Group/Object ID of the next object.
    */
   private async handleFetchStreamDraft18(
     reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -1224,15 +1222,13 @@ export class ObjectRouter {
         continue;
       }
 
-      // End-of-Range marker: two varints follow the special flag; MUST NOT
-      // update prior state (spec §11.4.4.2). Draft-22 §11.4.1.2: the marker's
-      // Group/Object ID become the prior Group/Object ID for the next object.
+      // End-of-Range marker: two varints follow the special flag. Its
+      // Group/Object ID become the prior Group/Object ID for the next object
+      // (d18 §11.4.4.2, d22 §11.4.1.2).
       if (decoded.endOfRange !== undefined) {
         bufferOffset = startOffset + headerBytes;
-        if (this.isDraft22) {
-          prevGroupId = decoded.groupIdDelta;
-          prevObjectId = decoded.objectIdDelta;
-        }
+        prevGroupId = decoded.groupIdDelta;
+        prevObjectId = decoded.objectIdDelta;
         log.info('Draft-18 FETCH end-of-range marker', {
           requestId: requestId.toString(),
           kind: this.endOfRangeKind(decoded.endOfRange),
@@ -1246,12 +1242,9 @@ export class ObjectRouter {
       const isFirst = prevGroupId === undefined;
       let groupId: bigint;
       if (decoded.groupIdDelta !== undefined) {
-        // Present-on-wire: draft-18 encodes as absolute for the first object,
-        // and moqtail/reference decoders treat later Group ID Delta fields as
-        // absolute values (there is no arithmetic delta — the flag bit merely
-        // signals presence; when absent the value inherits from the prior).
-        // Draft-22 §11.4.1.1: later objects carry a true delta.
-        groupId = this.isDraft22 && !isFirst
+        // Absolute for the first object, a true delta from the prior one after
+        // that (d18 §11.4.4.1, d22 §11.4.1.1).
+        groupId = !isFirst
           ? this.applyGroupDelta(prevGroupId!, decoded.groupIdDelta, groupOrder)
           : decoded.groupIdDelta;
       } else {
@@ -1264,9 +1257,9 @@ export class ObjectRouter {
       // Resolve Object ID: present-on-wire ⇒ absolute; absent ⇒ prev + 1.
       let objectId: bigint;
       if (decoded.objectIdDelta !== undefined) {
-        // Draft-22 §11.4.1.1: absolute alongside a Group ID Delta, else a
-        // delta from the prior Object ID.
-        const isRelative = this.isDraft22 && !isFirst && decoded.groupIdDelta === undefined;
+        // Absolute alongside a Group ID Delta, else a delta from the prior
+        // Object ID (d18 §11.4.4.1, d22 §11.4.1.1).
+        const isRelative = !isFirst && decoded.groupIdDelta === undefined;
         objectId = isRelative ? prevObjectId! + decoded.objectIdDelta : decoded.objectIdDelta;
       } else {
         if (isFirst) {
@@ -1395,11 +1388,11 @@ export class ObjectRouter {
     }
   }
 
-  /** Draft-22 §11.4.1.1: Group ID = prior +/- (delta + 1) by Group Order. */
+  /** d18 §11.4.4.1, d22 §11.4.1.1: Group ID = prior +/- (delta + 1) by Group Order. */
   private applyGroupDelta(prev: bigint, delta: bigint, order: GroupOrder): bigint {
     const groupId = order === GroupOrder.DESCENDING ? prev - (delta + 1n) : prev + delta + 1n;
     if (groupId < 0n) {
-      throw new Error('Draft-22 FETCH: Group ID Delta underflows below 0 (spec §11.4.1.1, PROTOCOL_VIOLATION)');
+      throw new Error('FETCH: Group ID Delta underflows below 0 (d18 §11.4.4.1, d22 §11.4.1.1, PROTOCOL_VIOLATION)');
     }
     return groupId;
   }

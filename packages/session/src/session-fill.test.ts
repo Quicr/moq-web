@@ -467,7 +467,7 @@ describe('draft-18 §10.12.2 fill as a Joining FETCH', () => {
     const { session, internals } = makeSession('draft-18');
     const seen: Seen = [];
     installDraft18Peer(internals, async (fetch) => {
-      const fill = openFillStream(internals, fetch.requestId, [firstObject(4n, 0n), nextObject({ groupIdDelta: 6n, objectIdDelta: 0n })]);
+      const fill = openFillStream(internals, fetch.requestId, [firstObject(4n, 0n), nextObject({ groupIdDelta: 1n, objectIdDelta: 0n })]);
       fill.fin();
       await fill.done;
     });
