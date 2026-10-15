@@ -848,8 +848,11 @@ export interface FetchCompleteEvent {
   requestId: bigint;
   /** 62-bit varint largest group ID available */
   largestGroupId: bigint;
-  /** 62-bit varint largest object ID in largest group */
-  largestObjectId: bigint;
+  /**
+   * 62-bit varint last object ID FETCH_OK covers in `largestGroupId`, inclusive;
+   * absent when it covers the whole group (draft-18 End Location object 0)
+   */
+  largestObjectId?: bigint;
   /** Whether this is the end of the track */
   endOfTrack: boolean;
 }

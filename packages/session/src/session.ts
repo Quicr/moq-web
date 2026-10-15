@@ -3999,17 +3999,27 @@ export class MOQTSession {
         endObject: fetchOk.endLocation.object.toString(),
         endOfTrack: fetchOk.endOfTrack,
       });
+      const end = this.fetchOkEnd(fetchOk.endLocation);
+      const isJoining = options?.fetchType !== undefined && options.fetchType !== FetchTypeDraft18.STANDALONE;
+      const endsBeforeStart = end.group < BigInt(range.startGroup)
+        || (end.group === BigInt(range.startGroup) && end.object !== undefined && end.object < BigInt(range.startObject));
+      if (!isJoining && endsBeforeStart) {
+        // d22 §9.12, d18 §10.13: an End Location before the FETCH's Start Location
+        const reason = `FETCH_OK End Location ${end.group}/${end.object} is before the Start Location`;
+        void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+        return;
+      }
       const info = this.activeFetches.get(requestId);
       if (info) {
         info.completed = true;
-        info.largestGroupId = fetchOk.endLocation.group;
-        info.largestObjectId = fetchOk.endLocation.object;
+        info.largestGroupId = end.group;
+        info.largestObjectId = end.object;
         info.endOfTrack = fetchOk.endOfTrack;
       }
       this.emit('fetch-complete', {
         requestId,
-        largestGroupId: fetchOk.endLocation.group,
-        largestObjectId: fetchOk.endLocation.object,
+        largestGroupId: end.group,
+        largestObjectId: end.object,
         endOfTrack: fetchOk.endOfTrack,
       } as FetchCompleteEvent);
     } else if (response.type === MessageTypeDraft18.REQUEST_OK) {
@@ -4041,6 +4051,22 @@ export class MOQTSession {
     }
   }
 
+  /**
+   * The last Object FETCH_OK covers. Draft-22 sends it inclusive (§9.12);
+   * draft-18 sends the last Object plus 1, or 0 for the whole End Group
+   * (§10.13), which names no Object (`object` undefined).
+   */
+  private fetchOkEnd(endLocation: { group: bigint; object: bigint }): { group: bigint; object?: bigint } {
+    if (this.isDraft22) {
+      return endLocation;
+    }
+
+    return {
+      group: endLocation.group,
+      object: endLocation.object === 0n ? undefined : endLocation.object - 1n,
+    };
+  }
+
   /** Draft-18 §10.12: FETCH with Fetch Type and raw start/end Locations. */
   private buildFetchDraft18(
     requestId: bigint,
@@ -4060,6 +4086,12 @@ export class MOQTSession {
       fetchType === FetchTypeDraft18.JOINING_ABSOLUTE;
     if (isJoining && options?.subscribeRequestId === undefined) {
       throw new Error('Joining FETCH requires options.subscribeRequestId');
+    }
+    // §10.12.3: a standalone FETCH ends at or after its start; endObject 0 is the whole End Group
+    const endsBeforeStart = range.endGroup < range.startGroup
+      || (range.endGroup === range.startGroup && range.endObject !== 0 && range.endObject < range.startObject);
+    if (!isJoining && endsBeforeStart) {
+      throw new Error(`FETCH end ${range.endGroup}/${range.endObject} is before start ${range.startGroup}/${range.startObject}`);
     }
     const parameters = new Map<number, Uint8Array>();
     addFetchTimeoutParams(parameters, options);
