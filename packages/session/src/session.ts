@@ -147,6 +147,7 @@ import {
   namespacePrefixMatches,
   narrowBigIntToNumber,
   sessionStateToConnectionState,
+  webTransportUri,
 } from './session-helpers.js';
 import { RequestRejectedError } from './request-rejected-error.js';
 import { streamResetCode, streamResetReason } from './stream-reset-reason.js';
@@ -626,6 +627,8 @@ export class MOQTSession {
   private goAwaySent = false;
   /** close() has begun, so the transport ending beneath it is expected */
   private closeStarted = false;
+  /** Closes the session when our GOAWAY's Timeout ends with requests open */
+  private goAwayTimer?: ReturnType<typeof setTimeout>;
   /** The peer sent its GOAWAY on the control stream (one is allowed, draft-22 §9.2) */
   private goAwayReceived = false;
   /** Request streams that already carried the peer's GOAWAY (one each) */
@@ -2431,6 +2434,7 @@ export class MOQTSession {
     const bytes = this.codec.encodeControlMessage(goAwayMessage);
     await this.doSendControl(bytes);
     this.goAwaySent = true;
+    this.armGoAwayTimeout(timeoutMs);
     this.setState('closing');
     log.info('Sent GOAWAY', { newSessionUri, timeoutMs: timeoutMs.toString() });
   }
@@ -2451,6 +2455,28 @@ export class MOQTSession {
     void this.close({ code: SessionErrorCodeDraft18.INVALID_REQUEST_ID, reason }).catch(() => {});
 
     return false;
+  }
+
+  /**
+   * After the Timeout of our GOAWAY the session closes with GOAWAY_TIMEOUT if
+   * requests are still open; 0 means no timeout (draft-22 §9.2, §6.6.1).
+   */
+  private armGoAwayTimeout(timeoutMs: bigint): void {
+    clearTimeout(this.goAwayTimer);
+    if (timeoutMs <= 0n) {
+      return;
+    }
+
+    this.goAwayTimer = setTimeout(() => {
+      if (this.closeStarted || this.activeRequestStreams.size === 0) {
+        return;
+      }
+
+      void this.close({
+        code: SessionErrorCodeDraft18.GOAWAY_TIMEOUT,
+        reason: 'Requests were still open when the GOAWAY timeout ended',
+      }).catch(() => {});
+    }, Number(timeoutMs));
   }
 
   /**
@@ -3061,6 +3087,7 @@ export class MOQTSession {
     const code = options?.code ?? SessionErrorCodeDraft18.NO_ERROR;
     const reason = options?.reason ?? 'Normal closure';
     this.closeStarted = true;
+    clearTimeout(this.goAwayTimer);
     this._lastCloseReason = reason;
     this._lastCloseCode = code;
     this.metrics.counter('moq.session.close', 1, {
@@ -7659,7 +7686,7 @@ export class MOQTSession {
    */
   private handleIncomingGoAwayDraft18(message: GoAwayMessageDraft18, streamRequestId?: bigint): void {
     const uri = message.newSessionUri && message.newSessionUri.length > 0
-      ? message.newSessionUri
+      ? webTransportUri(message.newSessionUri)
       : undefined;
     log.info('Received GOAWAY', {
       newSessionUri: uri,
@@ -7672,8 +7699,10 @@ export class MOQTSession {
       return;
     }
 
-    if (uri && streamRequestId === undefined) {
-      this._pendingMigrationUri = uri;
+    // On the control stream an empty URI means the current one (draft-22 §9.2)
+    const migrationUri = uri ?? this._lastConnectUrl;
+    if (migrationUri && streamRequestId === undefined) {
+      this._pendingMigrationUri = migrationUri;
     }
 
     this.emit('goaway', {
@@ -7689,12 +7718,12 @@ export class MOQTSession {
 
     // §3.6 auto-migration: only meaningful in worker mode, since main-thread
     // callers own the transport lifecycle themselves.
-    if (uri && this.useWorker && this.workerConfig?.autoMigrate) {
+    if (migrationUri && this.useWorker && this.workerConfig?.autoMigrate) {
       // Defer to the next microtask so the caller's `goaway` handler runs
       // first and can veto by clearing `_pendingMigrationUri` if needed.
       queueMicrotask(() => {
-        if (this._pendingMigrationUri === uri) {
-          this.autoMigrateWithBackoff(uri).catch((err) => {
+        if (this._pendingMigrationUri === migrationUri) {
+          this.autoMigrateWithBackoff(migrationUri).catch((err) => {
             log.error('Auto-migrate failed after retries', err as Error);
             this.emit('error', err as Error);
           });
@@ -7863,10 +7892,11 @@ export class MOQTSession {
       throw new Error('migrate() is only available in worker mode');
     }
 
-    const target = newSessionUri ?? this._pendingMigrationUri;
-    if (!target) {
+    const requested = newSessionUri ?? this._pendingMigrationUri ?? this._lastConnectUrl;
+    if (!requested) {
       throw new Error('migrate(): no target URI (pass newSessionUri or wait for GOAWAY with newSessionUri)');
     }
+    const target = webTransportUri(requested);
 
     const oldSessionUri = this._lastConnectUrl;
     this.sessionLog.info('Migrating session (draft-18 §3.6)', { from: oldSessionUri, to: target });

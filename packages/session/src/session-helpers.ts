@@ -55,6 +55,14 @@ export function narrowBigIntToNumber(value: bigint, field: string): number {
 }
 
 /**
+ * The https URI a client connects a WebTransport session to: a moqt URI has
+ * its scheme replaced by https (draft-22 §6.2.1).
+ */
+export function webTransportUri(uri: string): string {
+  return uri.replace(/^moqt:/i, 'https:');
+}
+
+/**
  * Subscriber-side timeouts a SUBSCRIBE may carry (d22 §9.20.2-9.20.6, d18
  * §10.2.3-10.2.6). Each is an even-key MOQT varint; a value of 0 or
  * undefined omits it.
