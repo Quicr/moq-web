@@ -70,7 +70,10 @@ describe.each([
     const received = await collector.done;
 
     expect(received).toHaveLength(total);
-    assertMonotonic(received);
+    // Only a stream preserves order; datagrams can legitimately reorder.
+    if (track.delivery === 'stream') {
+      assertMonotonic(received);
+    }
 
     for (const o of received) {
       const expected = expectedMessage(track.payload, o.groupId, o.objectId);
