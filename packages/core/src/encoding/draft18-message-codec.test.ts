@@ -826,7 +826,7 @@ describe('Draft18MessageCodec', () => {
   });
 
   describe('GOAWAY', () => {
-    it('roundtrips GOAWAY without URI (control stream)', () => {
+    it('roundtrips GOAWAY without URI', () => {
       const message: GoAwayMessageDraft18 = {
         type: MessageTypeDraft18.GOAWAY,
         timeout: 5000n,
@@ -842,7 +842,7 @@ describe('Draft18MessageCodec', () => {
       expect(d.requestId).toBeUndefined();
     });
 
-    it('roundtrips GOAWAY with URI (control stream)', () => {
+    it('roundtrips GOAWAY with URI', () => {
       const message: GoAwayMessageDraft18 = {
         type: MessageTypeDraft18.GOAWAY,
         newSessionUri: 'moqt://new-relay.example.com/moq',
@@ -858,7 +858,7 @@ describe('Draft18MessageCodec', () => {
       expect(d.requestId).toBeUndefined();
     });
 
-    it('roundtrips GOAWAY with Request ID (request stream)', () => {
+    it('roundtrips GOAWAY with Request ID (control stream)', () => {
       const message: GoAwayMessageDraft18 = {
         type: MessageTypeDraft18.GOAWAY,
         timeout: 2000n,
@@ -1309,7 +1309,7 @@ describe('Draft18MessageCodec', () => {
   // and §1.4.1 (MOQT varints).
   // ==========================================================================
   describe('golden bytes (§10 wire format)', () => {
-    it('GOAWAY control-stream with empty URI and zero timeout (§10.4)', () => {
+    it('GOAWAY on a request stream with empty URI and zero timeout (§10.4)', () => {
       // Framing: Type=0x10 (vi) | Length=2 (16-bit BE) | UriLen=0 (vi) | Timeout=0 (vi)
       const expected = new Uint8Array([0x10, 0x00, 0x02, 0x00, 0x00]);
       const encoded = Draft18MessageCodec.encode({
@@ -1319,7 +1319,7 @@ describe('Draft18MessageCodec', () => {
       expect(Array.from(encoded)).toEqual(Array.from(expected));
     });
 
-    it('GOAWAY control-stream with URI "/v2" and timeout=5000 (§10.4)', () => {
+    it('GOAWAY on a request stream with URI "/v2" and timeout=5000 (§10.4)', () => {
       // Type=0x10 | Length=6 | UriLen=3 | "/v2" | Timeout=5000 (14-bit vi = 0x93 0x88)
       const expected = new Uint8Array([
         0x10, 0x00, 0x06,
@@ -1334,7 +1334,7 @@ describe('Draft18MessageCodec', () => {
       expect(Array.from(encoded)).toEqual(Array.from(expected));
     });
 
-    it('GOAWAY request-stream includes trailing Request ID (§10.4)', () => {
+    it('GOAWAY on the control stream includes trailing Request ID (§10.4)', () => {
       // Type=0x10 | Length=3 | UriLen=0 | Timeout=0 | RequestID=42
       const expected = new Uint8Array([0x10, 0x00, 0x03, 0x00, 0x00, 0x2a]);
       const encoded = Draft18MessageCodec.encode({

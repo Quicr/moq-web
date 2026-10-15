@@ -241,6 +241,17 @@ interface RangeFilteredRequest {
   fill?: FillParametersDraft22;
 }
 
+/** Messages that open a request stream (draft-22 §6.3) */
+const PEER_REQUEST_TYPES: ReadonlySet<number> = new Set([
+  MessageTypeDraft18.SUBSCRIBE,
+  MessageTypeDraft18.PUBLISH,
+  MessageTypeDraft18.FETCH,
+  MessageTypeDraft18.TRACK_STATUS,
+  MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
+  MessageTypeDraft18.PUBLISH_NAMESPACE,
+  MessageTypeDraft18.SUBSCRIBE_TRACKS,
+]);
+
 /** Request types that stay open once accepted (draft-22 §6.4.2). */
 const ACCEPTED_REQUEST_TYPES: ReadonlySet<number> = new Set([
   MessageTypeDraft18.SUBSCRIBE,
@@ -558,6 +569,10 @@ export class MOQTSession {
    */
   /** Peer-supplied request IDs are 62-bit varints; key by bigint to preserve precision. */
   private incomingRequestKinds = new Map<bigint, RequestUpdateVariant>();
+  /** Request IDs the peer has used on its request streams */
+  private seenPeerRequestIds = new Set<bigint>();
+  /** We sent GOAWAY: requests that arrive from now on are refused (draft-18 §10.4) */
+  private goAwaySent = false;
   /** Namespace subscriptions (for subscribe namespace flow) */
   private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
   /** Request ID to namespace subscription mapping */
@@ -2254,12 +2269,28 @@ export class MOQTSession {
       type: MessageTypeDraft18.GOAWAY,
       newSessionUri,
       timeout: timeoutMs,
+      // Draft-18 §10.4: the smallest peer Request ID that might not have been processed
+      requestId: this.isDraft22 ? undefined : this.firstUnprocessedPeerRequestId(),
     };
 
     const bytes = this.codec.encodeControlMessage(goAwayMessage);
     await this.doSendControl(bytes);
+    this.goAwaySent = true;
     this.setState('closing');
     log.info('Sent GOAWAY', { newSessionUri, timeoutMs: timeoutMs.toString() });
+  }
+
+  /**
+   * The peer's next Request ID after the ones already seen: 1 when there are none,
+   * since the server uses odd IDs from 1 (draft-18 §10.4).
+   */
+  private firstUnprocessedPeerRequestId(): bigint {
+    let highest = -1n;
+    for (const id of this.seenPeerRequestIds) {
+      highest = id > highest ? id : highest;
+    }
+
+    return highest < 0n ? 1n : highest + 2n;
   }
 
   /**
@@ -6653,6 +6684,22 @@ export class MOQTSession {
       log.info('Received message on incoming bidi stream', { type: MessageTypeDraft18[message.type] });
 
       assertNoTokenRegister(message);
+
+      const peerRequestId = (message as { requestId?: bigint }).requestId;
+      if (peerRequestId !== undefined) {
+        this.seenPeerRequestIds.add(peerRequestId);
+      }
+
+      // After our GOAWAY a request is refused, not served (draft-18 §10.4, draft-22 §9.2)
+      if (this.goAwaySent && peerRequestId !== undefined && PEER_REQUEST_TYPES.has(message.type)) {
+        await this.sendRequestErrorOnStream(
+          handlerWritable,
+          peerRequestId,
+          RequestErrorCodeDraft18.GOING_AWAY,
+          'Session is going away',
+        );
+        return;
+      }
 
       // Register before dispatch: a handler's events can reach for this stream.
       // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
