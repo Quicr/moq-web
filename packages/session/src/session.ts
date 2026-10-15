@@ -771,6 +771,12 @@ export class MOQTSession {
       } as SubscribeStatsEvent);
     }, this._draft, this.metrics);
 
+    // Data-plane violations (unknown stream types, malformed headers and
+    // objects) MUST close the session (d22 §6.4.1, §11).
+    this.objectRouter.setViolationCallback((reason) => {
+      void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    });
+
     // Draft-18 §11.4.3: surface peer-initiated subgroup stream resets. We
     // only fire this for aborts where WebTransport gave us a numeric
     // streamErrorCode; §8 delivery-timeouts flow through the callback above.

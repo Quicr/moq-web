@@ -321,9 +321,8 @@ export class Draft18StreamCodec {
    * Type values with both STATUS (0x20) and END_OF_GROUP (0x02) set are invalid.
    */
   static isDatagramType(type: number): boolean {
-    if ((type & 0xd0) !== 0x00 && (type & 0xd0) !== 0x00) {
-      // sanity — bits 4, 6, 7 must be 0
-    }
+    // Type is a vi64: a value past one byte is not a datagram type, whatever its low byte
+    if (type > 0xff) return false;
     // Form check: bits 4, 6, 7 must be zero → (type & 0xd0) === 0
     if ((type & 0xd0) !== 0) return false;
     // Invalid: STATUS + END_OF_GROUP

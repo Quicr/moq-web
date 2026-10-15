@@ -23,6 +23,8 @@ import {
   Draft18StreamCodec,
   Draft18CodecError,
   Draft18StreamCodecError,
+  StreamTypeDraft18,
+  DatagramTypeDraft18,
   NoopMetricsSink,
   StreamResetErrorCodeDraft18,
   normalizeStreamResetErrorCode,
@@ -31,7 +33,7 @@ import {
   type MetricsSink,
   type Version,
 } from '@moq-web/core';
-import type { FetchDecoderState, FetchObjectDraft18 } from '@moq-web/core';
+import type { FetchDecoderState, FetchObjectDraft18, SubgroupHeaderDraft18 } from '@moq-web/core';
 import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 import { narrowBigIntToNumber } from './session-helpers.js';
@@ -67,6 +69,20 @@ function classifyRouterDecodeError(err: unknown): string {
 }
 
 const log = Logger.create('moqt:session:object-router');
+
+/**
+ * A data-plane protocol violation: the receiver MUST close the session
+ * (d22 §6.4.1, §11; d18 §3.4, §11).
+ */
+class DataPlaneViolation extends Error {}
+
+/** True when `err` only says more bytes are needed, not that the encoding is malformed. */
+function isTruncation(err: unknown): boolean {
+  return /underflow|incomplete/i.test(err instanceof Error ? err.message : '');
+}
+
+/** Stream types are at most one byte for subgroup headers (0b0XX1XXXX, d22 §11.3.1) */
+const MAX_SUBGROUP_STREAM_TYPE = 0x7f;
 
 /** Cap on cancelled FETCH ids awaiting a stream that may never arrive */
 const MAX_CANCELLED_FETCHES = 256;
@@ -118,6 +134,12 @@ export type FetchEndOfGroupCallback = (
 export type FetchStreamCloseCallback = (requestId: bigint) => void;
 
 /**
+ * Callback fired on a data-plane protocol violation, with the reason. The
+ * session closes with PROTOCOL_VIOLATION.
+ */
+export type ViolationCallback = (reason: string) => void;
+
+/**
  * Callback fired when a subgroup stream is reset by the peer (draft-18
  * §11.4.3). WebTransport surfaces the QUIC RESET_STREAM as a
  * `WebTransportError` with `streamErrorCode`; we forward that raw code so the
@@ -139,12 +161,16 @@ export class ObjectRouter {
   private onFetchEndOfGroup?: FetchEndOfGroupCallback;
   private onFetchStreamClose?: FetchStreamCloseCallback;
   private onStreamReset?: StreamResetCallback;
+  private onViolation?: ViolationCallback;
 
   private readonly _draft: DraftVersion;
   /** Decodes with the session's draft, not the build-time default */
   private readonly codec: IProtocolCodec;
   private get isDraft18(): boolean {
     return this._draft === 'draft-18' || this._draft === 'draft-22';
+  }
+  private get isDraft22(): boolean {
+    return this._draft === 'draft-22';
   }
   private get isDraft16(): boolean {
     return this._draft === 'draft-16' || this._draft === 'draft-17';
@@ -207,6 +233,19 @@ export class ObjectRouter {
    */
   setStreamResetCallback(cb: StreamResetCallback): void {
     this.onStreamReset = cb;
+  }
+
+  /**
+   * Register the callback fired on a data-plane protocol violation. Without
+   * one a violation is only logged.
+   */
+  setViolationCallback(cb: ViolationCallback): void {
+    this.onViolation = cb;
+  }
+
+  private reportViolation(reason: string): void {
+    log.error('Data-plane protocol violation', { reason });
+    this.onViolation?.(reason);
   }
 
   /**
@@ -287,6 +326,11 @@ export class ObjectRouter {
       }
     }
 
+    // Padding datagrams are discarded (d22 §11.5.2)
+    if (this.isDraft18 && this.isPaddingDatagram(data)) {
+      return;
+    }
+
     const decodeStart = nowMs();
     try {
       const { header, payload, status, endOfGroup } = this.decodeDatagram(data);
@@ -333,6 +377,23 @@ export class ObjectRouter {
         reason: classifyRouterDecodeError(err),
       });
       log.trace('Error parsing datagram', { error: (err as Error).message });
+
+      // A datagram is atomic, so any malformed one is a violation (d22 §11.2.1)
+      const malformed = err instanceof DataPlaneViolation ||
+        err instanceof Draft18StreamCodecError ||
+        err instanceof Draft18CodecError ||
+        isTruncation(err);
+      if (this.isDraft18 && malformed) {
+        this.reportViolation(`Invalid OBJECT_DATAGRAM: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  private isPaddingDatagram(data: Uint8Array): boolean {
+    try {
+      return MOQTVarInt.decode(data)[0] === BigInt(DatagramTypeDraft18.PADDING);
+    } catch {
+      return false;
     }
   }
 
@@ -380,13 +441,245 @@ export class ObjectRouter {
       return;
     }
 
-    log.info('Received object status', { status, groupId, objectId });
+    if (status !== ObjectStatusDraft18.END_OF_TRACK) {
+      throw new DataPlaneViolation(`Invalid Object Status 0x${status.toString(16)} (d22 §11.1.1)`);
+    }
+
+    log.info('Received End of Track', { groupId, objectId });
   }
 
   /**
    * Handle incoming unidirectional stream
    */
   async handleIncomingStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+    if (this.isDraft18) {
+      await this.handleStreamDraft18(stream);
+      return;
+    }
+    await this.handleStreamLegacy(stream);
+  }
+
+  /**
+   * Draft-18/22 data stream: read the stream type (a vi64 that may arrive
+   * split across reads), then take the stream as padding, FETCH or a
+   * subgroup. Any other type, or a malformed header or object, closes the
+   * session (d22 §6.4.1, §11.3.1).
+   */
+  private async handleStreamDraft18(stream: ReadableStream<Uint8Array>): Promise<void> {
+    const reader = stream.getReader();
+    // Hoisted so a peer RESET_STREAM caught below can still report which
+    // subgroup was in flight.
+    let subgroup: { trackAlias: number | bigint; groupId: number; subgroupId: number } | null = null;
+
+    let buffer = new Uint8Array(0);
+    let offset = 0;
+    let done = false;
+
+    // Append the next chunk to the bytes not yet consumed
+    const readMore = async (): Promise<void> => {
+      const { value, done: readDone } = await reader.read();
+      done = readDone;
+      if (!value || value.length === 0) {
+        return;
+      }
+
+      const rest = buffer.subarray(offset);
+      const merged = new Uint8Array(rest.length + value.length);
+      merged.set(rest);
+      merged.set(value, rest.length);
+      buffer = merged;
+      offset = 0;
+    };
+
+    try {
+      let type: [bigint, number] | undefined;
+      while (!type) {
+        try {
+          type = MOQTVarInt.decode(buffer, offset);
+        } catch {
+          if (done) {
+            return;
+          }
+          await readMore();
+        }
+      }
+      const [streamType, typeBytes] = type;
+
+      if (streamType === BigInt(StreamTypeDraft18.PADDING)) {
+        // d22 §11.5.1: the receiver MUST discard everything on a padding stream
+        while (!done) {
+          await readMore();
+        }
+        return;
+      }
+
+      if (streamType === BigInt(StreamTypeDraft18.FETCH_HEADER)) {
+        await this.handleFetchStream(reader, buffer.subarray(offset), done, typeBytes);
+        return;
+      }
+
+      if (streamType > BigInt(MAX_SUBGROUP_STREAM_TYPE) || !Draft18StreamCodec.isSubgroupHeader(Number(streamType))) {
+        throw new DataPlaneViolation(`Unknown stream type 0x${streamType.toString(16)} (d22 §6.4.1)`);
+      }
+
+      const headerStart = nowMs();
+      let parsed: [SubgroupHeaderDraft18, number] | undefined;
+      while (!parsed) {
+        try {
+          parsed = Draft18StreamCodec.decodeSubgroupHeader(buffer, offset);
+        } catch (err) {
+          if (!isTruncation(err)) {
+            this.countDecodeError(err);
+            throw new DataPlaneViolation(`Invalid SUBGROUP_HEADER: ${(err as Error).message}`);
+          }
+          if (done) {
+            this.countDecodeError(err);
+            log.warn('Stream ended inside its SUBGROUP_HEADER');
+            return;
+          }
+          await readMore();
+        }
+      }
+      const [header, headerBytes] = parsed;
+      offset += headerBytes;
+      this.metrics.histogram('moq.codec.decode.duration', nowMs() - headerStart, {
+        codec: this.codecLabel,
+        messageType: 'subgroup_header',
+      });
+      this.metrics.counter('moq.object.subgroup.opened', 1, { codec: this.codecLabel });
+
+      subgroup = {
+        trackAlias: header.trackAlias,
+        groupId: narrowBigIntToNumber(header.groupId, 'Group ID'),
+        subgroupId: narrowBigIntToNumber(header.subgroupId ?? 0n, 'Subgroup ID'),
+      };
+      log.info('Decoded subgroup header', { ...subgroup, endOfGroup: header.endOfGroup === true });
+
+      const hasProperties = header.hasProperties === true;
+      let previousObjectId = -1;
+      let objectCount = 0;
+      while (true) {
+        while (offset < buffer.length) {
+          const decodeStart = nowMs();
+          let decoded: [number, Uint8Array, ObjectStatus, number];
+          try {
+            decoded = this.codec.decodeStreamObject(buffer.subarray(offset), 0, hasProperties, previousObjectId);
+          } catch (err) {
+            if (isTruncation(err)) {
+              break;
+            }
+            this.countDecodeError(err);
+            throw new DataPlaneViolation(`Invalid subgroup object: ${(err as Error).message}`);
+          }
+
+          const [objectId, payload, status, bytesConsumed] = decoded;
+          offset += bytesConsumed;
+          this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
+            codec: this.codecLabel,
+            messageType: 'stream_object',
+          });
+          this.metrics.counter('moq.object.stream.in', 1, { codec: this.codecLabel });
+          previousObjectId = objectId;
+          objectCount++;
+
+          const subscription = this.subscriptionManager.getByAlias(subgroup.trackAlias);
+
+          // Status objects are markers, never payload (d22 §11.1.1)
+          if ((status as number) !== ObjectStatusDraft18.NORMAL) {
+            this.handleStatusObject(subscription, status, subgroup.groupId, objectId);
+            continue;
+          }
+
+          if (!subscription) {
+            log.warn('Received stream object for unknown track alias', {
+              receivedTrackAlias: subgroup.trackAlias.toString(),
+              knownAliases: this.subscriptionManager.getKnownAliases(),
+            });
+            continue;
+          }
+
+          // Copy payload to avoid detaching the shared buffer when transferred via postMessage
+          this.deliverObject(subscription, new Uint8Array(payload), subgroup.groupId, objectId, performance.now() * 1000);
+        }
+
+        if (done) {
+          break;
+        }
+        await readMore();
+      }
+
+      if (offset < buffer.length) {
+        log.warn('Stream ended inside an object', { remaining: buffer.length - offset });
+      }
+
+      // END_OF_GROUP in the header plus a FIN: no object follows the last one (d22 §11.3.1)
+      if (header.endOfGroup === true) {
+        this.subscriptionManager.getByAlias(subgroup.trackAlias)?.onEndOfGroup?.(subgroup.groupId);
+      }
+      log.info('Stream ended', { objectCount, trackAlias: subgroup.trackAlias.toString() });
+    } catch (err) {
+      if (err instanceof DataPlaneViolation) {
+        void reader.cancel().catch(() => { /* session is closing */ });
+        this.reportViolation(err.message);
+        return;
+      }
+      this.reportStreamError(err, subgroup);
+    }
+  }
+
+  private countDecodeError(err: unknown): void {
+    this.metrics.counter('moq.codec.decode.errors', 1, {
+      codec: this.codecLabel,
+      reason: classifyRouterDecodeError(err),
+    });
+  }
+
+  /**
+   * Surface a failed read of a subgroup stream: a peer RESET_STREAM through
+   * the reset callback, anything else as a log line.
+   */
+  private reportStreamError(
+    err: unknown,
+    subgroupHeader: { trackAlias: number | bigint; groupId: number; subgroupId: number } | null,
+  ): void {
+    const errorMessage = (err as Error).message || '';
+    // Draft-18 §11.4.3: a peer RESET_STREAM surfaces as a WebTransportError
+    // with a numeric `streamErrorCode`. Surface it as a typed callback so
+    // consumers can distinguish TOO_FAR_BEHIND / GOING_AWAY / application
+    // resets from an ordinary disconnect (which has no code).
+    const streamErrorCode = (err as { streamErrorCode?: number } | null)?.streamErrorCode;
+    if (typeof streamErrorCode === 'number' && this.onStreamReset) {
+      const subscription = subgroupHeader
+        ? this.subscriptionManager.getByAlias(subgroupHeader.trackAlias)
+        : undefined;
+      const detail: { groupId?: number; subgroupId?: number; trackAlias?: bigint } = {};
+      if (subgroupHeader) {
+        detail.groupId = subgroupHeader.groupId;
+        detail.subgroupId = subgroupHeader.subgroupId;
+        detail.trackAlias = BigInt(subgroupHeader.trackAlias);
+      }
+      // §14 grease: unknown Stream Reset codes MUST be treated as
+      // INTERNAL_ERROR for this registry. Draft-16 doesn't define grease so
+      // we only normalize on draft-18.
+      const normalizedCode = this.isDraft18
+        ? normalizeStreamResetErrorCode(streamErrorCode)
+        : streamErrorCode;
+      this.onStreamReset(subscription, normalizedCode, errorMessage, detail);
+    }
+    if (errorMessage.includes('session is closed') ||
+        errorMessage.includes('stream is closed') ||
+        errorMessage.includes('aborted') ||
+        errorMessage.includes('RESET_STREAM')) {
+      log.debug('Stream closed during read (disconnect/reset)', { error: errorMessage, streamErrorCode });
+    } else {
+      log.error('Error handling incoming stream', err as Error);
+    }
+  }
+
+  /**
+   * Draft-14/16 data stream.
+   */
+  private async handleStreamLegacy(stream: ReadableStream<Uint8Array>): Promise<void> {
     log.info('Received incoming stream');
     // Hoisted so a peer RESET_STREAM caught below can still report which
     // subgroup was in flight.
@@ -445,7 +738,7 @@ export class ObjectRouter {
 
         // Parse header if not yet done
         if (!headerParsed && viewLength > 0) {
-          if (this.isDraft18 || this.isDraft16) {
+          if (this.isDraft16) {
             // Draft-16/18: Stream starts with Type (0x10-0x3D range for subgroups, 0x05 for FETCH)
             const firstByte = bufferView[0];
             const streamType = firstByte & 0x3f;
@@ -598,13 +891,6 @@ export class ObjectRouter {
                 });
               }
 
-              // Draft-18+: status objects are markers, never payload (d22 §11.1.1)
-              if (this.isDraft18 && (status as number) !== ObjectStatusDraft18.NORMAL) {
-                this.handleStatusObject(subscription, status, subgroupHeader.groupId, objectId);
-                bufferOffset += bytesConsumed;
-                continue;
-              }
-
               // Handle END_OF_GROUP signal
               if (status === ObjectStatus.END_OF_GROUP) {
                 log.info('Received END_OF_GROUP', {
@@ -694,38 +980,7 @@ export class ObjectRouter {
         });
       }
     } catch (err) {
-      const errorMessage = (err as Error).message || '';
-      // Draft-18 §11.4.3: a peer RESET_STREAM surfaces as a WebTransportError
-      // with a numeric `streamErrorCode`. Surface it as a typed callback so
-      // consumers can distinguish TOO_FAR_BEHIND / GOING_AWAY / application
-      // resets from an ordinary disconnect (which has no code).
-      const streamErrorCode = (err as { streamErrorCode?: number } | null)?.streamErrorCode;
-      if (typeof streamErrorCode === 'number' && this.onStreamReset) {
-        const subscription = subgroupHeader
-          ? this.subscriptionManager.getByAlias(subgroupHeader.trackAlias)
-          : undefined;
-        const detail: { groupId?: number; subgroupId?: number; trackAlias?: bigint } = {};
-        if (subgroupHeader) {
-          detail.groupId = subgroupHeader.groupId;
-          detail.subgroupId = subgroupHeader.subgroupId;
-          detail.trackAlias = BigInt(subgroupHeader.trackAlias);
-        }
-        // §14 grease: unknown Stream Reset codes MUST be treated as
-        // INTERNAL_ERROR for this registry. Draft-16 doesn't define grease so
-        // we only normalize on draft-18.
-        const normalizedCode = this.isDraft18
-          ? normalizeStreamResetErrorCode(streamErrorCode)
-          : streamErrorCode;
-        this.onStreamReset(subscription, normalizedCode, errorMessage, detail);
-      }
-      if (errorMessage.includes('session is closed') ||
-          errorMessage.includes('stream is closed') ||
-          errorMessage.includes('aborted') ||
-          errorMessage.includes('RESET_STREAM')) {
-        log.debug('Stream closed during read (disconnect/reset)', { error: errorMessage, streamErrorCode });
-      } else {
-        log.error('Error handling incoming stream', err as Error);
-      }
+      this.reportStreamError(err, subgroupHeader);
     }
   }
 
@@ -829,7 +1084,8 @@ export class ObjectRouter {
   private async handleFetchStream(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     initialBuffer: Uint8Array,
-    initialDone: boolean
+    initialDone: boolean,
+    typeBytes: number = FETCH_HEADER_TYPE_BYTES,
   ): Promise<void> {
     let buffer = initialBuffer;
     let done = initialDone;
@@ -843,12 +1099,12 @@ export class ObjectRouter {
     while (requestId === undefined) {
       try {
         if (this.isDraft18) {
-          const [value, length] = MOQTVarInt.decode(buffer, FETCH_HEADER_TYPE_BYTES);
+          const [value, length] = MOQTVarInt.decode(buffer, typeBytes);
           requestId = value;
-          bufferOffset = FETCH_HEADER_TYPE_BYTES + length;
+          bufferOffset = typeBytes + length;
         } else {
           const headerReader = new BufferReader(buffer);
-          headerReader.skip(FETCH_HEADER_TYPE_BYTES);
+          headerReader.skip(typeBytes);
           requestId = headerReader.readVarInt();
           bufferOffset = headerReader.offset;
         }
@@ -1102,6 +1358,9 @@ export class ObjectRouter {
         decoded = obj;
         headerBytes = bytes;
       } catch (err) {
+        if (!isTruncation(err)) {
+          throw new DataPlaneViolation(`Invalid FETCH object: ${(err as Error).message}`);
+        }
         if (done) {
           log.warn('Failed to decode draft-18 FETCH object header at end of stream', {
             requestId: requestId.toString(),
@@ -1118,6 +1377,9 @@ export class ObjectRouter {
       // Group/Object ID become the prior Group/Object ID for the next object
       // (d18 §11.4.4.2, d22 §11.4.1.2).
       if (decoded.endOfRange !== undefined) {
+        if (decoded.endOfRange === FetchObjectEndOfRange.TIMED_OUT && !this.isDraft22) {
+          throw new DataPlaneViolation('End of Timed-Out Range (0x20C) is not defined in draft-18 (§11.4.4.2)');
+        }
         bufferOffset = startOffset + headerBytes;
         prevGroupId = decoded.groupIdDelta;
         prevObjectId = decoded.objectIdDelta;
@@ -1141,7 +1403,7 @@ export class ObjectRouter {
           : decoded.groupIdDelta;
       } else {
         if (isFirst) {
-          throw new Error('Draft-18 FETCH: first object missing Group ID (spec §11.4.4)');
+          throw new DataPlaneViolation('Draft-18 FETCH: first object missing Group ID (spec §11.4.4)');
         }
         groupId = prevGroupId!;
       }
@@ -1155,7 +1417,7 @@ export class ObjectRouter {
         objectId = isRelative ? prevObjectId! + decoded.objectIdDelta : decoded.objectIdDelta;
       } else {
         if (isFirst) {
-          throw new Error('Draft-18 FETCH: first object missing Object ID (spec §11.4.4)');
+          throw new DataPlaneViolation('Draft-18 FETCH: first object missing Object ID (spec §11.4.4)');
         }
         objectId = prevObjectId! + 1n;
       }
@@ -1173,24 +1435,24 @@ export class ObjectRouter {
             break;
           case FetchSubgroupMode.PRIOR:
             if (prevSubgroupId === undefined) {
-              throw new Error('Draft-18 FETCH: PRIOR subgroup mode on first object (spec §11.4.4)');
+              throw new DataPlaneViolation('Draft-18 FETCH: PRIOR subgroup mode on first object (spec §11.4.4)');
             }
             subgroupId = prevSubgroupId;
             break;
           case FetchSubgroupMode.PRIOR_PLUS_ONE:
             if (prevSubgroupId === undefined) {
-              throw new Error('Draft-18 FETCH: PRIOR_PLUS_ONE subgroup mode on first object (spec §11.4.4)');
+              throw new DataPlaneViolation('Draft-18 FETCH: PRIOR_PLUS_ONE subgroup mode on first object (spec §11.4.4)');
             }
             subgroupId = prevSubgroupId + 1n;
             break;
           case FetchSubgroupMode.EXPLICIT:
             if (decoded.subgroupId === undefined) {
-              throw new Error('Draft-18 FETCH: EXPLICIT subgroup mode missing subgroupId (spec §11.4.4)');
+              throw new DataPlaneViolation('Draft-18 FETCH: EXPLICIT subgroup mode missing subgroupId (spec §11.4.4)');
             }
             subgroupId = decoded.subgroupId;
             break;
           default:
-            throw new Error(`Draft-18 FETCH: invalid subgroupMode ${decoded.subgroupMode}`);
+            throw new DataPlaneViolation(`Draft-18 FETCH: invalid subgroupMode ${decoded.subgroupMode}`);
         }
       }
 
@@ -1200,7 +1462,7 @@ export class ObjectRouter {
         priority = decoded.publisherPriority;
       } else {
         if (prevPriority === undefined) {
-          throw new Error('Draft-18 FETCH: first object missing publisherPriority (spec §11.4.4)');
+          throw new DataPlaneViolation('Draft-18 FETCH: first object missing publisherPriority (spec §11.4.4)');
         }
         priority = prevPriority;
       }
@@ -1209,7 +1471,7 @@ export class ObjectRouter {
       // to grow to cover the full payload; loop until we have enough bytes.
       const payloadLenN = Number(decoded.payloadLength ?? 0n);
       if (!Number.isSafeInteger(payloadLenN) || payloadLenN < 0) {
-        throw new Error(`Draft-18 FETCH: invalid payload length ${decoded.payloadLength}`);
+        throw new DataPlaneViolation(`Draft-18 FETCH: invalid payload length ${decoded.payloadLength}`);
       }
       // ensureBytes() rebases the buffer so the unconsumed bytes start at 0;
       // bufferOffset tracks this object's start, startOffset goes stale.
@@ -1284,7 +1546,7 @@ export class ObjectRouter {
   private applyGroupDelta(prev: bigint, delta: bigint, order: GroupOrder): bigint {
     const groupId = order === GroupOrder.DESCENDING ? prev - (delta + 1n) : prev + delta + 1n;
     if (groupId < 0n) {
-      throw new Error('FETCH: Group ID Delta underflows below 0 (d18 §11.4.4.1, d22 §11.4.1.1, PROTOCOL_VIOLATION)');
+      throw new DataPlaneViolation('FETCH: Group ID Delta underflows below 0 (d18 §11.4.4.1, d22 §11.4.1.1, PROTOCOL_VIOLATION)');
     }
     return groupId;
   }
