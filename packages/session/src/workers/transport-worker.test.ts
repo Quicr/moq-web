@@ -172,6 +172,29 @@ describe('transport worker incoming unidirectional streams', () => {
     expect(worker.posted.filter((m) => m.type === 'incoming-stream' || m.type === 'stream-data')).toEqual([]);
   });
 
+  it.each([
+    ['FIN', false, (controller: ReadableStreamDefaultController<Uint8Array>) => controller.close()],
+    ['reset', true, (controller: ReadableStreamDefaultController<Uint8Array>) => controller.error(new Error('reset'))],
+  ])('reports the peer ending its control stream by %s', async (_name, reset, end) => {
+    const worker = await startWorker();
+    const setupType = Array.from(MOQTVarInt.encode(BigInt(StreamTypeDraft18.SETUP)));
+    let pulls = 0;
+
+    worker.openStream({
+      pull(controller) {
+        pulls++;
+        if (pulls === 1) {
+          controller.enqueue(new Uint8Array([...setupType, 0, 0]));
+          return;
+        }
+        end(controller);
+      },
+    });
+    await worker.send({});
+
+    expect(worker.posted).toContainEqual({ type: 'setup-stream-ended', reset });
+  });
+
   it('opens the setup stream, request streams and object streams with their priorities', async () => {
     const worker = await startWorker();
     const objectSendOrder = 123;

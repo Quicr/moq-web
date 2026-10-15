@@ -137,6 +137,49 @@ describe.each(['draft-18', 'draft-22'] as const)('control stream after SETUP (%s
   });
 });
 
+describe.each(['draft-18', 'draft-22'] as const)('peer control stream end (%s)', (draft) => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('closes the session with PROTOCOL_VIOLATION (d22 §6.3)', async () => {
+    const { session, close } = makeSession(draft);
+    (session as unknown as { _state: string })._state = 'ready';
+    const transport = (session as unknown as { transport: MOQTransport }).transport;
+    (session as unknown as { setupTransportHandlers: () => void }).setupTransportHandlers();
+
+    (transport as unknown as { emit: (e: string, d: unknown) => void }).emit('setup-stream-ended', { reset: false });
+    await settle();
+
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+  });
+
+  it('is ignored once the session is over', async () => {
+    const { session, close } = makeSession(draft);
+    const transport = (session as unknown as { transport: MOQTransport }).transport;
+    (session as unknown as { setupTransportHandlers: () => void }).setupTransportHandlers();
+
+    (transport as unknown as { emit: (e: string, d: unknown) => void }).emit('setup-stream-ended', { reset: true });
+    await settle();
+
+    expect(close).not.toHaveBeenCalled();
+  });
+});
+
+describe.each(['draft-18', 'draft-22'] as const)('server SETUP (%s)', (draft) => {
+  it.each([
+    ['PATH', { path: '/x' }, SessionErrorCodeDraft18.INVALID_PATH],
+    ['AUTHORITY', { authority: 'relay.example' }, SessionErrorCodeDraft18.INVALID_AUTHORITY],
+  ])('closes the session when it carries %s', (_name, options, code) => {
+    const { internals, close, session } = makeSession(draft);
+    const delivered = vi.fn();
+    (session as unknown as { onSetupMessage: unknown }).onSetupMessage = delivered;
+
+    internals.handleSetupMessage(internals.codec.encodeSetupStream({ type: MessageTypeDraft18.CLIENT_SETUP, ...options }));
+
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code }));
+    expect(delivered).not.toHaveBeenCalled();
+  });
+});
+
 describe.each(['draft-18', 'draft-22'] as const)('malformed request stream message (%s)', (draft) => {
   const MALFORMED_SUBSCRIBE_OK = Uint8Array.of(MessageTypeDraft18.SUBSCRIBE_OK, 0, 1, 0);
 

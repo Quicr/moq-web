@@ -621,6 +621,8 @@ export class MOQTSession {
   private seenPeerRequestIds = new Set<bigint>();
   /** We sent GOAWAY: requests that arrive from now on are refused (draft-18 §10.4) */
   private goAwaySent = false;
+  /** close() has begun, so the transport ending beneath it is expected */
+  private closeStarted = false;
   /** Namespace subscriptions (for subscribe namespace flow) */
   private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
   /** Request ID to namespace subscription mapping */
@@ -1173,6 +1175,9 @@ export class MOQTSession {
         this.handleSetupMessage(data);
       });
       this.transportCleanup.push(setupCleanup);
+      this.transportCleanup.push(this.transport.on('setup-stream-ended', () => {
+        this.handleControlStreamEnded();
+      }));
 
       // Incoming bidi streams for server-initiated requests
       const bidiCleanup = this.transport.on('incoming-bidi-stream', (stream) => {
@@ -1223,6 +1228,9 @@ export class MOQTSession {
       // Draft-18: Setup messages come on dedicated setup stream
       this.transportWorker.on('setup-message', ({ data }) => {
         this.handleSetupMessage(data);
+      });
+      this.transportWorker.on('setup-stream-ended', () => {
+        this.handleControlStreamEnded();
       });
 
       // Draft-18: Incoming bidi streams for server-initiated requests
@@ -2289,6 +2297,7 @@ export class MOQTSession {
     this.peerSetupSeen = false;
     this.seenPeerRequestIds.clear();
     this.goAwaySent = false;
+    this.closeStarted = false;
     this.setupBuffer = new Uint8Array(0);
     this.setupBufferOffset = 0;
     this.pendingSetupMessages = [];
@@ -3035,6 +3044,7 @@ export class MOQTSession {
   async close(options?: { code?: SessionErrorCodeDraft18; reason?: string }): Promise<void> {
     const code = options?.code ?? SessionErrorCodeDraft18.NO_ERROR;
     const reason = options?.reason ?? 'Normal closure';
+    this.closeStarted = true;
     this._lastCloseReason = reason;
     this._lastCloseCode = code;
     this.metrics.counter('moq.session.close', 1, {
@@ -6765,6 +6775,9 @@ export class MOQTSession {
         }
 
         this.peerSetupSeen = true;
+        if (!this.acceptServerSetup(message as ServerSetupMessageDraft18)) {
+          return;
+        }
         this.deliverPeerSetup(message as ControlMessageDraft18);
       } catch (err) {
         if (isIncompleteDecode(err)) {
@@ -6782,6 +6795,43 @@ export class MOQTSession {
       this.setupBuffer = new Uint8Array(0);
       this.setupBufferOffset = 0;
     }
+  }
+
+  /**
+   * The peer's control stream ended, by FIN or reset. It MUST stay open for
+   * the session's lifetime, so the session closes as a PROTOCOL_VIOLATION
+   * (draft-22 §6.3). Ignored once the session is over or being closed by us.
+   */
+  private handleControlStreamEnded(): void {
+    // A transport close ends the stream too; let that close arrive first
+    setTimeout(() => {
+      if (this.closeStarted || this._state === 'none' || this._state === 'error') {
+        return;
+      }
+
+      void this.close({
+        code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
+        reason: 'The peer closed its control stream',
+      }).catch(() => {});
+    }, 0);
+  }
+
+  /**
+   * A server must not send PATH or AUTHORITY; a client that receives one
+   * closes the session (draft-22 §9.1.1, §9.1.2). Returns whether the SETUP
+   * is acceptable.
+   */
+  private acceptServerSetup(setup: ServerSetupMessageDraft18): boolean {
+    const code = setup.path !== undefined
+      ? SessionErrorCodeDraft18.INVALID_PATH
+      : setup.authority !== undefined ? SessionErrorCodeDraft18.INVALID_AUTHORITY : undefined;
+    if (code === undefined) {
+      return true;
+    }
+
+    void this.close({ code, reason: 'The server sent a PATH or AUTHORITY setup option' }).catch(() => {});
+
+    return false;
   }
 
   /**

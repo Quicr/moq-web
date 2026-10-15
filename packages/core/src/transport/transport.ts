@@ -64,6 +64,7 @@ export type TransportEventType =
   | 'unidirectional-stream'
   | 'control-message'
   | 'setup-message'
+  | 'setup-stream-ended'
   | 'incoming-bidi-stream'
   | 'error'
   | 'closed';
@@ -89,6 +90,8 @@ export interface TransportEvents {
   'unidirectional-stream': ReadableStream<Uint8Array>;
   'control-message': Uint8Array;
   'setup-message': Uint8Array;
+  /** The peer's control stream ended; `reset` tells a RESET_STREAM from a FIN */
+  'setup-stream-ended': { reset: boolean };
   'incoming-bidi-stream': { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> };
   'error': Error;
   'closed': TransportClosedInfo;
@@ -589,6 +592,7 @@ export class MOQTransport {
           const { value, done } = await reader.read();
           if (done) {
             log.debug('Setup stream ended');
+            this.emitSetupStreamEnded(false);
             break;
           }
 
@@ -596,14 +600,23 @@ export class MOQTransport {
           this.emit('setup-message', value);
         }
       } catch (err) {
-        if (this._state === 'connected') {
-          log.error('Setup listener error', err as Error);
-          this.handleError(err as Error);
-        }
+        log.error('Setup listener error', err as Error);
+        this.emitSetupStreamEnded(true);
       }
     };
 
     readLoop();
+  }
+
+  /**
+   * The peer's control stream must stay open for the session's lifetime
+   * (draft-22 §6.3), so its end is reported while the connection is live and
+   * the session decides what to close.
+   */
+  private emitSetupStreamEnded(reset: boolean): void {
+    if (this._state === 'connected' && !this.localCloseInitiated) {
+      this.emit('setup-stream-ended', { reset });
+    }
   }
 
   /**

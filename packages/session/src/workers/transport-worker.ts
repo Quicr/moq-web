@@ -376,11 +376,18 @@ async function handleDraft18IncomingStream(stream: ReadableStream<Uint8Array>): 
         respond({ type: 'setup-message', data: remaining }, [remaining.buffer]);
       }
       // Continue reading setup stream messages
-      while (true) {
-        const { value, done: d } = await reader.read();
-        if (d) break;
-        respond({ type: 'setup-message', data: value }, [value.buffer]);
+      try {
+        while (true) {
+          const { value, done: d } = await reader.read();
+          if (d) break;
+          respond({ type: 'setup-message', data: value }, [value.buffer]);
+        }
+      } catch {
+        // A peer RESET_STREAM of its control stream; the session must close (d22 §6.3)
+        respond({ type: 'setup-stream-ended', reset: true });
+        return;
       }
+      respond({ type: 'setup-stream-ended', reset: false });
     } else if (streamTypeNum === StreamTypeDraft18.PADDING) {
       // d22 §11.5.1: the receiver MUST discard everything on a padding stream
       while (!(await reader.read()).done) {

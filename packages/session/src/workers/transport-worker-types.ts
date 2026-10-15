@@ -82,6 +82,7 @@ export type TransportWorkerResponse =
   | { type: 'state-change'; state: TransportState }
   | { type: 'control-message'; data: Uint8Array }
   | { type: 'setup-message'; data: Uint8Array }
+  | { type: 'setup-stream-ended'; reset: boolean }
   | { type: 'datagram'; data: Uint8Array }
   | { type: 'stream-created'; id: number; streamId: number }
   | { type: 'bidi-stream-created'; id: number; streamId: number }
