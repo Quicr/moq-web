@@ -1897,7 +1897,7 @@ export interface PublishDoneMessageDraft18 {
 /**
  * Draft-18 REQUEST_UPDATE message (§10.9)
  * Wire format: Type | Length | Request ID | Number of Parameters | Parameters.
- * The Request ID is the ID of the request being updated (not a new ID). The
+ * The Request ID is a new ID: each REQUEST_UPDATE consumes one (§10.1). The
  * update is sent on the same bidi stream as the original request.
  */
 export interface RequestUpdateMessageDraft18 {

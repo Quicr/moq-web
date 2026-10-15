@@ -151,7 +151,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     (session as unknown as { activeRequestStreams: Map<bigint, typeof fakeStream> })
       .activeRequestStreams.set(7n, fakeStream);
 
-    await session.sendRequestUpdate(7, true, { newGroupRequest: true });
+    await session.sendRequestUpdate(7, true, { awaitAck: false, newGroupRequest: true });
 
     expect(chunks.length).toBe(1);
     const [decoded] = Draft18MessageCodec.decode(chunks[0]);
@@ -179,7 +179,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     (session as unknown as { activeRequestStreams: Map<bigint, typeof fakeStream> })
       .activeRequestStreams.set(9n, fakeStream);
 
-    await session.sendRequestUpdate(9n, true, { newGroupRequest: 42 });
+    await session.sendRequestUpdate(9n, true, { awaitAck: false, newGroupRequest: 42 });
 
     const [decoded] = Draft18MessageCodec.decode(chunks[0]);
     const update = decoded as RequestUpdateMessageDraft18;
@@ -201,8 +201,8 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.2.13 NEW_GROUP_REQUEST', () => {
     (session as unknown as { activeRequestStreams: Map<bigint, typeof fakeStream> })
       .activeRequestStreams.set(11n, fakeStream);
 
-    await session.sendRequestUpdate(11n, false);
-    await session.sendRequestUpdate(11n, true, { newGroupRequest: false });
+    await session.sendRequestUpdate(11n, false, { awaitAck: false });
+    await session.sendRequestUpdate(11n, true, { awaitAck: false, newGroupRequest: false });
 
     expect(chunks.length).toBe(2);
     for (const c of chunks) {

@@ -548,12 +548,14 @@ export type SessionErrorHandler = (error: RequestError) => void;
 /**
  * GOAWAY event payload (draft-18 §10.4).
  * `timeoutMs` — grace period the sender will wait before enforcing closure (0 = no specific timeout).
- * `requestId` — set when GOAWAY was received on a request stream rather than the control stream.
+ * `requestId` — the control-stream GOAWAY's Request ID: the smallest peer request that may not have been processed.
+ * `streamRequestId` — set instead when GOAWAY was received on a request stream: the request it migrates.
  */
 export interface GoAwayEvent {
   newSessionUri?: string;
   timeoutMs?: bigint;
   requestId?: bigint;
+  streamRequestId?: bigint;
 }
 export type SessionGoAwayHandler = (event: GoAwayEvent) => void;
 export type SessionCloseHandler = () => void;

@@ -32,6 +32,7 @@ import {
   RequestErrorCodeDraft18,
   PublishDoneErrorCodeDraft18,
   SessionErrorCodeDraft18,
+  Draft18CodecError,
   StreamResetErrorCodeDraft18,
   normalizeSessionErrorCode,
   normalizeSessionErrorCodeDraft22,
@@ -72,6 +73,7 @@ import {
   type RequestUpdateMessageDraft18,
   type FetchMessageDraft18,
   type FetchOkMessageDraft18 as _FetchOkMessageDraft18,
+  type GoAwayEvent,
   type GoAwayMessageDraft18,
   type TrackStatusMessageDraft18,
   type PublishDoneMessageDraft18,
@@ -113,6 +115,7 @@ import {
 import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
   Draft18RequestStream,
+  RequestStreamEnded,
   addDeliveryTimeoutParams,
   assertNotReservedNamespace,
   buildTrackProperties,
@@ -194,6 +197,21 @@ const log = Logger.create('moqt:session');
 /** Draft-22 §9.9 PUBLISH_DONE Stream Count: "publisher cannot give the exact number" (2^64-1). */
 const STREAM_COUNT_UNKNOWN = (1n << 64n) - 1n;
 
+/** Request types that stay open once accepted (draft-22 §6.4.2). */
+const ACCEPTED_REQUEST_TYPES: ReadonlySet<number> = new Set([
+  MessageTypeDraft18.SUBSCRIBE,
+  MessageTypeDraft18.PUBLISH,
+  MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
+  MessageTypeDraft18.PUBLISH_NAMESPACE,
+  MessageTypeDraft18.SUBSCRIBE_TRACKS,
+]);
+
+/** A REQUEST_UPDATE waiting for its REQUEST_OK / REQUEST_ERROR (draft-22 §9.5, draft-18 §10.9). */
+interface PendingRequestUpdate {
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
 /**
  * Configuration for MOQTSession when using worker mode
  */
@@ -245,7 +263,7 @@ export interface MOQTSessionConfig {
    */
   sessionId?: string;
   /**
-   * Draft-16 / draft-18 §6.3 MAX_REQUEST_ID advertised in SETUP. Also acts
+   * Draft-14/16 §6.3 MAX_REQUEST_ID advertised in SETUP (removed in draft-17; ignored by draft-18 and later). Also acts
    * as a client-side hard cap on how many outbound requests the session
    * will originate before it refuses to allocate a new request ID.
    * Defaults to 1000.
@@ -429,7 +447,7 @@ export class MOQTSession {
    */
   private nextRequestId: number;
   /**
-   * Advertised MAX_REQUEST_ID (SETUP §6.3) and client-side hard cap.
+   * Advertised MAX_REQUEST_ID (draft-14/16 SETUP §6.3) and client-side hard cap.
    * Also enforced by {@link getNextRequestId} so runaway callers surface as
    * a typed error rather than silently overflowing.
    */
@@ -513,8 +531,12 @@ export class MOQTSession {
   private _implementationString?: string;
   /** Peer's MAX_REQUEST_UPDATES from SETUP (draft-22 §9.1.7). 0 = unlimited. */
   private peerMaxRequestUpdates = 0;
-  /** Outstanding REQUEST_UPDATE count per request stream (keyed by requestId). */
-  private outstandingRequestUpdates = new Map<bigint, number>();
+  /**
+   * REQUEST_UPDATEs awaiting their REQUEST_OK / REQUEST_ERROR, oldest first,
+   * keyed by the request stream's Request ID (draft-22 §9.5, draft-18 §10.9).
+   * The queue length is the outstanding count for §9.1.7.
+   */
+  private pendingRequestUpdates = new Map<bigint, PendingRequestUpdate[]>();
   // @ts-expect-error Reserved for token alias caching support (aliasType 1/2)
   private tokenAliasCache = new Map<number, { tokenType: number; tokenValue: Uint8Array }>();
   // @ts-expect-error Reserved for token alias caching support
@@ -832,7 +854,8 @@ export class MOQTSession {
    */
   private getNextRequestId(): number {
     const id = this.nextRequestId;
-    if (id >= this.maxRequestId) {
+    // MAX_REQUEST_ID was removed in draft-17: the draft-18 family has no cap.
+    if (!this.isDraft18 && id >= this.maxRequestId) {
       throw new Error(
         `Session request-id cap reached (${this.maxRequestId}); peer has not raised MAX_REQUEST_ID`,
       );
@@ -842,7 +865,7 @@ export class MOQTSession {
   }
 
   /**
-   * Advertised MAX_REQUEST_ID (draft-16 / draft-18 §6.3). Callers can read
+   * Advertised MAX_REQUEST_ID (draft-14/16 §6.3). Callers can read
    * this to size their own request queues.
    */
   get maxAdvertisedRequestId(): number {
@@ -1085,6 +1108,11 @@ export class MOQTSession {
       this.handleWorkerBidiStreamData(streamId, data);
     });
 
+    // Peer STOP_SENDING on one of our request streams
+    this.transportWorker.on('stream-send-stopped', ({ streamId }) => {
+      this.handleWorkerSendStopped(streamId);
+    });
+
     // Stream closed
     this.transportWorker.on('stream-closed', ({ streamId }) => {
       this.handleWorkerStreamClosed(streamId);
@@ -1160,6 +1188,8 @@ export class MOQTSession {
 
   /** Controllers for bidi streams (incoming and outgoing request streams) */
   private incomingBidiControllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+  /** Worker mode: what to do when the worker reports STOP_SENDING on a request stream. */
+  private sendStoppedHandlers = new Map<number, () => void>();
 
   /**
    * Long-lived per-request bidi stream (draft-18 §3.3, §10.9). Keys are the
@@ -1200,12 +1230,17 @@ export class MOQTSession {
         () => {
           try { worker.closeStream(streamId); } catch { /* ignore */ }
           this.incomingBidiControllers.delete(streamId);
+          this.sendStoppedHandlers.delete(streamId);
         },
         (code) => {
           try { worker.abortStream(streamId, code); } catch { /* ignore */ }
           this.incomingBidiControllers.delete(streamId);
+          this.sendStoppedHandlers.delete(streamId);
         }
       );
+      this.sendStoppedHandlers.set(streamId, () => {
+        void this.handlePeerCancel(requestId, stream);
+      });
     } else if (this.transport) {
       const { readable, writable } = await this.transport.createRequestStream();
       const writer = writable.getWriter();
@@ -1226,6 +1261,8 @@ export class MOQTSession {
           try { await writer.abort(streamResetReason(code)); } catch { /* already closed */ }
         }
       );
+      // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
+      writer.closed.catch(() => this.handlePeerCancel(requestId, stream));
     } else {
       throw new Error('No transport available');
     }
@@ -1242,7 +1279,22 @@ export class MOQTSession {
     const stream = this.activeRequestStreams.get(requestId);
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
+    this.failPendingUpdates(requestId);
     await stream.close();
+  }
+
+  /**
+   * The peer sent STOP_SENDING on our send side: it cancelled the request
+   * (draft-22 §3.1, §6.4.2.3). End it like a reset, and cancel the receive
+   * side too. Ignored for a stream we already closed or aborted ourselves.
+   */
+  private async handlePeerCancel(requestId: bigint, stream: Draft18RequestStream): Promise<void> {
+    if (this.activeRequestStreams.get(requestId) !== stream) {
+      return;
+    }
+    log.info('Peer sent STOP_SENDING', { requestId: requestId.toString() });
+    this.endRequest(requestId);
+    await this.abortRequestStream(requestId);
   }
 
   /**
@@ -1253,14 +1305,25 @@ export class MOQTSession {
     const stream = this.activeRequestStreams.get(requestId);
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
+    this.failPendingUpdates(requestId);
     await stream.abort(StreamResetErrorCodeDraft18.CANCELLED);
+  }
+
+  /** Reject every REQUEST_UPDATE still waiting on a request stream that is gone. */
+  private failPendingUpdates(requestId: bigint): void {
+    const pending = this.pendingRequestUpdates.get(requestId);
+    this.pendingRequestUpdates.delete(requestId);
+    for (const update of pending ?? []) {
+      update.reject(new Error(`Request stream closed for requestId=${requestId.toString()}`));
+    }
   }
 
   /**
    * Send an initial request on a new bidi stream and wait for its first
    * response message. The stream is registered under `requestId` and stays
-   * open so REQUEST_UPDATE can be sent on it later; call
-   * `closeRequestStream(requestId)` when the request is terminated.
+   * open so REQUEST_UPDATE can be sent on it later, and a reader keeps
+   * dispatching its later messages; call `closeRequestStream(requestId)` when
+   * the request is terminated.
    */
   private async sendRequestAndWaitResponse(
     encoded: Uint8Array,
@@ -1268,11 +1331,171 @@ export class MOQTSession {
   ): Promise<ControlMessageDraft18> {
     const stream = await this.openRequestStream(requestId, encoded);
     try {
-      return await stream.readMessage();
+      const response = await stream.readMessage();
+      // §6.4.2.3: a REQUEST_ERROR ends the request; anything else may be
+      // followed by more messages (PUBLISH_DONE, REQUEST_OK, ...).
+      if (response.type !== MessageTypeDraft18.REQUEST_ERROR) {
+        void this.readRequestStream(requestId, stream);
+      }
+      return response;
     } catch (err) {
       // Failed to read the first response — the stream is unusable, drop it.
       await this.closeRequestStream(requestId);
       throw err;
+    }
+  }
+
+  /**
+   * The single reader of a request stream after its first message
+   * (draft-22 §6.4.2, draft-18 §3.3), for requests we sent and requests we
+   * accepted. Decodes every later message and dispatches it.
+   *
+   * A reset from the peer cancels the request. A FIN only means the peer
+   * sends no more (draft-22 §6.4.2.2): we answer it with our own FIN, unless
+   * we still owe PUBLISH_DONE on this stream.
+   */
+  private async readRequestStream(requestId: bigint, stream: Draft18RequestStream): Promise<void> {
+    while (this.activeRequestStreams.get(requestId) === stream) {
+      let message: ControlMessageDraft18;
+      try {
+        message = await stream.readMessage();
+      } catch (err) {
+        // A local close or abort removed the stream first; nothing to tear down.
+        if (this.activeRequestStreams.get(requestId) !== stream) {
+          return;
+        }
+        log.info('Request stream ended', { requestId: requestId.toString(), reason: (err as Error).message });
+        if (this.closeOnUnknownType(err)) {
+          return;
+        }
+        if (!(err instanceof RequestStreamEnded)) {
+          this.endRequest(requestId);
+          await this.closeRequestStream(requestId);
+          return;
+        }
+        if (this.publicationManager.getByRequestId(requestId) === undefined) {
+          await this.closeRequestStream(requestId);
+        }
+        return;
+      }
+
+      try {
+        await this.dispatchStreamMessage(requestId, message);
+      } catch (err) {
+        log.error('Error handling request stream message', { requestId: requestId.toString(), error: (err as Error).message });
+      }
+    }
+  }
+
+  /**
+   * An unknown message type is a protocol violation: close the session
+   * (draft-22 §9, draft-18 §10). Returns whether `err` was one.
+   */
+  private closeOnUnknownType(err: unknown): boolean {
+    if (!(err instanceof Draft18CodecError) || !/^Unknown message type/.test(err.message)) {
+      return false;
+    }
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason: err.message }).catch(() => {});
+
+    return true;
+  }
+
+  /**
+   * Drop the publisher-side state of a request the peer cancelled, so
+   * delivery for it stops: its publication and, for an accepted PUBLISH,
+   * the subscription it created.
+   */
+  private endRequest(requestId: bigint): void {
+    const publication = this.publicationManager.getByRequestId(requestId);
+    if (publication) {
+      this.publicationManager.remove(publication.trackAlias);
+    }
+    for (const info of this.announcedNamespaces.values()) {
+      info.subscribers.delete(requestId);
+    }
+    if (this.incomingRequestKinds.get(requestId) === 'publish') {
+      const subscription = this.subscriptionManager.findByRequestId(requestId);
+      if (subscription) {
+        this.subscriptionManager.remove(subscription.subscriptionId);
+      }
+    }
+    this.incomingRequestKinds.delete(requestId);
+  }
+
+  /**
+   * Route a message that follows the first message on a request stream. The
+   * stream's Request ID stands in for any ID the message lacks or, for a
+   * REQUEST_UPDATE, for its own new ID.
+   */
+  private async dispatchStreamMessage(requestId: bigint, message: ControlMessageDraft18): Promise<void> {
+    switch (message.type) {
+      case MessageTypeDraft18.REQUEST_UPDATE:
+        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
+        // Draft-22 §9.5: exactly one REQUEST_OK or REQUEST_ERROR per update.
+        await this.activeRequestStreams.get(requestId)?.write(
+          this.codec.encodeControlMessage({ type: MessageTypeDraft18.REQUEST_OK, requestId }),
+        );
+        break;
+
+      case MessageTypeDraft18.REQUEST_OK:
+      case MessageTypeDraft18.REQUEST_ERROR:
+        this.settleRequestUpdate(requestId, message);
+        break;
+
+      case MessageTypeDraft18.PUBLISH_DONE:
+        this.handleIncomingPublishDoneDraft18({ ...(message as PublishDoneMessageDraft18), requestId });
+        break;
+
+      case MessageTypeDraft18.GOAWAY:
+        this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18, requestId);
+        break;
+
+      case MessageTypeDraft18.PUBLISH_BLOCKED:
+        if (this.isDraft22) {
+          this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22);
+        } else {
+          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
+        }
+        break;
+
+      case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
+        this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22);
+        break;
+
+      default:
+        log.warn('Unhandled message on request stream', { requestId: requestId.toString(), type: message.type });
+    }
+  }
+
+  /**
+   * Answer the oldest REQUEST_UPDATE on a request stream: the receiver sends
+   * exactly one REQUEST_OK or REQUEST_ERROR per update (draft-22 §9.5,
+   * draft-18 §10.9). A REQUEST_ERROR can stand for several coalesced updates
+   * and the sender cannot tell which failed (draft-22 §9.5, draft-18 §10.9.1),
+   * so it fails every update still pending on the stream.
+   */
+  private settleRequestUpdate(requestId: bigint, response: ControlMessageDraft18): void {
+    const pending = this.pendingRequestUpdates.get(requestId);
+    if (!pending || pending.length === 0) {
+      log.warn('Response with no REQUEST_UPDATE pending', { requestId: requestId.toString(), type: response.type });
+      return;
+    }
+
+    if (response.type !== MessageTypeDraft18.REQUEST_ERROR) {
+      pending.shift()!.resolve();
+      if (pending.length === 0) {
+        this.pendingRequestUpdates.delete(requestId);
+      }
+      log.info('REQUEST_UPDATE acknowledged', { subscriptionRequestId: requestId.toString() });
+      return;
+    }
+
+    const err = response as RequestErrorMessageDraft18;
+    this.pendingRequestUpdates.delete(requestId);
+    for (const update of pending) {
+      update.reject(new Error(
+        `REQUEST_UPDATE failed for requestId=${requestId.toString()}: ${err.reasonPhrase} (code ${err.errorCode})`,
+      ));
     }
   }
 
@@ -1289,6 +1512,13 @@ export class MOQTSession {
 
     // Create a WritableStream that sends data back via worker
     const writable = new WritableStream<Uint8Array>({
+      start: (controller) => {
+        // STOP_SENDING errors the send side, and cancels the receive side in the worker.
+        this.sendStoppedHandlers.set(streamId, () => {
+          controller.error(new Error('STOP_SENDING'));
+          this.transportWorker?.abortStream(streamId, StreamResetErrorCodeDraft18.CANCELLED);
+        });
+      },
       write: (chunk) => {
         this.transportWorker!.writeStream(streamId, chunk);
       },
@@ -1298,6 +1528,12 @@ export class MOQTSession {
     });
 
     this.handleIncomingBidiStream({ readable, writable });
+  }
+
+  private handleWorkerSendStopped(streamId: number): void {
+    const handler = this.sendStoppedHandlers.get(streamId);
+    this.sendStoppedHandlers.delete(streamId);
+    handler?.();
   }
 
   /** Chunked buffers for bidi stream data - avoids copying on each receive */
@@ -1688,13 +1924,16 @@ export class MOQTSession {
   /**
    * Send GOAWAY to signal graceful session termination
    *
-   * @param newSessionUri Optional URI for the client to migrate to (must be zero-length when sent by client, spec §10.4)
+   * @param newSessionUri Not allowed: a client must send a zero-length URI (draft-22 §9.2); a server closes the session on one
    * @param timeoutMs Grace period in milliseconds before the sender enforces closure (spec §10.4)
    */
   async goAway(newSessionUri?: string, timeoutMs: bigint = 0n): Promise<void> {
     if (!this.isDraft18) {
       log.warn('goAway only supported in draft-18');
       return;
+    }
+    if (newSessionUri) {
+      throw new Error('A client cannot send a GOAWAY New Session URI (draft-22 §9.2)');
     }
 
     const goAwayMessage: GoAwayMessageDraft18 = {
@@ -1900,9 +2139,10 @@ export class MOQTSession {
   /**
    * Send REQUEST_UPDATE for an existing request (draft-18 §10.9).
    *
-   * MUST be sent on the same bidi stream as the original request; the Request
-   * ID field is the ID of the request being updated (not a new ID). The
-   * receiver MUST respond with exactly one REQUEST_OK or REQUEST_ERROR.
+   * MUST be sent on the same bidi stream as the original request, but
+   * consumes a new Request ID (draft-22 §6.4.2.1, draft-18 §10.1). The
+   * receiver MUST respond with exactly one REQUEST_OK or REQUEST_ERROR, which
+   * the request stream reader matches to this update.
    *
    * When `awaitAck` is false, the update is fire-and-forget. Terminal
    * operations (unsubscribe, FETCH cancel) use this because §10.9.1 lets the
@@ -1920,20 +2160,17 @@ export class MOQTSession {
     }
     const rid = typeof subscriptionRequestId === 'bigint' ? subscriptionRequestId : BigInt(subscriptionRequestId);
 
-    // Draft-22 §9.1.7: Check MAX_REQUEST_UPDATES limit
-    if (this.peerMaxRequestUpdates > 0) {
-      const outstanding = this.outstandingRequestUpdates.get(rid) ?? 0;
-      if (outstanding >= this.peerMaxRequestUpdates) {
-        throw new Error(`MAX_REQUEST_UPDATES limit exceeded for request ${rid.toString()}`);
-      }
-      this.outstandingRequestUpdates.set(rid, outstanding + 1);
-    }
-
     const stream = this.activeRequestStreams.get(rid);
     if (!stream) {
       throw new Error(
         `sendRequestUpdate: no active request stream for requestId=${rid.toString()}`,
       );
+    }
+
+    // Draft-22 §9.1.7: Check MAX_REQUEST_UPDATES limit
+    const pending = this.pendingRequestUpdates.get(rid) ?? [];
+    if (this.peerMaxRequestUpdates > 0 && pending.length >= this.peerMaxRequestUpdates) {
+      throw new Error(`MAX_REQUEST_UPDATES limit exceeded for request ${rid.toString()}`);
     }
 
     // §10.2.13 NEW_GROUP_REQUEST — subscriber asks the publisher to cut a new
@@ -1944,25 +2181,41 @@ export class MOQTSession {
       extraParams.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(BigInt(val)));
     }
 
+    // Each REQUEST_UPDATE consumes a Request ID (draft-22 §6.4.2.1, draft-18 §10.1).
+    const updateId = BigInt(this.getNextRequestId());
     const updateMessage: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22 = this.isDraft22
       ? {
         type: MessageTypeDraft22.REQUEST_UPDATE,
-        requestId: rid,
+        requestId: updateId,
         // Draft-22 §9.5: FORWARD is not allowed when updating a FETCH
         forwardState: this.activeFetches.has(rid) ? undefined : forwardState,
         parameters: extraParams.size > 0 ? extraParams : undefined,
       }
       : {
         type: MessageTypeDraft18.REQUEST_UPDATE,
-        requestId: rid,
+        requestId: updateId,
         forwardState,
         parameters: extraParams.size > 0 ? extraParams : undefined,
       };
 
+    // Queue before writing so the reader can match a fast response.
+    const acknowledged = new Promise<void>((resolve, reject) => {
+      pending.push({ resolve, reject });
+    });
+    this.pendingRequestUpdates.set(rid, pending);
+    // A fire-and-forget update, or one the stream outlives, must not leave an unhandled rejection.
+    acknowledged.catch(() => {});
+
     const bytes = this.codec.encodeControlMessage(updateMessage);
-    await stream.write(bytes);
+    try {
+      await stream.write(bytes);
+    } catch (err) {
+      this.failPendingUpdates(rid);
+      throw err;
+    }
     log.info('Sent REQUEST_UPDATE', {
       subscriptionRequestId: rid.toString(),
+      updateRequestId: updateId.toString(),
       forwardState,
       newGroupRequest: options?.newGroupRequest ?? false,
     });
@@ -1971,35 +2224,14 @@ export class MOQTSession {
       return;
     }
 
-    const response = await stream.readMessage();
-
-    // Decrement outstanding REQUEST_UPDATE counter
-    const outstanding = this.outstandingRequestUpdates.get(rid);
-    if (outstanding !== undefined && outstanding > 0) {
-      this.outstandingRequestUpdates.set(rid, outstanding - 1);
-    }
-
-    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
-      const err = response as RequestErrorMessageDraft18;
-      throw new Error(
-        `REQUEST_UPDATE failed for requestId=${rid.toString()}: ${err.reasonPhrase} (code ${err.errorCode})`,
-      );
-    }
-    if (response.type !== MessageTypeDraft18.REQUEST_OK) {
-      log.warn('Unexpected response to REQUEST_UPDATE', {
-        subscriptionRequestId: rid.toString(),
-        responseType: response.type,
-      });
-    } else {
-      log.info('REQUEST_UPDATE acknowledged', { subscriptionRequestId: rid.toString() });
-    }
+    await acknowledged;
   }
 
   /**
    * Send PUBLISH_DONE to signal end of publishing on a track.
    *
-   * Draft-22 §9.9: sent on the PUBLISH request's bidi stream as its final
-   * message, after which the stream is closed.
+   * Draft-22 §9.9: sent on the PUBLISH or accepted SUBSCRIBE request's bidi
+   * stream as its final message, after which the stream is closed.
    *
    * @param requestId - Request ID of the PUBLISH
    * @param finalGroup - Final group ID
@@ -5563,6 +5795,7 @@ export class MOQTSession {
   on(event: 'namespace-forward-resumed', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'new-group-request', handler: (event: NewGroupRequestEvent) => void): () => void;
   on(event: 'stream-reset', handler: (event: StreamResetEvent) => void): () => void;
+  on(event: 'goaway', handler: (event: GoAwayEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -5771,43 +6004,36 @@ export class MOQTSession {
   }
 
   /**
-   * Process incoming bidi stream: read request, dispatch, respond
+   * Process incoming bidi stream: read request, dispatch, respond. A request
+   * we accept stays open and keeps being read (see `readRequestStream`); any
+   * other ends here with our FIN.
    */
   private async processIncomingBidiStream(stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): Promise<void> {
-    const reader = stream.readable.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
+    // Handlers write through their own short-lived writer, so until the request is
+    // accepted each write here takes one too. An accepted request holds one for good.
+    let held: WritableStreamDefaultWriter<Uint8Array> | undefined;
+    const writerOf = () => held ?? stream.writable.getWriter();
+    const requestStream = new Draft18RequestStream(
+      this.codec,
+      stream.readable,
+      async (data) => {
+        const writer = writerOf();
+        try {
+          await writer.write(data);
+        } finally {
+          if (!held) { writer.releaseLock(); }
+        }
+      },
+      async () => {
+        try { await writerOf().close(); } catch { /* already closed */ }
+      },
+      async (code) => {
+        try { await writerOf().abort(streamResetReason(code)); } catch { /* already closed */ }
+      },
+    );
 
     try {
-      // Read until we have a complete message
-      let message: ControlMessageDraft18 | null = null;
-      while (!message) {
-        const { value, done } = await reader.read();
-        if (done) {
-          log.warn('Incoming bidi stream closed before message received');
-          return;
-        }
-        chunks.push(value);
-        totalLength += value.length;
-
-        const buffer = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          buffer.set(chunk, offset);
-          offset += chunk.length;
-        }
-
-        try {
-          const [decoded] = this.codec.decodeControlMessage(buffer, 0, this.metrics);
-          message = decoded as ControlMessageDraft18;
-        } catch (err) {
-          const msg = (err as Error).message ?? '';
-          if (/incomplete|buffer|underflow/i.test(msg)) {
-            continue;
-          }
-          throw err;
-        }
-      }
+      const message = (await requestStream.readMessage()) as ControlMessageDraft18;
 
       log.info('Received message on incoming bidi stream', { type: MessageTypeDraft18[message.type] });
 
@@ -5830,7 +6056,7 @@ export class MOQTSession {
           break;
 
         case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
-          await this.handleIncomingSubscribeNamespaceDraft18(message as SubscribeNamespaceMessageDraft18, stream.writable, reader);
+          await this.handleIncomingSubscribeNamespaceDraft18(message as SubscribeNamespaceMessageDraft18, stream.writable);
           break;
 
         case MessageTypeDraft18.PUBLISH_NAMESPACE:
@@ -5874,11 +6100,26 @@ export class MOQTSession {
             'Unsupported message type',
           );
       }
+
+      // An accepted request can still get REQUEST_UPDATEs and must end with
+      // our own message, so it stays registered and read.
+      const requestId = (message as { requestId: bigint }).requestId;
+      if (ACCEPTED_REQUEST_TYPES.has(message.type) && this.incomingRequestKinds.has(requestId)) {
+        held = stream.writable.getWriter();
+        // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
+        held.closed.catch(() => this.handlePeerCancel(requestId, requestStream));
+        this.activeRequestStreams.set(requestId, requestStream);
+        void this.readRequestStream(requestId, requestStream);
+        return;
+      }
     } catch (err) {
-      log.error('Error reading incoming bidi stream', { error: (err as Error).message });
-    } finally {
-      reader.releaseLock();
+      if (!this.closeOnUnknownType(err)) {
+        log.error('Error reading incoming bidi stream', { error: (err as Error).message });
+      }
     }
+
+    // Anything else is finished: FIN our direction (draft-22 §6.4.2.2).
+    await requestStream.close();
   }
 
   /**
@@ -6162,8 +6403,7 @@ export class MOQTSession {
    */
   private async handleIncomingSubscribeNamespaceDraft18(
     message: SubscribeNamespaceMessageDraft18,
-    writable: WritableStream<Uint8Array>,
-    _reader: ReadableStreamDefaultReader<Uint8Array>
+    writable: WritableStream<Uint8Array>
   ): Promise<void> {
     const prefix = message.trackNamespacePrefix.join('/');
     log.info('Received SUBSCRIBE_NAMESPACE', {
@@ -6297,7 +6537,8 @@ export class MOQTSession {
 
   /**
    * Route a draft-18 REQUEST_UPDATE (§10.9) to the correct variant handler
-   * based on the request kind we previously accepted for `requestId`:
+   * based on the request kind we previously accepted for `requestId`, the
+   * request whose stream carried it (the update's own ID is a new one):
    * - §10.9.1 subscription-scoped → forward-paused / forward-resumed
    * - §10.9.2 namespace-scoped   → namespace-forward-paused / -resumed
    *
@@ -6305,11 +6546,14 @@ export class MOQTSession {
    * subscription variant, which matches prior behaviour and keeps backward
    * compatibility with peers that don't set up state before updating.
    */
-  private dispatchRequestUpdateDraft18(message: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22): void {
-    const requestId = message.requestId;
+  private dispatchRequestUpdateDraft18(
+    message: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22,
+    requestId: bigint = message.requestId,
+  ): void {
     const kind = this.incomingRequestKinds.get(requestId) ?? 'unknown';
     log.info('Received REQUEST_UPDATE', {
-      requestId: message.requestId.toString(),
+      requestId: requestId.toString(),
+      updateRequestId: message.requestId.toString(),
       forwardState: message.forwardState,
       variant: kind,
     });
@@ -6435,8 +6679,12 @@ export class MOQTSession {
    * — when `autoMigrate` was set on the session config — kick off migration
    * automatically after the current tick. The `goaway` event is emitted
    * regardless so callers can react (drain pending publishes, warn UI, etc.).
+   *
+   * A GOAWAY on a request stream (draft-22 §9.2) migrates only that request,
+   * so `streamRequestId` is its stream, the event carries it as
+   * `streamRequestId`, and the session keeps running.
    */
-  private handleIncomingGoAwayDraft18(message: GoAwayMessageDraft18): void {
+  private handleIncomingGoAwayDraft18(message: GoAwayMessageDraft18, streamRequestId?: bigint): void {
     const uri = message.newSessionUri && message.newSessionUri.length > 0
       ? message.newSessionUri
       : undefined;
@@ -6444,9 +6692,10 @@ export class MOQTSession {
       newSessionUri: uri,
       timeoutMs: message.timeout.toString(),
       requestId: message.requestId?.toString(),
+      streamRequestId: streamRequestId?.toString(),
     });
 
-    if (uri) {
+    if (uri && streamRequestId === undefined) {
       this._pendingMigrationUri = uri;
     }
 
@@ -6454,7 +6703,11 @@ export class MOQTSession {
       newSessionUri: uri,
       timeoutMs: message.timeout,
       requestId: message.requestId,
+      streamRequestId,
     });
+    if (streamRequestId !== undefined) {
+      return;
+    }
     this.setState('closing');
 
     // §3.6 auto-migration: only meaningful in worker mode, since main-thread

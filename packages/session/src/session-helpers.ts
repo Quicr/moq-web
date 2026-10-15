@@ -382,6 +382,18 @@ export function namespacePrefixMatches(prefix: string[], candidate: string[]): b
 }
 
 /**
+ * The peer finished its direction of a request stream (FIN) before the next
+ * full message arrived. Distinct from a reset, which surfaces as the stream's
+ * own error.
+ */
+export class RequestStreamEnded extends Error {
+  constructor() {
+    super('Request stream closed before a full control message was received');
+    this.name = 'RequestStreamEnded';
+  }
+}
+
+/**
  * Long-lived per-request bidi stream (draft-18 §3.3, §10.9).
  *
  * Each MOQT request (SUBSCRIBE, PUBLISH, FETCH, TRACK_STATUS, SUBSCRIBE_TRACKS,
@@ -438,7 +450,7 @@ export class Draft18RequestStream {
       }
 
       if (this.eof) {
-        throw new Error('Request stream closed before a full control message was received');
+        throw new RequestStreamEnded();
       }
 
       const { value, done } = await this.reader.read();

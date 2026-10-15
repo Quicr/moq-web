@@ -32,6 +32,7 @@ export type TransportWorkerEventType =
   | 'incoming-bidi-stream'
   | 'stream-data'
   | 'stream-closed'
+  | 'stream-send-stopped'
   | 'stream-created'
   | 'error';
 
@@ -211,6 +212,7 @@ export class TransportWorkerClient {
   on(type: 'stream-data', handler: (data: { streamId: number; data: Uint8Array }) => void): void;
   on(type: 'bidi-stream-data', handler: (data: { streamId: number; data: Uint8Array }) => void): void;
   on(type: 'stream-closed', handler: (data: { streamId: number }) => void): void;
+  on(type: 'stream-send-stopped', handler: (data: { streamId: number }) => void): void;
   on(type: 'error', handler: (data: { message: string; code?: number }) => void): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(type: string, handler: (data: any) => void): void {

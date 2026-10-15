@@ -438,6 +438,7 @@ async function listenForIncomingBidiStreams(): Promise<void> {
       const streamId = nextStreamId++;
       const writer = stream.writable.getWriter();
       outgoingStreams.set(streamId, { id: streamId, writer });
+      watchSendStopped(streamId, writer);
       log('Incoming bidi stream', { streamId });
       metric('counter', 'moq.transport.stream.opened', 1, { direction: 'inbound-bidi' });
       respond({ type: 'incoming-bidi-stream', streamId });
@@ -578,6 +579,22 @@ async function createStream(requestId: number): Promise<void> {
 }
 
 /**
+ * Tell the main thread when the peer sends STOP_SENDING on a request stream
+ * (the writer's `closed` rejects), which cancels the request (draft-22 §3.1).
+ */
+function watchSendStopped(streamId: number, writer: WritableStreamDefaultWriter<Uint8Array>): void {
+  writer.closed.catch(() => {
+    // Our own abort/close unregisters the stream first, so only a peer
+    // STOP_SENDING reaches here with the stream still registered
+    if (!outgoingStreams.has(streamId)) {
+      return;
+    }
+    outgoingStreams.delete(streamId);
+    respond({ type: 'stream-send-stopped', streamId });
+  });
+}
+
+/**
  * Create bidirectional stream for SUBSCRIBE_NAMESPACE (draft-16)
  */
 async function createBidiStream(requestId: number): Promise<void> {
@@ -592,6 +609,7 @@ async function createBidiStream(requestId: number): Promise<void> {
     const writer = stream.writable.getWriter();
 
     outgoingStreams.set(streamId, { id: requestId, writer });
+    watchSendStopped(streamId, writer);
     log('Created bidi stream', { requestId, streamId });
 
     metric('counter', 'moq.transport.stream.opened', 1, { direction: 'outbound-bidi' });
