@@ -37,6 +37,8 @@ export interface InternalPublication extends PublicationInfo {
    */
   subscriberPriority?: number;
   subscriberGroupOrder?: GroupOrder;
+  /** Draft-18 §9.9 PUBLISH_DONE Stream Count: data streams opened so far. */
+  streamsOpened?: number;
 }
 
 /**

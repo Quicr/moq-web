@@ -185,6 +185,8 @@ import type {
 
 const log = Logger.create('moqt:session');
 
+/** Draft-22 §9.9 PUBLISH_DONE Stream Count: "publisher cannot give the exact number" (2^64-1). */
+const STREAM_COUNT_UNKNOWN = (1n << 64n) - 1n;
 
 /**
  * Configuration for MOQTSession when using worker mode
@@ -890,6 +892,22 @@ export class MOQTSession {
     const go = pub?.subscriberGroupOrder ?? GroupOrder.ASCENDING;
     const pubP = publisherPriority ?? pub?.priority ?? 128;
     return computeSendOrder(subP, pubP, go, groupId);
+  }
+
+  /**
+   * Open a subgroup data stream for `trackAlias` and count it toward the
+   * publication's PUBLISH_DONE Stream Count (§9.9).
+   */
+  private async openSubgroupStream(
+    trackAlias: bigint,
+    opts?: { sendOrder?: number }
+  ): Promise<{ writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }> {
+    const streamInfo = await this.doCreateStream(opts);
+    const pub = this.publicationManager.get(trackAlias);
+    if (pub) {
+      pub.streamsOpened = (pub.streamsOpened ?? 0) + 1;
+    }
+    return streamInfo;
   }
 
   private async doCreateStream(
@@ -1930,7 +1948,10 @@ export class MOQTSession {
   }
 
   /**
-   * Send PUBLISH_DONE to signal end of publishing on a track
+   * Send PUBLISH_DONE to signal end of publishing on a track.
+   *
+   * Draft-22 §9.9: sent on the PUBLISH request's bidi stream as its final
+   * message, after which the stream is closed.
    *
    * @param requestId - Request ID of the PUBLISH
    * @param finalGroup - Final group ID
@@ -1950,20 +1971,32 @@ export class MOQTSession {
       throw new Error('sendPublishDone() requires draft-18');
     }
 
+    const stream = this.activeRequestStreams.get(requestId);
+    if (!stream) {
+      throw new Error(`sendPublishDone(): no PUBLISH request stream for requestId ${requestId}`);
+    }
+
+    // §9.9 Stream Count: streams opened for this publication; unknown if we
+    // have no record of the publication.
+    const publication = this.publicationManager.getByRequestId(requestId);
+    const streamCount = publication ? BigInt(publication.streamsOpened ?? 0) : STREAM_COUNT_UNKNOWN;
+
     const publishDone: PublishDoneMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH_DONE,
       requestId,
       finalLocation: { group: BigInt(finalGroup), object: BigInt(finalObject) },
       statusCode: BigInt(statusCode ?? PublishDoneErrorCodeDraft18.TRACK_ENDED),
+      streamCount,
       reasonPhrase,
     };
 
     const bytes = this.codec.encodeControlMessage(publishDone);
-    await this.doSendControl(bytes);
+    await stream.write(bytes);
+    await this.closeRequestStream(requestId);
     // PUBLISH_DONE terminates the incoming subscription; drop routing state so
     // any future REQUEST_UPDATE on this id doesn't route as §10.9.1 by default.
     this.incomingRequestKinds.delete(requestId);
-    log.info('Sent PUBLISH_DONE', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
+    log.info('Sent PUBLISH_DONE', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString(), streamCount: streamCount.toString() });
   }
 
   /**
@@ -4912,7 +4945,7 @@ export class MOQTSession {
     const timeoutKey = this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
     try {
       const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-      const streamInfo = await this.doCreateStream(sendOrder !== undefined ? { sendOrder } : undefined);
+      const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
 
       // Set END_OF_GROUP=true since this stream contains one complete object/group
       const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
@@ -5027,7 +5060,7 @@ export class MOQTSession {
         // Create new stream for this GOP — §7.2 sendOrder pulls priority
         // from the subscribing peer's SUBSCRIBER_PRIORITY / GROUP_ORDER.
         const gopSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-        const streamInfo = await this.doCreateStream(gopSendOrder !== undefined ? { sendOrder: gopSendOrder } : undefined);
+        const streamInfo = await this.openSubgroupStream(trackAlias, gopSendOrder !== undefined ? { sendOrder: gopSendOrder } : undefined);
 
         // Set END_OF_GROUP=true since each stream contains exactly one complete group (one GOP)
         const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
@@ -5090,7 +5123,7 @@ export class MOQTSession {
           });
 
           const pfSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-          const streamInfo = await this.doCreateStream(pfSendOrder !== undefined ? { sendOrder: pfSendOrder } : undefined);
+          const streamInfo = await this.openSubgroupStream(trackAlias, pfSendOrder !== undefined ? { sendOrder: pfSendOrder } : undefined);
           const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
             trackAlias,
             groupId: metadata.groupId,
@@ -5181,7 +5214,7 @@ export class MOQTSession {
 
             // Reopen stream and retry as if this is a new keyframe for the same group
             const reopenSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-            const streamInfo = await this.doCreateStream(reopenSendOrder !== undefined ? { sendOrder: reopenSendOrder } : undefined);
+            const streamInfo = await this.openSubgroupStream(trackAlias, reopenSendOrder !== undefined ? { sendOrder: reopenSendOrder } : undefined);
             const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
               trackAlias,
               groupId: metadata.groupId,
