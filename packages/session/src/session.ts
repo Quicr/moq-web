@@ -704,9 +704,8 @@ export class MOQTSession {
   // ============================================================================
   // Bound how much state a single peer can force us to hold. Every entry point
   // that would allocate a new subscription, publication (track), or transport
-  // stream first calls `enforceResourceLimit()`. Excess triggers a
-  // PROTOCOL_VIOLATION session close via the normal `close({...})` pattern —
-  // no new state-machine paths introduced.
+  // stream first calls `enforceResourceLimit()`. Excess throws; on draft-18/22
+  // a peer request over the cap is refused with EXCESSIVE_LOAD.
   /** Max concurrent subscriptions (client-initiated + peer-initiated). */
   private readonly maxSubscriptions = 4096;
   /** Max concurrent tracks we publish. */
@@ -3090,11 +3089,12 @@ export class MOQTSession {
    * B3 SEC: enforce a per-session resource cap.
    *
    * Called from subscribe/publish/stream-open entry points. If `currentCount`
-   * has reached or exceeded `limit`, terminate the session with
-   * PROTOCOL_VIOLATION via the existing `close()` path and throw so the
-   * caller unwinds without allocating additional state. The `code` on the
-   * thrown error is set to `'resource-limit-exceeded'` so callers can
-   * distinguish DoS caps from other failures.
+   * has reached or exceeded `limit`, throw so the caller unwinds without
+   * allocating additional state. The `code` on the thrown error is set to
+   * `'resource-limit-exceeded'` so callers can distinguish DoS caps from other
+   * failures. On draft-18/22 that is all: the peer broke no rule, so a request
+   * over the cap is refused with EXCESSIVE_LOAD by its handler and the session
+   * lives. Draft-14/16 also close the session with PROTOCOL_VIOLATION.
    *
    * @internal — this is a security gate, not a public API.
    */
@@ -3104,7 +3104,9 @@ export class MOQTSession {
     limit: number,
   ): void {
     if (currentCount < limit) return;
-    if (!this.resourceCapTripped) {
+    if (this.isDraft18) {
+      log.warn('Per-session resource cap exceeded', { what, currentCount, limit });
+    } else if (!this.resourceCapTripped) {
       this.resourceCapTripped = true;
       log.error('Per-session resource cap exceeded', { what, currentCount, limit });
       // Best-effort session termination. `close()` handles the two transport
@@ -7144,6 +7146,12 @@ export class MOQTSession {
     try {
       this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
     } catch {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.EXCESSIVE_LOAD,
+        'Too many tracks',
+      );
       return;
     }
 
@@ -7267,6 +7275,12 @@ export class MOQTSession {
     try {
       this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
     } catch {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.EXCESSIVE_LOAD,
+        'Too many subscriptions',
+      );
       return;
     }
 
