@@ -14,18 +14,20 @@ import {
   ConnectionStateMachine as _ConnectionStateMachine,
   MessageCodec,
   MOQTVarInt,
+  FetchTypeDraft18,
   LocationFilterTypeDraft22,
   RequestParameterDraft18,
   SubscriptionFilterDraft18,
   TrackPropertyDraft18,
   type ConnectionState,
   type ControlMessageDraft18,
+  type FillParametersDraft22,
   type LocationFilterDraft22,
   type IProtocolCodec,
   type StreamResetErrorCodeDraft18,
 } from '@moq-web/core';
 import { base64urlDecode, C4M_TOKEN_TYPE, coseSign1Encode } from '@moq-web/cat';
-import type { RequestAuthToken, SessionState } from './types.js';
+import type { FillOptions, RequestAuthToken, SessionState } from './types.js';
 import { streamResetReason } from './stream-reset-reason.js';
 
 /** Draft-18 subscription filter shape used by the SUBSCRIBE builder. */
@@ -162,6 +164,105 @@ export function mapLocationFilter(
         startLocation: { group: 0n, object: 0n },
       };
   }
+}
+
+/** Reject a `lastGroups` that is not a positive integer, or that clashes with `startGroup`. */
+function assertFillRange(fill: FillOptions): void {
+  if (fill.lastGroups === undefined) {
+    return;
+  }
+  if (!Number.isInteger(fill.lastGroups) || fill.lastGroups < 1) {
+    throw new Error(`Fill lastGroups must be a positive integer, got ${fill.lastGroups}`);
+  }
+  if (fill.startGroup !== undefined) {
+    throw new Error('Fill lastGroups and startGroup are mutually exclusive');
+  }
+}
+
+/** The fill's range as a Location filter, or undefined to inherit the subscription's. */
+function mapFillFilter(fill: FillOptions): LocationFilterDraft22 | undefined {
+  if (fill.lastGroups !== undefined) {
+    return {
+      type: LocationFilterTypeDraft22.RELATIVE_START,
+      startLocation: { group: BigInt(fill.lastGroups), object: 0n },
+    };
+  }
+  if (fill.startGroup === undefined) {
+    if (fill.endGroup !== undefined) {
+      throw new Error('Fill endGroup requires startGroup');
+    }
+
+    return undefined;
+  }
+
+  const startLocation = { group: BigInt(fill.startGroup), object: BigInt(fill.startObject ?? 0) };
+  if (fill.endGroup === undefined) {
+    return { type: LocationFilterTypeDraft22.ABSOLUTE_START, startLocation };
+  }
+  if (fill.endGroup < fill.startGroup) {
+    throw new Error(`Fill endGroup ${fill.endGroup} is before startGroup ${fill.startGroup}`);
+  }
+
+  return {
+    type: LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END,
+    startLocation,
+    endGroupDelta: BigInt(fill.endGroup - fill.startGroup),
+  };
+}
+
+/**
+ * Draft-22 §9.20.15 FILL_PARAMETERS mapping for SUBSCRIBE / REQUEST_UPDATE.
+ *
+ * `lastGroups` N is RELATIVE_START N (§9.20.9: 1 is the current group); an
+ * absolute start is ABSOLUTE_START, or ABSOLUTE_START_GROUP_END with an
+ * `endGroup`. Only the fields set in `fill` are carried (§9.20.15); a fill
+ * without a range inherits the subscription's Location filter (§3.4).
+ */
+export function mapFillParameters(fill: FillOptions): FillParametersDraft22 {
+  assertFillRange(fill);
+
+  const parameters: FillParametersDraft22 = {};
+  const locationFilter = mapFillFilter(fill);
+  if (locationFilter) {
+    parameters.locationFilter = locationFilter;
+  }
+  // §9.20.5: 0 is meaningful (only immediately available Objects)
+  if (fill.fillTimeout !== undefined) {
+    parameters.fillTimeoutMs = BigInt(fill.fillTimeout);
+  }
+  if (fill.priority !== undefined) {
+    parameters.subscriberPriority = fill.priority;
+  }
+  if (fill.groupOrder !== undefined) {
+    parameters.groupOrder = fill.groupOrder;
+  }
+
+  return parameters;
+}
+
+/**
+ * Draft-18 §10.12.2 Joining FETCH equivalent of a fill. The publisher starts
+ * at {Joining Location.Group - Joining Start, 0} (relative) or
+ * {Joining Start, 0} (absolute) and ends at the Joining Location, so a start
+ * object, an end group, or no range cannot be expressed.
+ */
+export function mapJoiningFetch(fill: FillOptions): { fetchType: FetchTypeDraft18; joiningStart: bigint } {
+  assertFillRange(fill);
+  if (fill.endGroup !== undefined) {
+    throw new Error('Draft-18 Joining FETCH cannot express fill endGroup');
+  }
+  if (fill.startObject) {
+    throw new Error('Draft-18 Joining FETCH cannot express fill startObject');
+  }
+
+  if (fill.lastGroups !== undefined) {
+    return { fetchType: FetchTypeDraft18.JOINING_RELATIVE, joiningStart: BigInt(fill.lastGroups - 1) };
+  }
+  if (fill.startGroup !== undefined) {
+    return { fetchType: FetchTypeDraft18.JOINING_ABSOLUTE, joiningStart: BigInt(fill.startGroup) };
+  }
+
+  throw new Error('Draft-18 Joining FETCH needs fill lastGroups or startGroup');
 }
 
 /**

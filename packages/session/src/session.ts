@@ -104,6 +104,7 @@ import {
   LocationFilterTypeDraft22,
   RequestParameterDraft22,
   type FetchMessageDraft22,
+  type FillParametersDraft22,
   type SubscribeMessageDraft22,
   type PublishMessageDraft22,
   type RequestUpdateMessageDraft22,
@@ -124,6 +125,8 @@ import {
   encodeTokenBytes,
   encodeTrackNamespaceBytes,
   generateSessionId,
+  mapFillParameters,
+  mapJoiningFetch,
   mapLocationFilter,
   mapSubscribeFilter,
   namespacePrefixMatches,
@@ -147,6 +150,7 @@ import type {
   SessionState,
   SessionEventType,
   SubscribeOptions,
+  FillOptions,
   PublishOptions,
   AnnounceOptions,
   ObjectMetadata,
@@ -583,6 +587,13 @@ export class MOQTSession {
   private activeFetches = new Map<bigint, FetchInfo>();
   /** Request ID to fetch stream mapping for receiving fetch data. Keyed by 62-bit varint request ID. */
   private fetchStreamBuffers = new Map<bigint, Uint8Array[]>();
+  /**
+   * Fill fetch streams (draft-22 §3.4; draft-18 Joining FETCHes) that may still
+   * arrive, keyed by the Request ID in their FETCH_HEADER, to the owning
+   * subscription. Entries go when the stream ends or the subscription is
+   * cancelled.
+   */
+  private fillStreams = new Map<bigint, number>();
 
   // ============================================================================
   // Track Status State (for live edge tracking)
@@ -774,6 +785,15 @@ export class MOQTSession {
     this.objectRouter.setFetchObjectCallback((requestId, data, groupId, objectId) => {
       // OPS-hi 1: per-object hot-path — demoted from .info to .trace.
       log.trace('FETCH object received', { requestId, groupId, objectId, dataSize: data.length });
+
+      // A fill stream's objects belong to its subscription (draft-22 §3.4),
+      // not to a fetch-object listener.
+      const fillOwner = this.fillStreams.get(requestId);
+      if (fillOwner !== undefined) {
+        this.subscriptionManager.get(fillOwner)?.onObject?.(data, groupId, objectId, performance.now() * 1000);
+        return;
+      }
+
       this.emit('fetch-object', {
         requestId,
         data,
@@ -789,6 +809,11 @@ export class MOQTSession {
         requestId,
         lastGroupId: groupId,
       });
+    });
+
+    // A reset or cancelled fill stream leaves its subscription alone (draft-22 §3.4.1).
+    this.objectRouter.setFetchStreamCloseCallback((requestId) => {
+      this.fillStreams.delete(requestId);
     });
 
     // Set up forward state change listener to emit events for MediaSession
@@ -2149,11 +2174,15 @@ export class MOQTSession {
    * responder reset the data stream or close the bidi on failure, and in
    * practice some relays close the stream without sending REQUEST_OK for
    * cancels — awaiting the ack would hang.
+   *
+   * `fill` (draft-22 §9.5.1) requests a fill fetch stream (§3.4) for the
+   * subscription; the new Request ID routes that stream's objects to it, and
+   * FORWARD is left out (unchanged).
    */
   async sendRequestUpdate(
     subscriptionRequestId: bigint | number,
     forwardState: boolean,
-    options?: { awaitAck?: boolean; newGroupRequest?: boolean | number },
+    options?: { awaitAck?: boolean; newGroupRequest?: boolean | number; fill?: FillParametersDraft22 },
   ): Promise<void> {
     if (!this.isDraft18) {
       throw new Error('sendRequestUpdate() requires draft-18');
@@ -2188,7 +2217,8 @@ export class MOQTSession {
         type: MessageTypeDraft22.REQUEST_UPDATE,
         requestId: updateId,
         // Draft-22 §9.5: FORWARD is not allowed when updating a FETCH
-        forwardState: this.activeFetches.has(rid) ? undefined : forwardState,
+        forwardState: this.activeFetches.has(rid) || options?.fill ? undefined : forwardState,
+        fill: options?.fill,
         parameters: extraParams.size > 0 ? extraParams : undefined,
       }
       : {
@@ -2206,10 +2236,17 @@ export class MOQTSession {
     // A fire-and-forget update, or one the stream outlives, must not leave an unhandled rejection.
     acknowledged.catch(() => {});
 
+    // Register the fill stream before the write so its objects can't beat us to it.
+    const fillSubscription = options?.fill ? this.subscriptionManager.findByRequestId(rid) : undefined;
+    if (options?.fill && fillSubscription) {
+      this.registerFill(updateId, fillSubscription, options.fill);
+    }
+
     const bytes = this.codec.encodeControlMessage(updateMessage);
     try {
       await stream.write(bytes);
     } catch (err) {
+      this.dropFillStream(updateId);
       this.failPendingUpdates(rid);
       throw err;
     }
@@ -2225,6 +2262,105 @@ export class MOQTSession {
     }
 
     await acknowledged;
+  }
+
+  /**
+   * Fill an existing subscription (ours, or one a relay pushed with PUBLISH)
+   * with past objects (draft-22 §3.4). They arrive in the subscription's
+   * object callback.
+   *
+   * Draft-22 sends REQUEST_UPDATE with FILL_PARAMETERS; draft-18 sends a
+   * Joining FETCH (§10.12.2). Neither waits for the peer's reply: a failed
+   * fill is a reset stream, which leaves the subscription alone (§3.4.1).
+   * Rejects while the subscription is paused (§3.4.1).
+   *
+   * @param subscriptionId - Subscription to fill
+   * @param fill - What to fill it with; see [[FillOptions]]
+   */
+  async requestFill(subscriptionId: number, fill: FillOptions): Promise<void> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+    if (!this.isDraft18) {
+      throw new Error('requestFill() requires draft-18');
+    }
+    const subscription = this.subscriptionManager.get(subscriptionId);
+    if (!subscription) {
+      throw new Error(`requestFill: no subscription ${subscriptionId}`);
+    }
+    if (subscription.paused) {
+      throw new Error(`requestFill: subscription ${subscriptionId} is paused (draft-22 §3.4.1)`);
+    }
+
+    if (!this.isDraft22) {
+      await this.fillWithJoiningFetch(subscription, fill);
+      return;
+    }
+
+    await this.sendRequestUpdate(subscription.requestId, true, {
+      awaitAck: false,
+      fill: mapFillParameters(fill),
+    });
+  }
+
+  /** Draft-18 §10.12.2: the fill is a Joining FETCH of the subscription. */
+  private async fillWithJoiningFetch(subscription: InternalSubscription, fill: FillOptions): Promise<void> {
+    const { fetchType, joiningStart } = mapJoiningFetch(fill);
+    const requestId = BigInt(this.getNextRequestId());
+    this.fillStreams.set(requestId, subscription.subscriptionId);
+
+    // The joining fetch carries no range of its own (§10.12.2.1).
+    const range: FetchRange = { startGroup: 0, startObject: 0, endGroup: 0, endObject: 0 };
+    await this.sendFetch(requestId, subscription.namespace, subscription.trackName, range, {
+      fetchType,
+      joiningStart,
+      subscribeRequestId: subscription.requestId,
+      priority: fill.priority,
+      groupOrder: fill.groupOrder ?? subscription.groupOrder,
+      fillTimeout: fill.fillTimeout,
+    });
+
+    // A rejected FETCH never opens a stream; its entry would linger.
+    if (!this.activeFetches.has(requestId)) {
+      this.dropFillStream(requestId);
+    }
+  }
+
+  /**
+   * Route a fill fetch stream's objects to `subscription` (draft-22 §3.4),
+   * decoding its Group ID Delta in the fill's group order (§11.4.1.1).
+   */
+  private registerFill(requestId: bigint, subscription: InternalSubscription, fill: FillParametersDraft22): void {
+    this.fillStreams.set(requestId, subscription.subscriptionId);
+    this.objectRouter.setFetchGroupOrder(
+      requestId,
+      fill.groupOrder ?? subscription.groupOrder ?? GroupOrder.ASCENDING,
+    );
+  }
+
+  private dropFillStream(requestId: bigint): void {
+    this.fillStreams.delete(requestId);
+    this.objectRouter.clearFetchGroupOrder(requestId);
+  }
+
+  /**
+   * Stop every fill stream of a cancelled subscription (draft-22 §3.4.1),
+   * including ones that haven't arrived yet.
+   */
+  private async endFillStreams(subscriptionId: number): Promise<void> {
+    for (const [requestId, owner] of this.fillStreams) {
+      if (owner !== subscriptionId) {
+        continue;
+      }
+
+      this.dropFillStream(requestId);
+      // A Joining FETCH is a request of its own; a draft-22 fill stream is only a data stream.
+      if (this.activeFetches.has(requestId)) {
+        await this.cancelFetch(requestId);
+        continue;
+      }
+      this.objectRouter.cancelFetchStream(requestId);
+    }
   }
 
   /**
@@ -2647,6 +2783,16 @@ export class MOQTSession {
     // B3 SEC: reject before allocating any request/subscription state.
     this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
 
+    // Refuse a fill this draft can't express before allocating any state.
+    const fill = this.isDraft18 ? options?.fill : undefined;
+    if (options?.fill && !fill) {
+      log.warn('Ignoring SubscribeOptions.fill: draft-14/16 have no fill');
+    }
+    const fillParameters = fill && this.isDraft22 ? mapFillParameters(fill) : undefined;
+    if (fill && !this.isDraft22) {
+      mapJoiningFetch(fill);
+    }
+
     // Local counter is small; widen for wire encode and state maps.
     const subscriptionId = this.getNextRequestId();
     const requestId = BigInt(subscriptionId);
@@ -2675,12 +2821,22 @@ export class MOQTSession {
       onEndOfGroup,
       subgroupDeliveryTimeoutMs: options?.subgroupDeliveryTimeout,
       objectDeliveryTimeoutMs: options?.objectDeliveryTimeout,
+      groupOrder: options?.groupOrder,
     };
     this.subscriptionManager.add(subscription);
 
     if (this.isDraft18) {
+      // Draft-22 §3.4: the SUBSCRIBE's fill stream carries its Request ID.
+      if (fillParameters) {
+        this.registerFill(requestId, subscription, fillParameters);
+      }
+
       // Draft-18: Send SUBSCRIBE on a new bidirectional stream
-      await this.subscribeDraft18(requestId, namespace, trackName, trackAlias, options);
+      await this.subscribeDraft18(requestId, namespace, trackName, trackAlias, options, fillParameters);
+
+      if (fill && !this.isDraft22) {
+        await this.requestFill(subscriptionId, fill);
+      }
     } else {
       // Draft-16 exposes only LATEST_GROUP and ABSOLUTE_START on the wire. Any
       // draft-18-only filter selection collapses to ABSOLUTE_START when it has
@@ -2742,7 +2898,8 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
     trackAlias: bigint,
-    options?: SubscribeOptions
+    options?: SubscribeOptions,
+    fill?: FillParametersDraft22,
   ): Promise<void> {
     const parameters = new Map<number, Uint8Array>();
     addDeliveryTimeoutParams(parameters, options);
@@ -2777,6 +2934,7 @@ export class MOQTSession {
         trackName,
         forwardState: true,
         locationFilter: mapLocationFilter(options),
+        fill,
         parameters,
       };
     } else {
@@ -2849,6 +3007,7 @@ export class MOQTSession {
         errorCode: error.errorCode,
         reasonPhrase: error.reasonPhrase,
       });
+      this.dropFillStream(requestId);
       await this.closeRequestStream(requestId);
       throw new Error(`SUBSCRIBE failed: ${error.reasonPhrase} (code ${error.errorCode})`);
     }
@@ -2941,6 +3100,8 @@ export class MOQTSession {
 
     log.info('Unsubscribing', { subscriptionId });
 
+    await this.endFillStreams(subscriptionId);
+
     if (this.isDraft22) {
       // Draft-22 §3.1: the subscriber terminates a subscription by
       // STOP_SENDING (§6.4.2.3); no REQUEST_UPDATE.
@@ -3032,6 +3193,19 @@ export class MOQTSession {
     // comparisons all operate on the 62-bit varint type — no silent precision loss
     // for long-lived sessions.
     const requestId = BigInt(this.getNextRequestId());
+
+    return this.sendFetch(requestId, namespace, trackName, range, options, onObject);
+  }
+
+  /** Send a FETCH under an already allocated Request ID. */
+  private async sendFetch(
+    requestId: bigint,
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+    onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
+  ): Promise<bigint> {
     const fullTrackNameStr = [...namespace, trackName].join('/');
 
     log.info('Fetching historical objects', {
@@ -6009,66 +6183,75 @@ export class MOQTSession {
    * other ends here with our FIN.
    */
   private async processIncomingBidiStream(stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): Promise<void> {
-    // Handlers write through their own short-lived writer, so until the request is
-    // accepted each write here takes one too. An accepted request holds one for good.
-    let held: WritableStreamDefaultWriter<Uint8Array> | undefined;
-    const writerOf = () => held ?? stream.writable.getWriter();
+    // The request stream owns the only writer. Handlers get `handlerWritable`,
+    // which forwards their writes to it, so they can respond (and emit events
+    // that write, like a REQUEST_UPDATE) while it is already registered.
+    const held = stream.writable.getWriter();
     const requestStream = new Draft18RequestStream(
       this.codec,
       stream.readable,
       async (data) => {
-        const writer = writerOf();
-        try {
-          await writer.write(data);
-        } finally {
-          if (!held) { writer.releaseLock(); }
-        }
+        await held.write(data);
       },
       async () => {
-        try { await writerOf().close(); } catch { /* already closed */ }
+        try { await held.close(); } catch { /* already closed */ }
       },
       async (code) => {
-        try { await writerOf().abort(streamResetReason(code)); } catch { /* already closed */ }
+        try { await held.abort(streamResetReason(code)); } catch { /* already closed */ }
       },
     );
+    const handlerWritable = new WritableStream<Uint8Array>({
+      write: (data) => requestStream.write(data),
+      close: () => requestStream.close(),
+    });
+    let registeredId: bigint | undefined;
 
     try {
       const message = (await requestStream.readMessage()) as ControlMessageDraft18;
 
       log.info('Received message on incoming bidi stream', { type: MessageTypeDraft18[message.type] });
 
+      // Register before dispatch: a handler's events can reach for this stream.
+      // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
+      if (ACCEPTED_REQUEST_TYPES.has(message.type)) {
+        registeredId = (message as { requestId: bigint }).requestId;
+        const id = registeredId;
+        this.activeRequestStreams.set(id, requestStream);
+        held.closed.catch(() => this.handlePeerCancel(id, requestStream));
+      }
+
       // Dispatch based on message type
       switch (message.type) {
         case MessageTypeDraft18.SUBSCRIBE:
-          await this.handleIncomingSubscribeDraft18(message as SubscribeMessageDraft18, stream.writable);
+          await this.handleIncomingSubscribeDraft18(message as SubscribeMessageDraft18, handlerWritable);
           break;
 
         case MessageTypeDraft18.PUBLISH:
-          await this.handleIncomingPublishDraft18(message as PublishMessageDraft18 | PublishMessageDraft22, stream.writable);
+          await this.handleIncomingPublishDraft18(message as PublishMessageDraft18 | PublishMessageDraft22, handlerWritable);
           break;
 
         case MessageTypeDraft18.FETCH:
-          await this.handleIncomingFetchDraft18(message as FetchMessageDraft18, stream.writable);
+          await this.handleIncomingFetchDraft18(message as FetchMessageDraft18, handlerWritable);
           break;
 
         case MessageTypeDraft18.TRACK_STATUS:
-          await this.handleIncomingTrackStatusDraft18(message as TrackStatusMessageDraft18 | TrackStatusMessageDraft22, stream.writable);
+          await this.handleIncomingTrackStatusDraft18(message as TrackStatusMessageDraft18 | TrackStatusMessageDraft22, handlerWritable);
           break;
 
         case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
-          await this.handleIncomingSubscribeNamespaceDraft18(message as SubscribeNamespaceMessageDraft18, stream.writable);
+          await this.handleIncomingSubscribeNamespaceDraft18(message as SubscribeNamespaceMessageDraft18, handlerWritable);
           break;
 
         case MessageTypeDraft18.PUBLISH_NAMESPACE:
-          await this.handleIncomingPublishNamespaceDraft18(message as PublishNamespaceMessageDraft18, stream.writable);
+          await this.handleIncomingPublishNamespaceDraft18(message as PublishNamespaceMessageDraft18, handlerWritable);
           break;
 
         case MessageTypeDraft18.SUBSCRIBE_TRACKS:
-          await this.handleIncomingSubscribeTracksDraft18(message as SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22, stream.writable);
+          await this.handleIncomingSubscribeTracksDraft18(message as SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22, handlerWritable);
           break;
 
         case MessageTypeDraft18.REQUEST_UPDATE:
-          await this.handleIncomingRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, stream.writable);
+          await this.handleIncomingRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, handlerWritable);
           break;
 
         case MessageTypeDraft18.PUBLISH_DONE:
@@ -6094,7 +6277,7 @@ export class MOQTSession {
         default:
           log.warn('Unhandled message type on incoming bidi stream', { type: message.type });
           await this.sendRequestErrorOnStream(
-            stream.writable,
+            handlerWritable,
             0n,
             RequestErrorCodeDraft18.NOT_SUPPORTED,
             'Unsupported message type',
@@ -6103,19 +6286,19 @@ export class MOQTSession {
 
       // An accepted request can still get REQUEST_UPDATEs and must end with
       // our own message, so it stays registered and read.
-      const requestId = (message as { requestId: bigint }).requestId;
-      if (ACCEPTED_REQUEST_TYPES.has(message.type) && this.incomingRequestKinds.has(requestId)) {
-        held = stream.writable.getWriter();
-        // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
-        held.closed.catch(() => this.handlePeerCancel(requestId, requestStream));
-        this.activeRequestStreams.set(requestId, requestStream);
-        void this.readRequestStream(requestId, requestStream);
+      if (registeredId !== undefined && this.incomingRequestKinds.has(registeredId)) {
+        void this.readRequestStream(registeredId, requestStream);
         return;
       }
     } catch (err) {
       if (!this.closeOnUnknownType(err)) {
         log.error('Error reading incoming bidi stream', { error: (err as Error).message });
       }
+    }
+
+    // Not accepted: unregister, unless the stream already ended itself.
+    if (registeredId !== undefined && this.activeRequestStreams.get(registeredId) === requestStream) {
+      this.activeRequestStreams.delete(registeredId);
     }
 
     // Anything else is finished: FIN our direction (draft-22 §6.4.2.2).

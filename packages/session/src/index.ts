@@ -73,6 +73,7 @@ export type {
   SessionState,
   SessionEventType,
   SubscribeOptions,
+  FillOptions,
   PublishOptions,
   AnnounceOptions,
   ObjectMetadata,

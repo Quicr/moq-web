@@ -5,7 +5,7 @@
  * Third-order studio room reproducer: replays the EXACT apps/studio/src/moqt.ts
  * peer wiring — MediaSession.subscribeNamespace + MSFSession.publishCatalog +
  * mediaSession-managed video/audio publishes + subscribeTracks + catalog
- * callback via session.setSubscriptionCallback.
+ * catalog callback via MSFSession.followCatalog.
  *
  * The bug this exists to catch: the studio UI gates a peer's <canvas> tile on
  * `peerCatalogs[peerId]` being present and having a track named 'video'. If
@@ -21,8 +21,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   MSFSession,
   createCatalog,
-  parseCatalogFromBytes,
-  isFullCatalog,
   CATALOG_TRACK_NAME,
   type FullCatalog,
 } from '@moq-web/msf';
@@ -117,21 +115,17 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
         ctx.subIdToPeer.set(evt.subscriptionId, peerId);
 
         if (evt.trackName === CATALOG_TRACK_NAME) {
-          handle.session.setSubscriptionCallback(evt.subscriptionId, (data) => {
-            try {
-              const cat = parseCatalogFromBytes(data);
-              if (isFullCatalog(cat)) {
-                ctx.peerCatalogs.set(peerId, cat);
-              }
-            } catch (err) {
-              // Surface parse failures via a marker catalog so the assertion
-              // reports them instead of hiding them.
-              ctx.peerCatalogs.set(peerId, {
-                version: -1,
-                tracks: [{ name: `PARSE_ERROR:${(err as Error).message}` }],
-              } as unknown as FullCatalog);
-            }
-          });
+          // Surface read failures via a marker catalog so the assertion
+          // reports them instead of hiding them.
+          const markError = (err: Error) => {
+            ctx.peerCatalogs.set(peerId, {
+              version: -1,
+              tracks: [{ name: `PARSE_ERROR:${err.message}` }],
+            } as unknown as FullCatalog);
+          };
+          msfSession
+            .followCatalog(evt.subscriptionId, (cat) => ctx.peerCatalogs.set(peerId, cat), markError)
+            .catch(markError);
         }
         // video/audio handled by MediaSession.handleIncomingPublish;
         // catalog handled above; other tracks (timeline) ignored here.

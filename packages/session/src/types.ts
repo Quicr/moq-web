@@ -138,6 +138,43 @@ export interface SubscribeOptions {
   objectDeliveryTimeout?: number;
   fillTimeout?: number;
   rendezvousTimeout?: number;
+  /**
+   * Fill the subscription with past objects (draft-22 §3.4). Draft-22 sends
+   * FILL_PARAMETERS in SUBSCRIBE; draft-18 follows SUBSCRIBE with a Joining
+   * FETCH (§10.12.2). Ignored on draft-14/16, which have no fill.
+   */
+  fill?: FillOptions;
+}
+
+/**
+ * What to fill an existing subscription with (draft-22 §3.4, §9.20.15).
+ *
+ * Fill objects arrive in the subscription's object callback, the same one
+ * live objects use. The library does not dedupe them: when the fill range
+ * overlaps the live range an object can arrive twice (§3.4).
+ *
+ * Draft-22 sends only the fields set here; the rest follow the subscription.
+ * Draft-18 sends a Joining FETCH (§10.12.2): it needs `lastGroups` or
+ * `startGroup`, and rejects `startObject`, `endGroup`.
+ */
+export interface FillOptions {
+  /**
+   * Last N groups up to Largest Object; 1 is the current group.
+   * Mutually exclusive with `startGroup`.
+   */
+  lastGroups?: number;
+  /** Absolute start group */
+  startGroup?: number;
+  /** Absolute start object within `startGroup` (default 0) */
+  startObject?: number;
+  /** Absolute end group, inclusive; requires `startGroup` */
+  endGroup?: number;
+  /** FILL_TIMEOUT in ms (§9.20.5). 0 asks for only what is available now; draft-18 omits 0. */
+  fillTimeout?: number;
+  /** Subscriber priority of the fill stream (0-255) */
+  priority?: number;
+  /** Group order of the fill stream */
+  groupOrder?: GroupOrder;
 }
 
 /**

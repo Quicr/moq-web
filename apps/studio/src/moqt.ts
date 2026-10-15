@@ -9,8 +9,6 @@ import {
   MSFSession,
   createCatalog,
   createDelta,
-  parseCatalogFromBytes,
-  isFullCatalog,
   CATALOG_TRACK_NAME,
   encodeEventTimelineEntry,
   decodeEventTimelineEntry,
@@ -148,8 +146,9 @@ interface PeerState {
  *      relay fans PUBLISHes for that peer's tracks back to us.
  *   3. When a PUBLISH lands, `session.on('incoming-publish')` fires with a new
  *      subscriptionId whose object-callback is not yet attached. For non-media
- *      tracks (timeline, catalog) we bind the callback via
- *      `setSubscriptionCallback`; video/audio are handled by MediaSession.
+ *      tracks we bind the callback via `setSubscriptionCallback` (timeline) or
+ *      `MSFSession.followCatalog` (catalog); video/audio are handled by
+ *      MediaSession.
  *      Any pre-callback objects are flushed automatically (pendingObjects).
  */
 export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<StudioBroadcast> {
@@ -219,18 +218,13 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     const lower = trackName.toLowerCase();
 
     if (trackName === CATALOG_TRACK_NAME) {
-      session.setSubscriptionCallback(evt.subscriptionId, (data) => {
-        try {
-          const cat = parseCatalogFromBytes(data);
-          if (isFullCatalog(cat)) opts.onPeerCatalog(peerId, cat);
-        } catch (err) {
-          opts.onError(
-            new Error(
-              `Failed to parse catalog from ${peerId}: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          );
-        }
-      });
+      const onCatalogError = (err: Error) =>
+        opts.onError(new Error(`Failed to read catalog from ${peerId}: ${err.message}`));
+      // Also fills the current group, so a late joiner gets the catalog now
+      // instead of at the publisher's next republish.
+      msfSession
+        .followCatalog(evt.subscriptionId, (cat) => opts.onPeerCatalog(peerId, cat), onCatalogError)
+        .catch(onCatalogError);
       return;
     }
 

@@ -9,7 +9,7 @@
  * (server-assigned, client-assigned, request ID) and subscriptions.
  */
 
-import { Logger } from '@moq-web/core';
+import { Logger, type GroupOrder } from '@moq-web/core';
 import type { SubscriptionInfo } from './types.js';
 
 const log = Logger.create('moqt:session:subscription-manager');
@@ -31,6 +31,8 @@ export interface InternalSubscription extends SubscriptionInfo {
    */
   subgroupDeliveryTimeoutMs?: number;
   objectDeliveryTimeoutMs?: number;
+  /** Group order requested at subscribe time; fill streams default to it (draft-22 §3.4) */
+  groupOrder?: GroupOrder;
 }
 
 /**

@@ -107,6 +107,12 @@ export type FetchEndOfGroupCallback = (
 ) => void;
 
 /**
+ * Callback for a FETCH data stream that ended (FIN, reset or cancelled),
+ * with the Request ID from its FETCH_HEADER.
+ */
+export type FetchStreamCloseCallback = (requestId: bigint) => void;
+
+/**
  * Extract the track-alias string from a §8 timer key. Keys are shaped
  * `sg:${alias}:...` or `obj:${alias}:...`.
  */
@@ -150,6 +156,7 @@ export type StreamResetCallback = (
 export class ObjectRouter {
   private onFetchObject?: FetchObjectCallback;
   private onFetchEndOfGroup?: FetchEndOfGroupCallback;
+  private onFetchStreamClose?: FetchStreamCloseCallback;
   private onDeliveryTimeout?: DeliveryTimeoutCallback;
   private onStreamReset?: StreamResetCallback;
 
@@ -329,6 +336,13 @@ export class ObjectRouter {
    */
   setFetchEndOfGroupCallback(callback: FetchEndOfGroupCallback): void {
     this.onFetchEndOfGroup = callback;
+  }
+
+  /**
+   * Set the FETCH stream close callback
+   */
+  setFetchStreamCloseCallback(callback: FetchStreamCloseCallback): void {
+    this.onFetchStreamClose = callback;
   }
 
   /**
@@ -896,6 +910,7 @@ export class ObjectRouter {
     if (this.cancelledFetches.delete(requestId)) {
       log.info('Cancelling FETCH stream for cancelled request', { requestId: requestId.toString() });
       try { await reader.cancel(streamResetReason(StreamResetErrorCodeDraft18.CANCELLED)); } catch { /* ignore */ }
+      this.onFetchStreamClose?.(requestId);
       return;
     }
 
@@ -905,6 +920,7 @@ export class ObjectRouter {
     } finally {
       this.fetchReaders.delete(requestId);
       this.cancelledFetches.delete(requestId);
+      this.onFetchStreamClose?.(requestId);
     }
   }
 
