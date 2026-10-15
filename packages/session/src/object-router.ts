@@ -817,21 +817,35 @@ export class ObjectRouter {
     initialBuffer: Uint8Array,
     initialDone: boolean
   ): Promise<void> {
-    const buffer = initialBuffer;
-    const done = initialDone;
+    let buffer = initialBuffer;
+    let done = initialDone;
 
-    // Parse FETCH_HEADER: stream type (already consumed) + request ID (62-bit varint)
-    const headerReader = new BufferReader(buffer);
-    headerReader.skip(1); // Skip stream type byte (0x05)
+    // Parse FETCH_HEADER: stream type (already consumed) + request ID (62-bit
+    // varint). The Request ID can be split across reads, so keep reading
+    // until it decodes or the stream ends.
+    let requestId: bigint | undefined;
+    let bufferOffset = 0;
+    while (requestId === undefined) {
+      try {
+        const headerReader = new BufferReader(buffer);
+        headerReader.skip(1); // Skip stream type byte (0x05)
+        requestId = headerReader.readVarInt();
+        bufferOffset = headerReader.offset;
+      } catch {
+        if (done) {
+          log.error('Failed to decode FETCH request ID');
+          return;
+        }
 
-    let requestId: bigint;
-    let bufferOffset: number;
-    try {
-      requestId = headerReader.readVarInt();
-      bufferOffset = headerReader.offset;
-    } catch {
-      log.error('Failed to decode FETCH request ID');
-      return;
+        const { value, done: readDone } = await reader.read();
+        done = readDone;
+        if (value && value.length > 0) {
+          const merged = new Uint8Array(buffer.length + value.length);
+          merged.set(buffer);
+          merged.set(value, buffer.length);
+          buffer = merged;
+        }
+      }
     }
 
     log.info('Handling FETCH stream', {
@@ -1149,20 +1163,22 @@ export class ObjectRouter {
       if (!Number.isSafeInteger(payloadLenN) || payloadLenN < 0) {
         throw new Error(`Draft-18 FETCH: invalid payload length ${decoded.payloadLength}`);
       }
+      // ensureBytes() rebases the buffer so the unconsumed bytes start at 0;
+      // bufferOffset tracks this object's start, startOffset goes stale.
       const totalObjectBytes = headerBytes + payloadLenN;
-      while (buffer.length - startOffset < totalObjectBytes) {
+      while (buffer.length - bufferOffset < totalObjectBytes) {
         if (done) {
           log.warn('Draft-18 FETCH stream truncated mid-payload', {
             requestId: requestId.toString(),
             needed: totalObjectBytes,
-            haveRemaining: buffer.length - startOffset,
+            haveRemaining: buffer.length - bufferOffset,
           });
           return;
         }
         await ensureBytes();
       }
 
-      const payloadStart = startOffset + headerBytes;
+      const payloadStart = bufferOffset + headerBytes;
       const payload = buffer.slice(payloadStart, payloadStart + payloadLenN);
       bufferOffset = payloadStart + payloadLenN;
 
