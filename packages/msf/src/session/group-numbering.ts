@@ -23,6 +23,7 @@ export type GroupNumberingStrategy = 'epoch' | 'sequential';
 export class EpochGroupNumbering {
   private currentGroup: number;
   private currentObject: number;
+  private hasFullCatalog = false;
 
   constructor(startEpoch?: number) {
     this.currentGroup = startEpoch ?? Math.floor(Date.now() / 1000);
@@ -48,8 +49,12 @@ export class EpochGroupNumbering {
    * @returns [groupId, objectId]
    */
   nextFull(): [number, number] {
-    // Start new group with epoch timestamp
-    this.currentGroup = Math.floor(Date.now() / 1000);
+    // Start new group with epoch timestamp. An Object's content must not
+    // change (draft-22 §2.1), so a second full catalog within the same
+    // second takes the next group instead of reusing {group, 0}.
+    const epoch = Math.floor(Date.now() / 1000);
+    this.currentGroup = this.hasFullCatalog ? Math.max(epoch, this.currentGroup + 1) : epoch;
+    this.hasFullCatalog = true;
     this.currentObject = 0;
     return [this.currentGroup, this.currentObject];
   }

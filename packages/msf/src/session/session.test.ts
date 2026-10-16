@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   EpochGroupNumbering,
   SequentialGroupNumbering,
@@ -24,6 +24,39 @@ describe('GroupNumbering', () => {
 
       expect(groupId).toBeGreaterThanOrEqual(before);
       expect(groupId).toBeLessThanOrEqual(after);
+    });
+
+    describe('full catalogs within one second', () => {
+      const MS_PER_SECOND = 1000;
+      const NOW_SECONDS = 5000;
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it('never reuses a group, as an Object must not change (d22 §2.1)', () => {
+        vi.spyOn(Date, 'now').mockReturnValue(NOW_SECONDS * MS_PER_SECOND);
+        const numbering = new EpochGroupNumbering();
+
+        const [first] = numbering.nextFull();
+        const [second] = numbering.nextFull();
+        numbering.nextDelta();
+        const [third] = numbering.nextFull();
+
+        expect([first, second, third]).toEqual([NOW_SECONDS, NOW_SECONDS + 1, NOW_SECONDS + 2]);
+      });
+
+      it('goes back to the clock once it has caught up', () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(NOW_SECONDS * MS_PER_SECOND);
+        const numbering = new EpochGroupNumbering();
+        numbering.nextFull();
+        numbering.nextFull();
+
+        now.mockReturnValue((NOW_SECONDS + 10) * MS_PER_SECOND);
+        const [group] = numbering.nextFull();
+
+        expect(group).toBe(NOW_SECONDS + 10);
+      });
     });
 
     it('should start full catalog at object 0', () => {
