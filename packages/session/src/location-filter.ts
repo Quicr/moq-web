@@ -105,3 +105,8 @@ export function admits(range: LocationRange, group: bigint, object: bigint): boo
 
   return group === range.end.group && (range.end.object === undefined || object <= range.end.object);
 }
+
+/** Whether the End Group of `range` is already completely published, so nothing is left to deliver (d18 §5.1.2) */
+export function endsBefore(range: LocationRange, largest: Location | undefined): boolean {
+  return range.end !== undefined && largest !== undefined && largest.group > range.end.group;
+}

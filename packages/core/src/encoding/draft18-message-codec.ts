@@ -937,6 +937,9 @@ export class Draft18MessageCodec {
         encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
       });
     }
+    if (message.filter !== undefined) {
+      params.push(Draft18MessageCodec.filterParameter(message));
+    }
     Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
@@ -948,13 +951,16 @@ export class Draft18MessageCodec {
     let largestLocation: Location | undefined;
     // §10.2.12: FORWARD in a PUBLISH_OK sets the initial state; omitted is 1
     let forwardState: boolean | undefined;
+    let filterFields: ReturnType<typeof Draft18MessageCodec.readFilter> | undefined;
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.REQUEST_OK, previousType, i);
       previousType = type;
 
-      if (type === RequestParameterDraft18.EXPIRES) {
+      if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
+        filterFields = Draft18MessageCodec.readFilter(reader, MessageTypeDraft18.REQUEST_OK);
+      } else if (type === RequestParameterDraft18.EXPIRES) {
         expires = reader.readVarInt();
       } else if (type === RequestParameterDraft18.FORWARD) {
         forwardState = Draft18MessageCodec.readUint8Parameter(reader, type) === 0x01;
@@ -973,6 +979,7 @@ export class Draft18MessageCodec {
       expires,
       largestLocation,
       forwardState,
+      ...filterFields,
     };
   }
 

@@ -555,6 +555,24 @@ describe('Draft18MessageCodec', () => {
       expect(d.largestLocation).toEqual({ group: 100n, object: 3n });
     });
 
+    it('roundtrips REQUEST_OK with the SUBSCRIPTION_FILTER of a PUBLISH_OK (§10.2.9)', () => {
+      const message: RequestOkMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_OK,
+        requestId: 0n,
+        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
+        startLocation: { group: 4n, object: 1n },
+        endGroupDelta: 3n,
+      };
+
+      const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+      expect(decoded).toMatchObject({
+        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
+        startLocation: { group: 4n, object: 1n },
+        endGroupDelta: 3n,
+      });
+    });
+
     it('leaves largestLocation undefined when omitted on the wire', () => {
       const message: RequestOkMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_OK,

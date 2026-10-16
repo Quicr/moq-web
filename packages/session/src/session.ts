@@ -158,7 +158,15 @@ import { PublicationManager, type InternalPublication } from './publication-mana
 import { ObjectRouter } from './object-router.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 import { IdleActivityTracker } from './idle-activity-tracker.js';
-import { compareLocations, resolveLocationFilter, resolveSubscriptionFilter, WHOLE_TRACK, type LocationRange } from './location-filter.js';
+import {
+  admits,
+  compareLocations,
+  endsBefore,
+  resolveLocationFilter,
+  resolveSubscriptionFilter,
+  WHOLE_TRACK,
+  type LocationRange,
+} from './location-filter.js';
 import { IncomingNamespaceSubscriptions, NamespaceChange } from './incoming-namespace-subscriptions.js';
 import { TransportWorkerClient } from './workers/index.js';
 import {
@@ -1810,14 +1818,14 @@ export class MOQTSession {
         // Draft-22 §9.5: exactly one REQUEST_OK or REQUEST_ERROR per update.
         // Ranges are over our MAX_FILTER_RANGES (§9.1.6), so the update is refused unapplied.
         if (this.exceedsOwnFilterRanges(message as RangeFilteredRequest)) {
-          const refusal: RequestErrorMessageDraft18 = {
-            type: MessageTypeDraft18.REQUEST_ERROR,
-            requestId,
-            errorCode: RequestErrorCodeDraft22.INVALID_FILTER,
-            reasonPhrase: 'Range filters not supported (MAX_FILTER_RANGES 0)',
-          };
-          await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(refusal));
-          await this.endRefusedRequest(requestId);
+          await this.refuseUpdate(requestId, RequestErrorCodeDraft22.INVALID_FILTER, 'Range filters not supported (MAX_FILTER_RANGES 0)');
+          break;
+        }
+
+        // Draft-18 §5.1.2: a range whose End Group is published has nothing to deliver
+        const range = this.updatedRange(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
+        if (!this.isDraft22 && range && endsBefore(range, this.largestOfRequest(requestId))) {
+          await this.refuseUpdate(requestId, RequestErrorCodeDraft18.INVALID_RANGE, 'End Group is already published');
           break;
         }
 
@@ -1867,6 +1875,37 @@ export class MOQTSession {
       default:
         log.warn('Unhandled message on request stream', { requestId: requestId.toString(), type: message.type });
     }
+  }
+
+  /** Refuse a REQUEST_UPDATE: REQUEST_ERROR, then the request ends (draft-22 §9.5.1, draft-18 §10.9.1) */
+  private async refuseUpdate(requestId: bigint, errorCode: number, reasonPhrase: string): Promise<void> {
+    const refusal: RequestErrorMessageDraft18 = { type: MessageTypeDraft18.REQUEST_ERROR, requestId, errorCode, reasonPhrase };
+    await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(refusal));
+    await this.endRefusedRequest(requestId);
+  }
+
+  /** The Largest Object of the track the subscription `requestId` publishes */
+  private largestOfRequest(requestId: bigint): Location | undefined {
+    const publication = this.publicationManager.getByRequestId(requestId);
+
+    return publication && this.publicationManager.largestOf(publication.namespace, publication.trackName);
+  }
+
+  /** The Locations a REQUEST_UPDATE selects, or undefined when it carries no filter (d22 §9.20.9, d18 §10.2.9) */
+  private updatedRange(
+    update: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22,
+    requestId: bigint,
+  ): LocationRange | undefined {
+    const largest = this.largestOfRequest(requestId);
+    if (this.isDraft22) {
+      const { locationFilter } = update as RequestUpdateMessageDraft22;
+
+      return locationFilter && resolveLocationFilter(locationFilter, largest);
+    }
+
+    const { filter, startLocation, endGroupDelta } = update as RequestUpdateMessageDraft18;
+
+    return filter === undefined ? undefined : resolveSubscriptionFilter(filter, startLocation, endGroupDelta, largest);
   }
 
   /** FILL_PARAMETERS in a REQUEST_UPDATE of a subscription we publish (draft-22 §3.4.1) */
@@ -3884,6 +3923,12 @@ export class MOQTSession {
       // Draft-18 §5.1: a subscriber can start the subscription paused with FORWARD=0 in PUBLISH_OK
       if (ok.forwardState === false) {
         this.publicationManager.setForwardByRequestId(requestId, 0);
+      }
+      // §10.2.9: the PUBLISH_OK filter picks the Objects to send; omitted is unfiltered
+      const publication = this.publicationManager.getByRequestId(requestId);
+      if (publication && ok.filter !== undefined) {
+        const largest = this.publicationManager.largestOf(namespace, trackName);
+        publication.filter = resolveSubscriptionFilter(ok.filter, ok.startLocation, ok.endGroupDelta, largest);
       }
       this.emit('request-ok', { requestId, requestKind: 'publish', expiresMs } as RequestOkEvent);
       if (!options?.skipForwardWait) {
@@ -5991,8 +6036,9 @@ export class MOQTSession {
       return;
     }
 
-    // A paused subscription gets no Objects, though they still exist (d22 §3.1.1)
-    if (this.isDraft18 && publication?.forward === 0) {
+    // A paused subscription gets no Objects, though they still exist (d22 §3.1.1). Nor does
+    // one get Objects outside its filter (d22 §3.3.1, d18 §5.1.2).
+    if (this.isDraft18 && publication && (publication.forward === 0 || !this.passesFilter(publication, metadata))) {
       this.publicationManager.updateLatest(trackAlias, BigInt(metadata.groupId), BigInt(metadata.objectId));
       return;
     }
@@ -6023,6 +6069,11 @@ export class MOQTSession {
       objectId: metadata.objectId,
       bytes: data.byteLength,
     } as PublishStatsEvent);
+  }
+
+  /** Whether the Object is inside the Locations the subscriber asked for */
+  private passesFilter(publication: InternalPublication, metadata: ObjectMetadata): boolean {
+    return !publication.filter || admits(publication.filter, BigInt(metadata.groupId), BigInt(metadata.objectId));
   }
 
   /**
@@ -7218,6 +7269,18 @@ export class MOQTSession {
 
     const largestLocation = this.publicationManager.largestOf(namespace, trackName);
 
+    // Draft-18 §5.1.2: a range whose End Group is published has nothing to deliver. A d22 filter is always valid (§3.3.1).
+    const range = this.subscribeRange(message, largestLocation);
+    if (!this.isDraft22 && endsBefore(range, largestLocation)) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.INVALID_RANGE,
+        'End Group is already published',
+      );
+      return;
+    }
+
     // Draft-18 §5.1: at most one subscription per Track and role (d22 allows several)
     if (!this.isDraft22 && this.publicationManager.getByTrackName(namespace, trackName)) {
       await this.sendRequestErrorOnStream(
@@ -7276,7 +7339,7 @@ export class MOQTSession {
       cleanupHandlers: [],
       // The subscriber sets the initial Forward State (d22 §3.1.1, d18 §5.1)
       forward: message.forwardState === false ? 0 : 1,
-      filter: this.subscribeRange(message, largestLocation),
+      filter: range,
       subscriberPriority,
       subscriberGroupOrder,
       ...subscriberTimeouts,
@@ -7845,6 +7908,13 @@ export class MOQTSession {
         pub.subscriberSubgroupTimeoutMs = timeouts.subgroupMs ?? pub.subscriberSubgroupTimeoutMs;
         pub.subscriberObjectTimeoutMs = timeouts.objectMs ?? pub.subscriberObjectTimeoutMs;
       }
+    }
+
+    // The filter of the update replaces the subscription's (d22 §9.20.9, d18 §10.2.9)
+    const range = this.updatedRange(message, requestId);
+    const filtered = this.publicationManager.getByRequestId(requestId);
+    if (range && filtered) {
+      filtered.filter = range;
     }
 
     // §10.9.1 — subscription-scoped update. The forward-state flip applies to

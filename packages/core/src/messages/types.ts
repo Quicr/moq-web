@@ -1688,6 +1688,10 @@ export interface RequestOkMessageDraft18 {
   largestLocation?: Location;
   /** §10.2.12 FORWARD in a PUBLISH_OK: the subscription's initial state; omitted is 1 */
   forwardState?: boolean;
+  /** §10.2.9 SUBSCRIPTION_FILTER in a PUBLISH_OK; omitted is unfiltered */
+  filter?: SubscriptionFilterDraft18;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
 }
 
 /**
