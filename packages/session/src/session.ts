@@ -142,6 +142,7 @@ import {
   encodeRequestAuthTokenBytes,
   encodeTokenBytes,
   generateSessionId,
+  isUnservedNamespace,
   mapFillParameters,
   mapJoiningFetch,
   mapLocationFilter,
@@ -7208,6 +7209,17 @@ export class MOQTSession {
         return;
       }
 
+      // Draft-22 §2.4.3, §6.5: a reserved namespace we do not serve does not exist
+      if (isUnservedNamespace(this.referencedNamespace(message))) {
+        await this.sendRequestErrorOnStream(
+          handlerWritable,
+          peerRequestId,
+          RequestErrorCodeDraft18.DOES_NOT_EXIST,
+          'Reserved namespace',
+        );
+        return;
+      }
+
       // Register before dispatch: a handler's events can reach for this stream.
       // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
       if (ACCEPTED_REQUEST_TYPES.has(message.type)) {
@@ -7267,6 +7279,13 @@ export class MOQTSession {
 
     // Anything else is finished: FIN our direction (draft-22 §6.4.2.2).
     await requestStream.close();
+  }
+
+  /** The Track Namespace or prefix a request names; none for a Joining FETCH, which names a subscription. */
+  private referencedNamespace(request: ControlMessageDraft18): string[] {
+    const { trackNamespace, trackNamespacePrefix } = request as { trackNamespace?: string[]; trackNamespacePrefix?: string[] };
+
+    return trackNamespace ?? trackNamespacePrefix ?? [];
   }
 
   /**

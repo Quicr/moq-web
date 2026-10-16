@@ -433,6 +433,19 @@ export function assertNotReservedNamespace(namespace: string[], action: string):
   );
 }
 
+/** The only reserved first fields that are rejected rather than passed to the application */
+const UNSERVED_FIRST_FIELDS: ReadonlySet<string> = new Set(['.', '.session']);
+
+/**
+ * Whether a request referencing `namespace` is rejected with DOES_NOT_EXIST.
+ * A namespace whose first field is exactly "." is unusable, and we define no
+ * session-level tracks or namespaces under ".session" (draft-22 §2.4.3, §6.5).
+ * Other reserved namespaces go to the application.
+ */
+export function isUnservedNamespace(namespace: string[]): boolean {
+  return namespace.length > 0 && UNSERVED_FIRST_FIELDS.has(namespace[0]);
+}
+
 /**
  * Draft-18 §12 publisher-side track properties advertised on PUBLISH. Each
  * key is an even-key MOQT varint; 0/undefined omits it. Returns `undefined`
