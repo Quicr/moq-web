@@ -37,6 +37,7 @@ import type { FetchDecoderState, FetchObjectDraft18, SubgroupHeaderDraft18 } fro
 import { FetchSubgroupMode, FetchObjectEndOfRange } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 import { narrowBigIntToNumber } from './session-helpers.js';
+import { hasMandatoryProperty } from './track-properties.js';
 import { streamResetReason } from './stream-reset-reason.js';
 
 /**
@@ -75,6 +76,25 @@ const log = Logger.create('moqt:session:object-router');
  * (d22 §6.4.1, §11; d18 §3.4, §11).
  */
 class DataPlaneViolation extends Error {}
+
+/** What a malformed Track belongs to: a subscription by its Track Alias, or a fetch by its Request ID */
+export interface MalformedTrackTarget {
+  trackAlias?: bigint | number;
+  fetchRequestId?: bigint;
+}
+
+/**
+ * An Object made its Track malformed (d22 §12.1): the subscriber cancels the
+ * subscription or fetch. The session stays up.
+ */
+class MalformedTrack extends Error {
+  constructor(readonly target: MalformedTrackTarget, reason: string) {
+    super(reason);
+  }
+}
+
+/** The reason when an Object carries a Mandatory Track Property as an Object Property (d22 §3.7) */
+const MANDATORY_ON_OBJECT = 'Object has a Mandatory Track Property as an Object Property';
 
 /** True when `err` only says more bytes are needed, not that the encoding is malformed. */
 function isTruncation(err: unknown): boolean {
@@ -129,6 +149,9 @@ export type FetchStreamCloseCallback = (requestId: bigint, lastGroupId?: number)
  */
 export type ViolationCallback = (reason: string) => void;
 
+/** Callback fired when a Track is found malformed, with what to cancel and why */
+export type MalformedTrackCallback = (target: MalformedTrackTarget, reason: string) => void;
+
 /**
  * Callback fired when a subgroup stream is reset by the peer (draft-18
  * §11.4.3). WebTransport surfaces the QUIC RESET_STREAM as a
@@ -151,6 +174,7 @@ export class ObjectRouter {
   private onFetchStreamClose?: FetchStreamCloseCallback;
   private onStreamReset?: StreamResetCallback;
   private onViolation?: ViolationCallback;
+  private onMalformedTrack?: MalformedTrackCallback;
 
   private readonly _draft: DraftVersion;
   /** Decodes with the session's draft, not the build-time default */
@@ -240,6 +264,16 @@ export class ObjectRouter {
    */
   setViolationCallback(cb: ViolationCallback): void {
     this.onViolation = cb;
+  }
+
+  /** Register the callback fired when a Track is malformed (draft-22 §12.1). */
+  setMalformedTrackCallback(cb: MalformedTrackCallback): void {
+    this.onMalformedTrack = cb;
+  }
+
+  private reportMalformedTrack(target: MalformedTrackTarget, reason: string): void {
+    log.error('Malformed Track', { reason, ...target });
+    this.onMalformedTrack?.(target, reason);
   }
 
   private reportViolation(reason: string): void {
@@ -338,7 +372,7 @@ export class ObjectRouter {
 
     const decodeStart = nowMs();
     try {
-      const { header, payload, status, endOfGroup } = this.decodeDatagram(data);
+      const { header, payload, status, endOfGroup, objectProperties } = this.decodeDatagram(data);
       this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
         codec: this.codecLabel,
         messageType: 'object_datagram',
@@ -351,6 +385,11 @@ export class ObjectRouter {
         objectId: header.objectId,
         payloadSize: payload.length,
       });
+
+      if (hasMandatoryProperty(objectProperties)) {
+        this.reportMalformedTrack({ trackAlias: header.trackAlias }, MANDATORY_ON_OBJECT);
+        return;
+      }
 
       // Route to subscription
       const subscription = this.subscriptionManager.getByAlias(header.trackAlias);
@@ -411,6 +450,7 @@ export class ObjectRouter {
     payload: Uint8Array;
     status: number;
     endOfGroup: boolean;
+    objectProperties?: Map<number, Uint8Array>;
   } {
     if (!this.isDraft18) {
       const { header, payload } = this.codec.decodeDatagramObject(data);
@@ -427,6 +467,7 @@ export class ObjectRouter {
       payload: datagram.payload?.slice() ?? new Uint8Array(0),
       status: datagram.objectStatus ?? ObjectStatusDraft18.NORMAL,
       endOfGroup: datagram.endOfGroup === true,
+      objectProperties: datagram.objectProperties,
     };
   }
 
@@ -583,6 +624,9 @@ export class ObjectRouter {
           }
 
           const [objectId, payload, status, bytesConsumed] = decoded;
+          if (hasProperties && this.hasMandatoryObjectProperty(buffer.subarray(offset))) {
+            throw new MalformedTrack({ trackAlias: subgroup.trackAlias }, MANDATORY_ON_OBJECT);
+          }
           offset += bytesConsumed;
           this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
             codec: this.codecLabel,
@@ -633,12 +677,22 @@ export class ObjectRouter {
         this.reportViolation(err.message);
         return;
       }
+      if (err instanceof MalformedTrack) {
+        void reader.cancel().catch(() => { /* session is closing */ });
+        this.reportMalformedTrack(err.target, err.message);
+        return;
+      }
       this.reportStreamError(err, subgroup);
     } finally {
       if (aliasKey !== undefined) {
         this.subgroupReaders.get(aliasKey)?.delete(reader);
       }
     }
+  }
+
+  /** Whether the object at the start of `bytes`, which has Properties, carries a Mandatory Track Property */
+  private hasMandatoryObjectProperty(bytes: Uint8Array): boolean {
+    return hasMandatoryProperty(Draft18StreamCodec.decodeObjectHeader(bytes, 0, true)[0].objectProperties);
   }
 
   private countDecodeError(err: unknown): void {
@@ -1402,6 +1456,10 @@ export class ObjectRouter {
           objectIdDelta: decoded.objectIdDelta?.toString(),
         });
         continue;
+      }
+
+      if (hasMandatoryProperty(decoded.objectProperties)) {
+        throw new MalformedTrack({ fetchRequestId: requestId }, MANDATORY_ON_OBJECT);
       }
 
       // Resolve inherited/absolute Group ID.

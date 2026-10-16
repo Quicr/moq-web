@@ -161,7 +161,7 @@ import { RequestRejectedError } from './request-rejected-error.js';
 import { streamResetCode, streamResetReason } from './stream-reset-reason.js';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
-import { ObjectRouter } from './object-router.js';
+import { ObjectRouter, type MalformedTrackTarget } from './object-router.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 import { IdleActivityTracker } from './idle-activity-tracker.js';
 import {
@@ -917,6 +917,11 @@ export class MOQTSession {
     // objects) MUST close the session (d22 §6.4.1, §11).
     this.objectRouter.setViolationCallback((reason) => {
       void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    });
+
+    // A Track with a malformed Object is cancelled; the session stays (d22 §12.1)
+    this.objectRouter.setMalformedTrackCallback((target, reason) => {
+      void this.cancelMalformedTrack(target, reason).catch(() => {});
     });
 
     // Draft-18 §11.4.3: surface peer-initiated subgroup stream resets. We
@@ -1727,7 +1732,11 @@ export class MOQTSession {
    * by reset, so the request failed (draft-22 §3.1.2, §6.4.2.2). Drop the
    * subscription and report it as ended.
    */
-  private failSubscription(requestId: bigint, reason: string): void {
+  private failSubscription(
+    requestId: bigint,
+    reason: string,
+    statusCode: PublishDoneErrorCodeDraft18 = PublishDoneErrorCodeDraft18.INTERNAL_ERROR,
+  ): void {
     const subscription = this.subscriptionManager.findByRequestId(requestId);
     if (!subscription) {
       return;
@@ -1740,9 +1749,37 @@ export class MOQTSession {
       subscriptionId: subscription.subscriptionId,
       finalGroupId: 0,
       finalObjectId: 0,
-      statusCode: PublishDoneErrorCodeDraft18.INTERNAL_ERROR,
+      statusCode,
       reasonPhrase: reason,
     } as PublishDoneEvent);
+  }
+
+  /**
+   * Cancel the subscription or fetch whose Track a received Object made
+   * malformed (draft-22 §12.1): cancel its request stream and tell the
+   * application, as PUBLISH_DONE or a FETCH error with MALFORMED_TRACK.
+   */
+  private async cancelMalformedTrack(target: MalformedTrackTarget, reason = 'Malformed Track'): Promise<void> {
+    if (target.fetchRequestId !== undefined) {
+      const requestId = target.fetchRequestId;
+      this.activeFetches.delete(requestId);
+      this.objectRouter.clearFetchGroupOrder(requestId);
+      await this.abortRequestStream(requestId);
+      this.emit('fetch-error', {
+        requestId,
+        errorCode: RequestErrorCodeDraft18.MALFORMED_TRACK,
+        reason,
+      } as FetchErrorEvent);
+      return;
+    }
+
+    const subscription = target.trackAlias === undefined ? undefined : this.subscriptionManager.getByAlias(target.trackAlias);
+    if (!subscription) {
+      return;
+    }
+
+    await this.abortRequestStream(subscription.requestId);
+    this.failSubscription(subscription.requestId, reason, PublishDoneErrorCodeDraft18.MALFORMED_TRACK);
   }
 
   /**

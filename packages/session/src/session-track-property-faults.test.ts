@@ -13,16 +13,18 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   Draft18BufferWriter,
+  Draft18StreamCodec,
   GroupOrder,
   MOQTVarInt,
   MessageTypeDraft18,
+  PublishDoneErrorCodeDraft18,
   RequestErrorCodeDraft18,
   SessionErrorCodeDraft18,
   TrackPropertyDraft18,
   encodeKeyValuePairs,
 } from '@moq-web/core';
 
-import { makeSession, openIncoming, type Draft } from './__tests__/incoming-peer.js';
+import { makeSession, openIncoming, tick, type Draft } from './__tests__/incoming-peer.js';
 import type { FetchErrorEvent } from './types.js';
 
 const MANDATORY = 0x4000;
@@ -184,5 +186,67 @@ describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a FETCH_OK
 
     expect(aborted).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([expect.objectContaining({ errorCode: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION })]);
+  });
+});
+
+describe.each(['draft-18', 'draft-22'] as const)('an Object with a Mandatory Track Property (%s)', (draft: Draft) => {
+  const ALIAS = 7n;
+  const REQUEST_ID = 4n;
+
+  function receiving() {
+    const { session } = makeSession(draft);
+    const hooks = session as unknown as {
+      abortRequestStream: unknown;
+      subscriptionManager: { add: (s: unknown) => void; size: number };
+      objectRouter: { handleDatagram: (d: Uint8Array) => void };
+    };
+    const aborted = vi.fn().mockResolvedValue(undefined);
+    hooks.abortRequestStream = aborted;
+    hooks.subscriptionManager.add({
+      subscriptionId: 1,
+      requestId: REQUEST_ID,
+      namespace: NAMESPACE,
+      trackName: TRACK,
+      trackAlias: ALIAS,
+      paused: false,
+      onObject: () => {},
+    });
+
+    return { session, hooks, aborted };
+  }
+
+  const datagram = (properties: Map<number, Uint8Array>) => Draft18StreamCodec.encodeObjectDatagram({
+    trackAlias: ALIAS,
+    groupId: 1n,
+    objectId: 1n,
+    objectProperties: properties,
+    payload: new Uint8Array([1]),
+  });
+
+  it('cancels the subscription and reports the Track as malformed', async () => {
+    const { session, hooks, aborted } = receiving();
+    const done: Array<{ requestId: bigint; statusCode?: number }> = [];
+    session.on('publish-done', (event) => done.push(event));
+
+    hooks.objectRouter.handleDatagram(datagram(mandatory));
+    await tick();
+
+    expect(aborted).toHaveBeenCalledWith(REQUEST_ID);
+    expect(hooks.subscriptionManager.size).toBe(0);
+    expect(done).toEqual([
+      expect.objectContaining({ requestId: REQUEST_ID, statusCode: PublishDoneErrorCodeDraft18.MALFORMED_TRACK }),
+    ]);
+  });
+
+  it('cancels the fetch of a Track found malformed in its fetch stream', async () => {
+    const { session, aborted } = receiving();
+    const errors: Array<{ requestId: bigint; errorCode: number }> = [];
+    session.on('fetch-error', (event) => errors.push(event));
+    (session as unknown as { activeFetches: Map<bigint, unknown> }).activeFetches.set(9n, {});
+
+    await (session as unknown as { cancelMalformedTrack: (t: object) => Promise<void> }).cancelMalformedTrack({ fetchRequestId: 9n });
+
+    expect(aborted).toHaveBeenCalledWith(9n);
+    expect(errors).toEqual([expect.objectContaining({ requestId: 9n, errorCode: RequestErrorCodeDraft18.MALFORMED_TRACK })]);
   });
 });

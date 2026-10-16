@@ -68,9 +68,25 @@ export function trackPropertyFault(raw: Map<number, Uint8Array> | undefined): Tr
     return TrackPropertyFault.INVALID;
   }
 
-  const isMandatory = (key: number) => key >= MANDATORY_FIRST && key <= MANDATORY_LAST;
+  return [...properties.keys()].some(isMandatoryProperty) ? TrackPropertyFault.UNSUPPORTED : undefined;
+}
 
-  return [...properties.keys()].some(isMandatory) ? TrackPropertyFault.UNSUPPORTED : undefined;
+const isMandatoryProperty = (key: number): boolean => key >= MANDATORY_FIRST && key <= MANDATORY_LAST;
+
+/**
+ * Whether Object Properties include a Mandatory Track Property, which only
+ * has Track scope: an Object carrying one is malformed (draft-22 §3.7, §12.1).
+ */
+export function hasMandatoryProperty(raw: Map<number, Uint8Array> | undefined): boolean {
+  if (!raw) {
+    return false;
+  }
+
+  try {
+    return [...effectiveProperties(raw).keys()].some(isMandatoryProperty);
+  } catch {
+    return false;
+  }
 }
 
 /**
