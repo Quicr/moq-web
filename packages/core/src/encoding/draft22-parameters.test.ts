@@ -484,6 +484,7 @@ describe('Draft22 §9.20 message parameters', () => {
         type: MessageTypeDraft22.SUBSCRIBE_NAMESPACE,
         requestId: 2n,
         trackNamespacePrefix: ['a'],
+        authTokens: [bytes(0x03, 0x00, 0xaa)],
       });
       expect(bytesRead).toBe(wire.length);
     });

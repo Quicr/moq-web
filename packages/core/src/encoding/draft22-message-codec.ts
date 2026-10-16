@@ -130,6 +130,16 @@ export class Draft22MessageCodec {
           message.type,
           (w) => Draft22MessageCodec.encodeSubscribeTracks(w, message as SubscribeTracksMessageDraft22),
         );
+      case MessageTypeDraft18.PUBLISH_NAMESPACE:
+        return encodeFramed(
+          message.type,
+          (w) => Draft22MessageCodec.encodeNamespaceRequest(w, message as PublishNamespaceMessageDraft18, S.PUBLISH_NAMESPACE),
+        );
+      case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
+        return encodeFramed(
+          message.type,
+          (w) => Draft22MessageCodec.encodeNamespaceRequest(w, message as SubscribeNamespaceMessageDraft18, S.SUBSCRIBE_NAMESPACE),
+        );
       case MessageTypeDraft18.SUBSCRIBE_OK:
         return encodeFramed(
           message.type,
@@ -607,22 +617,33 @@ export class Draft22MessageCodec {
   // PUBLISH_NAMESPACE / SUBSCRIBE_NAMESPACE - Draft-22 §9.14, §9.15
   // ============================================================================
 
-  // Only AUTHORIZATION_TOKEN is allowed; it is checked and dropped, as in draft-18.
+  // Only AUTHORIZATION_TOKEN is allowed; the receiver applies the Token rules of §8.9.
+
+  private static encodeNamespaceRequest(
+    writer: Draft18BufferWriter,
+    message: PublishNamespaceMessageDraft18 | SubscribeNamespaceMessageDraft18,
+    scope: typeof S.PUBLISH_NAMESPACE | typeof S.SUBSCRIBE_NAMESPACE,
+  ): void {
+    // Request ID | Track Namespace Prefix | Parameters
+    writer.writeVarInt(message.requestId);
+    encodeTrackNamespace(writer, message.trackNamespacePrefix);
+    encodeParameters(writer, scope, { authTokens: message.authTokens });
+  }
 
   private static decodePublishNamespace(reader: Draft18BufferReader): PublishNamespaceMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_NAMESPACE);
-    decodeParameters(reader, S.PUBLISH_NAMESPACE);
+    const { authTokens } = decodeParameters(reader, S.PUBLISH_NAMESPACE);
 
-    return { type: MessageTypeDraft18.PUBLISH_NAMESPACE, requestId, trackNamespacePrefix };
+    return { type: MessageTypeDraft18.PUBLISH_NAMESPACE, requestId, trackNamespacePrefix, authTokens };
   }
 
   private static decodeSubscribeNamespace(reader: Draft18BufferReader): SubscribeNamespaceMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
-    decodeParameters(reader, S.SUBSCRIBE_NAMESPACE);
+    const { authTokens } = decodeParameters(reader, S.SUBSCRIBE_NAMESPACE);
 
-    return { type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE, requestId, trackNamespacePrefix };
+    return { type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE, requestId, trackNamespacePrefix, authTokens };
   }
 
   // encodeTrackNamespace, decodeTrackNamespace, encodeString, decodeTrackName

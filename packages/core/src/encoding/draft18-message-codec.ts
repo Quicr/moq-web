@@ -1213,7 +1213,9 @@ export class Draft18MessageCodec {
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
     encodeTrackName(writer, message.trackName, message.trackNamespace);
-    Draft18MessageCodec.encodeMessageParameters(writer, []);
+    const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
+    Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
   private static decodeTrackStatus(reader: Draft18BufferReader): TrackStatusMessageDraft18 {
@@ -1222,11 +1224,12 @@ export class Draft18MessageCodec {
     const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS, trackNamespace);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'TRACK_STATUS numParams', MessageTypeDraft18.TRACK_STATUS);
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.TRACK_STATUS, previousType, i);
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
     }
 
     return {
@@ -1234,6 +1237,7 @@ export class Draft18MessageCodec {
       requestId,
       trackNamespace,
       trackName,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 
@@ -1298,11 +1302,7 @@ export class Draft18MessageCodec {
       params.push(Draft18MessageCodec.filterParameter(message));
     }
 
-    if (message.parameters) {
-      for (const [type, value] of message.parameters) {
-        params.push({ type, encode: (w) => w.writeBytes(value) });
-      }
-    }
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
@@ -1347,7 +1347,9 @@ export class Draft18MessageCodec {
     // Draft-18: Request ID | Track Namespace | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespacePrefix);
-    Draft18MessageCodec.encodeMessageParameters(writer, []);
+    const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
+    Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
   private static decodePublishNamespace(reader: Draft18BufferReader): PublishNamespaceMessageDraft18 {
@@ -1355,17 +1357,19 @@ export class Draft18MessageCodec {
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_NAMESPACE);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH_NAMESPACE numParams', MessageTypeDraft18.PUBLISH_NAMESPACE);
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.PUBLISH_NAMESPACE, previousType, i);
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
     }
 
     return {
       type: MessageTypeDraft18.PUBLISH_NAMESPACE,
       requestId,
       trackNamespacePrefix,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 
@@ -1377,7 +1381,9 @@ export class Draft18MessageCodec {
     // Draft-18: Request ID | Track Namespace Prefix | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespacePrefix);
-    Draft18MessageCodec.encodeMessageParameters(writer, []);
+    const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
+    Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
   private static decodeSubscribeNamespace(reader: Draft18BufferReader): SubscribeNamespaceMessageDraft18 {
@@ -1385,17 +1391,19 @@ export class Draft18MessageCodec {
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_NAMESPACE numParams', MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE, previousType, i);
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
     }
 
     return {
       type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
       requestId,
       trackNamespacePrefix,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 

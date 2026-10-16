@@ -367,6 +367,7 @@ export { Draft18MessageCodec, Draft18CodecError, isIncompleteDecode } from './en
 export {
   AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
   AUTH_TOKEN_FORMAT_ERROR,
+  AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
   AuthTokenAliasType,
   decodeDraft18AuthToken,
   decodeKeyValuePairsToEnd,

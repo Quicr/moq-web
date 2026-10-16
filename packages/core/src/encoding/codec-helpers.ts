@@ -345,6 +345,13 @@ export const AUTH_TOKEN_FORMAT_ERROR = 'key-value-formatting-error';
  */
 export const AUTH_TOKEN_CACHE_OVERFLOW_ERROR = 'auth-token-cache-overflow';
 
+/**
+ * Error tag for a Token that uses or deletes an Alias that is not registered:
+ * the receiver rejects the message with UNKNOWN_AUTH_TOKEN_ALIAS (§8.9). With
+ * no token cache no Alias can be registered.
+ */
+export const AUTH_TOKEN_UNKNOWN_ALIAS_ERROR = 'unknown-auth-token-alias';
+
 /** Decode a Token structure (see {@link encodeDraft18AuthToken}). */
 export function decodeDraft18AuthToken(data: Uint8Array): AuthorizationToken {
   try {

@@ -11,6 +11,7 @@
 
 import {
   AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
+  AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
   AuthTokenAliasType,
   decodeDraft18AuthToken,
   Draft18CodecError,
@@ -592,10 +593,11 @@ export function encodeRequestAuthTokenBytes(authToken: RequestAuthToken): Uint8A
 
 /**
  * §8.9: this session advertises no token cache (MAX_AUTH_TOKEN_CACHE_SIZE 0),
- * so a request whose Token registers an Alias exceeds it. Throws a codec
- * error tagged for a session close with AUTH_TOKEN_CACHE_OVERFLOW.
+ * so no Alias is registered. Throws a codec error tagged for a session close
+ * with AUTH_TOKEN_CACHE_OVERFLOW if a request's Token registers one, and with
+ * UNKNOWN_AUTH_TOKEN_ALIAS if it uses or deletes one.
  */
-export function assertNoTokenRegister(message: ControlMessageDraft18): void {
+export function assertNoTokenAlias(message: ControlMessageDraft18): void {
   // Draft-22 requests carry every Token in `authTokens`; draft-18 keeps one in `parameters`
   const { authTokens, parameters } = message as {
     authTokens?: Uint8Array[];
@@ -604,13 +606,33 @@ export function assertNoTokenRegister(message: ControlMessageDraft18): void {
   const tokens = authTokens ?? [parameters?.get(RequestParameterDraft18.AUTHORIZATION_TOKEN)];
 
   for (const bytes of tokens) {
-    if (bytes && decodeDraft18AuthToken(bytes).aliasType === AuthTokenAliasType.REGISTER) {
+    if (!bytes) {
+      continue;
+    }
+    if (decodeDraft18AuthToken(bytes).aliasType === AuthTokenAliasType.REGISTER) {
       throw new Draft18CodecError(
         'Authorization Token registers an Alias with no token cache (AUTH_TOKEN_CACHE_OVERFLOW)',
         undefined,
         AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
       );
     }
+    assertNoAliasReference(bytes);
+  }
+}
+
+/**
+ * §8.9: with no token cache an Alias is never registered, so a Token that
+ * uses or deletes one names an Alias that is not currently registered.
+ * Throws a codec error tagged for a session close with UNKNOWN_AUTH_TOKEN_ALIAS.
+ */
+export function assertNoAliasReference(token: Uint8Array): void {
+  const { aliasType } = decodeDraft18AuthToken(token);
+  if (aliasType === AuthTokenAliasType.USE_ALIAS || aliasType === AuthTokenAliasType.DELETE) {
+    throw new Draft18CodecError(
+      'Authorization Token references an Alias that is not registered (UNKNOWN_AUTH_TOKEN_ALIAS)',
+      undefined,
+      AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
+    );
   }
 }
 

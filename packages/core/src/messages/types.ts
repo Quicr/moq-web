@@ -1777,6 +1777,8 @@ export interface TrackStatusMessageDraft18 {
   requestId: bigint;
   trackNamespace: TrackNamespace;
   trackName: string;
+  /** The §10.2 parameters, by type: AUTHORIZATION_TOKEN */
+  parameters?: Map<number, Uint8Array>;
 }
 
 /**
@@ -1938,6 +1940,8 @@ export interface PublishNamespaceMessageDraft18 {
   requestId: bigint;
   trackNamespacePrefix: TrackNamespace;
   parameters?: Map<number, Uint8Array>;
+  /** Draft-22 AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
 }
 
 /**
@@ -1949,6 +1953,8 @@ export interface SubscribeNamespaceMessageDraft18 {
   requestId: bigint;
   trackNamespacePrefix: TrackNamespace;
   parameters?: Map<number, Uint8Array>;
+  /** Draft-22 AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
 }
 
 /**

@@ -21,6 +21,7 @@ import {
   MessageCodec,
   AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
   AUTH_TOKEN_FORMAT_ERROR,
+  AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
   AuthTokenAliasType,
   encodeDraft18AuthToken,
   MessageType,
@@ -133,7 +134,8 @@ import {
   addFetchTimeoutParams,
   addSubscribeTimeoutParams,
   parseDeliveryTimeoutParams,
-  assertNoTokenRegister,
+  assertNoAliasReference,
+  assertNoTokenAlias,
   applyRangeFilters,
   assertNotReservedNamespace,
   buildTrackProperties,
@@ -234,6 +236,7 @@ const log = Logger.create('moqt:session');
 const FATAL_DECODE_CODES: ReadonlyMap<string | undefined, SessionErrorCodeDraft18> = new Map([
   [AUTH_TOKEN_FORMAT_ERROR, SessionErrorCodeDraft18.KEY_VALUE_FORMATTING_ERROR],
   [AUTH_TOKEN_CACHE_OVERFLOW_ERROR, SessionErrorCodeDraft18.AUTH_TOKEN_CACHE_OVERFLOW],
+  [AUTH_TOKEN_UNKNOWN_ALIAS_ERROR, SessionErrorCodeDraft18.UNKNOWN_AUTH_TOKEN_ALIAS],
 ]);
 
 /** PUBLISH_DONE Stream Count meaning "publisher cannot give the exact number": 2^62-1 in draft-18 §10.11 */
@@ -1830,6 +1833,12 @@ export class MOQTSession {
     switch (message.type) {
       case MessageTypeDraft18.REQUEST_UPDATE: {
         if (!this.acceptPeerRequestId(message.requestId)) {
+          break;
+        }
+        try {
+          assertNoTokenAlias(message);
+        } catch (err) {
+          this.closeOnFatalDecode(err);
           break;
         }
         const target = request?.kind ?? this.incomingRequestKinds.get(requestId) ?? 'unknown';
@@ -7127,6 +7136,11 @@ export class MOQTSession {
    * is acceptable.
    */
   private acceptServerSetup(setup: ServerSetupMessageDraft18): boolean {
+    // Draft-22 §9.1.4: a REGISTER in SETUP is treated as USE_VALUE, but we have no Alias to use or delete
+    if (setup.authToken) {
+      assertNoAliasReference(setup.authToken);
+    }
+
     const code = setup.path !== undefined
       ? SessionErrorCodeDraft18.INVALID_PATH
       : setup.authority !== undefined ? SessionErrorCodeDraft18.INVALID_AUTHORITY : undefined;
@@ -7219,7 +7233,7 @@ export class MOQTSession {
         return;
       }
 
-      assertNoTokenRegister(message);
+      assertNoTokenAlias(message);
 
       const peerRequestId = (message as { requestId: bigint }).requestId;
       if (!this.acceptPeerRequestId(peerRequestId)) {
