@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec';
 import { MOQTVarInt } from './moqt-varint';
-import { encodeFramed, encodeString, encodeTrackNamespace } from './codec-helpers';
+import { AuthTokenAliasType, encodeDraft18AuthToken, encodeFramed, encodeString, encodeTrackNamespace } from './codec-helpers';
 import {
   MessageTypeDraft18,
   Version,
@@ -361,6 +361,23 @@ describe('Draft18MessageCodec', () => {
       expect(d.trackNamespace).toEqual(['pub', 'ns']);
       expect(d.trackName).toBe('audio');
       expect(d.forwardState).toBe(true);
+    });
+
+    it('roundtrips PUBLISH with an AUTHORIZATION_TOKEN (§10.2.2)', () => {
+      const token = encodeDraft18AuthToken({ aliasType: AuthTokenAliasType.USE_VALUE, tokenType: 7, tokenValue: new Uint8Array([1, 2]) });
+      const message: PublishMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH,
+        requestId: 5n,
+        trackAlias: 1n,
+        trackNamespace: ['pub'],
+        trackName: 'audio',
+        forwardState: true,
+        parameters: new Map([[RequestParameterDraft18.AUTHORIZATION_TOKEN, token]]),
+      };
+
+      const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+      expect((decoded as PublishMessageDraft18).parameters).toEqual(message.parameters);
     });
 
     it('roundtrips PUBLISH with §12 track properties', () => {

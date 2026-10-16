@@ -1648,6 +1648,8 @@ export interface PublishMessageDraft18 {
   forwardState: boolean;
   /** §10.2.11 LARGEST_OBJECT: omitted until Objects have been published. {0, 0} is a real location. */
   largestLocation?: Location;
+  /** The other §10.2 parameters, by type: AUTHORIZATION_TOKEN and EXPIRES */
+  parameters?: Map<number, Uint8Array>;
   trackProperties?: Map<number, Uint8Array>;
 }
 

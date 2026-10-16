@@ -3942,6 +3942,8 @@ export class MOQTSession {
     });
     // LARGEST_OBJECT is omitted until Objects have been published (d22 §9.20.17, d18 §10.2.11)
     const largestLocation = this.publicationManager.largestOf(namespace, trackName);
+    // §8.9: draft-22 carries Authorization Tokens in `authTokens`, which may repeat
+    const authBytes = options?.authToken ? encodeDraft18AuthBytes(options.authToken) : undefined;
     const publishMessage: PublishMessageDraft18 | PublishMessageDraft22 = this.isDraft22
       ? {
         type: MessageTypeDraft22.PUBLISH,
@@ -3951,6 +3953,7 @@ export class MOQTSession {
         trackName,
         forwardState: true,
         largestLocation,
+        authTokens: authBytes ? [authBytes] : undefined,
         trackProperties,
       }
       : {
@@ -3961,6 +3964,7 @@ export class MOQTSession {
         trackName,
         forwardState: true,
         largestLocation,
+        parameters: authBytes ? new Map([[RequestParameterDraft18.AUTHORIZATION_TOKEN, authBytes]]) : undefined,
         trackProperties,
       };
 

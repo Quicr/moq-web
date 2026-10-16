@@ -601,25 +601,7 @@ export class Draft18MessageCodec {
       params.push(Draft18MessageCodec.filterParameter(message));
     }
 
-    // Add any additional raw parameters. §10.2 wire convention: even keys
-    // carry their value verbatim (single-byte or varint); odd keys are
-    // length-prefixed byte strings. Callers pass raw payload bytes and we
-    // length-prefix them when appropriate to match the decoder.
-    if (message.parameters) {
-      for (const [type, value] of message.parameters) {
-        if (type % 2 === 0) {
-          params.push({ type, encode: (w) => w.writeBytes(value) });
-        } else {
-          params.push({
-            type,
-            encode: (w) => {
-              w.writeVarInt(BigInt(value.length));
-              w.writeBytes(value);
-            },
-          });
-        }
-      }
-    }
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
@@ -717,6 +699,32 @@ export class Draft18MessageCodec {
     }
   }
 
+  /**
+   * Add additional raw parameters. §10.2 wire convention: even keys carry
+   * their value verbatim (single-byte or varint); odd keys are
+   * length-prefixed byte strings. Callers pass raw payload bytes and we
+   * length-prefix them when appropriate to match the decoder.
+   */
+  private static pushRawParameters(
+    params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }>,
+    parameters: Map<number, Uint8Array> | undefined,
+  ): void {
+    for (const [type, value] of parameters ?? []) {
+      if (type % 2 === 0) {
+        params.push({ type, encode: (w) => w.writeBytes(value) });
+        continue;
+      }
+
+      params.push({
+        type,
+        encode: (w) => {
+          w.writeVarInt(BigInt(value.length));
+          w.writeBytes(value);
+        },
+      });
+    }
+  }
+
   /** Add LARGEST_OBJECT (§10.2.11) when Objects have been published */
   private static pushLargestObject(
     params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }>,
@@ -794,6 +802,7 @@ export class Draft18MessageCodec {
       encode: (w) => { w.writeByte(message.forwardState === false ? 0x00 : 0x01); },
     });
     Draft18MessageCodec.pushLargestObject(params, message.largestLocation);
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
 
@@ -815,6 +824,7 @@ export class Draft18MessageCodec {
     // §10.2.12: an omitted FORWARD is 1
     let forwardState = true;
     let largestLocation: Location | undefined;
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
       const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.PUBLISH, previousType, i);
@@ -827,6 +837,8 @@ export class Draft18MessageCodec {
       const value = Draft18MessageCodec.readParameterValue(reader, type);
       if (type === RequestParameterDraft18.FORWARD) {
         forwardState = value[0] === 0x01;
+      } else {
+        parameters.set(type, value);
       }
     }
 
@@ -843,6 +855,7 @@ export class Draft18MessageCodec {
       trackName,
       forwardState,
       largestLocation,
+      parameters: parameters.size > 0 ? parameters : undefined,
       trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
   }
