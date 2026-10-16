@@ -357,8 +357,6 @@ export interface TrackProperties {
   defaultPublisherGroupOrder?: GroupOrder;
   /** §12.6 — dynamic-groups flag (false = static, true = dynamic) */
   dynamicGroups?: boolean;
-  /** §12.7 — immutable-properties bitmap (raw varint) */
-  immutablePropertiesBitmap?: bigint;
   /**
    * §12.8 — prior group-ID gap. Advertises the gap between the current
    * group ID and the previous group ID the publisher will emit; a decoder

@@ -173,7 +173,7 @@ import {
   JitteredExponentialBackoff,
   type ReconnectPolicy,
 } from './reconnect-policy.js';
-import { parseTrackProperties } from './track-properties.js';
+import { parseTrackProperties, TrackPropertyFault, trackPropertyFault } from './track-properties.js';
 import { parseSubscriberSchedulingParams, computeSendOrder } from './priority.js';
 import type {
   SessionState,
@@ -2043,6 +2043,22 @@ export class MOQTSession {
     this.emit('namespace-done', { namespaceSubscriptionId: subscriptionId, namespace });
   }
 
+  /**
+   * Check the Track Properties of a PUBLISH, SUBSCRIBE_OK or FETCH_OK. A value out of
+   * range closes the session (draft-22 §10.5, §10.6, §10.7); the caller refuses the
+   * track for a Mandatory Track Property we do not understand (§3.7).
+   */
+  private checkTrackProperties(raw: Map<number, Uint8Array> | undefined, where: string): TrackPropertyFault | undefined {
+    const fault = trackPropertyFault(raw);
+    if (fault === TrackPropertyFault.INVALID) {
+      const reason = `Invalid Track Properties in ${where}`;
+      log.error(reason);
+      void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    }
+
+    return fault;
+  }
+
   /** The peer sent a message its role or the request's kind does not allow (draft-22 Table 5). */
   private closeForUnexpectedMessage(message: ControlMessageDraft18, where: string): void {
     const reason = `Message type ${message.type} is not allowed on ${where}`;
@@ -3822,6 +3838,19 @@ export class MOQTSession {
         largestGroup: subscribeOk.largestLocation?.group.toString(),
         largestObject: subscribeOk.largestLocation?.object.toString(),
       });
+      const fault = this.checkTrackProperties(subscribeOk.trackProperties, 'SUBSCRIBE_OK');
+      if (fault === TrackPropertyFault.INVALID) {
+        throw new Error('SUBSCRIBE_OK has invalid Track Properties');
+      }
+      if (fault === TrackPropertyFault.UNSUPPORTED) {
+        // Draft-22 §3.7: the track is not processed, so the subscription is cancelled
+        await this.abortRequestStream(requestId);
+        throw new RequestRejectedError(
+          'SUBSCRIBE failed: Mandatory Track Property not understood',
+          RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
+          'Mandatory Track Property not understood',
+        );
+      }
       const sub = this.subscriptionManager.findByRequestId(requestId);
       if (sub && !this.acceptTrackAlias(relayTrackAlias, sub.namespace, sub.trackName, sub.subscriptionId)) {
         throw new Error(`SUBSCRIBE_OK reuses Track Alias ${relayTrackAlias.toString()}`);
@@ -4169,6 +4198,22 @@ export class MOQTSession {
 
     if (response.type === MessageTypeDraft18.FETCH_OK) {
       const fetchOk = response as _FetchOkMessageDraft18;
+      const fault = this.checkTrackProperties(fetchOk.trackProperties, 'FETCH_OK');
+      if (fault === TrackPropertyFault.INVALID) {
+        return;
+      }
+      if (fault === TrackPropertyFault.UNSUPPORTED) {
+        // Draft-22 §3.7: the track is not processed, so the fetch is cancelled
+        this.activeFetches.delete(requestId);
+        this.objectRouter.clearFetchGroupOrder(requestId);
+        await this.abortRequestStream(requestId);
+        this.emit('fetch-error', {
+          requestId,
+          errorCode: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
+          reason: 'Mandatory Track Property not understood',
+        } as FetchErrorEvent);
+        return;
+      }
       log.info('Received FETCH_OK', {
         requestId: requestId.toString(),
         endGroup: fetchOk.endLocation.group.toString(),
@@ -7483,6 +7528,21 @@ export class MOQTSession {
         message.requestId,
         RequestErrorCodeDraft18.UNINTERESTED,
         'No matching subscription',
+      );
+      return;
+    }
+
+    const fault = this.checkTrackProperties(message.trackProperties, 'PUBLISH');
+    if (fault === TrackPropertyFault.INVALID) {
+      return;
+    }
+    if (fault === TrackPropertyFault.UNSUPPORTED) {
+      // Draft-22 §3.7: the subscriber MUST respond with PUBLISH_ERROR UNSUPPORTED_EXTENSION
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
+        'Mandatory Track Property not understood',
       );
       return;
     }

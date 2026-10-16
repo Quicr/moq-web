@@ -1,9 +1,77 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
-import { MOQTVarInt, GroupOrder, TrackPropertyDraft18 } from '@moq-web/core';
+import { Draft18BufferReader, MOQTVarInt, GroupOrder, TrackPropertyDraft18, decodeKeyValuePairsToEnd } from '@moq-web/core';
 
 import type { TrackProperties } from './types.js';
+
+/** Property types 0x4000-0x7FFF are Mandatory Track Properties (draft-22 §3.7) */
+const MANDATORY_FIRST = 0x4000;
+const MANDATORY_LAST = 0x7fff;
+
+/** The largest value of DYNAMIC_GROUPS (draft-22 §10.6) */
+const DYNAMIC_GROUPS_MAX = 1n;
+
+/** What is wrong with the Track Properties of a PUBLISH, SUBSCRIBE_OK or FETCH_OK */
+export enum TrackPropertyFault {
+  /** A Mandatory Track Property we do not understand: the track is not processed (draft-22 §3.7) */
+  UNSUPPORTED,
+  /** A value out of range or Key-Value-Pairs that do not parse: PROTOCOL_VIOLATION (draft-22 §10.5, §10.6, §10.7) */
+  INVALID,
+}
+
+/**
+ * The properties of a track: those listed, then those inside Immutable
+ * Properties, which holds Key-Value-Pairs of its own (draft-22 §10.7: "search
+ * both"). Throws if the Immutable Properties do not parse.
+ */
+function effectiveProperties(raw: Map<number, Uint8Array>): Map<number, Uint8Array> {
+  const nested = raw.get(TrackPropertyDraft18.IMMUTABLE_PROPERTIES);
+  if (!nested) {
+    return raw;
+  }
+
+  const all = new Map(raw);
+  for (const [key, value] of decodeKeyValuePairsToEnd(new Draft18BufferReader(nested, 0))) {
+    if (!all.has(key)) {
+      all.set(key, value);
+    }
+  }
+
+  return all;
+}
+
+/**
+ * Check the Track Properties of a PUBLISH, SUBSCRIBE_OK or FETCH_OK. We
+ * understand no Mandatory Track Property, so one makes the track unusable to
+ * us; a value outside its range closes the session. Undefined means fine.
+ */
+export function trackPropertyFault(raw: Map<number, Uint8Array> | undefined): TrackPropertyFault | undefined {
+  if (!raw) {
+    return undefined;
+  }
+
+  let properties: Map<number, Uint8Array>;
+  try {
+    properties = effectiveProperties(raw);
+  } catch {
+    return TrackPropertyFault.INVALID;
+  }
+
+  const groupOrder = properties.get(TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER);
+  const dynamicGroups = properties.get(TrackPropertyDraft18.DYNAMIC_GROUPS);
+  const groupOrders: bigint[] = [BigInt(GroupOrder.ASCENDING), BigInt(GroupOrder.DESCENDING)];
+  if (groupOrder && !groupOrders.includes(MOQTVarInt.decode(groupOrder)[0])) {
+    return TrackPropertyFault.INVALID;
+  }
+  if (dynamicGroups && MOQTVarInt.decode(dynamicGroups)[0] > DYNAMIC_GROUPS_MAX) {
+    return TrackPropertyFault.INVALID;
+  }
+
+  const isMandatory = (key: number) => key >= MANDATORY_FIRST && key <= MANDATORY_LAST;
+
+  return [...properties.keys()].some(isMandatory) ? TrackPropertyFault.UNSUPPORTED : undefined;
+}
 
 /**
  * Decode the `trackProperties` KVP map emitted on SUBSCRIBE_OK / PUBLISH /
@@ -15,7 +83,8 @@ import type { TrackProperties } from './types.js';
  * varints here.
  *
  * Unknown keys are silently ignored per §15.8 — endpoints MUST skip unknown
- * property types.
+ * property types. Check `trackPropertyFault` first: this does not reject a
+ * Mandatory Track Property or an invalid value.
  */
 export function parseTrackProperties(
   raw: Map<number, Uint8Array> | undefined,
@@ -23,11 +92,17 @@ export function parseTrackProperties(
   if (!raw || raw.size === 0) return undefined;
 
   const props: TrackProperties = {};
+  let properties: Map<number, Uint8Array>;
+  try {
+    properties = effectiveProperties(raw);
+  } catch {
+    // Immutable Properties that do not parse are trackPropertyFault's to report
+    properties = raw;
+  }
 
   const readVarIntNum = (bytes: Uint8Array): number => Number(MOQTVarInt.decode(bytes)[0]);
-  const readVarIntBig = (bytes: Uint8Array): bigint => MOQTVarInt.decode(bytes)[0];
 
-  for (const [key, value] of raw) {
+  for (const [key, value] of properties) {
     switch (key) {
       case TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT:
         props.subgroupDeliveryTimeoutMs = readVarIntNum(value);
@@ -50,9 +125,6 @@ export function parseTrackProperties(
       }
       case TrackPropertyDraft18.DYNAMIC_GROUPS:
         props.dynamicGroups = readVarIntNum(value) !== 0;
-        break;
-      case TrackPropertyDraft18.IMMUTABLE_PROPERTIES:
-        props.immutablePropertiesBitmap = readVarIntBig(value);
         break;
       case TrackPropertyDraft18.PRIOR_GROUP_ID_GAP:
         props.priorGroupIdGap = readVarIntNum(value);

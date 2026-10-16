@@ -369,7 +369,9 @@ export {
   AUTH_TOKEN_FORMAT_ERROR,
   AuthTokenAliasType,
   decodeDraft18AuthToken,
+  decodeKeyValuePairsToEnd,
   encodeDraft18AuthToken,
+  encodeKeyValuePairs,
 } from './encoding/codec-helpers.js';
 export { countRanges, validateRangeFilters, INVALID_FILTER_CODE } from './encoding/draft22-range-filter.js';
 

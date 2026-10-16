@@ -489,7 +489,7 @@ export enum TrackPropertyDraft18 {
   MAX_CACHE_DURATION = 0x04,
   /** §12.1 — per-subgroup delivery timeout (ms) */
   SUBGROUP_DELIVERY_TIMEOUT = 0x06,
-  /** §12.7 — immutable-properties bitmap (Track + Object scope) */
+  /** §12.7 — Key-Value-Pairs of properties that no relay may change (Track + Object scope) */
   IMMUTABLE_PROPERTIES = 0x0b,
   /** §12.4 — default publisher priority (0-255) when object omits its own */
   DEFAULT_PUBLISHER_PRIORITY = 0x0e,
