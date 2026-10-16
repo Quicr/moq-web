@@ -7454,21 +7454,21 @@ export class MOQTSession {
       trackAlias: message.trackAlias.toString(),
     });
 
-    // Check if this is our own publish
-    if (this.ownNamespacePrefix && namespaceStr.startsWith(this.ownNamespacePrefix)) {
-      log.debug('Ignoring own PUBLISH', { namespace: namespaceStr });
+    // Our own track, echoed back to us: not wanted, but still answered (d22 §3.1, d18 §5.1)
+    if (this.ownNamespacePrefix && namespacePrefixMatches(this.ownNamespacePrefix.split('/'), namespace)) {
+      log.debug('Refusing own PUBLISH', { namespace: namespaceStr });
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.UNINTERESTED,
+        'Own track',
+      );
       return;
     }
 
-    // Find matching namespace subscription
-    let matchingSubscription: NamespaceSubscriptionInfo | undefined;
-    for (const sub of this.namespaceSubscriptions.values()) {
-      const prefix = sub.namespacePrefix.join('/');
-      if (namespaceStr.startsWith(prefix)) {
-        matchingSubscription = sub;
-        break;
-      }
-    }
+    // Find matching namespace subscription, field by field (d22 §2.4.2)
+    const matchingSubscription = [...this.namespaceSubscriptions.values()]
+      .find((sub) => namespacePrefixMatches(sub.namespacePrefix, namespace));
 
     if (!matchingSubscription) {
       log.warn('PUBLISH does not match any namespace subscription', { publishNamespace: namespaceStr });

@@ -165,9 +165,9 @@ export class PublicationManager {
    * session publishes.
    */
   getByTrackName(namespace: string[], trackName: string): InternalPublication | undefined {
-    const nsKey = namespace.join('/');
+    const key = trackKey(namespace, trackName);
     for (const pub of this.publications.values()) {
-      if (pub.trackName === trackName && pub.namespace.join('/') === nsKey) {
+      if (trackKey(pub.namespace, pub.trackName) === key) {
         return pub;
       }
     }

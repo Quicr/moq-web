@@ -233,7 +233,7 @@ export class SubscriptionManager {
    * Make a track name key from namespace and track name
    */
   private makeTrackNameKey(namespace: string[], trackName: string): string {
-    return [...namespace, trackName].join('/');
+    return JSON.stringify([namespace, trackName]);
   }
 
   /**
