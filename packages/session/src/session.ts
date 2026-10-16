@@ -23,6 +23,8 @@ import {
   AUTH_TOKEN_FORMAT_ERROR,
   AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
   AuthTokenAliasType,
+  Draft18BufferReader,
+  decodeTrackNamespace,
   encodeDraft18AuthToken,
   MessageType,
   MessageTypeDraft18,
@@ -1858,6 +1860,13 @@ export class MOQTSession {
           break;
         }
 
+        // Draft-22 §9.5.2: the new prefix must not overlap another request of the same type
+        const newPrefix = this.updatedPrefix(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22);
+        if (newPrefix && this.prefixOverlaps(requestId, newPrefix)) {
+          await this.refuseUpdate(requestId, RequestErrorCodeDraft18.PREFIX_OVERLAP, 'Prefix overlaps another request');
+          break;
+        }
+
         // Draft-18 §5.1.2: a range whose End Group is published has nothing to deliver
         const range = this.updatedRange(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
         if (!this.isDraft22 && range && endsBefore(range, this.largestOfRequest(requestId))) {
@@ -1868,6 +1877,9 @@ export class MOQTSession {
         this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
         await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(this.updateOk(requestId)));
         await this.fillForUpdate(requestId, message as unknown as RequestUpdateMessageDraft22);
+        if (newPrefix) {
+          await this.applyPrefixUpdate(requestId, newPrefix);
+        }
         break;
       }
 
@@ -1910,6 +1922,47 @@ export class MOQTSession {
 
       default:
         log.warn('Unhandled message on request stream', { requestId: requestId.toString(), type: message.type });
+    }
+  }
+
+  /** The Track Namespace Prefix a REQUEST_UPDATE sets (draft-22 §9.20.20), if it sets one */
+  private updatedPrefix(update: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22): string[] | undefined {
+    const bytes = update.parameters?.get(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX);
+
+    return bytes && decodeTrackNamespace(new Draft18BufferReader(bytes, 0));
+  }
+
+  /** The overlap space of the namespace request `requestId`: its own type's (draft-22 §9.5.2) */
+  private subscriptionsOfKind(requestId: bigint): IncomingNamespaceSubscriptions | undefined {
+    switch (this.incomingRequestKinds.get(requestId)) {
+      case 'subscribe-namespace':
+        return this.incomingNamespaces;
+      case 'subscribe-tracks':
+        return this.incomingTrackSubs;
+      default:
+        return undefined;
+    }
+  }
+
+  private prefixOverlaps(requestId: bigint, prefix: string[]): boolean {
+    return this.subscriptionsOfKind(requestId)?.overlaps(prefix, requestId) === true;
+  }
+
+  /**
+   * Switch a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS to its updated prefix.
+   * A SUBSCRIBE_NAMESPACE is told the namespaces the new prefix adds, as
+   * suffixes relative to it (draft-22 §9.5.2). A SUBSCRIBE_TRACKS keeps the
+   * subscriptions it already made.
+   */
+  private async applyPrefixUpdate(requestId: bigint, prefix: string[]): Promise<void> {
+    const subscriptions = this.subscriptionsOfKind(requestId);
+    subscriptions?.update(requestId, prefix);
+    if (subscriptions !== this.incomingNamespaces) {
+      return;
+    }
+
+    for (const info of this.announcedNamespaces.values()) {
+      await this.notifyNamespace(info.namespace, NamespaceChange.ANNOUNCED);
     }
   }
 

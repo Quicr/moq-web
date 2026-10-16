@@ -58,7 +58,7 @@ export function makeSession(
 }
 
 export function announce(internals: SessionInternals, namespace: string[], options: object = {}): void {
-  internals.announcedNamespaces.set(namespace.join('/'), { namespace, options, subscribers: new Map() });
+  internals.announcedNamespaces.set(JSON.stringify(namespace), { namespace, options, subscribers: new Map() });
 }
 
 /** Open a request stream from the peer whose first message is `first`. */

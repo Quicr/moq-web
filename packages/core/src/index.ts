@@ -371,8 +371,10 @@ export {
   AuthTokenAliasType,
   decodeDraft18AuthToken,
   decodeKeyValuePairsToEnd,
+  decodeTrackNamespace,
   encodeDraft18AuthToken,
   encodeKeyValuePairs,
+  encodeTrackNamespace,
 } from './encoding/codec-helpers.js';
 export { countRanges, validateRangeFilters, INVALID_FILTER_CODE } from './encoding/draft22-range-filter.js';
 

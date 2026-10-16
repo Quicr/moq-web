@@ -27,7 +27,7 @@ export interface NamespaceNotice {
 
 interface Subscription {
   prefix: string[];
-  /** Suffixes sent in a NAMESPACE and not yet ended by a NAMESPACE_DONE */
+  /** Namespaces (as full tuples) sent in a NAMESPACE and not yet ended by a NAMESPACE_DONE */
   announced: Set<string>;
 }
 
@@ -37,10 +37,14 @@ export class IncomingNamespaceSubscriptions {
   /**
    * Whether `prefix` shares a common prefix with an established
    * subscription: one is a prefix of the other, or they are equal
-   * (draft-22 §4.2, PREFIX_OVERLAP).
+   * (draft-22 §4.2, PREFIX_OVERLAP). A request updating its own prefix is
+   * left out of the comparison via `except`.
    */
-  overlaps(prefix: string[]): boolean {
-    for (const subscription of this.subscriptions.values()) {
+  overlaps(prefix: string[], except?: bigint): boolean {
+    for (const [requestId, subscription] of this.subscriptions) {
+      if (requestId === except) {
+        continue;
+      }
       if (namespacePrefixMatches(subscription.prefix, prefix) || namespacePrefixMatches(prefix, subscription.prefix)) {
         return true;
       }
@@ -51,6 +55,25 @@ export class IncomingNamespaceSubscriptions {
 
   add(requestId: bigint, prefix: string[]): void {
     this.subscriptions.set(requestId, { prefix, announced: new Set() });
+  }
+
+  /**
+   * Change the prefix of a request (draft-22 §9.5.2). What was announced
+   * stays announced if the new prefix matches it, so it is not announced
+   * again, and is forgotten otherwise.
+   */
+  update(requestId: bigint, prefix: string[]): void {
+    const subscription = this.subscriptions.get(requestId);
+    if (!subscription) {
+      return;
+    }
+
+    subscription.prefix = prefix;
+    for (const key of subscription.announced) {
+      if (!namespacePrefixMatches(prefix, JSON.parse(key) as string[])) {
+        subscription.announced.delete(key);
+      }
+    }
   }
 
   remove(requestId: bigint): void {
@@ -74,7 +97,7 @@ export class IncomingNamespaceSubscriptions {
       }
 
       const suffix = namespace.slice(subscription.prefix.length);
-      const key = JSON.stringify(suffix);
+      const key = JSON.stringify(namespace);
       if (change === NamespaceChange.WITHDRAWN && !subscription.announced.delete(key)) {
         continue;
       }
