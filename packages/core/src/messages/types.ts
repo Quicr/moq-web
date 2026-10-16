@@ -1692,6 +1692,8 @@ export interface RequestOkMessageDraft18 {
   filter?: SubscriptionFilterDraft18;
   startLocation?: Location;
   endGroupDelta?: bigint;
+  /** Track Properties; only a TRACK_STATUS_OK has them (d22 §9.3, d18 §10.5) */
+  trackProperties?: Map<number, Uint8Array>;
 }
 
 /**

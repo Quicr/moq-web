@@ -304,6 +304,8 @@ export interface TrackStatusResult {
   expiresMs?: number;
   latestGroup?: bigint;
   latestObject?: bigint;
+  /** The Track Properties of the TRACK_STATUS_OK (draft-22 §9.13) */
+  trackProperties?: TrackProperties;
 }
 
 /**

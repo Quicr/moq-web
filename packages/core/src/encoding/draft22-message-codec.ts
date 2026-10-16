@@ -553,16 +553,22 @@ export class Draft22MessageCodec {
   private static encodeRequestOk(writer: Draft18BufferWriter, message: RequestOkMessageDraft18): void {
     // Parameters | Track Properties (..)
     encodeParameters(writer, S.REQUEST_OK, Draft22MessageCodec.okParameters(message));
+
+    if (message.trackProperties) {
+      encodeKeyValuePairs(writer, message.trackProperties);
+    }
   }
 
   private static decodeRequestOk(reader: Draft18BufferReader): RequestOkMessageDraft18 {
     const params = decodeParameters(reader, S.REQUEST_OK);
+    const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;
 
     return {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: 0n,
       expires: Draft22MessageCodec.decodeExpires(params),
       largestLocation: params.largestLocation,
+      trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
   }
 

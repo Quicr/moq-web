@@ -1582,6 +1582,9 @@ export class MOQTSession {
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       return this.acceptRedirect(response as RequestErrorMessageDraft18, request.kind);
     }
+    if (!this.acceptOkProperties(response, request.kind)) {
+      return false;
+    }
     if (response.type === successResponseType(request.kind)) {
       return true;
     }
@@ -1677,6 +1680,24 @@ export class MOQTSession {
     this.incomingRequestKinds.delete(requestId);
     this.goAwayStreams.delete(requestId);
     this.endNamespaceSubscription(requestId);
+  }
+
+  /**
+   * Track Properties are only populated in a TRACK_STATUS_OK; in any other
+   * REQUEST_OK they close the session (draft-22 §9.3, draft-18 §10.5).
+   * Returns whether the message was fine.
+   */
+  private acceptOkProperties(response: ControlMessageDraft18, kind: OutgoingRequestKind | 'update'): boolean {
+    const hasProperties = response.type === MessageTypeDraft18.REQUEST_OK
+      && (response as RequestOkMessageDraft18).trackProperties !== undefined;
+    if (!hasProperties || kind === 'track-status') {
+      return true;
+    }
+
+    const reason = `REQUEST_OK for a ${kind} request has Track Properties`;
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+
+    return false;
   }
 
   /**
@@ -2079,6 +2100,10 @@ export class MOQTSession {
     if (!pending || pending.length === 0) {
       // A second response to a request, or one to no update, breaks "exactly one" (d22 §3.1, §9.5)
       this.closeForUnexpectedMessage(response, `request ${requestId.toString()}, which has no REQUEST_UPDATE pending`);
+      return;
+    }
+
+    if (!this.acceptOkProperties(response, 'update')) {
       return;
     }
 
@@ -2697,6 +2722,7 @@ export class MOQTSession {
         expiresMs,
         latestGroup: ok.largestLocation?.group,
         latestObject: ok.largestLocation?.object,
+        trackProperties: parseTrackProperties(ok.trackProperties),
       };
       log.info('TRACK_STATUS response received', {
         requestId: requestId.toString(),
@@ -7732,12 +7758,13 @@ export class MOQTSession {
   }
 
   /**
-   * Handle incoming TRACK_STATUS on bidi stream (draft-18 §10.14).
+   * Handle incoming TRACK_STATUS on bidi stream (draft-22 §9.13, draft-18 §10.14).
    *
-   * If we're publishing the queried track, reply with REQUEST_OK carrying
-   * LARGEST_OBJECT (0x09) so the requester knows the live edge; otherwise
-   * reply with REQUEST_ERROR DOES_NOT_EXIST (§15.10.2). LARGEST_OBJECT is
-   * omitted when the publication has not yet sent any objects.
+   * Handled like a SUBSCRIBE that creates no state: a track under a namespace
+   * we announce, or one we publish, answers with REQUEST_OK carrying the
+   * LARGEST_OBJECT the track has published (omitted before any), and any
+   * other with REQUEST_ERROR DOES_NOT_EXIST. The Track Properties are those a
+   * SUBSCRIBE_OK would carry, and we send none.
    */
   private async handleIncomingTrackStatusDraft18(
     message: TrackStatusMessageDraft18 | TrackStatusMessageDraft22,
@@ -7749,8 +7776,9 @@ export class MOQTSession {
       trackName: message.trackName,
     });
 
-    const pub = this.publicationManager.getByTrackName(message.trackNamespace, message.trackName);
-    if (!pub) {
+    const known = this.matchesAnnouncedNamespace(message.trackNamespace) !== undefined
+      || this.publicationManager.getByTrackName(message.trackNamespace, message.trackName) !== undefined;
+    if (!known) {
       await this.sendRequestErrorOnStream(
         writable,
         message.requestId,
@@ -7763,10 +7791,8 @@ export class MOQTSession {
     const requestOk: RequestOkMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: message.requestId,
+      largestLocation: this.publicationManager.largestOf(message.trackNamespace, message.trackName),
     };
-    if (pub.latestGroup !== undefined && pub.latestObject !== undefined) {
-      requestOk.largestLocation = { group: pub.latestGroup, object: pub.latestObject };
-    }
     const writer = writable.getWriter();
     try {
       await writer.write(this.codec.encodeControlMessage(requestOk));

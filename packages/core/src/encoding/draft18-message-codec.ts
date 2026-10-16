@@ -941,6 +941,11 @@ export class Draft18MessageCodec {
       params.push(Draft18MessageCodec.filterParameter(message));
     }
     Draft18MessageCodec.encodeMessageParameters(writer, params);
+
+    // Track Properties (KVPs to end)
+    if (message.trackProperties) {
+      encodeKeyValuePairs(writer, message.trackProperties);
+    }
   }
 
   private static decodeRequestOk(reader: Draft18BufferReader): RequestOkMessageDraft18 {
@@ -973,6 +978,9 @@ export class Draft18MessageCodec {
       }
     }
 
+    // Track Properties fill the remaining bytes
+    const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;
+
     return {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: 0n,
@@ -980,6 +988,7 @@ export class Draft18MessageCodec {
       largestLocation,
       forwardState,
       ...filterFields,
+      trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
   }
 
