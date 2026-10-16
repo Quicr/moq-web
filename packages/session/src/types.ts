@@ -31,6 +31,7 @@ export type SessionEventType =
   | 'namespace-error'
   | 'request-ok'
   | 'incoming-subscribe'
+  | 'incoming-subscribe-tracks'
   | 'namespace-acknowledged'
   | 'namespace-announced'
   | 'namespace-done'
@@ -661,6 +662,20 @@ export interface IncomingSubscribeEvent {
   trackName: string;
   /** Track alias to use for publishing */
   trackAlias: bigint;
+}
+
+/**
+ * Event fired when the peer's SUBSCRIBE_TRACKS was accepted (draft-22 §3.6,
+ * draft-18 §10.19). The application answers it by publishing the tracks
+ * under the prefix with `publish()`, or by sending PUBLISH_SKIPPED.
+ */
+export interface IncomingSubscribeTracksEvent {
+  /** Request ID of the SUBSCRIBE_TRACKS, to address PUBLISH_SKIPPED to */
+  requestId: bigint;
+  /** Tracks under this namespace prefix are wanted */
+  namespacePrefix: string[];
+  /** Forward State the resulting PUBLISH messages should carry */
+  forwardState: boolean;
 }
 
 /**

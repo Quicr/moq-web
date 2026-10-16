@@ -202,6 +202,7 @@ import type {
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
+  IncomingSubscribeTracksEvent,
   SubscribeNamespaceOptions,
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
@@ -633,6 +634,8 @@ export class MOQTSession {
    */
   /** Peer-supplied request IDs are 62-bit varints; key by bigint to preserve precision. */
   private incomingRequestKinds = new Map<bigint, RequestUpdateVariant>();
+  /** SUBSCRIBE_TRACKS requests the peer made to us: a separate overlap space (draft-22 §3.6) */
+  private incomingTrackSubs = new IncomingNamespaceSubscriptions();
   /** SUBSCRIBE_NAMESPACE requests the peer made to us, kept current as our announced set changes (draft-22 §4.2) */
   private incomingNamespaces = new IncomingNamespaceSubscriptions();
   /** Request IDs the peer has used on its request streams */
@@ -1749,6 +1752,7 @@ export class MOQTSession {
    */
   private endNamespaceSubscription(requestId: bigint): void {
     this.incomingNamespaces.remove(requestId);
+    this.incomingTrackSubs.remove(requestId);
     const request = this.outgoingRequests.get(requestId);
     const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
     if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
@@ -3248,6 +3252,7 @@ export class MOQTSession {
     this.publicationManager.clear();
     this.incomingRequestKinds.clear();
     this.incomingNamespaces.clear();
+    this.incomingTrackSubs.clear();
     // §8: cancel every pending delivery-timeout so stale timers can't fire
     // after the session is gone.
     this.publisherDeliveryTimeouts.clear();
@@ -6839,6 +6844,7 @@ export class MOQTSession {
   on(event: 'session-migrating', handler: (event: SessionMigrationEvent) => void): () => void;
   on(event: 'session-migrated', handler: (event: SessionMigrationEvent) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
+  on(event: 'incoming-subscribe-tracks', handler: (event: IncomingSubscribeTracksEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
   on(event: 'namespace-announced', handler: (event: NamespaceAnnouncedEvent) => void): () => void;
@@ -7785,16 +7791,27 @@ export class MOQTSession {
     message: SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
-    const prefix = message.trackNamespacePrefix.join('/');
+    const prefix = message.trackNamespacePrefix;
 
     log.info('Received SUBSCRIBE_TRACKS', {
       requestId: message.requestId.toString(),
-      prefix,
+      prefix: prefix.join('/'),
       forwardState: message.forwardState,
       filter: 'filter' in message ? message.filter : undefined,
     });
 
     if (await this.rejectRangeFilters(message as RangeFilteredRequest, writable)) {
+      return;
+    }
+
+    // Draft-22 §3.6: a prefix that shares a common prefix with an established SUBSCRIBE_TRACKS is refused
+    if (this.incomingTrackSubs.overlaps(prefix)) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.PREFIX_OVERLAP,
+        'Prefix overlaps an established SUBSCRIBE_TRACKS',
+      );
       return;
     }
 
@@ -7811,18 +7828,14 @@ export class MOQTSession {
     // SUBSCRIBE_TRACKS is a namespace-scoped subscription for track discovery;
     // future REQUEST_UPDATE on this requestId is §10.9.2 namespace-scoped.
     this.incomingRequestKinds.set(message.requestId, 'subscribe-tracks');
+    this.incomingTrackSubs.add(message.requestId, prefix);
 
-    // Emit incoming-subscribe for each track we publish under this prefix.
-    for (const [, pub] of this.publicationManager) {
-      const pubNs = pub.namespace.join('/');
-      if (!pubNs.startsWith(prefix)) continue;
-      this.emit('incoming-subscribe', {
-        requestId: message.requestId,
-        namespace: pub.namespace,
-        trackName: pub.trackName,
-        trackAlias: pub.trackAlias,
-      } as IncomingSubscribeEvent);
-    }
+    // The application publishes the tracks the peer wants; a PUBLISH needs a track only it knows
+    this.emit('incoming-subscribe-tracks', {
+      requestId: message.requestId,
+      namespacePrefix: prefix,
+      forwardState: message.forwardState !== false,
+    } as IncomingSubscribeTracksEvent);
   }
 
   /**

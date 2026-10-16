@@ -96,6 +96,7 @@ export type {
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
+  IncomingSubscribeTracksEvent,
   NamespaceAnnouncedEvent,
   NamespaceDoneEvent,
   SubscribeNamespaceOptions,
