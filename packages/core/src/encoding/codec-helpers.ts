@@ -17,6 +17,8 @@ import type { AuthorizationToken, MessageTypeDraft18, TrackNamespace } from '../
 // Module-level singletons shared across helpers
 const TE = new TextEncoder();
 const TD = new TextDecoder();
+/** Names must be UTF-8: invalid bytes throw instead of becoming U+FFFD */
+const TD_FATAL = new TextDecoder('utf-8', { fatal: true });
 
 // =============================================================================
 // Codec Safety Bounds (B1 SEC)
@@ -108,6 +110,19 @@ export function readVarIntSaturating(reader: Draft18BufferReader): number {
 // Track Namespace / String Helpers
 // =============================================================================
 
+/**
+ * Decode the bytes of a Track Namespace field or Track Name. They are bytes
+ * on the wire (d22 §2.4.1), but we carry them as strings, so bytes that are
+ * not UTF-8 are a malformed message (PROTOCOL_VIOLATION), never mangled.
+ */
+export function decodeName(bytes: Uint8Array, what: string, messageType?: MessageTypeDraft18): string {
+  try {
+    return TD_FATAL.decode(bytes);
+  } catch {
+    throw new Draft18CodecError(`${what} is not valid UTF-8 (PROTOCOL_VIOLATION)`, messageType);
+  }
+}
+
 /** Total byte length of a Track Namespace: the sum of its field lengths (§8.7) */
 function namespaceLength(namespace: TrackNamespace): number {
   return namespace.reduce((total, field) => total + TE.encode(field).length, 0);
@@ -143,7 +158,7 @@ export function decodeTrackNamespace(reader: Draft18BufferReader, messageType?: 
     total += length;
     assertBound(total, MAX_TRACK_NAME_LENGTH, 'TrackNamespace length', messageType);
     const bytes = reader.readBytes(length);
-    namespace.push(TD.decode(bytes));
+    namespace.push(decodeName(bytes, 'Track Namespace Field', messageType));
   }
   return namespace;
 }
@@ -220,7 +235,7 @@ export function decodeTrackName(
     messageType,
   );
   const bytes = reader.readBytes(length);
-  return TD.decode(bytes);
+  return decodeName(bytes, 'Track Name', messageType);
 }
 
 // =============================================================================

@@ -41,6 +41,7 @@ import type {
 import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec.js';
 import { Draft22MessageCodec } from './draft22-message-codec.js';
 import { Draft18StreamCodecError } from './draft18-stream-codec.js';
+import { decodeName } from './codec-helpers.js';
 import { NoopMetricsSink, type MetricsSink } from '../metrics/index.js';
 
 const NOOP_METRICS: MetricsSink = new NoopMetricsSink();
@@ -755,7 +756,7 @@ class Draft18Codec implements IProtocolCodec {
     for (let i = 0; i < count; i++) {
       const length = reader.readVarIntNumber();
       const bytes = reader.readBytes(length);
-      namespace.push(TD.decode(bytes));
+      namespace.push(decodeName(bytes, 'Track Namespace Field'));
     }
     return [namespace, reader.offset - offset];
   }
@@ -781,11 +782,11 @@ class Draft18Codec implements IProtocolCodec {
     for (let i = 0; i < namespaceCount; i++) {
       const length = reader.readVarIntNumber();
       const bytes = reader.readBytes(length);
-      namespace.push(TD.decode(bytes));
+      namespace.push(decodeName(bytes, 'Track Namespace Field'));
     }
     const trackNameLength = reader.readVarIntNumber();
     const trackNameBytes = reader.readBytes(trackNameLength);
-    const trackName = TD.decode(trackNameBytes);
+    const trackName = decodeName(trackNameBytes, 'Track Name');
     return [{ namespace, trackName }, reader.offset - offset];
   }
 

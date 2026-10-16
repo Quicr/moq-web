@@ -921,8 +921,8 @@ export class Draft18MessageCodec {
 
   private static decodeRedirect(reader: Draft18BufferReader): RequestErrorRedirectDraft18 {
     const connectUri = decodeString(reader);
-    const trackNamespace = decodeTrackNamespace(reader);
-    const trackName = decodeString(reader);
+    const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.REQUEST_ERROR);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.REQUEST_ERROR, trackNamespace);
     return { connectUri, trackNamespace, trackName };
   }
 
