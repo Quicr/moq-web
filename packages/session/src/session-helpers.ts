@@ -457,8 +457,6 @@ export function buildTrackProperties(options?: {
   maxCacheDuration?: number;
   priority?: number;
   groupOrder?: number;
-  priorGroupIdGap?: number;
-  priorObjectIdGap?: number;
   dynamicGroups?: boolean;
 }): Map<number, Uint8Array> | undefined {
   if (!options) return undefined;
@@ -466,10 +464,6 @@ export function buildTrackProperties(options?: {
   const setMs = (key: number, ms: number | undefined) => {
     if (!ms || ms <= 0) return;
     props.set(key, MOQTVarInt.encode(BigInt(ms)));
-  };
-  const setNonNegative = (key: number, n: number | undefined) => {
-    if (n === undefined || n < 0) return;
-    props.set(key, MOQTVarInt.encode(BigInt(Math.floor(n))));
   };
   setMs(TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
   setMs(TrackPropertyDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
@@ -489,8 +483,6 @@ export function buildTrackProperties(options?: {
   if (options.dynamicGroups) {
     props.set(TrackPropertyDraft18.DYNAMIC_GROUPS, MOQTVarInt.encode(1n));
   }
-  setNonNegative(TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, options.priorGroupIdGap);
-  setNonNegative(TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP, options.priorObjectIdGap);
   return props.size > 0 ? props : undefined;
 }
 

@@ -3936,8 +3936,6 @@ export class MOQTSession {
       maxCacheDuration: options?.maxCacheDuration,
       priority: options?.priority,
       groupOrder: options?.groupOrder,
-      priorGroupIdGap: options?.priorGroupIdGap,
-      priorObjectIdGap: options?.priorObjectIdGap,
       dynamicGroups: options?.dynamicGroups,
     });
     // LARGEST_OBJECT is omitted until Objects have been published (d22 §9.20.17, d18 §10.2.11)

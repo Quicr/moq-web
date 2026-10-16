@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 import { describe, it, expect } from 'vitest';
-import { FetchTypeDraft18, GroupOrder, LocationFilterTypeDraft22 } from '@moq-web/core';
+import { FetchTypeDraft18, GroupOrder, LocationFilterTypeDraft22, TrackPropertyDraft18 } from '@moq-web/core';
 
-import { mapFillParameters, mapJoiningFetch, mapLocationFilter } from './session-helpers.js';
+import { buildTrackProperties, mapFillParameters, mapJoiningFetch, mapLocationFilter } from './session-helpers.js';
 
 describe('mapLocationFilter (draft-22 §9.20.9)', () => {
   it('maps largest-object to NEXT_OBJECT', () => {
@@ -124,5 +124,19 @@ describe('mapJoiningFetch (draft-18 §10.12.2)', () => {
     expect(() => mapJoiningFetch({ startGroup: 1, startObject: 2 })).toThrow(/startObject/);
     expect(() => mapJoiningFetch({ startGroup: 1, endGroup: 2 })).toThrow(/endGroup/);
     expect(() => mapJoiningFetch({ lastGroups: 1, endGroup: 2 })).toThrow(/endGroup/);
+  });
+});
+
+describe('buildTrackProperties', () => {
+  it('sends no Prior Group or Object ID Gap, which only apply to Objects (d22 §10.8, §10.9)', () => {
+    const options = { priorGroupIdGap: 1, priorObjectIdGap: 4 } as Parameters<typeof buildTrackProperties>[0];
+
+    expect(buildTrackProperties(options)).toBeUndefined();
+  });
+
+  it('keeps the dynamic groups flag', () => {
+    const properties = buildTrackProperties({ dynamicGroups: true });
+
+    expect([...properties!.keys()]).toEqual([TrackPropertyDraft18.DYNAMIC_GROUPS]);
   });
 });
