@@ -648,6 +648,11 @@ export function encodeDraft18AuthBytes(authToken: RequestAuthToken): Uint8Array 
   });
 }
 
+/** Key of a Track Namespace in a map: its fields stay distinct when they contain '/'. */
+export function namespaceKey(namespace: string[]): string {
+  return JSON.stringify(namespace);
+}
+
 /**
  * Draft-18 §7.1 namespace prefix match. Returns true when `prefix` is a
  * proper (or equal) prefix of `candidate` under tuple-equality. Callers use

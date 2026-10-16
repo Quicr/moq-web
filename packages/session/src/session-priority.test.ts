@@ -61,6 +61,7 @@ async function announceForTest(session: MOQTSession, namespace: string[]): Promi
   // Directly seed the announced namespace map so we don't need the full
   // PUBLISH_NAMESPACE handshake to test the SUBSCRIBE-handler wiring.
   const namespaceStr = namespace.join('/');
+  const key = JSON.stringify(namespace);
   (session as unknown as {
     announcedNamespaces: Map<string, {
       namespace: string[];
@@ -69,7 +70,7 @@ async function announceForTest(session: MOQTSession, namespace: string[]): Promi
       options: { priority: number; groupOrder: GroupOrder; deliveryTimeout: number; deliveryMode: 'stream' };
       acknowledged: boolean;
     }>;
-  }).announcedNamespaces.set(namespaceStr, {
+  }).announcedNamespaces.set(key, {
     namespace,
     namespaceStr,
     subscribers: new Map(),
@@ -119,7 +120,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §7 SUBSCRIBE parameters land on publica
     expect(pub?.subscriberGroupOrder).toBe(GroupOrder.DESCENDING);
 
     // Also mirrored onto the announced-subscribers map.
-    const info = priv.announcedNamespaces.get('room');
+    const info = priv.announcedNamespaces.get(JSON.stringify(['room']));
     const sub = info?.subscribers.get(1n);
     expect(sub?.subscriberPriority).toBe(32);
     expect(sub?.groupOrder).toBe(GroupOrder.DESCENDING);

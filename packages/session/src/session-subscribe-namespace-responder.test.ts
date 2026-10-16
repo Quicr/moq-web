@@ -139,3 +139,15 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE_NAMESPACE (
     expect(types(again.written())).toEqual([MessageTypeDraft18.REQUEST_OK]);
   });
 });
+
+describe.each(['draft-18', 'draft-22'] as const)('announced namespaces that differ only by a slash (%s)', (draft: Draft) => {
+  it('are announced and withdrawn separately', async () => {
+    const { session } = makeSession(draft);
+
+    await announceOk(session, ['a/b']);
+    await announceOk(session, ['a', 'b']);
+    await session.cancelAnnounce(['a', 'b']);
+
+    expect(session.getAnnouncedNamespaces().map((info) => info.namespace)).toEqual([['a/b']]);
+  });
+});

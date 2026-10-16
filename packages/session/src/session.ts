@@ -149,6 +149,7 @@ import {
   mapJoiningFetch,
   mapLocationFilter,
   mapSubscribeFilter,
+  namespaceKey,
   namespacePrefixMatches,
   narrowBigIntToNumber,
   sessionStateToConnectionState,
@@ -620,7 +621,7 @@ export class MOQTSession {
   /** Announced namespaces (for announce flow) */
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
   /** Request ID to namespace mapping (for draft-16 PUBLISH_NAMESPACE_OK) */
-  private announceRequestIdToNamespace = new Map<bigint, string>();
+  private announceRequestIdToNamespace = new Map<bigint, string[]>();
   /** Next track alias for incoming subscriptions (announce flow, draft-14/16) */
   private nextIncomingTrackAlias = BigInt(1000);
   /**
@@ -5075,10 +5076,11 @@ export class MOQTSession {
     assertNotReservedNamespace(namespace, 'ANNOUNCE');
 
     const namespaceStr = namespace.join('/');
+    const key = namespaceKey(namespace);
     log.info('Announcing namespace', { namespace: namespaceStr });
 
     // Check if already announced
-    if (this.announcedNamespaces.has(namespaceStr)) {
+    if (this.announcedNamespaces.has(key)) {
       log.warn('Namespace already announced', { namespace: namespaceStr });
       return;
     }
@@ -5096,7 +5098,7 @@ export class MOQTSession {
       },
       acknowledged: false,
     };
-    this.announcedNamespaces.set(namespaceStr, announceInfo);
+    this.announcedNamespaces.set(key, announceInfo);
     await this.notifyNamespace(namespace, NamespaceChange.ANNOUNCED);
 
     // Local counter is small; widen for wire encode + state maps.
@@ -5117,7 +5119,7 @@ export class MOQTSession {
       const hexBytes = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
       log.info('PUBLISH_NAMESPACE bytes', { length: bytes.length, hex: hexBytes, namespace: namespaceStr, requestId: requestId.toString() });
 
-      this.announceRequestIdToNamespace.set(requestId, namespaceStr);
+      this.announceRequestIdToNamespace.set(requestId, namespace);
 
       await this.doSendControl(bytes);
       log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId: requestId.toString() });
@@ -5128,14 +5130,14 @@ export class MOQTSession {
 
       return new Promise<void>((resolve, reject) => {
         const checkAcknowledged = () => {
-          const info = this.announcedNamespaces.get(namespaceStr);
+          const info = this.announcedNamespaces.get(key);
           if (info?.acknowledged) {
             resolve();
             return;
           }
 
           if (Date.now() - startTime > timeout) {
-            this.announcedNamespaces.delete(namespaceStr);
+            this.announcedNamespaces.delete(key);
             reject(new Error(`Timeout waiting for PUBLISH_NAMESPACE_OK for ${namespaceStr}`));
             return;
           }
@@ -5182,7 +5184,7 @@ export class MOQTSession {
         log.info('PUBLISH_NAMESPACE accepted', { namespace: namespaceStr, expiresMs });
       } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
-        this.announcedNamespaces.delete(namespaceStr);
+        this.announcedNamespaces.delete(namespaceKey(namespace));
         await this.notifyNamespace(namespace, NamespaceChange.WITHDRAWN);
         await this.closeRequestStream(requestId);
         throw this.rejection('Namespace announcement', error);
@@ -5199,7 +5201,7 @@ export class MOQTSession {
    */
   async cancelAnnounce(namespace: string[]): Promise<void> {
     const namespaceStr = namespace.join('/');
-    const announceInfo = this.announcedNamespaces.get(namespaceStr);
+    const announceInfo = this.announcedNamespaces.get(namespaceKey(namespace));
 
     if (!announceInfo) {
       log.warn('No announced namespace found', { namespace: namespaceStr });
@@ -5222,7 +5224,7 @@ export class MOQTSession {
     }
 
     // Clean up local state
-    this.announcedNamespaces.delete(namespaceStr);
+    this.announcedNamespaces.delete(namespaceKey(namespace));
     this.publicationManager.forgetUnder(namespace);
     await this.notifyNamespace(namespace, NamespaceChange.WITHDRAWN);
     log.info('Namespace announcement cancelled', { namespace: namespaceStr });
@@ -5241,8 +5243,7 @@ export class MOQTSession {
    * @param namespace - Namespace to get subscribers for
    */
   getSubscribers(namespace: string[]): IncomingSubscriber[] {
-    const namespaceStr = namespace.join('/');
-    const announceInfo = this.announcedNamespaces.get(namespaceStr);
+    const announceInfo = this.announcedNamespaces.get(namespaceKey(namespace));
     if (!announceInfo) {
       return [];
     }
@@ -7690,7 +7691,7 @@ export class MOQTSession {
       groupOrder: GroupOrder.ASCENDING,
       acknowledged: true,
     };
-    matchingSubscription.tracks.set(fullTrackNameStr, trackInfo);
+    matchingSubscription.tracks.set(JSON.stringify([namespace, trackName]), trackInfo);
 
     this.emit('incoming-publish', {
       namespaceSubscriptionId: matchingSubscription.subscriptionId,
@@ -8842,8 +8843,8 @@ export class MOQTSession {
 
         if (this.isDraft16 && publishNamespaceOk.requestId !== undefined) {
           // Draft-16: Look up namespace by requestId
-          namespaceStr = this.announceRequestIdToNamespace.get(publishNamespaceOk.requestId) ?? '';
-          namespace = namespaceStr ? namespaceStr.split('/') : [];
+          namespace = this.announceRequestIdToNamespace.get(publishNamespaceOk.requestId) ?? [];
+          namespaceStr = namespace.join('/');
           log.info('Received PUBLISH_NAMESPACE_OK (draft-16)', {
             requestId: publishNamespaceOk.requestId,
             expires: publishNamespaceOk.expires,
@@ -8859,7 +8860,7 @@ export class MOQTSession {
         }
 
         // Mark namespace as acknowledged
-        const announceInfo = this.announcedNamespaces.get(namespaceStr);
+        const announceInfo = this.announcedNamespaces.get(namespaceKey(namespace));
         if (announceInfo) {
           announceInfo.acknowledged = true;
           this.emit('namespace-acknowledged', { namespace });
@@ -8883,7 +8884,7 @@ export class MOQTSession {
         });
 
         // Remove the failed namespace announcement
-        this.announcedNamespaces.delete(namespaceStr);
+        this.announcedNamespaces.delete(namespaceKey(publishNamespaceError.namespace));
         this.emit('namespace-error', {
           kind: 'publish-namespace',
           namespace: publishNamespaceError.namespace,

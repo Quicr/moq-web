@@ -253,7 +253,7 @@ describe('draft-18 one subscription per Track and role (§5.1)', () => {
 
   it('refuses a SUBSCRIBE for a Track we already publish', async () => {
     const { session, internals } = makeSession('draft-18');
-    internals.announcedNamespaces.set('ns', { namespace: ['ns'], options: {}, subscribers: new Map() });
+    internals.announcedNamespaces.set(JSON.stringify(['ns']), { namespace: ['ns'], options: {}, subscribers: new Map() });
     const subscribe = (requestId: bigint) => ({
       type: MessageTypeDraft18.SUBSCRIBE,
       requestId,

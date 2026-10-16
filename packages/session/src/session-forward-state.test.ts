@@ -44,7 +44,7 @@ function makeSession(draft: Draft) {
   const session = new MOQTSession(transport);
   (session as unknown as { _state: string })._state = 'ready';
   const internals = session as unknown as Internals;
-  internals.announcedNamespaces.set('ns', { namespace: ['ns'], options: {}, subscribers: new Map() });
+  internals.announcedNamespaces.set(JSON.stringify(['ns']), { namespace: ['ns'], options: {}, subscribers: new Map() });
 
   return { session, internals };
 }
