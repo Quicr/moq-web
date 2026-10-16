@@ -6124,6 +6124,12 @@ export class MOQTSession {
       return;
     }
 
+    // Draft-18 §10.11: past the End Group of its filter, the subscription ends
+    if (!this.isDraft22 && publication && this.isPastFilterEnd(publication, metadata)) {
+      await this.endAtFilterEnd(publication);
+      return;
+    }
+
     // A paused subscription gets no Objects, though they still exist (d22 §3.1.1). Nor does
     // one get Objects outside its filter (d22 §3.3.1, d18 §5.1.2).
     if (this.isDraft18 && publication && (publication.forward === 0 || !this.passesFilter(publication, metadata))) {
@@ -6157,6 +6163,31 @@ export class MOQTSession {
       objectId: metadata.objectId,
       bytes: data.byteLength,
     } as PublishStatsEvent);
+  }
+
+  /** Whether the Object is in a group after the End Group of the subscriber's filter */
+  private isPastFilterEnd(publication: InternalPublication, metadata: ObjectMetadata): boolean {
+    const end = publication.filter?.end;
+
+    return end !== undefined && BigInt(metadata.groupId) > end.group;
+  }
+
+  /** End a subscription that reached the end of its filter: PUBLISH_DONE SUBSCRIPTION_ENDED (draft-18 §10.11) */
+  private async endAtFilterEnd(publication: InternalPublication): Promise<void> {
+    const endGroup = publication.filter!.end!.group;
+    const lastObject = publication.latestGroup === endGroup ? publication.latestObject ?? 0n : 0n;
+    try {
+      await this.sendPublishDone(
+        publication.requestId,
+        Number(endGroup),
+        Number(lastObject),
+        'End of subscription filter',
+        PublishDoneErrorCodeDraft18.SUBSCRIPTION_ENDED,
+      );
+    } catch (err) {
+      log.warn('Could not send PUBLISH_DONE at the end of a filter', { error: (err as Error).message });
+    }
+    this.publicationManager.remove(publication.trackAlias);
   }
 
   /** Whether the Object is inside the Locations the subscriber asked for */
