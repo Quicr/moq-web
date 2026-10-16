@@ -60,7 +60,7 @@ function deltaBytes(): Uint8Array {
 }
 
 describe('catalog subscribe asks for a fill of the current group', () => {
-  it('passes SubscribeOptions.fill for the current group', async () => {
+  it('starts at the Next Object, so no delta falls between the fill and the subscription (d22 §3.5)', async () => {
     const { session, moqt } = makeFakeSession();
     const msf = new MSFSession(moqt, NAMESPACE);
 
@@ -69,7 +69,7 @@ describe('catalog subscribe asks for a fill of the current group', () => {
     expect(session.subscribe).toHaveBeenCalledWith(
       NAMESPACE,
       'catalog',
-      { fill: CURRENT_GROUP_FILL },
+      { filterType: 'largest-object', fill: CURRENT_GROUP_FILL },
       expect.any(Function),
     );
   });

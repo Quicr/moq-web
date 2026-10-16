@@ -8,7 +8,7 @@
  */
 
 import { Logger } from '@moq-web/core';
-import type { FillOptions, MOQTSession } from '@moq-web/session';
+import type { FillOptions, MOQTSession, SubscribeOptions } from '@moq-web/session';
 import { CATALOG_TRACK_NAME } from '../version.js';
 import { parseCatalogFromBytes, serializeCatalogToBytes } from '../catalog/index.js';
 import { applyDelta } from '../catalog/delta.js';
@@ -111,7 +111,7 @@ export class CatalogSubscriber {
     this.subscriptionId = await this.session.subscribe(
       this.namespace,
       CATALOG_TRACK_NAME,
-      { fill: this.catalogFill },
+      this.catalogSubscribeOptions,
       this.handleObject.bind(this)
     );
   }
@@ -130,6 +130,20 @@ export class CatalogSubscriber {
     if (this.catalogFill) {
       await this.session.requestFill(subscriptionId, this.catalogFill);
     }
+  }
+
+  /**
+   * Draft-22 starts the subscription at the Next Object and fills the current
+   * group up to the Largest Object, so a delta added to the group after the
+   * SUBSCRIBE is processed is in neither gap (draft-22 §3.4, §3.5). Draft-18
+   * has no fill here, so it starts at the Next Group.
+   */
+  private get catalogSubscribeOptions(): SubscribeOptions {
+    if (this.session.draft !== 'draft-22') {
+      return { fill: this.catalogFill };
+    }
+
+    return { filterType: 'largest-object', fill: this.catalogFill };
   }
 
   /**
