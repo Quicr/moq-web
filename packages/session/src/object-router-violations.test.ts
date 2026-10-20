@@ -47,8 +47,8 @@ function makeRouter(draft: DraftVersion) {
 
   const router = new ObjectRouter(subs, undefined, draft);
   const violations: string[] = [];
-  const delivered: Array<[number, number]> = [];
-  const fetched: Array<[number, number]> = [];
+  const delivered: Array<[bigint, bigint]> = [];
+  const fetched: Array<[bigint, bigint]> = [];
   router.setViolationCallback((reason) => violations.push(reason));
   router.setCallback((_sub, _data, groupId, objectId) => delivered.push([groupId, objectId]));
   router.setFetchObjectCallback((_id, _data, groupId, objectId) => fetched.push([groupId, objectId]));
@@ -114,7 +114,7 @@ describe.each(['draft-18', 'draft-22'] as const)('data-plane violations (%s)', (
     );
 
     expect(violations).toEqual([]);
-    expect(fetched).toEqual([[1, 0]]);
+    expect(fetched).toEqual([[1n, 0n]]);
   });
 
   it('closes on a reserved SUBGROUP_ID_MODE', async () => {

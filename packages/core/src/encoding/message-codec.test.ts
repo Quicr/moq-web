@@ -736,9 +736,9 @@ describe('ObjectCodec', () => {
       const [decoded, bytesConsumed] = ObjectCodec.decodeDatagramHeader(encoded);
 
       expect(decoded.trackAlias).toBe(BigInt(1));
-      expect(decoded.groupId).toBe(10);
+      expect(decoded.groupId).toBe(10n);
       expect(decoded.subgroupId).toBe(0);
-      expect(decoded.objectId).toBe(5);
+      expect(decoded.objectId).toBe(5n);
       expect(decoded.publisherPriority).toBe(128);
       expect(decoded.objectStatus).toBe(ObjectStatus.NORMAL);
       expect(bytesConsumed).toBe(encoded.length);
@@ -766,8 +766,8 @@ describe('ObjectCodec', () => {
       const decoded = ObjectCodec.decodeDatagramObject(encoded);
 
       expect(decoded.header.trackAlias).toBe(BigInt(42));
-      expect(decoded.header.groupId).toBe(1);
-      expect(decoded.header.objectId).toBe(0);
+      expect(decoded.header.groupId).toBe(1n);
+      expect(decoded.header.objectId).toBe(0n);
       expect(Array.from(decoded.payload)).toEqual([0x01, 0x02, 0x03, 0x04, 0x05]);
       expect(decoded.payloadLength).toBe(5);
     });
@@ -807,7 +807,7 @@ describe('ObjectCodec', () => {
       const [decoded, bytesConsumed] = ObjectCodec.decodeSubgroupHeader(encoded);
 
       expect(decoded.trackAlias).toBe(BigInt(100));
-      expect(decoded.groupId).toBe(5);
+      expect(decoded.groupId).toBe(5n);
       expect(decoded.subgroupId).toBe(0);
       expect(decoded.publisherPriority).toBe(200);
       expect(bytesConsumed).toBe(encoded.length);
@@ -827,7 +827,7 @@ describe('ObjectCodec', () => {
       const [decoded] = ObjectCodec.decodeSubgroupHeader(buffer);
 
       expect(decoded.trackAlias).toBe(BigInt(100));
-      expect(decoded.groupId).toBe(5);
+      expect(decoded.groupId).toBe(5n);
       expect(decoded.subgroupId).toBe(2);
       expect(decoded.publisherPriority).toBe(128);
     });

@@ -34,7 +34,7 @@ import {
 import { MOQTSession } from './session.js';
 
 type Draft = 'draft-16' | 'draft-18' | 'draft-22';
-type Seen = Array<[number, number]>;
+type Seen = Array<[bigint, bigint]>;
 
 const PRIORITY = 128;
 const TRACK_ALIAS = 1n;
@@ -153,7 +153,7 @@ async function subscribeWith(
   const peer = installPeerStream(session, internals);
   peer.send(SUBSCRIBE_OK);
   const seen: Seen = [];
-  const onObject = (_d: Uint8Array, group: number, object: number) => { seen.push([group, object]); };
+  const onObject = (_d: Uint8Array, group: bigint, object: bigint) => { seen.push([group, object]); };
 
   const subscriptionId = await session.subscribe(['ns'], 't', options, onObject);
   const requestId = session.getSubscriptions()[0].requestId;
@@ -283,7 +283,7 @@ describe('draft-22 §3.4 fill fetch streams', () => {
     fill.fin();
     await fill.done;
 
-    expect(seen).toEqual([[7, 0], [7, 0], [7, 1]]);
+    expect(seen).toEqual([[7n, 0n], [7n, 0n], [7n, 1n]]);
   });
 
   it('delivers a REQUEST_UPDATE-initiated fill stream with its group order', async () => {
@@ -298,7 +298,7 @@ describe('draft-22 §3.4 fill fetch streams', () => {
     fill.fin();
     await fill.done;
 
-    expect(seen).toEqual([[10, 0], [9, 0]]);
+    expect(seen).toEqual([[10n, 0n], [9n, 0n]]);
   });
 
   it('delivers through a callback set after subscribing, and not as fetch-object', async () => {
@@ -306,7 +306,7 @@ describe('draft-22 §3.4 fill fetch streams', () => {
       fill: { lastGroups: 1 },
     });
     const later: Seen = [];
-    session.setSubscriptionCallback(subscriptionId, (_d, g, o) => { later.push([g, o]); });
+    session.setSubscriptionCallback(subscriptionId, (_d: Uint8Array, g: bigint, o: bigint) => { later.push([g, o]); });
     const events: unknown[] = [];
     session.on('fetch-object', (e) => events.push(e));
 
@@ -314,7 +314,7 @@ describe('draft-22 §3.4 fill fetch streams', () => {
     fill.fin();
     await fill.done;
 
-    expect(later).toEqual([[2, 3]]);
+    expect(later).toEqual([[2n, 3n]]);
     expect(events).toHaveLength(0);
   });
 
@@ -333,7 +333,7 @@ describe('draft-22 §3.4 fill fetch streams', () => {
     await tick();
 
     expect(internals.fillStreams.size).toBe(2);
-    expect([...seen].sort()).toEqual([[5, 0], [5, 1], [8, 0], [8, 1]]);
+    expect([...seen].sort()).toEqual([[5n, 0n], [5n, 1n], [8n, 0n], [8n, 1n]]);
 
     first.fin();
     second.fin();
@@ -370,7 +370,7 @@ describe('draft-22 §3.4 fill fetch streams', () => {
 
     expect(fill.cancelled).toHaveBeenCalled();
     expect(internals.fillStreams.size).toBe(0);
-    expect(seen).toEqual([[1, 0]]);
+    expect(seen).toEqual([[1n, 0n]]);
   });
 
   it('cancels a fill stream that has not arrived yet when unsubscribing', async () => {
@@ -471,11 +471,11 @@ describe('draft-18 §10.12.2 fill as a Joining FETCH', () => {
       fill.fin();
       await fill.done;
     });
-    const subscriptionId = await session.subscribe(['ns'], 't', undefined, (_d, g, o) => { seen.push([g, o]); });
+    const subscriptionId = await session.subscribe(['ns'], 't', undefined, (_d: Uint8Array, g: bigint, o: bigint) => { seen.push([g, o]); });
 
     await session.requestFill(subscriptionId, { lastGroups: 1 });
 
-    expect(seen).toEqual([[4, 0], [6, 0]]);
+    expect(seen).toEqual([[4n, 0n], [6n, 0n]]);
     expect(internals.fillStreams.size).toBe(0);
   });
 

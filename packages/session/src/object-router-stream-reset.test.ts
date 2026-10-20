@@ -51,7 +51,7 @@ describe('ObjectRouter §11.4.3 peer-initiated stream-reset', () => {
       code: number;
       reason: string;
       trackAlias?: bigint;
-      groupId?: number;
+      groupId?: bigint;
       subgroupId?: number;
     }> = [];
     router.setStreamResetCallback((sub, code, reason, detail) => {
@@ -89,7 +89,7 @@ describe('ObjectRouter §11.4.3 peer-initiated stream-reset', () => {
     expect(hits[0].reason).toContain('RESET_STREAM');
     expect(hits[0].subId).toBe(5);
     expect(hits[0].trackAlias).toBe(11n);
-    expect(hits[0].groupId).toBe(3);
+    expect(hits[0].groupId).toBe(3n);
     expect(hits[0].subgroupId).toBe(0);
   });
 

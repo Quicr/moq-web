@@ -226,10 +226,10 @@ export interface PublishOptions {
  * Metadata for sending objects
  */
 export interface ObjectMetadata {
-  /** Group ID */
-  groupId: number;
-  /** Object ID within the group */
-  objectId: number;
+  /** Group ID (62-bit varint on the wire; bigint for full range) */
+  groupId: bigint;
+  /** Object ID within the group (62-bit varint on the wire; bigint for full range) */
+  objectId: bigint;
   /** Signals the start of a new group (closes previous group's stream, opens new one) */
   newGroup?: boolean;
   /** Whether this object is a keyframe */
@@ -250,17 +250,10 @@ export interface ReceivedObjectEvent {
   trackAlias: bigint;
   /** Object payload */
   data: Uint8Array;
-  /**
-   * Group ID (62-bit varint on the wire).
-   *
-   * NOTE: kept as `number` throughout the object plane because the
-   * delta-encoded stream/fetch codecs, media pipeline, and JSON logging paths
-   * perform arithmetic in `number`. The codec asserts the wire value fits in
-   * `number` via `readVarIntNumber()`.
-   */
-  groupId: number;
-  /** Object ID (see note on `groupId` for `number` rationale). */
-  objectId: number;
+  /** Group ID (62-bit varint on the wire). */
+  groupId: bigint;
+  /** Object ID (62-bit varint on the wire). */
+  objectId: bigint;
   /** Timestamp (microseconds) */
   timestamp: number;
 }
@@ -526,7 +519,7 @@ export interface StreamResetEvent {
   /** Subscription that owned the stream (subscriber-side only). */
   subscriptionId?: number;
   /** Group / subgroup identifiers, when known at reset time. */
-  groupId?: number;
+  groupId?: bigint;
   subgroupId?: number;
 }
 
@@ -661,7 +654,7 @@ export interface SubscribeNamespaceOptions {
   /** Subscriber priority (0-255, default 128) */
   priority?: number;
   /** Callback for received objects from tracks under this namespace */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: (data: Uint8Array, groupId: bigint, objectId: bigint, timestamp: number) => void;
   /**
    * Draft-18 §10.2.10 EXPIRES (ms) advertised on the REQUEST_OK we send when
    * accepting an incoming PUBLISH under this namespace. `0` = no expiration,
@@ -683,7 +676,7 @@ export interface NamespaceSubscriptionInfo {
   /** Tracks discovered under this namespace */
   tracks: Map<string, IncomingPublishInfo>;
   /** Callback for received objects from tracks under this namespace */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: (data: Uint8Array, groupId: bigint, objectId: bigint, timestamp: number) => void;
   /** §10.2.10 EXPIRES (ms) to advertise on REQUEST_OK for incoming PUBLISH matches. */
   expires?: number;
 }
@@ -836,10 +829,10 @@ export interface FetchObjectEvent {
   requestId: bigint;
   /** Object payload */
   data: Uint8Array;
-  /** Group ID (62-bit varint on wire; bounded to number for object plane). */
-  groupId: number;
-  /** Object ID (see FetchRange note on bounded-number rationale). */
-  objectId: number;
+  /** Group ID (62-bit varint on the wire). */
+  groupId: bigint;
+  /** Object ID (62-bit varint on the wire). */
+  objectId: bigint;
 }
 
 /**
@@ -868,10 +861,10 @@ export interface FetchStreamCompleteEvent {
   /** 62-bit varint fetch request ID */
   requestId: bigint;
   /**
-   * Last group ID received on this stream (bounded to number; see FetchRange).
+   * Last group ID received on this stream (62-bit varint).
    * Absent when the stream carried no objects.
    */
-  lastGroupId?: number;
+  lastGroupId?: bigint;
 }
 
 /**

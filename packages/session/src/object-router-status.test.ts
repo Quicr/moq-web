@@ -22,13 +22,13 @@ const PRIORITY = 128;
 
 interface Harness {
   router: ObjectRouter;
-  delivered: Array<[number, number, number]>;
-  endedGroups: number[];
+  delivered: Array<[bigint, bigint, number]>;
+  endedGroups: bigint[];
 }
 
 function harness(draft: 'draft-18' | 'draft-22'): Harness {
   const subs = new SubscriptionManager();
-  const endedGroups: number[] = [];
+  const endedGroups: bigint[] = [];
   const sub: InternalSubscription = {
     subscriptionId: 1,
     requestId: 1n,
@@ -41,7 +41,7 @@ function harness(draft: 'draft-18' | 'draft-22'): Harness {
   subs.add(sub);
 
   const router = new ObjectRouter(subs, undefined, draft);
-  const delivered: Array<[number, number, number]> = [];
+  const delivered: Array<[bigint, bigint, number]> = [];
   router.setCallback((_sub, data, groupId, objectId) => {
     delivered.push([groupId, objectId, data.length]);
   });
@@ -101,7 +101,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Object Status on the data plan
     );
 
     expect(delivered).toEqual([]);
-    expect(endedGroups).toEqual([GROUP_ID]);
+    expect(endedGroups).toEqual([BigInt(GROUP_ID)]);
   });
 
   it('delivers a datagram with END_OF_GROUP, then signals the group end', () => {
@@ -118,8 +118,8 @@ describe.each(['draft-18', 'draft-22'] as const)('Object Status on the data plan
       }),
     );
 
-    expect(delivered).toEqual([[GROUP_ID, OBJECT_ID, 1]]);
-    expect(endedGroups).toEqual([GROUP_ID]);
+    expect(delivered).toEqual([[BigInt(GROUP_ID), BigInt(OBJECT_ID), 1]]);
+    expect(endedGroups).toEqual([BigInt(GROUP_ID)]);
   });
 
   it('does not deliver a stream End of Track object', async () => {
@@ -139,7 +139,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Object Status on the data plan
     await router.handleIncomingStream(streamOf(subgroupHeader(), endOfGroup));
 
     expect(delivered).toEqual([]);
-    expect(endedGroups).toEqual([GROUP_ID]);
+    expect(endedGroups).toEqual([BigInt(GROUP_ID)]);
   });
 
   it('delivers a zero-length Normal object', async () => {
@@ -148,6 +148,6 @@ describe.each(['draft-18', 'draft-22'] as const)('Object Status on the data plan
     const empty = new Uint8Array([0x00, 0x00, ObjectStatusDraft18.NORMAL]);
     await router.handleIncomingStream(streamOf(subgroupHeader(), empty));
 
-    expect(delivered).toEqual([[GROUP_ID, 0, 0]]);
+    expect(delivered).toEqual([[BigInt(GROUP_ID), 0n, 0]]);
   });
 });

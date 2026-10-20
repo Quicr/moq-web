@@ -34,7 +34,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter datagrams (%s)', 
     subs.add(makeSub());
     const router = new ObjectRouter(subs, undefined, draft);
 
-    const delivered: Array<[number, number]> = [];
+    const delivered: Array<[bigint, bigint]> = [];
     router.setCallback((_sub, _data, groupId, objectId) => {
       delivered.push([groupId, objectId]);
     });
@@ -50,6 +50,6 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter datagrams (%s)', 
 
     router.handleDatagram(datagram);
 
-    expect(delivered).toEqual([[3, 0]]);
+    expect(delivered).toEqual([[3n, 0n]]);
   });
 });

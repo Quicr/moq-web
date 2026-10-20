@@ -488,8 +488,8 @@ export class MediaSession {
           ? (await secureContext.encrypt(obj.data, { groupId: BigInt(obj.groupId), objectId: obj.objectId })).ciphertext
           : obj.data;
         await this.session.sendObject(trackAlias, payload, {
-          groupId: obj.groupId,
-          objectId: obj.objectId,
+          groupId: BigInt(obj.groupId),
+          objectId: BigInt(obj.objectId),
           newGroup: obj.isKeyframe,
           type: 'video',
         });
@@ -508,8 +508,8 @@ export class MediaSession {
           objectId: obj.objectId,
         }).then(({ ciphertext }) => {
           this.session.sendObject(trackAlias, ciphertext, {
-            groupId: obj.groupId,
-            objectId: obj.objectId,
+            groupId: BigInt(obj.groupId),
+            objectId: BigInt(obj.objectId),
             type: 'audio',
           });
         }).catch((err) => {
@@ -517,8 +517,8 @@ export class MediaSession {
         });
       } else {
         this.session.sendObject(trackAlias, obj.data, {
-          groupId: obj.groupId,
-          objectId: obj.objectId,
+          groupId: BigInt(obj.groupId),
+          objectId: BigInt(obj.objectId),
           type: 'audio',
         });
       }
@@ -838,30 +838,32 @@ export class MediaSession {
       trackName,
       mergedOptions,
       (data, groupId, objectId, timestamp) => {
+        const groupIdN = Number(groupId);
+        const objectIdN = Number(objectId);
         log.info('MediaSession onObject callback invoked', {
           namespace: namespace.join('/'),
           trackName,
-          groupId,
-          objectId,
+          groupId: groupIdN,
+          objectId: objectIdN,
           dataSize: data.length,
           hasSecureContext: !!secureContext,
         });
         if (secureContext) {
           // Decrypt before pushing to pipeline
           secureContext.decrypt(data, {
-            groupId: BigInt(groupId),
-            objectId,
+            groupId,
+            objectId: objectIdN,
           }).then(({ plaintext }) => {
-            pipeline.push(plaintext, groupId, objectId, timestamp);
+            pipeline.push(plaintext, groupIdN, objectIdN, timestamp);
           }).catch((err) => {
-            log.error('Decryption failed', { groupId, objectId, error: (err as Error).message });
+            log.error('Decryption failed', { groupId: groupIdN, objectId: objectIdN, error: (err as Error).message });
           });
         } else {
-          pipeline.push(data, groupId, objectId, timestamp);
+          pipeline.push(data, groupIdN, objectIdN, timestamp);
         }
       },
       (groupId) => {
-        pipeline.markGroupComplete(groupId);
+        pipeline.markGroupComplete(Number(groupId));
       }
     );
 
@@ -1264,8 +1266,8 @@ export class MediaSession {
           ? (await secureContext.encrypt(obj.data, { groupId: BigInt(obj.groupId), objectId: obj.objectId })).ciphertext
           : obj.data;
         await this.session.sendObject(trackAlias, payload, {
-          groupId: obj.groupId,
-          objectId: obj.objectId,
+          groupId: BigInt(obj.groupId),
+          objectId: BigInt(obj.objectId),
           newGroup: obj.isKeyframe,
           type: 'video',
         });
@@ -1283,8 +1285,8 @@ export class MediaSession {
           objectId: obj.objectId,
         }).then(({ ciphertext }) => {
           this.session.sendObject(trackAlias, ciphertext, {
-            groupId: obj.groupId,
-            objectId: obj.objectId,
+            groupId: BigInt(obj.groupId),
+            objectId: BigInt(obj.objectId),
             type: 'audio',
           });
         }).catch((err) => {
@@ -1292,8 +1294,8 @@ export class MediaSession {
         });
       } else {
         this.session.sendObject(trackAlias, obj.data, {
-          groupId: obj.groupId,
-          objectId: obj.objectId,
+          groupId: BigInt(obj.groupId),
+          objectId: BigInt(obj.objectId),
           type: 'audio',
         });
       }
@@ -1484,7 +1486,7 @@ export class MediaSession {
       (data, groupId, objectId) => {
         // Push fetched data into the subscription pipeline for decoding
         // Use current time as timestamp since we're seeking
-        subscription.pipeline.push(data, groupId, objectId, Date.now() * 1000);
+        subscription.pipeline.push(data, Number(groupId), Number(objectId), Date.now() * 1000);
       }
     );
 
@@ -1583,7 +1585,7 @@ export class MediaSession {
       },
       {},
       (data, groupId, objectId) => {
-        pipeline.push(data, groupId, objectId, Date.now() * 1000);
+        pipeline.push(data, Number(groupId), Number(objectId), Date.now() * 1000);
       }
     );
 
@@ -1846,8 +1848,8 @@ export class MediaSession {
     subscription.feedbackGroupId = (subscription.feedbackGroupId ?? 0) + 1;
 
     this.session.sendObject(subscription.feedbackTrackAlias!, data, {
-      groupId: subscription.feedbackGroupId,
-      objectId: 0,
+      groupId: BigInt(subscription.feedbackGroupId),
+      objectId: 0n,
       isKeyframe: true,
       type: 'data',
     });
@@ -2166,18 +2168,20 @@ export class MediaSession {
 
     // Update the subscription's onObject callback to push to pipeline (with optional decryption)
     this.session.setSubscriptionCallback(subscriptionId, (data, groupId, objectId, timestamp) => {
+      const groupIdN = Number(groupId);
+      const objectIdN = Number(objectId);
       if (secureContext) {
         // Decrypt before pushing to pipeline
         secureContext.decrypt(data, {
-          groupId: BigInt(groupId),
-          objectId,
+          groupId,
+          objectId: objectIdN,
         }).then(({ plaintext }) => {
-          pipeline.push(plaintext, groupId, objectId, timestamp);
+          pipeline.push(plaintext, groupIdN, objectIdN, timestamp);
         }).catch((err) => {
-          log.error('Decryption failed', { groupId, objectId, error: (err as Error).message });
+          log.error('Decryption failed', { groupId: groupIdN, objectId: objectIdN, error: (err as Error).message });
         });
       } else {
-        pipeline.push(data, groupId, objectId, timestamp);
+        pipeline.push(data, groupIdN, objectIdN, timestamp);
       }
     });
 

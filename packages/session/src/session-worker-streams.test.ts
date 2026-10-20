@@ -83,7 +83,7 @@ describe.each(['draft-18', 'draft-22'] as const)('worker data streams (%s)', (dr
     deliver({ type: 'stream-reset', streamId: FETCH_STREAM, code: StreamResetErrorCodeDraft18.CANCELLED });
     await tick();
 
-    expect(events).toEqual([{ requestId: REQUEST_ID, lastGroupId: 3 }]);
+    expect(events).toEqual([{ requestId: REQUEST_ID, lastGroupId: 3n }]);
   });
 
   it('reports the code of a peer reset of a subgroup stream', async () => {

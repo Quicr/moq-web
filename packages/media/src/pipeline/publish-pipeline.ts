@@ -71,9 +71,9 @@ export interface PublishedObject {
   type: 'video' | 'audio';
   /** LOC-packaged data */
   data: Uint8Array;
-  /** Group ID */
+  /** Group ID (pipeline-internal counter; converted to bigint at ObjectMetadata boundary) */
   groupId: number;
-  /** Object ID within group */
+  /** Object ID within group (pipeline-internal counter; converted to bigint at ObjectMetadata boundary) */
   objectId: number;
   /** Whether this is a keyframe */
   isKeyframe: boolean;

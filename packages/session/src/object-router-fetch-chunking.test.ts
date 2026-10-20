@@ -25,7 +25,7 @@ const PRIORITY = 128;
 const OBJECT_COUNT = 3;
 const PAYLOAD_SIZE = 8;
 
-type Delivered = Array<{ objectId: number; payload: number[] }>;
+type Delivered = Array<{ objectId: bigint; payload: number[] }>;
 
 function payloadFor(objectId: number): Uint8Array {
   return Uint8Array.from({ length: PAYLOAD_SIZE }, (_, i) => objectId * 16 + i);
@@ -83,14 +83,14 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH header (%s)
       0xaa,
     ]);
     const router = new ObjectRouter(new SubscriptionManager(), undefined, draft);
-    const delivered: Array<[bigint, number, number]> = [];
+    const delivered: Array<[bigint, bigint, bigint]> = [];
     router.setFetchObjectCallback((id, _data, group, object) => {
       delivered.push([id, group, object]);
     });
 
     await router.handleIncomingStream(chunked(bytes, bytes.length));
 
-    expect(delivered).toEqual([[requestId, 3, 0]]);
+    expect(delivered).toEqual([[requestId, 3n, 0n]]);
   });
 });
 
@@ -98,7 +98,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH chunking (%
   it('delivers identical objects wherever the stream is split', async () => {
     const bytes = fetchBytes();
     const expected: Delivered = Array.from({ length: OBJECT_COUNT }, (_, objectId) => ({
-      objectId,
+      objectId: BigInt(objectId),
       payload: Array.from(payloadFor(objectId)),
     }));
 

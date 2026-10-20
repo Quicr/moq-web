@@ -116,32 +116,31 @@ const FETCH_HEADER_TYPE_BYTES = 1;
 export type ObjectCallback = (
   subscription: InternalSubscription,
   data: Uint8Array,
-  groupId: number,
-  objectId: number,
+  groupId: bigint,
+  objectId: bigint,
   timestamp: number
 ) => void;
 
 /**
  * Callback for received FETCH objects.
  *
- * NOTE: `requestId` is a 62-bit varint (bigint). `groupId`/`objectId` are
- * kept as `number` because the delta-encoded fetch stream codec, media
- * pipeline, and JSON logging paths perform arithmetic in `number`. Codec
- * sites assert wire values fit in `number` via `readVarIntNumber()`.
+ * `requestId`, `groupId`, and `objectId` are all 62-bit varints (bigint),
+ * matching the wire type. Consumers that need `number` for arithmetic must
+ * narrow with `Number(groupId)` and assert the value is safe themselves.
  */
 export type FetchObjectCallback = (
   requestId: bigint,
   data: Uint8Array,
-  groupId: number,
-  objectId: number
+  groupId: bigint,
+  objectId: bigint
 ) => void;
 
 /**
  * Callback for a FETCH data stream that ended (FIN, reset or cancelled),
  * with the Request ID from its FETCH_HEADER and the last Group ID received,
- * if any object arrived (bounded-number; see the FetchObjectCallback note).
+ * if any object arrived (62-bit varint).
  */
-export type FetchStreamCloseCallback = (requestId: bigint, lastGroupId?: number) => void;
+export type FetchStreamCloseCallback = (requestId: bigint, lastGroupId?: bigint) => void;
 
 /**
  * Callback fired on a data-plane protocol violation, with the reason. The
@@ -163,7 +162,7 @@ export type StreamResetCallback = (
   subscription: InternalSubscription | undefined,
   code: number,
   reason: string,
-  detail: { groupId?: number; subgroupId?: number; trackAlias?: bigint },
+  detail: { groupId?: bigint; subgroupId?: number; trackAlias?: bigint },
 ) => void;
 
 /**
@@ -216,7 +215,7 @@ export class ObjectRouter {
   private cancelledFetches = new Set<bigint>();
 
   /** Group ID of the last object received on each in-flight FETCH stream */
-  private fetchLastGroups = new Map<bigint, number>();
+  private fetchLastGroups = new Map<bigint, bigint>();
 
   /**
    * Metrics sink for per-object decode observability (Wave 3 Track I).
@@ -446,7 +445,7 @@ export class ObjectRouter {
    * END_OF_GROUP survive; the legacy header has nowhere to carry them.
    */
   private decodeDatagram(data: Uint8Array): {
-    header: { trackAlias: number | bigint; groupId: number; objectId: number };
+    header: { trackAlias: number | bigint; groupId: bigint; objectId: bigint };
     payload: Uint8Array;
     status: number;
     endOfGroup: boolean;
@@ -454,15 +453,24 @@ export class ObjectRouter {
   } {
     if (!this.isDraft18) {
       const { header, payload } = this.codec.decodeDatagramObject(data);
-      return { header, payload, status: header.objectStatus, endOfGroup: false };
+      return {
+        header: {
+          trackAlias: header.trackAlias,
+          groupId: BigInt(header.groupId),
+          objectId: BigInt(header.objectId),
+        },
+        payload,
+        status: header.objectStatus,
+        endOfGroup: false,
+      };
     }
 
     const [datagram] = Draft18StreamCodec.decodeObjectDatagram(data);
     return {
       header: {
         trackAlias: datagram.trackAlias,
-        groupId: narrowBigIntToNumber(datagram.groupId, 'Group ID'),
-        objectId: narrowBigIntToNumber(datagram.objectId ?? 0n, 'Object ID'),
+        groupId: datagram.groupId,
+        objectId: datagram.objectId ?? 0n,
       },
       payload: datagram.payload?.slice() ?? new Uint8Array(0),
       status: datagram.objectStatus ?? ObjectStatusDraft18.NORMAL,
@@ -478,11 +486,11 @@ export class ObjectRouter {
   private handleStatusObject(
     subscription: InternalSubscription | undefined,
     status: number,
-    groupId: number,
-    objectId: number,
+    groupId: bigint,
+    objectId: bigint,
   ): void {
     if (status === ObjectStatusDraft18.END_OF_GROUP) {
-      log.info('Received END_OF_GROUP', { groupId, objectId });
+      log.info('Received END_OF_GROUP', { groupId: groupId.toString(), objectId: objectId.toString() });
       subscription?.onEndOfGroup?.(groupId);
       return;
     }
@@ -515,7 +523,7 @@ export class ObjectRouter {
     const reader = stream.getReader();
     // Hoisted so a peer RESET_STREAM caught below can still report which
     // subgroup was in flight.
-    let subgroup: { trackAlias: number | bigint; groupId: number; subgroupId: number } | null = null;
+    let subgroup: { trackAlias: number | bigint; groupId: bigint; subgroupId: number } | null = null;
     let aliasKey: string | undefined;
 
     let buffer = new Uint8Array(0);
@@ -597,7 +605,7 @@ export class ObjectRouter {
 
       subgroup = {
         trackAlias: header.trackAlias,
-        groupId: narrowBigIntToNumber(header.groupId, 'Group ID'),
+        groupId: header.groupId,
         subgroupId: narrowBigIntToNumber(header.subgroupId ?? 0n, 'Subgroup ID'),
       };
       log.info('Decoded subgroup header', { ...subgroup, endOfGroup: header.endOfGroup === true });
@@ -623,7 +631,7 @@ export class ObjectRouter {
             throw new DataPlaneViolation(`Invalid subgroup object: ${(err as Error).message}`);
           }
 
-          const [objectId, payload, status, bytesConsumed] = decoded;
+          const [objectIdN, payload, status, bytesConsumed] = decoded;
           if (hasProperties && this.hasMandatoryObjectProperty(buffer.subarray(offset))) {
             throw new MalformedTrack({ trackAlias: subgroup.trackAlias }, MANDATORY_ON_OBJECT);
           }
@@ -633,8 +641,9 @@ export class ObjectRouter {
             messageType: 'stream_object',
           });
           this.metrics.counter('moq.object.stream.in', 1, { codec: this.codecLabel });
-          previousObjectId = objectId;
+          previousObjectId = objectIdN;
           objectCount++;
+          const objectId = BigInt(objectIdN);
 
           const subscription = this.subscriptionManager.getByAlias(subgroup.trackAlias);
 
@@ -708,7 +717,7 @@ export class ObjectRouter {
    */
   private reportStreamError(
     err: unknown,
-    subgroupHeader: { trackAlias: number | bigint; groupId: number; subgroupId: number } | null,
+    subgroupHeader: { trackAlias: number | bigint; groupId: number | bigint; subgroupId: number } | null,
   ): void {
     const errorMessage = (err as Error).message || '';
     // Draft-18 §11.4.3: a peer RESET_STREAM surfaces as a WebTransportError
@@ -720,9 +729,9 @@ export class ObjectRouter {
       const subscription = subgroupHeader
         ? this.subscriptionManager.getByAlias(subgroupHeader.trackAlias)
         : undefined;
-      const detail: { groupId?: number; subgroupId?: number; trackAlias?: bigint } = {};
+      const detail: { groupId?: bigint; subgroupId?: number; trackAlias?: bigint } = {};
       if (subgroupHeader) {
-        detail.groupId = subgroupHeader.groupId;
+        detail.groupId = typeof subgroupHeader.groupId === 'bigint' ? subgroupHeader.groupId : BigInt(subgroupHeader.groupId);
         detail.subgroupId = subgroupHeader.subgroupId;
         detail.trackAlias = BigInt(subgroupHeader.trackAlias);
       }
@@ -751,7 +760,7 @@ export class ObjectRouter {
     log.info('Received incoming stream');
     // Hoisted so a peer RESET_STREAM caught below can still report which
     // subgroup was in flight.
-    let subgroupHeader: { trackAlias: number | bigint; groupId: number; subgroupId: number } | null = null;
+    let subgroupHeader: { trackAlias: number | bigint; groupId: bigint; subgroupId: number } | null = null;
     try {
       const reader = stream.getReader();
 
@@ -967,7 +976,7 @@ export class ObjectRouter {
                   trackAlias: subgroupHeader.trackAlias.toString(),
                 });
                 if (subscription?.onEndOfGroup) {
-                  subscription.onEndOfGroup(subgroupHeader.groupId);
+                  subscription.onEndOfGroup(BigInt(subgroupHeader.groupId));
                 }
                 bufferOffset += bytesConsumed;
                 continue; // Don't deliver empty END_OF_GROUP marker as a regular object
@@ -983,7 +992,7 @@ export class ObjectRouter {
                 const timestamp = performance.now() * 1000;
                 // Copy payload to avoid detaching the shared buffer when transferred via postMessage
                 const payloadCopy = new Uint8Array(payload);
-                this.deliverObject(subscription, payloadCopy, subgroupHeader.groupId, objectId, timestamp);
+                this.deliverObject(subscription, payloadCopy, BigInt(subgroupHeader.groupId), BigInt(objectId), timestamp);
 
                 log.trace('Processed stream object', {
                   groupId: subgroupHeader.groupId,
@@ -1025,7 +1034,7 @@ export class ObjectRouter {
                 groupId: subgroupHeader.groupId,
                 trackAlias: subgroupHeader.trackAlias.toString(),
               });
-              subscription.onEndOfGroup(subgroupHeader.groupId);
+              subscription.onEndOfGroup(BigInt(subgroupHeader.groupId));
             }
           }
           log.info('Stream ended', {
@@ -1072,7 +1081,7 @@ export class ObjectRouter {
       const subscription = this.subscriptionManager.getByAlias(header.trackAlias);
       if (subscription) {
         const timestamp = performance.now() * 1000;
-        this.deliverObject(subscription, payload, header.groupId, header.objectId, timestamp);
+        this.deliverObject(subscription, payload, BigInt(header.groupId), BigInt(header.objectId), timestamp);
       } else {
         log.warn('Received object for unknown track alias', {
           trackAlias: header.trackAlias.toString(),
@@ -1085,7 +1094,7 @@ export class ObjectRouter {
   }
 
   // Track last delivered object per subscription for gap detection
-  private lastDelivered = new Map<number, { groupId: number; objectId: number }>();
+  private lastDelivered = new Map<number, { groupId: bigint; objectId: bigint }>();
 
   /**
    * Deliver object to subscription
@@ -1093,29 +1102,29 @@ export class ObjectRouter {
   private deliverObject(
     subscription: InternalSubscription,
     data: Uint8Array,
-    groupId: number,
-    objectId: number,
+    groupId: bigint,
+    objectId: bigint,
     timestamp: number
   ): void {
     // Detect gaps in object delivery
     const last = this.lastDelivered.get(subscription.subscriptionId);
     if (last) {
-      if (groupId === last.groupId && objectId !== last.objectId + 1) {
+      if (groupId === last.groupId && objectId !== last.objectId + 1n) {
         log.warn('Gap detected in object delivery', {
           subscriptionId: subscription.subscriptionId,
-          lastGroupId: last.groupId,
-          lastObjectId: last.objectId,
-          currentGroupId: groupId,
-          currentObjectId: objectId,
-          missedObjects: objectId - last.objectId - 1,
+          lastGroupId: last.groupId.toString(),
+          lastObjectId: last.objectId.toString(),
+          currentGroupId: groupId.toString(),
+          currentObjectId: objectId.toString(),
+          missedObjects: (objectId - last.objectId - 1n).toString(),
         });
       } else if (groupId !== last.groupId) {
         log.info('New group started', {
           subscriptionId: subscription.subscriptionId,
-          previousGroup: last.groupId,
-          previousLastObject: last.objectId,
-          newGroup: groupId,
-          newFirstObject: objectId,
+          previousGroup: last.groupId.toString(),
+          previousLastObject: last.objectId.toString(),
+          newGroup: groupId.toString(),
+          newFirstObject: objectId.toString(),
         });
       }
     }
@@ -1124,8 +1133,8 @@ export class ObjectRouter {
     // Log every object at info level for debugging
     log.info('Delivering object', {
       subscriptionId: subscription.subscriptionId,
-      groupId,
-      objectId,
+      groupId: groupId.toString(),
+      objectId: objectId.toString(),
       dataSize: data.length,
     });
 
@@ -1305,7 +1314,7 @@ export class ObjectRouter {
         this.metrics.counter('moq.object.fetch.in', 1, { codec: this.codecLabel });
         objectCount++;
         bufferOffset += result.bytesConsumed;
-        this.fetchLastGroups.set(requestId, result.groupId);
+        this.fetchLastGroups.set(requestId, BigInt(result.groupId));
 
         log.info('Decoded FETCH object', {
           requestId: requestId.toString(),
@@ -1317,7 +1326,7 @@ export class ObjectRouter {
 
         // Call the FETCH object callback
         if (this.onFetchObject) {
-          this.onFetchObject(requestId, result.payload, result.groupId, result.objectId);
+          this.onFetchObject(requestId, result.payload, BigInt(result.groupId), BigInt(result.objectId));
         }
       } catch (err) {
         this.metrics.counter('moq.codec.decode.errors', 1, {
@@ -1563,24 +1572,21 @@ export class ObjectRouter {
       bufferOffset = payloadStart + payloadLenN;
 
       objectCount++;
-      // IDs are vi64; refuse values a number would round
-      const groupIdN = narrowBigIntToNumber(groupId, 'FETCH Group ID');
-      const objectIdN = narrowBigIntToNumber(objectId, 'FETCH Object ID');
 
-      this.fetchLastGroups.set(requestId, groupIdN);
+      this.fetchLastGroups.set(requestId, groupId);
 
       log.info('Decoded draft-18 FETCH object', {
         requestId: requestId.toString(),
-        groupId: groupIdN,
+        groupId: groupId.toString(),
         subgroupId: subgroupId.toString(),
-        objectId: objectIdN,
+        objectId: objectId.toString(),
         priority,
         payloadSize: payload.length,
         objectCount,
       });
 
       if (this.onFetchObject) {
-        this.onFetchObject(requestId, payload, groupIdN, objectIdN);
+        this.onFetchObject(requestId, payload, groupId, objectId);
       }
 
       // Update prior-object context (spec §11.4.4).

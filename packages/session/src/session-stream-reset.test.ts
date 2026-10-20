@@ -66,7 +66,7 @@ describe('draft-18 §11.4.3 publisher-side stream-reset event', () => {
       code: StreamResetErrorCodeDraft18.EXCESSIVE_LOAD,
       reason: 'load-shedding',
       trackAlias: 42n,
-      groupId: 3,
+      groupId: 3n,
     });
     // The writer is aborted with the code, which is what reaches the wire (d22 §12.5)
     expect(abortSpy).toHaveBeenCalledWith(streamResetReason(StreamResetErrorCodeDraft18.EXCESSIVE_LOAD));

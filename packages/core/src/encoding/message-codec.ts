@@ -2695,12 +2695,11 @@ export class ObjectCodec {
   static decodeDatagramHeader(buffer: Uint8Array): [ObjectHeader, number] {
     if (isDraft18Active()) {
       const [datagram, bytesRead] = Draft18StreamCodec.decodeObjectDatagram(buffer);
-      // groupId/objectId are bounded numbers (see ObjectHeader note).
       const header: ObjectHeader = {
         trackAlias: datagram.trackAlias,
-        groupId: toSafeNumber(datagram.groupId, 'Group ID'),
+        groupId: datagram.groupId,
         subgroupId: 0,
-        objectId: toSafeNumber(datagram.objectId ?? 0n, 'Object ID'),
+        objectId: datagram.objectId ?? 0n,
         publisherPriority: datagram.publisherPriority ?? 128,
         objectStatus: ObjectStatus.NORMAL,
       };
@@ -2716,9 +2715,9 @@ export class ObjectCodec {
     let publisherPriority: number;
     let objectStatus: ObjectStatus;
     let trackAliasBigInt: bigint;
-    let groupId: number;
+    let groupId: bigint;
     let subgroupId = 0;
-    let objectId: number;
+    let objectId: bigint;
 
     if (isDraft16Active()) {
       // Relay wire format: 0x01 | TrackAlias | GroupID | ObjectID |
@@ -2731,9 +2730,8 @@ export class ObjectCodec {
         );
       }
       trackAliasBigInt = reader.readVarInt();
-      // groupId/objectId are bounded numbers — assert wire values fit in Number.
-      groupId = reader.readVarIntNumber();
-      objectId = reader.readVarIntNumber();
+      groupId = reader.readVarInt();
+      objectId = reader.readVarInt();
       const extensionLength = reader.readVarIntNumber(); // bounded length prefix
       if (extensionLength > 0) {
         reader.readBytes(extensionLength);
@@ -2748,10 +2746,9 @@ export class ObjectCodec {
         );
       }
       trackAliasBigInt = reader.readVarInt();
-      // groupId/subgroupId/objectId are bounded numbers — see ObjectHeader note.
-      groupId = reader.readVarIntNumber();
+      groupId = reader.readVarInt();
       subgroupId = reader.readVarIntNumber();
-      objectId = reader.readVarIntNumber();
+      objectId = reader.readVarInt();
       publisherPriority = reader.readByte();
       objectStatus = reader.readVarIntNumber() as ObjectStatus; // byte-sized enum
     }
@@ -2895,10 +2892,9 @@ export class ObjectCodec {
       const hasProperties = d18Header.hasProperties === true;
       // Priority default (spec §11.4.2 DEFAULT_PRIORITY bit) — surface 128 to legacy callers.
       const priority = d18Header.publisherPriority ?? 128;
-      // groupId/subgroupId are bounded numbers (see SubgroupHeader note).
       const header: SubgroupHeader = {
         trackAlias: d18Header.trackAlias,
-        groupId: toSafeNumber(d18Header.groupId, 'Group ID'),
+        groupId: d18Header.groupId,
         subgroupId: toSafeNumber(d18Header.subgroupId ?? 0n, 'Subgroup ID'),
         publisherPriority: priority,
       };
@@ -2915,8 +2911,8 @@ export class ObjectCodec {
     const reader = new BufferReader(buffer);
     const headerType = reader.readVarIntNumber(); // byte-sized discriminator
     const trackAlias = reader.readVarInt();
-    // groupId is a bounded number — assert wire fits Number (see SubgroupHeader note).
-    const groupId = reader.readVarIntNumber();
+    // groupId is a 62-bit varint on the wire; read as bigint (SubgroupHeader.groupId: bigint).
+    const groupId = reader.readVarInt();
 
     const hasExtensions = (headerType & 0x01) !== 0;
     const subgroupIdMode = (headerType & 0x06) >> 1;

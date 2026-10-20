@@ -285,8 +285,8 @@ export class UnifiedSession implements ISession {
 
     const onObject = (
       data: Uint8Array,
-      groupId: number,
-      objectId: number,
+      groupId: bigint,
+      objectId: bigint,
       _timestamp: number
     ) => {
       const buf = bufferRef.buffer;
@@ -294,9 +294,9 @@ export class UnifiedSession implements ISession {
 
       const obj: UnifiedMOQTObject = {
         trackAlias: 0n,
-        groupId: BigInt(groupId),
+        groupId,
         subgroupId: 0n,
-        objectId: BigInt(objectId),
+        objectId,
         publisherPriority: 128,
         status: ObjectStatus.NORMAL,
         payload: data,
@@ -477,8 +477,8 @@ export class UnifiedSession implements ISession {
 
       async sendObject(object: OutgoingObject): Promise<void> {
         const metadata: ObjectMetadata = {
-          groupId: Number(object.groupId),
-          objectId: Number(object.objectId),
+          groupId: object.groupId,
+          objectId: object.objectId,
         };
 
         await self.session.sendObject(trackAlias, object.payload, metadata);
@@ -515,13 +515,13 @@ export class UnifiedSession implements ISession {
 
     const buffer: ObjectBuffer = { queue: [], resolver: null, closed: false };
 
-    const onObject = (data: Uint8Array, groupId: number, objectId: number) => {
+    const onObject = (data: Uint8Array, groupId: bigint, objectId: bigint) => {
       if (buffer.closed) return;
       const obj: UnifiedMOQTObject = {
         trackAlias: 0n,
-        groupId: BigInt(groupId),
+        groupId,
         subgroupId: 0n,
-        objectId: BigInt(objectId),
+        objectId,
         publisherPriority: 128,
         status: ObjectStatus.NORMAL,
         payload: data,

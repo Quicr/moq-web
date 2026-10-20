@@ -43,7 +43,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter session draft (%s
     const subs = new SubscriptionManager();
     subs.add(makeSub());
     const router = new ObjectRouter(subs, undefined, draft);
-    const delivered: Array<[number, number]> = [];
+    const delivered: Array<[bigint, bigint]> = [];
     router.setCallback((_sub, _data, groupId, objectId) => {
       delivered.push([groupId, objectId]);
     });
@@ -58,14 +58,14 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter session draft (%s
     const object = new Uint8Array([0x00, 0x01, 0xaa]);
     await router.handleIncomingStream(streamOf(new Uint8Array([...header, ...object])));
 
-    expect(delivered).toEqual([[GROUP_ID, OBJECT_ID]]);
+    expect(delivered).toEqual([[BigInt(GROUP_ID), BigInt(OBJECT_ID)]]);
   });
 
   it('decodes a datagram with large IDs', () => {
     const subs = new SubscriptionManager();
     subs.add(makeSub());
     const router = new ObjectRouter(subs, undefined, draft);
-    const delivered: Array<[number, number]> = [];
+    const delivered: Array<[bigint, bigint]> = [];
     router.setCallback((_sub, _data, groupId, objectId) => {
       delivered.push([groupId, objectId]);
     });
@@ -80,6 +80,6 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter session draft (%s
       }),
     );
 
-    expect(delivered).toEqual([[GROUP_ID, 1]]);
+    expect(delivered).toEqual([[BigInt(GROUP_ID), 1n]]);
   });
 });

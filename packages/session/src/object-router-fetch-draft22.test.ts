@@ -26,7 +26,7 @@ import { SubscriptionManager } from './subscription-manager.js';
 const REQUEST_ID = 7n;
 const PRIORITY = 128;
 
-type Seen = Array<[number, number]>;
+type Seen = Array<[bigint, bigint]>;
 
 /** First object: absolute Group ID / Object ID, explicit priority. */
 function first(group: bigint, object: bigint): FetchObjectDraft18 {
@@ -97,7 +97,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH stream delt
       next({ groupIdDelta: 2n, objectIdDelta: 4n }), // group 9
     ]);
 
-    expect(seen).toEqual([[5, 0], [6, 0], [9, 4]]);
+    expect(seen).toEqual([[5n, 0n], [6n, 0n], [9n, 4n]]);
   });
 
   it('defaults to ascending when no group order was registered', async () => {
@@ -106,7 +106,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH stream delt
       next({ groupIdDelta: 0n, objectIdDelta: 0n }),
     ]);
 
-    expect(seen).toEqual([[1, 0], [2, 0]]);
+    expect(seen).toEqual([[1n, 0n], [2n, 0n]]);
   });
 
   it('descending: Group ID Delta is prior - (delta + 1)', async () => {
@@ -120,7 +120,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH stream delt
       GroupOrder.DESCENDING,
     );
 
-    expect(seen).toEqual([[10, 3], [9, 0], [5, 1]]);
+    expect(seen).toEqual([[10n, 3n], [9n, 0n], [5n, 1n]]);
   });
 
   it('descending: a computed Group ID below 0 stops decoding', async () => {
@@ -134,7 +134,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH stream delt
       GroupOrder.DESCENDING,
     );
 
-    expect(seen).toEqual([[1, 0]]);
+    expect(seen).toEqual([[1n, 0n]]);
   });
 
   it('Object ID Delta without Group ID Delta is prior + delta', async () => {
@@ -145,7 +145,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH stream delt
       next({ objectIdDelta: 0n }), // 8 (prior + 0)
     ]);
 
-    expect(seen).toEqual([[3, 2], [3, 7], [3, 8], [3, 8]]);
+    expect(seen).toEqual([[3n, 2n], [3n, 7n], [3n, 8n], [3n, 8n]]);
   });
 
   it('End of Range sets the prior Group/Object ID for the next object', async () => {
@@ -157,19 +157,21 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH stream delt
       next({ objectIdDelta: 2n }), // same group 6, object 3 + 2
     ]);
 
-    expect(seen).toEqual([[2, 0], [5, 0], [6, 5]]);
+    expect(seen).toEqual([[2n, 0n], [5n, 0n], [6n, 5n]]);
   });
 
-  it('does not deliver an ID above 2^53-1 rounded onto its neighbour', async () => {
+  it('delivers a large ID (above 2^53-1) correctly as bigint without rounding', async () => {
     const router = new ObjectRouter(new SubscriptionManager(), undefined, draft);
     const seen: Seen = [];
     router.setFetchObjectCallback((_id, _data, group, object) => {
       seen.push([group, object]);
     });
 
-    await router.handleIncomingStream(fetchStream([first((1n << 60n) + 1n, 0n)])).catch(() => undefined);
+    const largeId = (1n << 60n) + 1n;
+    await router.handleIncomingStream(fetchStream([first(largeId, 0n)])).catch(() => undefined);
 
-    expect(seen).toEqual([]);
+    // With bigint IDs, the large value is delivered exactly — no rounding onto a neighbour.
+    expect(seen).toEqual([[largeId, 0n]]);
   });
 
   it('clears the registered group order when the stream ends', async () => {
@@ -184,7 +186,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH stream delt
     await router.handleIncomingStream(fetchStream([first(9n, 0n), next({ groupIdDelta: 0n, objectIdDelta: 0n })]));
 
     // Second stream sees the ascending default, not the stale DESCENDING entry.
-    expect(seen).toEqual([[9, 0], [9, 0], [10, 0]]);
+    expect(seen).toEqual([[9n, 0n], [9n, 0n], [10n, 0n]]);
   });
 });
 
@@ -196,6 +198,6 @@ describe('ObjectRouter draft-22 End of Timed-Out Range (§11.4.1.2)', () => {
       next({ objectIdDelta: 2n }), // same group 6, object 3 + 2
     ]);
 
-    expect(seen).toEqual([[2, 0], [6, 5]]);
+    expect(seen).toEqual([[2n, 0n], [6n, 5n]]);
   });
 });

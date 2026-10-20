@@ -35,8 +35,8 @@ function makeRouter(draft: DraftVersion) {
   const router = new ObjectRouter(subs, undefined, draft);
   const malformed: Array<{ trackAlias?: bigint | number; fetchRequestId?: bigint }> = [];
   const violations: string[] = [];
-  const delivered: Array<[number, number]> = [];
-  const fetched: Array<[number, number]> = [];
+  const delivered: Array<[bigint, bigint]> = [];
+  const fetched: Array<[bigint, bigint]> = [];
   router.setMalformedTrackCallback((target) => malformed.push(target));
   router.setViolationCallback((reason) => violations.push(reason));
   router.setCallback((_sub, _data, groupId, objectId) => delivered.push([groupId, objectId]));
@@ -132,7 +132,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Mandatory Track Property on an
     await router.handleIncomingStream(streamOf(fetchStream(ordinary)));
 
     expect(malformed).toEqual([]);
-    expect(delivered).toEqual([[3, 0], [3, 1]]);
-    expect(fetched).toEqual([[1, 0]]);
+    expect(delivered).toEqual([[3n, 0n], [3n, 1n]]);
+    expect(fetched).toEqual([[1n, 0n]]);
   });
 });

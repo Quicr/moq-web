@@ -19,11 +19,11 @@ const log = Logger.create('moqt:session:subscription-manager');
  */
 export interface InternalSubscription extends SubscriptionInfo {
   /** Object handler callback */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: (data: Uint8Array, groupId: bigint, objectId: bigint, timestamp: number) => void;
   /** End of group callback - called when END_OF_GROUP status is received */
-  onEndOfGroup?: (groupId: number) => void;
+  onEndOfGroup?: (groupId: bigint) => void;
   /** Buffer for objects that arrive before onObject is set */
-  pendingObjects?: Array<{ data: Uint8Array; groupId: number; objectId: number; timestamp: number }>;
+  pendingObjects?: Array<{ data: Uint8Array; groupId: bigint; objectId: bigint; timestamp: number }>;
   /** Group order requested at subscribe time; fill streams default to it (draft-22 §3.4) */
   groupOrder?: GroupOrder;
   /** Ranges held per Range Filter, for the peer's MAX_FILTER_RANGES (draft-22 §9.1.6) */

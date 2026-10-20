@@ -1390,22 +1390,12 @@ export interface AuthorizationToken {
 export interface ObjectHeader {
   /** Track alias for efficient reference — 62-bit varint */
   trackAlias: bigint;
-  /**
-   * Group ID (typically increments at keyframes).
-   *
-   * NOTE: Wire type is a 62-bit varint but this field is kept as `number`
-   * throughout the object plane because the delta-encoded stream/fetch
-   * codecs, media pipeline, and JSON logging paths perform arithmetic in
-   * `number`. Callers producing group IDs above `Number.MAX_SAFE_INTEGER`
-   * (2^53-1) should upgrade to a bigint-safe path; codec sites that read
-   * this field from the wire assert the value fits in `number` via
-   * `readVarIntNumber()`.
-   */
-  groupId: number;
-  /** Subgroup ID within the group (bounded number; see `groupId` note) */
+  /** Group ID (62-bit varint on the wire). */
+  groupId: bigint;
+  /** Subgroup ID within the group (bounded to number for internal multiplexing use) */
   subgroupId: number;
-  /** Object ID within the subgroup (bounded number; see `groupId` note) */
-  objectId: number;
+  /** Object ID within the subgroup (62-bit varint on the wire). */
+  objectId: bigint;
   /** Publisher priority for this object (byte 0-255) */
   publisherPriority: number;
   /** Object status */
@@ -1421,15 +1411,9 @@ export interface ObjectHeader {
 export interface SubgroupHeader {
   /** Track alias — 62-bit varint */
   trackAlias: bigint;
-  /**
-   * Group ID.
-   *
-   * NOTE: Wire type is a 62-bit varint but kept as `number` — see the
-   * `ObjectHeader.groupId` note for rationale. Codec sites assert range
-   * via `readVarIntNumber()`.
-   */
-  groupId: number;
-  /** Subgroup ID (bounded number; see `groupId` note) */
+  /** Group ID (62-bit varint on the wire). */
+  groupId: bigint;
+  /** Subgroup ID (bounded to number for internal multiplexing use) */
   subgroupId: number;
   /** Publisher priority (byte 0-255) */
   publisherPriority: number;

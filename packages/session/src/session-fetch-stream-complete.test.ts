@@ -75,7 +75,7 @@ describe.each(['draft-18', 'draft-22'] as const)('fetch-stream-complete (%s)', (
 
     await internals.objectRouter.handleIncomingStream(stream);
 
-    expect(events).toEqual([{ requestId: REQUEST_ID, lastGroupId: 6 }]);
+    expect(events).toEqual([{ requestId: REQUEST_ID, lastGroupId: 6n }]);
   });
 
   it('fires for an empty fetch, a header followed by FIN', async () => {
@@ -108,6 +108,6 @@ describe.each(['draft-18', 'draft-22'] as const)('fetch-stream-complete (%s)', (
 
     await internals.objectRouter.handleIncomingStream(stream);
 
-    expect(events).toEqual([{ requestId: REQUEST_ID, lastGroupId: 2 }]);
+    expect(events).toEqual([{ requestId: REQUEST_ID, lastGroupId: 2n }]);
   });
 });

@@ -34,7 +34,7 @@ describe.each(['draft-18', 'draft-22'] as const)('subscriber delivery timeouts (
     };
     subs.add(sub);
     const router = new ObjectRouter(subs, undefined, draft);
-    const delivered: number[] = [];
+    const delivered: bigint[] = [];
     router.setCallback((_sub, _data, _groupId, objectId) => {
       delivered.push(objectId);
     });
@@ -61,7 +61,7 @@ describe.each(['draft-18', 'draft-22'] as const)('subscriber delivery timeouts (
     controller.close();
     await done;
 
-    expect(delivered).toEqual([0, 1]);
+    expect(delivered).toEqual([0n, 1n]);
     expect(cancelled).not.toHaveBeenCalled();
   });
 });

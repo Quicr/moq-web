@@ -892,8 +892,9 @@ export class MOQTSession {
     this.maxRequestId = configuredMax !== undefined && configuredMax > 0 ? configuredMax : 1000;
 
     this.objectRouter = new ObjectRouter(this.subscriptionManager, (sub, data, groupId, objectId, timestamp) => {
-      if (sub.largestGroup === undefined || groupId > sub.largestGroup) {
-        sub.largestGroup = groupId;
+      const groupIdN = groupId <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(groupId) : Number.MAX_SAFE_INTEGER;
+      if (sub.largestGroup === undefined || groupIdN > sub.largestGroup) {
+        sub.largestGroup = groupIdN;
       }
       this.emit('object', {
         subscriptionId: sub.subscriptionId,
@@ -904,11 +905,11 @@ export class MOQTSession {
         timestamp,
       } as ReceivedObjectEvent);
 
-      // Emit subscribe stats for UI updates
+      // Emit subscribe stats for UI updates (stats use number for display)
       this.emit('subscribe-stats', {
         subscriptionId: sub.subscriptionId,
-        groupId,
-        objectId,
+        groupId: groupIdN,
+        objectId: objectId <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(objectId) : Number.MAX_SAFE_INTEGER,
         bytes: data.byteLength,
       } as SubscribeStatsEvent);
     }, this._draft, this.metrics);
@@ -2855,7 +2856,7 @@ export class MOQTSession {
    */
   async subscribeTracks(
     namespacePrefix: string[],
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
+    onObject?: (data: Uint8Array, groupId: bigint, objectId: bigint, timestamp: number) => void,
     options?: {
       forwardState?: boolean;
       filter?: SubscriptionFilterDraft18;
@@ -3506,7 +3507,7 @@ export class MOQTSession {
   private noteObjectExpired(trackAlias: bigint, metadata: ObjectMetadata): void {
     const publication = this.publicationManager.get(trackAlias);
     if (publication) {
-      publication.expiredGroup = metadata.groupId;
+      publication.expiredGroup = Number(metadata.groupId);
     }
 
     this.emit('delivery-timeout', {
@@ -3514,9 +3515,9 @@ export class MOQTSession {
       reason: 'object',
       resetCode: StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT,
       trackAlias,
-      groupId: metadata.groupId,
+      groupId: Number(metadata.groupId),
       subgroupId: 0,
-      objectId: metadata.objectId,
+      objectId: Number(metadata.objectId),
     } as DeliveryTimeoutEvent);
   }
 
@@ -3636,7 +3637,7 @@ export class MOQTSession {
         code,
         reason: abortReason,
         trackAlias: BigInt(trackAlias),
-        groupId: existing.groupId,
+        groupId: existing.groupId !== undefined ? BigInt(existing.groupId) : undefined,
       } as StreamResetEvent);
     } catch { /* alias may not parse as bigint in test fixtures */ }
     this.activeVideoStreams.delete(trackAlias);
@@ -3752,8 +3753,8 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
     options?: SubscribeOptions,
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
-    onEndOfGroup?: (groupId: number) => void
+    onObject?: (data: Uint8Array, groupId: bigint, objectId: bigint, timestamp: number) => void,
+    onEndOfGroup?: (groupId: bigint) => void
   ): Promise<number> {
     if (!this.isReady) {
       throw new Error('Session not ready');
@@ -4193,7 +4194,7 @@ export class MOQTSession {
     trackName: string,
     range: FetchRange,
     options?: FetchOptions,
-    onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
+    onObject?: (data: Uint8Array, groupId: bigint, objectId: bigint) => void
   ): Promise<bigint> {
     if (!this.isReady) {
       throw new Error('Session not ready');
@@ -4217,7 +4218,7 @@ export class MOQTSession {
     trackName: string,
     range: FetchRange,
     options?: FetchOptions,
-    onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
+    onObject?: (data: Uint8Array, groupId: bigint, objectId: bigint) => void
   ): Promise<bigint> {
     const fullTrackNameStr = [...namespace, trackName].join('/');
 
@@ -4952,7 +4953,7 @@ export class MOQTSession {
    */
   setSubscriptionCallback(
     subscriptionId: number,
-    onObject: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void
+    onObject: (data: Uint8Array, groupId: bigint, objectId: bigint, timestamp: number) => void
   ): void {
     const subscription = this.subscriptionManager.get(subscriptionId);
     if (subscription) {
@@ -5876,8 +5877,8 @@ export class MOQTSession {
               // Send object using normal publish flow
               // Note: Omitting maxCacheDuration to avoid extension encoding issues with relay
               await this.sendObject(trackAlias, data, {
-                groupId: currentGroupId,
-                objectId,
+                groupId: BigInt(currentGroupId),
+                objectId: BigInt(objectId),
                 type: 'video',
                 isKeyframe: objectId === 0,
               });
@@ -6250,8 +6251,8 @@ export class MOQTSession {
     this.emit('publish-stats', {
       trackAlias: trackAlias.toString(),
       type: metadata.type,
-      groupId: metadata.groupId,
-      objectId: metadata.objectId,
+      groupId: Number(metadata.groupId),
+      objectId: Number(metadata.objectId),
       bytes: data.byteLength,
     } as PublishStatsEvent);
   }
@@ -6355,9 +6356,9 @@ export class MOQTSession {
     // stalled create/write path is caught by the same timer that guards
     // long-running GOP streams. Since sendObjectViaStream sends one whole
     // object per stream, we key on (alias, groupId, subgroupId=0).
-    const timeoutKey = this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
+    const timeoutKey = this.armPublisherSubgroupTimer(trackAlias, Number(metadata.groupId), 0);
     try {
-      const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+      const sendOrder = this.deriveSendOrder(trackAlias, priority, Number(metadata.groupId));
       const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
 
       // Set END_OF_GROUP=true since this stream contains one complete object/group
@@ -6376,7 +6377,7 @@ export class MOQTSession {
       }
 
       const objectData = this.codec.encodeStreamObject(
-        metadata.objectId,
+        Number(metadata.objectId),
         data,
         ObjectStatus.NORMAL,
         -1, // previousObjectId (first object)
@@ -6439,7 +6440,7 @@ export class MOQTSession {
     const receivedAt = performance.now();
 
     // After an object timeout the subgroup is not reopened (d22 §5.2)
-    if (this.publicationManager.get(trackAlias)?.expiredGroup === metadata.groupId) {
+    if (this.publicationManager.get(trackAlias)?.expiredGroup === Number(metadata.groupId)) {
       log.debug('Dropping object of a subgroup reset for a delivery timeout', {
         trackAlias: aliasKey,
         groupId: metadata.groupId,
@@ -6450,7 +6451,7 @@ export class MOQTSession {
 
     try {
       let existing = this.activeVideoStreams.get(aliasKey);
-      if (existing && existing.groupId !== metadata.groupId) {
+      if (existing && existing.groupId !== Number(metadata.groupId)) {
         await this.closeVideoGOPStream(aliasKey);
         existing = undefined;
       }
@@ -6468,7 +6469,7 @@ export class MOQTSession {
 
       const maxCacheDuration = metadata.maxCacheDuration ?? existing.maxCacheDuration;
       const objectData = this.codec.encodeStreamObject(
-        metadata.objectId,
+        Number(metadata.objectId),
         data,
         ObjectStatus.NORMAL,
         existing.previousObjectId,
@@ -6479,7 +6480,7 @@ export class MOQTSession {
       try {
         await this.doWriteStream({ writer: existing.writer, streamId: existing.streamId }, objectData);
         existing.objectCount++;
-        existing.previousObjectId = metadata.objectId;
+        existing.previousObjectId = Number(metadata.objectId);
       } catch (writeErr) {
         const errMsg = (writeErr as Error).message;
         if (!errMsg.includes('not found') && !errMsg.includes('STOP_SENDING')) {
@@ -6521,12 +6522,12 @@ export class MOQTSession {
     receivedAt: number
   ): Promise<void> {
     const publication = this.publicationManager.get(trackAlias);
-    const reopened = publication?.lastStreamGroup === metadata.groupId;
+    const reopened = publication?.lastStreamGroup === Number(metadata.groupId);
     if (publication) {
-      publication.lastStreamGroup = metadata.groupId;
+      publication.lastStreamGroup = Number(metadata.groupId);
     }
 
-    const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+    const sendOrder = this.deriveSendOrder(trackAlias, priority, Number(metadata.groupId));
     const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
 
     // Opening the stream may have taken longer than the object may wait
@@ -6547,7 +6548,7 @@ export class MOQTSession {
 
     const maxCacheDuration = metadata.maxCacheDuration;
     const objectData = this.codec.encodeStreamObject(
-      metadata.objectId,
+      Number(metadata.objectId),
       data,
       ObjectStatus.NORMAL,
       -1, // first object on this stream
@@ -6563,9 +6564,9 @@ export class MOQTSession {
     this.activeVideoStreams.set(trackAlias.toString(), {
       writer: streamInfo.writer,
       streamId: streamInfo.streamId,
-      groupId: metadata.groupId,
+      groupId: Number(metadata.groupId),
       objectCount: 1,
-      previousObjectId: metadata.objectId,
+      previousObjectId: Number(metadata.objectId),
       hasExtensions,
       maxCacheDuration,
     });
@@ -6619,11 +6620,11 @@ export class MOQTSession {
         }
 
         // §8: arm a fresh subgroup-delivery deadline for the incoming GOP.
-        this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
+        this.armPublisherSubgroupTimer(trackAlias, Number(metadata.groupId), 0);
 
         // Create new stream for this GOP — §7.2 sendOrder pulls priority
         // from the subscribing peer's SUBSCRIBER_PRIORITY / GROUP_ORDER.
-        const gopSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+        const gopSendOrder = this.deriveSendOrder(trackAlias, priority, Number(metadata.groupId));
         const streamInfo = await this.openSubgroupStream(trackAlias, gopSendOrder !== undefined ? { sendOrder: gopSendOrder } : undefined);
 
         // Set END_OF_GROUP=true since each stream contains exactly one complete group (one GOP)
@@ -6642,7 +6643,7 @@ export class MOQTSession {
         }
 
         const objectData = this.codec.encodeStreamObject(
-          metadata.objectId,
+          Number(metadata.objectId),
           data,
           ObjectStatus.NORMAL,
           -1, // previousObjectId (first object)
@@ -6659,9 +6660,9 @@ export class MOQTSession {
         this.activeVideoStreams.set(aliasKey, {
           writer: streamInfo.writer!,
           streamId: streamInfo.streamId!,
-          groupId: metadata.groupId,
+          groupId: Number(metadata.groupId),
           objectCount: 1,
-          previousObjectId: metadata.objectId, // For delta encoding
+          previousObjectId: Number(metadata.objectId), // For delta encoding
           hasExtensions,
           maxCacheDuration: metadata.maxCacheDuration, // Store for P-frames
         });
@@ -6686,7 +6687,7 @@ export class MOQTSession {
             objectId: metadata.objectId,
           });
 
-          const pfSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+          const pfSendOrder = this.deriveSendOrder(trackAlias, priority, Number(metadata.groupId));
           const streamInfo = await this.openSubgroupStream(trackAlias, pfSendOrder !== undefined ? { sendOrder: pfSendOrder } : undefined);
           const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
             trackAlias,
@@ -6696,7 +6697,7 @@ export class MOQTSession {
           }, false);
 
           const objectData = this.codec.encodeStreamObject(
-            metadata.objectId,
+            Number(metadata.objectId),
             data,
             ObjectStatus.NORMAL,
             -1,
@@ -6712,15 +6713,15 @@ export class MOQTSession {
           this.activeVideoStreams.set(aliasKey, {
             writer: streamInfo.writer!,
             streamId: streamInfo.streamId!,
-            groupId: metadata.groupId,
+            groupId: Number(metadata.groupId),
             objectCount: 1,
-            previousObjectId: metadata.objectId,
+            previousObjectId: Number(metadata.objectId),
             hasExtensions,
           });
           return;
         }
 
-        if (existing.groupId !== metadata.groupId) {
+        if (existing.groupId !== Number(metadata.groupId)) {
           log.warn('P-frame groupId mismatch, closing stream and creating new', {
             trackAlias: aliasKey,
             existingGroupId: existing.groupId,
@@ -6744,7 +6745,7 @@ export class MOQTSession {
         }
 
         const objectData = this.codec.encodeStreamObject(
-          metadata.objectId,
+          Number(metadata.objectId),
           data,
           ObjectStatus.NORMAL,
           existing.previousObjectId, // Delta encoding from previous object
@@ -6755,7 +6756,7 @@ export class MOQTSession {
         try {
           await this.doWriteStream({ writer: existing.writer, streamId: existing.streamId }, objectData);
           existing.objectCount++;
-          existing.previousObjectId = metadata.objectId; // Update for next delta
+          existing.previousObjectId = Number(metadata.objectId); // Update for next delta
 
           log.debug('Added P-frame to GOP stream', {
             trackAlias: aliasKey,
@@ -6777,7 +6778,7 @@ export class MOQTSession {
             this.activeVideoStreams.delete(aliasKey);
 
             // Reopen stream and retry as if this is a new keyframe for the same group
-            const reopenSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+            const reopenSendOrder = this.deriveSendOrder(trackAlias, priority, Number(metadata.groupId));
             const streamInfo = await this.openSubgroupStream(trackAlias, reopenSendOrder !== undefined ? { sendOrder: reopenSendOrder } : undefined);
             const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
               trackAlias,
@@ -6787,7 +6788,7 @@ export class MOQTSession {
             }, false /* not endOfGroup - stream stays open */);
 
             const retryObjectData = this.codec.encodeStreamObject(
-              metadata.objectId,
+              Number(metadata.objectId),
               data,
               ObjectStatus.NORMAL,
               -1, // first object in new subgroup
@@ -6803,9 +6804,9 @@ export class MOQTSession {
             this.activeVideoStreams.set(aliasKey, {
               writer: streamInfo.writer!,
               streamId: streamInfo.streamId!,
-              groupId: metadata.groupId,
+              groupId: Number(metadata.groupId),
               objectCount: 1,
-              previousObjectId: metadata.objectId,
+              previousObjectId: Number(metadata.objectId),
               hasExtensions,
             });
           } else {
