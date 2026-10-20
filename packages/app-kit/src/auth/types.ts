@@ -37,6 +37,8 @@ export interface MintedAuthToken {
   expiresAt?: number;
   /** Optional adapter-specific handle so `revoke` can find the token later. */
   handle?: string;
+  /** Optional CAT token for SETUP AUTHORIZATION_TOKEN (e.g. Cloudflare pilot). */
+  catToken?: { raw: string; type: number };
 }
 
 /** Context handed to `mintToken` — the current relay URL, the requested

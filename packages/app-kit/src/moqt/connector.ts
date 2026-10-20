@@ -68,6 +68,7 @@ export async function connectMoqtSession(opts: ConnectMoqtOptions): Promise<Conn
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
 
     let connectUrl = url;
+    let adapterCatToken: { raw: string; type: number } | undefined;
     if (adapter && requestedOps && requestedOps.length > 0) {
       try {
         const token = await adapter.mintToken({
@@ -77,6 +78,7 @@ export async function connectMoqtSession(opts: ConnectMoqtOptions): Promise<Conn
           signal,
         });
         connectUrl = adapter.applyToUrl(url, token);
+        adapterCatToken = token.catToken;
       } catch (err) {
         log.warn('Auth adapter mint failed, trying next relay', {
           url,
@@ -99,7 +101,11 @@ export async function connectMoqtSession(opts: ConnectMoqtOptions): Promise<Conn
       const session = new MOQTSession(transport);
       if (clientExtensions) session.setClientExtensions(clientExtensions);
       if (implementationString) session.setImplementationString(implementationString);
-      if (authToken) session.setAuthToken(authToken.raw, authToken.type);
+      if (adapterCatToken) {
+        session.setAuthToken(adapterCatToken.raw, adapterCatToken.type);
+      } else if (authToken) {
+        session.setAuthToken(authToken.raw, authToken.type);
+      }
       if (cfg.relay.keepAliveMs > 0) {
         session.configureIdle({ keepaliveIntervalMs: cfg.relay.keepAliveMs });
       }

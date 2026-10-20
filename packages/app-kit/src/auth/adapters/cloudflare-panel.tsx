@@ -6,9 +6,11 @@ import type { SettingsPanelProps } from '../types.js';
 import {
   createCloudflareToken,
   listCloudflareRelays,
+  moatGuestLogin,
   parseCloudflareJwt,
   relayUrlFromRelay,
   runtimeCache,
+  moatCatCache,
   type CloudflareCachedToken,
   type CloudflareRelay,
   type CloudflareState,
@@ -224,6 +226,8 @@ export function CloudflareAuthPanel({ state, updateState, resetState }: Settings
       ) : (
         <ApiModeBody />
       )}
+
+      <CatSection state={s} updateState={updateState} />
     </div>
   );
 
@@ -635,4 +639,167 @@ function formatExpiry(epochMs: number): string {
   if (hours < 48) return `in ${hours}h (${new Date(epochMs).toLocaleString()})`;
   const days = Math.round(hours / 24);
   return `in ${days}d (${new Date(epochMs).toLocaleDateString()})`;
+}
+
+// ============================================================================
+// CAT Authorization Section (Cloudflare pilot)
+// ============================================================================
+
+function CatSection({
+  state: s,
+  updateState,
+}: {
+  state: CloudflareState;
+  updateState: (patch: Record<string, unknown>) => void;
+}) {
+  const [moatUrlDraft, setMoatUrlDraft] = useState(s.moatUrl ?? '');
+  const [displayNameDraft, setDisplayNameDraft] = useState(s.moatDisplayName ?? 'studio-user');
+  const [roomIdDraft, setRoomIdDraft] = useState(s.moatRoomId ?? '');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reconcile runtime cache into state
+  useEffect(() => {
+    if (moatCatCache.token && moatCatCache.expiresAt) {
+      if (s.moatCatToken !== moatCatCache.token) {
+        updateState({
+          moatCatToken: moatCatCache.token,
+          moatCatExpiresAt: moatCatCache.expiresAt,
+        });
+      }
+    }
+  }, []);
+
+  const handleLogin = async () => {
+    if (!moatUrlDraft) { setError('Enter moat URL'); return; }
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await moatGuestLogin(moatUrlDraft, displayNameDraft);
+      updateState({
+        moatUrl: moatUrlDraft,
+        moatSessionToken: resp.session_token,
+        moatDisplayName: displayNameDraft,
+      });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveRoom = () => {
+    updateState({ moatRoomId: roomIdDraft });
+  };
+
+  return (
+    <div
+      style={{
+        borderTop: '1px solid var(--ak-border)',
+        paddingTop: 12,
+        marginTop: 4,
+      }}
+    >
+      <div className="ak-row-between" style={{ marginBottom: 8 }}>
+        <div>
+          <div className="ak-heading" style={{ fontSize: 13 }}>CAT Authorization</div>
+          <div className="ak-subtle" style={{ fontSize: 11 }}>
+            Cloudflare pilot — COSE_Sign1 token type 1 via moat
+          </div>
+        </div>
+        <label className="ak-toggle">
+          <input
+            type="checkbox"
+            checked={!!s.catEnabled}
+            onChange={(e) => updateState({ catEnabled: e.target.checked })}
+          />
+          <span />
+        </label>
+      </div>
+
+      {s.catEnabled && (
+        <div className="ak-stack" style={{ gap: 8 }}>
+          {error && (
+            <div className="ak-caption" style={{ color: 'var(--ak-danger)', fontSize: 11 }}>
+              {error}
+            </div>
+          )}
+
+          {/* Moat URL */}
+          <label>
+            <div className="ak-caption" style={{ marginBottom: 4 }}>Moat service URL</div>
+            <input
+              className="ak-input ak-input-mono"
+              type="text"
+              placeholder="https://moat.example.com"
+              value={moatUrlDraft}
+              onChange={(e) => setMoatUrlDraft(e.target.value)}
+            />
+          </label>
+
+          {/* Display name + login */}
+          <div className="ak-row" style={{ gap: 6 }}>
+            <input
+              className="ak-input"
+              type="text"
+              placeholder="Display name"
+              value={displayNameDraft}
+              onChange={(e) => setDisplayNameDraft(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button
+              className="ak-btn ak-btn-primary"
+              onClick={handleLogin}
+              disabled={loading || !moatUrlDraft}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {loading ? 'Logging in...' : s.moatSessionToken ? 'Re-login' : 'Guest login'}
+            </button>
+          </div>
+
+          {/* Status */}
+          {s.moatSessionToken && (
+            <div className="ak-chip ak-chip-success" style={{ fontSize: 11 }}>
+              Logged in to moat
+            </div>
+          )}
+
+          {/* Room ID */}
+          <label>
+            <div className="ak-caption" style={{ marginBottom: 4 }}>Room ID (for token scoping)</div>
+            <div className="ak-row" style={{ gap: 6 }}>
+              <input
+                className="ak-input ak-input-mono"
+                type="text"
+                placeholder="room-uuid-or-name"
+                value={roomIdDraft}
+                onChange={(e) => setRoomIdDraft(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <button
+                className="ak-btn ak-btn-ghost"
+                onClick={handleSaveRoom}
+                disabled={!roomIdDraft}
+              >
+                Save
+              </button>
+            </div>
+          </label>
+
+          {/* Cached CAT info */}
+          {s.moatCatToken && (
+            <div style={{ fontSize: 11, color: 'var(--ak-fg-muted)' }}>
+              CAT cached · expires {formatExpiry(s.moatCatExpiresAt ?? 0)}
+              · token type 1 · SETUP AUTHORIZATION_TOKEN
+            </div>
+          )}
+
+          {/* Interop note */}
+          <div className="ak-chip ak-chip-warn" style={{ fontSize: 10 }}>
+            Requires moat with c4m-01 encoding (tag 18, raw r‖s sig, claim 327)
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

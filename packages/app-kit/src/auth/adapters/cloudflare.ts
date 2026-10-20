@@ -88,6 +88,22 @@ export interface CloudflareState extends ProviderState {
    *     in; the adapter only reads `tokens` and never calls the API.
    */
   authMode?: 'api' | 'preminted';
+
+  // ---- CAT authorization (Cloudflare pilot) ----
+  /** Enable CAT authorization via moat token service */
+  catEnabled?: boolean;
+  /** Moat token service base URL */
+  moatUrl?: string;
+  /** Session token from moat /v1/auth/guest or /v1/auth/google */
+  moatSessionToken?: string;
+  /** Display name used for moat guest login */
+  moatDisplayName?: string;
+  /** Room ID to request tokens for */
+  moatRoomId?: string;
+  /** Cached moat CAT token (base64url-encoded COSE_Sign1) */
+  moatCatToken?: string;
+  /** Cached moat CAT token expiry (epoch ms) */
+  moatCatExpiresAt?: number;
 }
 
 interface CloudflareEnvelope<T> {
@@ -226,9 +242,111 @@ export function parseCloudflareJwt(jwt: string): {
   };
 }
 
+// ============================================================================
+// Moat token service client (CAT authorization)
+// ============================================================================
+
+export interface MoatGuestLoginResponse {
+  user: { id: string; display_name: string };
+  session_token: string;
+}
+
+export interface MoatTokenResponse {
+  token: string;
+  expires_at: number;
+  scopes: Array<{ actions: number[]; namespace: string }>;
+  dpop: boolean;
+}
+
+export async function moatGuestLogin(
+  moatUrl: string,
+  displayName: string,
+  signal?: AbortSignal,
+): Promise<MoatGuestLoginResponse> {
+  const res = await fetch(`${moatUrl}/v1/auth/guest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ display_name: displayName }),
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(`Moat guest login failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function moatMintCat(
+  moatUrl: string,
+  sessionToken: string,
+  roomId: string,
+  role: 'publisher' | 'subscriber' | 'pubsub',
+  signal?: AbortSignal,
+): Promise<MoatTokenResponse> {
+  const res = await fetch(`${moatUrl}/v1/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${sessionToken}`,
+    },
+    body: JSON.stringify({ room_id: roomId, role }),
+    signal,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Moat token mint failed: HTTP ${res.status} ${body}`);
+  }
+  return res.json();
+}
+
+// ============================================================================
+// Token minting
+// ============================================================================
+
+/**
+ * Optionally mint a CAT from moat when catEnabled.
+ * Returns the catToken field for MintedAuthToken, or undefined.
+ */
+async function mintMoatCatIfEnabled(
+  state: CloudflareState,
+  operations: AuthOperation[],
+  signal?: AbortSignal,
+): Promise<{ raw: string; type: number } | undefined> {
+  if (!state.catEnabled) return undefined;
+  const { moatUrl, moatSessionToken, moatRoomId } = state;
+  if (!moatUrl || !moatSessionToken || !moatRoomId) {
+    throw new Error(
+      'CAT enabled but moat is not configured — open Settings ▸ Auth and login to moat',
+    );
+  }
+
+  // Check cached CAT
+  if (state.moatCatToken && state.moatCatExpiresAt && state.moatCatExpiresAt - SKEW_MS > Date.now()) {
+    return { raw: state.moatCatToken, type: 1 };
+  }
+
+  // Determine role from operations
+  const hasPub = operations.includes('publish');
+  const hasSub = operations.includes('subscribe');
+  const role = hasPub && hasSub ? 'pubsub' : hasPub ? 'publisher' : 'subscriber';
+
+  const catResponse = await moatMintCat(moatUrl, moatSessionToken, moatRoomId, role, signal);
+
+  // Cache in runtime (can't reach store from here)
+  moatCatCache.token = catResponse.token;
+  moatCatCache.expiresAt = catResponse.expires_at * 1000;
+
+  return { raw: catResponse.token, type: 1 };
+}
+
+/** Runtime cache for moat CAT (parallels runtimeCache for relay JWTs) */
+export const moatCatCache: { token?: string; expiresAt?: number } = {};
+
 async function mintCloudflareToken(ctx: MintContext): Promise<MintedAuthToken> {
   const state = ctx.state as CloudflareState;
   const { apiToken, accountId, relayId, tokens = [] } = state;
+
+  // Mint CAT from moat if enabled (independent of relay JWT)
+  const catToken = await mintMoatCatIfEnabled(state, ctx.operations, ctx.signal);
 
   // Cache first: in both 'api' and 'preminted' modes, a non-expired cached
   // token covering the requested operations is returned without touching the
@@ -244,6 +362,7 @@ async function mintCloudflareToken(ctx: MintContext): Promise<MintedAuthToken> {
       operations: cached.operations,
       expiresAt: cached.expiresAt,
       handle: cached.jti,
+      catToken,
     };
   }
 
@@ -273,6 +392,7 @@ async function mintCloudflareToken(ctx: MintContext): Promise<MintedAuthToken> {
     operations: fresh.operations,
     expiresAt: fresh.expiresAt,
     handle: fresh.jti,
+    catToken,
   };
 }
 
