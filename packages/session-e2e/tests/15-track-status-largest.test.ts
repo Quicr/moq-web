@@ -87,7 +87,7 @@ describe.skipIf(!isDraft18)('TRACK_STATUS LARGEST_OBJECT round-trip', () => {
       expect(typeof result!.latestGroup).toBe('bigint');
       expect(typeof result!.latestObject).toBe('bigint');
       expect(result!.latestGroup >= 0n).toBe(true);
-      expect(result!.latestObject >= 0n).toBe(true);
+      expect(result!.latestObject! >= 0n).toBe(true);
     }
   });
 });

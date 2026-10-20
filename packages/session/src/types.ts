@@ -9,7 +9,8 @@
  * any media-specific dependencies.
  */
 
-import type { GroupOrder, FetchTypeDraft18 } from '@moq-web/core';
+import type { GroupOrder, FetchTypeDraft18, RangeFilterDraft22 } from '@moq-web/core';
+import type { RequestRedirect } from './request-rejected-error.js';
 
 /**
  * Session state
@@ -30,6 +31,7 @@ export type SessionEventType =
   | 'namespace-error'
   | 'request-ok'
   | 'incoming-subscribe'
+  | 'incoming-subscribe-tracks'
   | 'namespace-acknowledged'
   | 'namespace-announced'
   | 'namespace-done'
@@ -44,6 +46,7 @@ export type SessionEventType =
   | 'session-migrated'
   | 'publish-done'
   | 'publish-blocked'
+  | 'subscription-cancelled'
   | 'delivery-timeout'
   | 'stream-reset'
   | 'new-group-request'
@@ -125,19 +128,64 @@ export interface SubscribeOptions {
   /** Per-request authorization token */
   authToken?: RequestAuthToken;
   /**
-   * Draft-18 §10.2 subscriber-side delivery timeouts (ms).
+   * Draft-18/22 subscriber-side timeouts (ms) a SUBSCRIBE may carry.
    *
    * - subgroupDeliveryTimeout — max time to fully deliver a subgroup
    * - objectDeliveryTimeout   — max time to deliver a single object
-   * - fillTimeout             — max time to wait for a missing object
    * - rendezvousTimeout       — max time to wait before a new-subscriber cutover
    *
    * A value of 0 or `undefined` omits the parameter. Draft-16 ignores these.
+   * The wait for a fill is `fill.fillTimeout`; SUBSCRIBE has no FILL_TIMEOUT.
    */
   subgroupDeliveryTimeout?: number;
   objectDeliveryTimeout?: number;
-  fillTimeout?: number;
   rendezvousTimeout?: number;
+  /**
+   * Fill the subscription with past objects (draft-22 §3.4). Draft-22 sends
+   * FILL_PARAMETERS in SUBSCRIBE; draft-18 follows SUBSCRIBE with a Joining
+   * FETCH (§10.12.2). Ignored on draft-14/16, which have no fill.
+   */
+  fill?: FillOptions;
+  /**
+   * Draft-22 Range Filters (§3.3.2): only Objects matching them are sent.
+   * Needs a peer MAX_FILTER_RANGES large enough for every Range (§9.1.6);
+   * `subscribe()` throws before sending otherwise, and on any other draft.
+   * TRACK_PROPERTY_FILTER is for SUBSCRIBE_TRACKS and is refused.
+   */
+  rangeFilters?: RangeFilterDraft22[];
+}
+
+/**
+ * What to fill an existing subscription with (draft-22 §3.4, §9.20.15).
+ *
+ * Fill objects arrive in the subscription's object callback, the same one
+ * live objects use. The library does not dedupe them: when the fill range
+ * overlaps the live range an object can arrive twice (§3.4).
+ *
+ * Draft-22 sends only the fields set here; the rest follow the subscription.
+ * Draft-18 sends a Joining FETCH (§10.12.2): it needs `lastGroups` or
+ * `startGroup`, and rejects `startObject`, `endGroup`.
+ */
+export interface FillOptions {
+  /**
+   * Last N groups up to Largest Object; 1 is the current group.
+   * Mutually exclusive with `startGroup`.
+   */
+  lastGroups?: number;
+  /** Absolute start group */
+  startGroup?: number;
+  /** Absolute start object within `startGroup` (default 0) */
+  startObject?: number;
+  /** Absolute end group, inclusive; requires `startGroup` */
+  endGroup?: number;
+  /** FILL_TIMEOUT in ms (§9.20.5). 0 asks for only what is available now; draft-18 omits 0. */
+  fillTimeout?: number;
+  /** Subscriber priority of the fill stream (0-255) */
+  priority?: number;
+  /** Group order of the fill stream */
+  groupOrder?: GroupOrder;
+  /** Draft-22 Range Filters of the fill stream (§3.3.2); see [[SubscribeOptions.rangeFilters]] */
+  rangeFilters?: RangeFilterDraft22[];
 }
 
 /**
@@ -167,17 +215,11 @@ export interface PublishOptions {
    */
   expires?: number;
   /**
-   * Draft-18 §12.8 PRIOR_GROUP_ID_GAP advertised on outbound PUBLISH so
-   * subscribers know the expected group-ID gap between adjacent groups.
-   * Non-negative varint; `undefined` omits the property.
+   * Advertise DYNAMIC_GROUPS=1 on the PUBLISH (draft-18 §12.6, draft-22 §10.5):
+   * this publisher starts a new Group when a subscriber sends NEW_GROUP_REQUEST
+   * (`new-group-request` event). Subscribers may only send it for such tracks.
    */
-  priorGroupIdGap?: number;
-  /**
-   * Draft-18 §12.9 PRIOR_OBJECT_ID_GAP advertised on outbound PUBLISH — the
-   * expected object-ID gap within a group. Non-negative varint; `undefined`
-   * omits the property.
-   */
-  priorObjectIdGap?: number;
+  dynamicGroups?: boolean;
 }
 
 /**
@@ -250,6 +292,8 @@ export interface TrackStatusResult {
   expiresMs?: number;
   latestGroup?: bigint;
   latestObject?: bigint;
+  /** The Track Properties of the TRACK_STATUS_OK (draft-22 §9.13) */
+  trackProperties?: TrackProperties;
 }
 
 /**
@@ -303,20 +347,6 @@ export interface TrackProperties {
   defaultPublisherGroupOrder?: GroupOrder;
   /** §12.6 — dynamic-groups flag (false = static, true = dynamic) */
   dynamicGroups?: boolean;
-  /** §12.7 — immutable-properties bitmap (raw varint) */
-  immutablePropertiesBitmap?: bigint;
-  /**
-   * §12.8 — prior group-ID gap. Advertises the gap between the current
-   * group ID and the previous group ID the publisher will emit; a decoder
-   * can use this to distinguish "next expected group" from "publisher
-   * skipped ahead" without waiting for the next object.
-   */
-  priorGroupIdGap?: number;
-  /**
-   * §12.9 — prior object-ID gap within the current group. Same semantics
-   * as `priorGroupIdGap` but scoped to object IDs inside a group.
-   */
-  priorObjectIdGap?: number;
 }
 
 /**
@@ -376,6 +406,10 @@ export interface NamespaceErrorEvent {
   reasonPhrase: string;
   /** Draft-16 request id (62-bit varint), when available. */
   requestId?: bigint;
+  /** Minimum wait before retrying, in ms; undefined when the peer says not to retry (draft-22 §9.4.2) */
+  retryAfterMs?: number;
+  /** Where to retry, for a REDIRECT error (draft-22 §9.4.1) */
+  redirect?: RequestRedirect;
 }
 
 /**
@@ -408,32 +442,46 @@ export interface PublishDoneEvent {
 }
 
 /**
- * Draft-18 PUBLISH_BLOCKED event (§10.20). Fired when the publisher
- * cannot continue delivery due to flow control. Consumers can use this
- * to slow down producers or drop non-critical objects.
+ * Draft-18 PUBLISH_BLOCKED event (§10.20). Fired when the publisher of a
+ * SUBSCRIBE_TRACKS cannot PUBLISH a track for lack of streams. The
+ * subscriber can SUBSCRIBE to the track instead.
  */
 export interface PublishBlockedEvent {
-  /** Track alias that is blocked */
+  /** Request ID of the SUBSCRIBE_TRACKS whose response stream carried it */
+  requestId: bigint;
+  /** Track Namespace Suffix, relative to the SUBSCRIBE_TRACKS prefix */
+  trackNamespaceSuffix: string[];
+  /** Name of the track that could not be published */
+  trackName: string;
+}
+
+/**
+ * A subscriber cancelled a subscription we publish, by resetting or
+ * STOP_SENDING its request stream (draft-22 §3.1.2). The publication is gone
+ * and its open streams are reset; stop producing objects for `trackAlias`.
+ */
+export interface SubscriptionCancelledEvent {
+  /** Request ID of the cancelled SUBSCRIBE or PUBLISH */
+  requestId: bigint;
+  /** Track alias that was being published */
   trackAlias: bigint;
 }
 
 /**
- * Draft-18 §8 delivery-timeout event. Fired when a subscriber-side or
- * publisher-side delivery deadline elapses. The peer receives a
+ * Draft-18 §8 delivery-timeout event. Fired when a publisher-side delivery
+ * deadline elapses. The peer receives a
  * `DELIVERY_TIMEOUT` (§15.10.4) stream reset; consumers can use this
  * event to surface the drop in the UI or reset an application decoder.
  */
 export interface DeliveryTimeoutEvent {
-  /** Which side of the pipeline observed the timeout. */
-  side: 'subscriber' | 'publisher';
+  /** Which side of the pipeline observed the timeout (always the publisher). */
+  side: 'publisher';
   /** Which class of deadline expired. */
   reason: 'subgroup' | 'object' | 'fill' | 'rendezvous';
   /** §15.10.4 stream reset code conveyed to the peer. */
   resetCode: number;
   /** Track alias whose stream was affected. */
   trackAlias?: bigint;
-  /** Subscription that owned the subgroup (subscriber-side only). */
-  subscriptionId?: number;
   /** Group / subgroup / object that missed its deadline. */
   groupId?: number;
   subgroupId?: number;
@@ -556,6 +604,8 @@ export interface AnnouncedNamespaceInfo {
   options: AnnounceOptions;
   /** Whether announce was acknowledged by relay */
   acknowledged: boolean;
+  /** Request ID of the PUBLISH_NAMESPACE request stream (draft-18/22) */
+  requestId?: bigint;
 }
 
 /**
@@ -588,6 +638,20 @@ export interface IncomingSubscribeEvent {
   trackName: string;
   /** Track alias to use for publishing */
   trackAlias: bigint;
+}
+
+/**
+ * Event fired when the peer's SUBSCRIBE_TRACKS was accepted (draft-22 §3.6,
+ * draft-18 §10.19). The application answers it by publishing the tracks
+ * under the prefix with `publish()`, or by sending PUBLISH_SKIPPED.
+ */
+export interface IncomingSubscribeTracksEvent {
+  /** Request ID of the SUBSCRIBE_TRACKS, to address PUBLISH_SKIPPED to */
+  requestId: bigint;
+  /** Tracks under this namespace prefix are wanted */
+  namespacePrefix: string[];
+  /** Forward State the resulting PUBLISH messages should carry */
+  forwardState: boolean;
 }
 
 /**
@@ -711,15 +775,15 @@ export interface FetchOptions {
   /** Draft-18 joining fetch: group offset (relative) or group id (absolute) */
   joiningStart?: bigint;
   /**
-   * Draft-18 §10.2 subscriber-side delivery timeouts (ms). See
-   * [[SubscribeOptions]] for semantics; ignored for draft-16.
+   * Draft-18/22 FILL_TIMEOUT (ms): how long a relay may wait for objects it
+   * does not have. 0 asks for only what is available now. Ignored for
+   * draft-16. A FETCH carries no delivery or rendezvous timeouts.
    */
-  subgroupDeliveryTimeout?: number;
-  objectDeliveryTimeout?: number;
   fillTimeout?: number;
-  rendezvousTimeout?: number;
   /** Per-request authorization token (draft-18 §10.2.2). */
   authToken?: RequestAuthToken;
+  /** Draft-22 Range Filters (§3.3.2); see [[SubscribeOptions.rangeFilters]] */
+  rangeFilters?: RangeFilterDraft22[];
 }
 
 /**
@@ -786,8 +850,11 @@ export interface FetchCompleteEvent {
   requestId: bigint;
   /** 62-bit varint largest group ID available */
   largestGroupId: bigint;
-  /** 62-bit varint largest object ID in largest group */
-  largestObjectId: bigint;
+  /**
+   * 62-bit varint last object ID FETCH_OK covers in `largestGroupId`, inclusive;
+   * absent when it covers the whole group (draft-18 End Location object 0)
+   */
+  largestObjectId?: bigint;
   /** Whether this is the end of the track */
   endOfTrack: boolean;
 }
@@ -800,8 +867,11 @@ export interface FetchCompleteEvent {
 export interface FetchStreamCompleteEvent {
   /** 62-bit varint fetch request ID */
   requestId: bigint;
-  /** Last group ID received on this stream (bounded to number; see FetchRange). */
-  lastGroupId: number;
+  /**
+   * Last group ID received on this stream (bounded to number; see FetchRange).
+   * Absent when the stream carried no objects.
+   */
+  lastGroupId?: number;
 }
 
 /**
@@ -814,6 +884,10 @@ export interface FetchErrorEvent {
   errorCode: number;
   /** Error reason */
   reason: string;
+  /** Minimum wait before retrying, in ms; undefined when the peer says not to retry (draft-22 §9.4.2) */
+  retryAfterMs?: number;
+  /** Where to retry, for a REDIRECT error (draft-22 §9.4.1) */
+  redirect?: RequestRedirect;
 }
 
 // ============================================================================
@@ -926,6 +1000,7 @@ export type RequestUpdateVariant =
   | 'subscribe-namespace'
   | 'publish'
   | 'publish-namespace'
+  | 'subscribe-tracks'
   | 'fetch'
   | 'unknown';
 

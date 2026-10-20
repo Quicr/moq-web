@@ -25,6 +25,8 @@ function makeSession(maxRequestId?: number): MOQTSession {
       // Pretend to be a worker-mode config to reach the maxRequestId option
       // path. We never call any transport methods here.
       worker: {} as Worker,
+      // MAX_REQUEST_ID was removed in draft-17, so the cap is draft-16 behaviour.
+      draft: 'draft-16',
       maxRequestId,
     });
   }

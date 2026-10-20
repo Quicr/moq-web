@@ -18,6 +18,7 @@ import {
   getProtocolCodecForVersion,
   Version,
   InMemoryMetricsSink,
+  SubscriptionFilter,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
@@ -43,16 +44,16 @@ describe('session diagnostics metrics (Wave 2 Track E)', () => {
     // branches without a live transport. `subscribe` returns a numeric
     // subscription id.
     const subscribe = vi
-      .fn<Parameters<MOQTSession['subscribe']>, ReturnType<MOQTSession['subscribe']>>()
+      .fn<MOQTSession['subscribe']>()
       .mockResolvedValueOnce(42)
       .mockRejectedValueOnce(Object.assign(new Error('nope'), { code: 'SUB_ERR' }));
     (session as unknown as { subscribe: typeof subscribe }).subscribe = subscribe;
 
     const unified = new UnifiedSession(session);
 
-    await unified.subscribe({ trackNamespace: ['a'], trackName: 't' });
+    await unified.subscribe({ trackNamespace: ['a'], trackName: 't', filter: SubscriptionFilter.LATEST_OBJECT });
     await expect(
-      unified.subscribe({ trackNamespace: ['a'], trackName: 't' }),
+      unified.subscribe({ trackNamespace: ['a'], trackName: 't', filter: SubscriptionFilter.LATEST_OBJECT }),
     ).rejects.toThrow('nope');
 
     const snap = session.getDiagnostics().metrics;

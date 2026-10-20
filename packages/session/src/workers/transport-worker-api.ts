@@ -27,11 +27,14 @@ export type TransportWorkerEventType =
   | 'disconnected'
   | 'control-message'
   | 'setup-message'
+  | 'setup-stream-ended'
   | 'datagram'
   | 'incoming-stream'
   | 'incoming-bidi-stream'
   | 'stream-data'
   | 'stream-closed'
+  | 'stream-reset'
+  | 'stream-send-stopped'
   | 'stream-created'
   | 'error';
 
@@ -151,12 +154,12 @@ export class TransportWorkerClient {
    * Create unidirectional stream
    * @returns Promise resolving to stream ID
    */
-  async createStream(): Promise<number> {
+  async createStream(options?: { sendOrder?: number }): Promise<number> {
     const id = ++this.streamRequestId;
 
     return new Promise((resolve) => {
       this.pendingStreamCreations.set(id, resolve);
-      this.post({ type: 'create-stream', id });
+      this.post({ type: 'create-stream', id, sendOrder: options?.sendOrder });
     });
   }
 
@@ -188,6 +191,13 @@ export class TransportWorkerClient {
   }
 
   /**
+   * Abort a stream: STOP_SENDING its receive side and RESET_STREAM its send side
+   */
+  abortStream(streamId: number, code: number): void {
+    this.post({ type: 'abort-stream', streamId, code });
+  }
+
+  /**
    * Register event handler
    */
   on(type: 'state-change', handler: (data: { state: TransportState }) => void): void;
@@ -198,12 +208,15 @@ export class TransportWorkerClient {
   ): void;
   on(type: 'control-message', handler: (data: { data: Uint8Array }) => void): void;
   on(type: 'setup-message', handler: (data: { data: Uint8Array }) => void): void;
+  on(type: 'setup-stream-ended', handler: (data: { reset: boolean }) => void): void;
   on(type: 'datagram', handler: (data: { data: Uint8Array }) => void): void;
   on(type: 'incoming-stream', handler: (data: { streamId: number }) => void): void;
   on(type: 'incoming-bidi-stream', handler: (data: { streamId: number }) => void): void;
   on(type: 'stream-data', handler: (data: { streamId: number; data: Uint8Array }) => void): void;
   on(type: 'bidi-stream-data', handler: (data: { streamId: number; data: Uint8Array }) => void): void;
   on(type: 'stream-closed', handler: (data: { streamId: number }) => void): void;
+  on(type: 'stream-reset', handler: (data: { streamId: number; code?: number; message?: string }) => void): void;
+  on(type: 'stream-send-stopped', handler: (data: { streamId: number }) => void): void;
   on(type: 'error', handler: (data: { message: string; code?: number }) => void): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(type: string, handler: (data: any) => void): void {

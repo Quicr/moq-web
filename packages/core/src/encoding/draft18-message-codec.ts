@@ -9,7 +9,7 @@
  */
 
 import { Logger } from '../utils/logger.js';
-import { MOQTVarInt } from './moqt-varint.js';
+import { MOQTVarInt, MOQT_VARINT_MAX } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
 import {
   normalizePublishDoneErrorCode,
@@ -17,14 +17,29 @@ import {
 } from './grease.js';
 import {
   assertBound,
+  assertControlLength,
   encodeTrackNamespace,
   decodeTrackNamespace,
   encodeString,
+  encodeTrackName,
   decodeString,
+  encodeReasonPhrase,
+  decodeReasonPhrase,
   decodeTrackName,
+  encodeKeyValuePairs,
+  decodeDraft18AuthToken,
+  decodeKeyValuePairsToEnd,
+  DEFAULT_SUBSCRIBER_PRIORITY,
+  MAX_SAFE_KEY,
+  readKvpKey,
+  readKvpLength,
+  readVarIntSaturating,
+  skipKvpValue,
   encodeFramed,
   decodeFramed,
+  peekMessageType,
   MAX_PARAMETER_COUNT,
+  MAX_GOAWAY_URI_LENGTH,
   MAX_STRING_LENGTH,
   MAX_AUTH_TOKEN_LENGTH,
 } from './codec-helpers.js';
@@ -71,6 +86,20 @@ const log = Logger.create('moqt:core:draft18-codec');
 const TE = new TextEncoder();
 const TD = new TextDecoder();
 
+/** `Draft18CodecError.code` for a message that has not fully arrived yet. */
+export const CODEC_INCOMPLETE = 'incomplete';
+
+/** `Draft18CodecError.code` for a message whose body disagrees with its Length (§9). */
+export const CODEC_MALFORMED = 'malformed';
+
+/**
+ * True when `err` only says more bytes are needed. Every other decode error
+ * is a violation of the peer's framing or syntax.
+ */
+export function isIncompleteDecode(err: unknown): boolean {
+  return err instanceof Draft18CodecError && err.code === CODEC_INCOMPLETE;
+}
+
 export class Draft18CodecError extends Error {
   messageType?: MessageTypeDraft18;
   /**
@@ -88,6 +117,58 @@ export class Draft18CodecError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * Maps raw wire error codes onto a draft's registry (§14 grease: unknown
+ * codes become INTERNAL_ERROR). Draft-22 supplies its own registry.
+ */
+export interface ErrorCodeNormalizers {
+  requestError: (code: number) => number;
+  publishDone: (code: number) => number;
+}
+
+const DRAFT18_NORMALIZERS: ErrorCodeNormalizers = {
+  requestError: normalizeRequestErrorCode,
+  publishDone: normalizePublishDoneErrorCode,
+};
+
+const P18 = RequestParameterDraft18;
+
+/**
+ * §10.2.2-10.2.14: the Message Parameters each message may carry. REQUEST_OK
+ * is the union over the replies that use it (PUBLISH_OK, REQUEST_UPDATE_OK,
+ * TRACK_STATUS_OK, ...).
+ */
+const PARAMETER_SCOPES: ReadonlyMap<MessageTypeDraft18, ReadonlySet<number>> = new Map([
+  [MessageTypeDraft18.SUBSCRIBE, new Set([
+    P18.AUTHORIZATION_TOKEN, P18.OBJECT_DELIVERY_TIMEOUT, P18.SUBGROUP_DELIVERY_TIMEOUT, P18.RENDEZVOUS_TIMEOUT,
+    P18.FORWARD, P18.SUBSCRIBER_PRIORITY, P18.SUBSCRIPTION_FILTER, P18.GROUP_ORDER, P18.NEW_GROUP_REQUEST,
+  ])],
+  [MessageTypeDraft18.SUBSCRIBE_OK, new Set([P18.EXPIRES, P18.LARGEST_OBJECT])],
+  [MessageTypeDraft18.PUBLISH, new Set([P18.AUTHORIZATION_TOKEN, P18.EXPIRES, P18.LARGEST_OBJECT, P18.FORWARD])],
+  [MessageTypeDraft18.REQUEST_OK, new Set([
+    P18.OBJECT_DELIVERY_TIMEOUT, P18.SUBGROUP_DELIVERY_TIMEOUT, P18.EXPIRES, P18.LARGEST_OBJECT, P18.FORWARD,
+    P18.SUBSCRIBER_PRIORITY, P18.SUBSCRIPTION_FILTER, P18.GROUP_ORDER, P18.NEW_GROUP_REQUEST,
+  ])],
+  [MessageTypeDraft18.FETCH, new Set([
+    P18.AUTHORIZATION_TOKEN, P18.FILL_TIMEOUT, P18.SUBSCRIBER_PRIORITY, P18.GROUP_ORDER,
+  ])],
+  [MessageTypeDraft18.FETCH_OK, new Set<number>()],
+  [MessageTypeDraft18.TRACK_STATUS, new Set([P18.AUTHORIZATION_TOKEN])],
+  [MessageTypeDraft18.REQUEST_UPDATE, new Set([
+    P18.AUTHORIZATION_TOKEN, P18.OBJECT_DELIVERY_TIMEOUT, P18.SUBGROUP_DELIVERY_TIMEOUT, P18.FORWARD,
+    P18.SUBSCRIBER_PRIORITY, P18.SUBSCRIPTION_FILTER, P18.NEW_GROUP_REQUEST, P18.TRACK_NAMESPACE_PREFIX,
+  ])],
+  [MessageTypeDraft18.PUBLISH_NAMESPACE, new Set([P18.AUTHORIZATION_TOKEN])],
+  [MessageTypeDraft18.SUBSCRIBE_NAMESPACE, new Set([P18.AUTHORIZATION_TOKEN])],
+  [MessageTypeDraft18.SUBSCRIBE_TRACKS, new Set([P18.AUTHORIZATION_TOKEN, P18.FORWARD])],
+]);
+
+/** §10.2.8 / §10.2.12: uint8 parameters with a restricted range */
+const UINT8_RANGES: ReadonlyMap<number, readonly [min: number, max: number]> = new Map([
+  [P18.FORWARD, [0, 1]],
+  [P18.GROUP_ORDER, [GroupOrder.ASCENDING, GroupOrder.DESCENDING]],
+]);
 
 // Re-export bounds constants for backward compatibility (consumers may import from here)
 export { MAX_PARAMETER_COUNT, MAX_STRING_LENGTH, MAX_NAMESPACE_TUPLE_COUNT, MAX_TRACK_NAME_LENGTH, MAX_AUTH_TOKEN_LENGTH } from './codec-helpers.js';
@@ -167,9 +248,13 @@ export class Draft18MessageCodec {
   /**
    * Decode a draft-18 control message from bytes
    */
-  static decode(buffer: Uint8Array, offset = 0): [ControlMessageDraft18, number] {
+  static decode(
+    buffer: Uint8Array,
+    offset = 0,
+    normalizers: ErrorCodeNormalizers = DRAFT18_NORMALIZERS,
+  ): [ControlMessageDraft18, number] {
     // Peek at message type for logging before delegating to decodeFramed
-    const [typeValue] = MOQTVarInt.decodeNumber(buffer, offset);
+    const typeValue = peekMessageType(buffer, offset);
     const messageType = typeValue as MessageTypeDraft18;
 
     return decodeFramed<ControlMessageDraft18>(buffer, offset, (reader) => {
@@ -185,7 +270,7 @@ export class Draft18MessageCodec {
         case MessageTypeDraft18.PUBLISH:
           return Draft18MessageCodec.decodePublish(reader);
         case MessageTypeDraft18.REQUEST_ERROR:
-          return Draft18MessageCodec.decodeRequestError(reader);
+          return Draft18MessageCodec.decodeRequestError(reader, normalizers);
         case MessageTypeDraft18.REQUEST_OK:
         case MessageTypeDraft18.PUBLISH_OK: {
           const msg = Draft18MessageCodec.decodeRequestOk(reader);
@@ -201,7 +286,7 @@ export class Draft18MessageCodec {
         case MessageTypeDraft18.TRACK_STATUS:
           return Draft18MessageCodec.decodeTrackStatus(reader);
         case MessageTypeDraft18.PUBLISH_DONE:
-          return Draft18MessageCodec.decodePublishDone(reader);
+          return Draft18MessageCodec.decodePublishDone(reader, normalizers);
         case MessageTypeDraft18.REQUEST_UPDATE:
           return Draft18MessageCodec.decodeRequestUpdate(reader);
         case MessageTypeDraft18.PUBLISH_NAMESPACE:
@@ -229,14 +314,26 @@ export class Draft18MessageCodec {
    */
   static decodeSetupStream(buffer: Uint8Array, offset = 0): [ServerSetupMessageDraft18, number] {
     if (buffer.length < offset + 2) {
-      throw new Draft18CodecError('Incomplete setup message: missing length field');
+      throw new Draft18CodecError('Incomplete setup message: missing length field', undefined, CODEC_INCOMPLETE);
     }
     const payloadLength = (buffer[offset] << 8) | buffer[offset + 1];
     if (buffer.length < offset + 2 + payloadLength) {
-      throw new Draft18CodecError('Incomplete setup message: not enough payload bytes');
+      throw new Draft18CodecError('Incomplete setup message: not enough payload bytes', undefined, CODEC_INCOMPLETE);
     }
-    const reader = new Draft18BufferReader(buffer, offset + 2);
-    const message = Draft18MessageCodec.decodeSetup(reader, payloadLength);
+    const reader = new Draft18BufferReader(buffer.subarray(offset + 2, offset + 2 + payloadLength));
+    let message: ServerSetupMessageDraft18;
+    try {
+      message = Draft18MessageCodec.decodeSetup(reader, payloadLength);
+    } catch (err) {
+      if (err instanceof Draft18CodecError) {
+        throw err;
+      }
+      throw new Draft18CodecError(
+        `SETUP body shorter than its options: ${(err as Error).message} (PROTOCOL_VIOLATION)`,
+        undefined,
+        CODEC_MALFORMED,
+      );
+    }
     return [message, 2 + payloadLength];
   }
 
@@ -248,6 +345,7 @@ export class Draft18MessageCodec {
     const payloadWriter = new Draft18BufferWriter();
     Draft18MessageCodec.encodeSetup(payloadWriter, message);
     const payload = payloadWriter.toUint8Array();
+    assertControlLength(payload.length);
     const result = new Uint8Array(2 + payload.length);
     result[0] = (payload.length >> 8) & 0xFF;
     result[1] = payload.length & 0xFF;
@@ -398,13 +496,19 @@ export class Draft18MessageCodec {
     // extensions (e.g. custom auth schemes, feature flags). Even keys carry
     // a varint value; odd keys carry length-prefixed bytes.
     let extensions: Map<number, SetupExtensionValue> | undefined;
-    let previousKey = 0;
+    let previousKey = 0n;
 
     while (reader.offset < endOffset) {
-      const deltaKey = reader.readVarIntNumber();
-      const key = previousKey + deltaKey;
-      previousKey = key;
+      const bigKey = readKvpKey(reader, previousKey);
+      previousKey = bigKey;
 
+      // §13: grease codepoints above 2^53 are unknown options; skip them.
+      if (bigKey > MAX_SAFE_KEY) {
+        skipKvpValue(reader, bigKey);
+        continue;
+      }
+
+      const key = Number(bigKey);
       switch (key) {
         case SetupOptionDraft18.PATH: {
           const length = reader.readVarIntNumber();
@@ -413,13 +517,13 @@ export class Draft18MessageCodec {
           break;
         }
         case SetupOptionDraft18.MAX_AUTH_TOKEN_CACHE_SIZE:
-          maxAuthTokenCacheSize = reader.readVarIntNumber();
+          maxAuthTokenCacheSize = readVarIntSaturating(reader);
           break;
         case SetupOptionDraft18.AUTHORIZATION_TOKEN: {
           const length = reader.readVarIntNumber();
           assertBound(length, MAX_AUTH_TOKEN_LENGTH, 'SETUP AUTHORIZATION_TOKEN length', MessageTypeDraft18.SETUP);
           // Copy so callers can hold onto the token past the decode buffer's
-          // lifetime; downstream code decodes via MessageCodec.decodeAuthorizationToken.
+          // lifetime; downstream code decodes via decodeDraft18AuthToken.
           authToken = new Uint8Array(reader.readBytes(length));
           break;
         }
@@ -430,18 +534,17 @@ export class Draft18MessageCodec {
           break;
         }
         case SetupOptionDraft18.MOQT_IMPLEMENTATION: {
-          const length = reader.readVarIntNumber();
-          assertBound(length, MAX_STRING_LENGTH, 'SETUP MOQT_IMPLEMENTATION length', MessageTypeDraft18.SETUP);
+          const length = readKvpLength(reader, 'SETUP MOQT_IMPLEMENTATION length');
           moqtImplementation = TD.decode(reader.readBytes(length));
           break;
         }
         case 0x06:
           // MAX_FILTER_RANGES (draft-22 §9.1.6)
-          maxFilterRanges = reader.readVarIntNumber();
+          maxFilterRanges = readVarIntSaturating(reader);
           break;
         case 0x08:
           // MAX_REQUEST_UPDATES (draft-22 §9.1.7)
-          maxRequestUpdates = reader.readVarIntNumber();
+          maxRequestUpdates = readVarIntSaturating(reader);
           break;
         default:
           // Unknown option: capture it so the caller can inspect §3.2
@@ -451,8 +554,7 @@ export class Draft18MessageCodec {
           if (key % 2 === 0) {
             extensions.set(key, { varint: reader.readVarInt() });
           } else {
-            const length = reader.readVarIntNumber();
-            assertBound(length, MAX_STRING_LENGTH, 'SETUP extension length', MessageTypeDraft18.SETUP);
+            const length = readKvpLength(reader, 'SETUP extension length');
             const bytes = reader.readBytes(length);
             // Copy so callers can hold on to the slice beyond the decode
             // scratch buffer's lifetime.
@@ -483,97 +585,79 @@ export class Draft18MessageCodec {
     // Draft-18 SUBSCRIBE: Request ID | Track Namespace | Track Name | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
 
     // Build parameters list including subscription filter
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
     // FORWARD parameter (0x10): even type = single byte value
-    // 0x01 = forward new objects to subscriber
-    if (message.forwardState !== false) {
-      params.push({
-        type: RequestParameterDraft18.FORWARD,
-        encode: (w) => { w.writeByte(0x01); },
-      });
-    }
+    // 0x01 = forward new objects to subscriber, 0x00 = start paused (§10.2.12)
+    params.push({
+      type: RequestParameterDraft18.FORWARD,
+      encode: (w) => { w.writeByte(message.forwardState === false ? 0x00 : 0x01); },
+    });
 
     if (message.filter !== undefined) {
-      params.push({
-        type: RequestParameterDraft18.SUBSCRIPTION_FILTER,
-        encode: (w) => {
-          // Length-prefixed: encode filter into temp buffer, write length + bytes
-          const filterWriter = new Draft18BufferWriter();
-          filterWriter.writeVarInt(BigInt(message.filter));
-          if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
-              message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-            const loc = message.startLocation ?? { group: 0n, object: 0n };
-            filterWriter.writeVarInt(loc.group);
-            filterWriter.writeVarInt(loc.object);
-          }
-          if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-            filterWriter.writeVarInt(message.endGroupDelta ?? 0n);
-          }
-          const filterBytes = filterWriter.toUint8Array();
-          w.writeVarInt(BigInt(filterBytes.length));
-          w.writeBytes(filterBytes);
-        },
-      });
+      params.push(Draft18MessageCodec.filterParameter(message));
     }
 
-    // Add any additional raw parameters. §10.2 wire convention: even keys
-    // carry their value verbatim (single-byte or varint); odd keys are
-    // length-prefixed byte strings. Callers pass raw payload bytes and we
-    // length-prefix them when appropriate to match the decoder.
-    if (message.parameters) {
-      for (const [type, value] of message.parameters) {
-        if (type % 2 === 0) {
-          params.push({ type, encode: (w) => w.writeBytes(value) });
-        } else {
-          params.push({
-            type,
-            encode: (w) => {
-              w.writeVarInt(BigInt(value.length));
-              w.writeBytes(value);
-            },
-          });
-        }
-      }
-    }
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
+  }
+
+  /** The SUBSCRIPTION_FILTER parameter (§10.2.9) for a message carrying `filter`. */
+  private static filterParameter(message: {
+    filter?: SubscriptionFilterDraft18;
+    startLocation?: Location;
+    endGroupDelta?: bigint;
+  }): { type: number; encode: (w: Draft18BufferWriter) => void } {
+    return {
+      type: RequestParameterDraft18.SUBSCRIPTION_FILTER,
+      encode: (w) => {
+        // Length-prefixed: encode filter into temp buffer, write length + bytes
+        const filterWriter = new Draft18BufferWriter();
+        filterWriter.writeVarInt(BigInt(message.filter!));
+        if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
+            message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+          const loc = message.startLocation ?? { group: 0n, object: 0n };
+          filterWriter.writeVarInt(loc.group);
+          filterWriter.writeVarInt(loc.object);
+        }
+        if (message.filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+          filterWriter.writeVarInt(message.endGroupDelta ?? 0n);
+        }
+        const filterBytes = filterWriter.toUint8Array();
+        w.writeVarInt(BigInt(filterBytes.length));
+        w.writeBytes(filterBytes);
+      },
+    };
   }
 
   private static decodeSubscribe(reader: Draft18BufferReader): SubscribeMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.SUBSCRIBE);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.SUBSCRIBE, trackNamespace);
 
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE numParams', MessageTypeDraft18.SUBSCRIBE);
-    let filter = SubscriptionFilterDraft18.NEXT_GROUP_START;
-    let startLocation: Location | undefined;
+    // §10.2.9: an omitted filter means unfiltered, i.e. AbsoluteStart {0, 0}
+    let filter = SubscriptionFilterDraft18.ABSOLUTE_START;
+    let startLocation: Location | undefined = { group: 0n, object: 0n };
     let endGroupDelta: bigint | undefined;
+    // §10.2.12: an omitted FORWARD is 1
+    let forwardState = true;
     const parameters = new Map<number, Uint8Array>();
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE, previousType, i);
       previousType = type;
 
       if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
-        const length = reader.readVarIntNumber();
-        assertBound(length, MAX_STRING_LENGTH, 'SUBSCRIBE SUBSCRIPTION_FILTER length', MessageTypeDraft18.SUBSCRIBE);
-        const filterBytes = reader.readBytes(length);
-        const filterReader = new Draft18BufferReader(filterBytes, 0);
-        filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
-        if (filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
-            filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-          startLocation = { group: filterReader.readVarInt(), object: filterReader.readVarInt() };
-        }
-        if (filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-          endGroupDelta = filterReader.readVarInt();
-        }
+        ({ filter, startLocation, endGroupDelta } = Draft18MessageCodec.readFilter(reader, MessageTypeDraft18.SUBSCRIBE));
+      } else if (type === RequestParameterDraft18.FORWARD) {
+        forwardState = Draft18MessageCodec.readUint8Parameter(reader, type) === 0x01;
       } else {
         const value = Draft18MessageCodec.readParameterValue(reader, type);
         parameters.set(type, value);
@@ -585,7 +669,7 @@ export class Draft18MessageCodec {
       requestId,
       trackNamespace,
       trackName,
-      forwardState: true,
+      forwardState,
       filter,
       startLocation,
       endGroupDelta,
@@ -606,21 +690,57 @@ export class Draft18MessageCodec {
         encode: (w) => w.writeVarInt(message.expires!),
       });
     }
-    if (message.largestLocation && (message.largestLocation.group > 0n || message.largestLocation.object > 0n)) {
-      params.push({
-        type: RequestParameterDraft18.LARGEST_OBJECT,
-        encode: (w) => {
-          w.writeVarInt(message.largestLocation.group);
-          w.writeVarInt(message.largestLocation.object);
-        },
-      });
-    }
+    Draft18MessageCodec.pushLargestObject(params, message.largestLocation);
     Draft18MessageCodec.encodeMessageParameters(writer, params);
 
     // Track Properties (KVPs to end)
     if (message.trackProperties) {
-      Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackProperties);
+      encodeKeyValuePairs(writer, message.trackProperties);
     }
+  }
+
+  /**
+   * Add additional raw parameters. §10.2 wire convention: even keys carry
+   * their value verbatim (single-byte or varint); odd keys are
+   * length-prefixed byte strings. Callers pass raw payload bytes and we
+   * length-prefix them when appropriate to match the decoder.
+   */
+  private static pushRawParameters(
+    params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }>,
+    parameters: Map<number, Uint8Array> | undefined,
+  ): void {
+    for (const [type, value] of parameters ?? []) {
+      if (type % 2 === 0) {
+        params.push({ type, encode: (w) => w.writeBytes(value) });
+        continue;
+      }
+
+      params.push({
+        type,
+        encode: (w) => {
+          w.writeVarInt(BigInt(value.length));
+          w.writeBytes(value);
+        },
+      });
+    }
+  }
+
+  /** Add LARGEST_OBJECT (§10.2.11) when Objects have been published */
+  private static pushLargestObject(
+    params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }>,
+    largestLocation: Location | undefined,
+  ): void {
+    if (!largestLocation) {
+      return;
+    }
+
+    params.push({
+      type: RequestParameterDraft18.LARGEST_OBJECT,
+      encode: (w) => {
+        w.writeVarInt(largestLocation.group);
+        w.writeVarInt(largestLocation.object);
+      },
+    });
   }
 
   private static decodeSubscribeOk(reader: Draft18BufferReader): SubscribeOkMessageDraft18 {
@@ -629,13 +749,12 @@ export class Draft18MessageCodec {
 
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_OK numParams', MessageTypeDraft18.SUBSCRIBE_OK);
-    let largestLocation: Location = { group: 0n, object: 0n };
+    let largestLocation: Location | undefined;
     let expires: bigint | undefined;
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE_OK, previousType, i);
       previousType = type;
 
       if (type === RequestParameterDraft18.LARGEST_OBJECT) {
@@ -649,7 +768,7 @@ export class Draft18MessageCodec {
 
     // Track Properties fill remaining bytes
     const trackProperties = reader.hasMore
-      ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
+      ? decodeKeyValuePairsToEnd(reader)
       : undefined;
 
     return {
@@ -670,49 +789,62 @@ export class Draft18MessageCodec {
     // Draft-18 PUBLISH: Request ID | Track Namespace | Track Name | Track Alias | Num Params | Params | Track Properties
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
     writer.writeVarInt(message.trackAlias);
 
     // Message Parameters (count-prefixed)
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
     // FORWARD parameter (0x10): even type = single byte
-    // 0x01 = will forward new objects
-    if (message.forwardState !== false) {
-      params.push({
-        type: RequestParameterDraft18.FORWARD,
-        encode: (w) => { w.writeByte(0x01); },
-      });
-    }
+    // 0x01 = will forward new objects, 0x00 = starts paused (§10.2.12)
+    params.push({
+      type: RequestParameterDraft18.FORWARD,
+      encode: (w) => { w.writeByte(message.forwardState === false ? 0x00 : 0x01); },
+    });
+    Draft18MessageCodec.pushLargestObject(params, message.largestLocation);
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
 
     // Track Properties (KVPs to end)
     if (message.trackProperties) {
-      Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackProperties);
+      encodeKeyValuePairs(writer, message.trackProperties);
     }
   }
 
   private static decodePublish(reader: Draft18BufferReader): PublishMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH, trackNamespace);
     const trackAlias = reader.readVarInt();
 
     // Message Parameters (count-prefixed)
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH numParams', MessageTypeDraft18.PUBLISH);
+    // §10.2.12: an omitted FORWARD is 1
+    let forwardState = true;
+    let largestLocation: Location | undefined;
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.PUBLISH, previousType, i);
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      if (type === RequestParameterDraft18.LARGEST_OBJECT) {
+        largestLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
+        continue;
+      }
+
+      const value = Draft18MessageCodec.readParameterValue(reader, type);
+      if (type === RequestParameterDraft18.FORWARD) {
+        forwardState = value[0] === 0x01;
+      } else {
+        parameters.set(type, value);
+      }
     }
 
     // Track Properties (KVPs to end)
     const trackProperties = reader.hasMore
-      ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
+      ? decodeKeyValuePairsToEnd(reader)
       : undefined;
 
     return {
@@ -721,8 +853,9 @@ export class Draft18MessageCodec {
       trackAlias,
       trackNamespace,
       trackName,
-      forwardState: true,
-      largestLocation: { group: 0n, object: 0n },
+      forwardState,
+      largestLocation,
+      parameters: parameters.size > 0 ? parameters : undefined,
       trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
   }
@@ -735,7 +868,7 @@ export class Draft18MessageCodec {
     // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
     writer.writeVarInt(message.errorCode);
     writer.writeVarInt(message.retryInterval ?? 0n);
-    encodeString(writer, message.reasonPhrase);
+    encodeReasonPhrase(writer, message.reasonPhrase);
 
     // Redirect is present only when Error Code === REDIRECT (0x34)
     if (message.errorCode === RequestErrorCodeDraft18.REDIRECT) {
@@ -749,14 +882,17 @@ export class Draft18MessageCodec {
     }
   }
 
-  private static decodeRequestError(reader: Draft18BufferReader): RequestErrorMessageDraft18 {
+  private static decodeRequestError(
+    reader: Draft18BufferReader,
+    normalizers: ErrorCodeNormalizers,
+  ): RequestErrorMessageDraft18 {
     // Draft-18 §10.6.2: Error Code | Retry Interval | Error Reason | [Redirect]
     // §14 grease: an unknown error code MUST be treated as INTERNAL_ERROR for
     // this registry. Normalize immediately so callers see stable enum values.
-    const rawErrorCode = reader.readVarIntNumber();
-    const errorCode = normalizeRequestErrorCode(rawErrorCode);
+    const rawErrorCode = readVarIntSaturating(reader);
+    const errorCode = normalizers.requestError(rawErrorCode);
     const retryInterval = reader.readVarInt();
-    const reasonPhrase = decodeString(reader);
+    const reasonPhrase = decodeReasonPhrase(reader, MessageTypeDraft18.REQUEST_ERROR);
 
     const message: RequestErrorMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_ERROR,
@@ -785,8 +921,8 @@ export class Draft18MessageCodec {
 
   private static decodeRedirect(reader: Draft18BufferReader): RequestErrorRedirectDraft18 {
     const connectUri = decodeString(reader);
-    const trackNamespace = decodeTrackNamespace(reader);
-    const trackName = decodeString(reader);
+    const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.REQUEST_ERROR);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.REQUEST_ERROR, trackNamespace);
     return { connectUri, trackNamespace, trackName };
   }
 
@@ -808,7 +944,21 @@ export class Draft18MessageCodec {
         },
       });
     }
+    if (message.forwardState !== undefined) {
+      params.push({
+        type: RequestParameterDraft18.FORWARD,
+        encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
+      });
+    }
+    if (message.filter !== undefined) {
+      params.push(Draft18MessageCodec.filterParameter(message));
+    }
     Draft18MessageCodec.encodeMessageParameters(writer, params);
+
+    // Track Properties (KVPs to end)
+    if (message.trackProperties) {
+      encodeKeyValuePairs(writer, message.trackProperties);
+    }
   }
 
   private static decodeRequestOk(reader: Draft18BufferReader): RequestOkMessageDraft18 {
@@ -817,15 +967,21 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'REQUEST_OK numParams', MessageTypeDraft18.REQUEST_OK);
     let expires: bigint | undefined;
     let largestLocation: Location | undefined;
+    // §10.2.12: FORWARD in a PUBLISH_OK sets the initial state; omitted is 1
+    let forwardState: boolean | undefined;
+    let filterFields: ReturnType<typeof Draft18MessageCodec.readFilter> | undefined;
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.REQUEST_OK, previousType, i);
       previousType = type;
 
-      if (type === RequestParameterDraft18.EXPIRES) {
+      if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
+        filterFields = Draft18MessageCodec.readFilter(reader, MessageTypeDraft18.REQUEST_OK);
+      } else if (type === RequestParameterDraft18.EXPIRES) {
         expires = reader.readVarInt();
+      } else if (type === RequestParameterDraft18.FORWARD) {
+        forwardState = Draft18MessageCodec.readUint8Parameter(reader, type) === 0x01;
       } else if (type === RequestParameterDraft18.LARGEST_OBJECT) {
         const group = reader.readVarInt();
         const object = reader.readVarInt();
@@ -835,11 +991,17 @@ export class Draft18MessageCodec {
       }
     }
 
+    // Track Properties fill the remaining bytes
+    const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;
+
     return {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: 0n,
       expires,
       largestLocation,
+      forwardState,
+      ...filterFields,
+      trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
   }
 
@@ -873,19 +1035,17 @@ export class Draft18MessageCodec {
       // Standalone fetch (type 0x1)
       writer.writeVarInt(BigInt(FetchTypeDraft18.STANDALONE));
       encodeTrackNamespace(writer, message.trackNamespace!);
-      encodeString(writer, message.trackName!);
+      encodeTrackName(writer, message.trackName!, message.trackNamespace!);
       Draft18MessageCodec.encodeLocation(writer, message.startLocation);
       Draft18MessageCodec.encodeLocation(writer, message.endLocation);
     }
 
     // Parameters (count-prefixed)
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
-    if (message.subscriberPriority !== 0) {
-      params.push({
-        type: RequestParameterDraft18.SUBSCRIBER_PRIORITY,
-        encode: (w) => w.writeByte(message.subscriberPriority),
-      });
-    }
+    params.push({
+      type: RequestParameterDraft18.SUBSCRIBER_PRIORITY,
+      encode: (w) => w.writeByte(message.subscriberPriority),
+    });
     if (message.groupOrder) {
       params.push({
         type: RequestParameterDraft18.GROUP_ORDER,
@@ -937,7 +1097,7 @@ export class Draft18MessageCodec {
 
     if (fetchType === FetchTypeDraft18.STANDALONE) {
       trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.FETCH);
-      trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH);
+      trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH, trackNamespace);
       startLocation = Draft18MessageCodec.decodeLocation(reader);
       endLocation = Draft18MessageCodec.decodeLocation(reader);
     } else {
@@ -949,18 +1109,18 @@ export class Draft18MessageCodec {
     // Parameters
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'FETCH numParams', MessageTypeDraft18.FETCH);
-    let subscriberPriority = 0;
+    // §10.2.7: omitted SUBSCRIBER_PRIORITY is 128
+    let subscriberPriority = DEFAULT_SUBSCRIBER_PRIORITY;
     let groupOrder = GroupOrder.ASCENDING as GroupOrder;
     const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.FETCH, previousType, i);
       previousType = type;
       if (type === RequestParameterDraft18.SUBSCRIBER_PRIORITY) {
         subscriberPriority = reader.readByte();
       } else if (type === RequestParameterDraft18.GROUP_ORDER) {
-        groupOrder = reader.readByte() as GroupOrder;
+        groupOrder = Draft18MessageCodec.readUint8Parameter(reader, type) as GroupOrder;
       } else {
         parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
       }
@@ -989,7 +1149,7 @@ export class Draft18MessageCodec {
     Draft18MessageCodec.encodeLocation(writer, message.endLocation);
     Draft18MessageCodec.encodeMessageParameters(writer, []);
     if (message.trackProperties) {
-      Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackProperties);
+      encodeKeyValuePairs(writer, message.trackProperties);
     }
   }
 
@@ -1002,14 +1162,13 @@ export class Draft18MessageCodec {
     assertBound(numParams, MAX_PARAMETER_COUNT, 'FETCH_OK numParams', MessageTypeDraft18.FETCH_OK);
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.FETCH_OK, previousType, i);
       previousType = type;
       Draft18MessageCodec.readParameterValue(reader, type);
     }
 
     const trackProperties = reader.hasMore
-      ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
+      ? decodeKeyValuePairsToEnd(reader)
       : undefined;
 
     return {
@@ -1034,11 +1193,12 @@ export class Draft18MessageCodec {
     }
   }
 
-  private static decodeGoAway(reader: Draft18BufferReader): GoAwayMessageDraft18 {
+  /** `requestId` is draft-18 only: draft-22 dropped the field (§9.2) */
+  static decodeGoAway(reader: Draft18BufferReader, hasRequestId = true): GoAwayMessageDraft18 {
     // Draft-18 §10.4: New Session URI Length | New Session URI | Timeout (vi) | [Request ID (vi)]
-    const newSessionUri = decodeString(reader);
+    const newSessionUri = decodeString(reader, MessageTypeDraft18.GOAWAY, MAX_GOAWAY_URI_LENGTH);
     const timeout = reader.readVarInt();
-    const requestId = reader.hasMore ? reader.readVarInt() : undefined;
+    const requestId = hasRequestId && reader.hasMore ? reader.readVarInt() : undefined;
 
     return {
       type: MessageTypeDraft18.GOAWAY,
@@ -1052,22 +1212,24 @@ export class Draft18MessageCodec {
     // Same format as SUBSCRIBE: Request ID | Track Namespace | Track Name | Num Params | Params
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
-    encodeString(writer, message.trackName);
-    Draft18MessageCodec.encodeMessageParameters(writer, []);
+    encodeTrackName(writer, message.trackName, message.trackNamespace);
+    const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
+    Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
   private static decodeTrackStatus(reader: Draft18BufferReader): TrackStatusMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.TRACK_STATUS);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS, trackNamespace);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'TRACK_STATUS numParams', MessageTypeDraft18.TRACK_STATUS);
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.TRACK_STATUS, previousType, i);
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
     }
 
     return {
@@ -1075,6 +1237,7 @@ export class Draft18MessageCodec {
       requestId,
       trackNamespace,
       trackName,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 
@@ -1086,10 +1249,13 @@ export class Draft18MessageCodec {
     // Draft-18: Status Code (vi64) | Stream Count (vi64) | Error Reason (Reason Phrase)
     writer.writeVarInt(message.statusCode ?? 0n);
     writer.writeVarInt(message.streamCount ?? 0n);
-    encodeString(writer, message.reasonPhrase ?? '');
+    encodeReasonPhrase(writer, message.reasonPhrase ?? '');
   }
 
-  private static decodePublishDone(reader: Draft18BufferReader): PublishDoneMessageDraft18 {
+  private static decodePublishDone(
+    reader: Draft18BufferReader,
+    normalizers: ErrorCodeNormalizers,
+  ): PublishDoneMessageDraft18 {
     const rawStatusCode = reader.readVarInt();
     // §14 grease: unknown PUBLISH_DONE codes MUST be treated as INTERNAL_ERROR
     // (0x0). Registry codes are small; anything outside Number.MAX_SAFE_INTEGER
@@ -1098,9 +1264,9 @@ export class Draft18MessageCodec {
     const normalizedStatusCode: bigint =
       rawStatusCode > BigInt(Number.MAX_SAFE_INTEGER)
         ? 0n
-        : BigInt(normalizePublishDoneErrorCode(Number(rawStatusCode)));
+        : BigInt(normalizers.publishDone(Number(rawStatusCode)));
     const streamCount = reader.readVarInt();
-    const reasonPhrase = decodeString(reader);
+    const reasonPhrase = decodeReasonPhrase(reader, MessageTypeDraft18.PUBLISH_DONE);
 
     return {
       type: MessageTypeDraft18.PUBLISH_DONE,
@@ -1123,17 +1289,20 @@ export class Draft18MessageCodec {
     writer.writeVarInt(message.requestId);
     const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
 
-    // FORWARD parameter (0x10): even type = single byte value (0 = pause, 1 = resume)
-    params.push({
-      type: RequestParameterDraft18.FORWARD,
-      encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
-    });
-
-    if (message.parameters) {
-      for (const [type, value] of message.parameters) {
-        params.push({ type, encode: (w) => w.writeBytes(value) });
-      }
+    // FORWARD parameter (0x10): even type = single byte value (0 = pause, 1 = resume);
+    // omitted leaves the subscription's state unchanged (§10.2.12)
+    if (message.forwardState !== undefined) {
+      params.push({
+        type: RequestParameterDraft18.FORWARD,
+        encode: (w) => { w.writeByte(message.forwardState ? 0x01 : 0x00); },
+      });
     }
+
+    if (message.filter !== undefined) {
+      params.push(Draft18MessageCodec.filterParameter(message));
+    }
+
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
 
     Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
@@ -1143,15 +1312,19 @@ export class Draft18MessageCodec {
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'REQUEST_UPDATE numParams', MessageTypeDraft18.REQUEST_UPDATE);
     let previousType = 0;
-    let forwardState = true;
+    let forwardState: boolean | undefined;
+    let filterFields: ReturnType<typeof Draft18MessageCodec.readFilter> | undefined;
     const parameters = new Map<number, Uint8Array>();
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.REQUEST_UPDATE, previousType, i);
       previousType = type;
+      if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
+        filterFields = Draft18MessageCodec.readFilter(reader, MessageTypeDraft18.REQUEST_UPDATE);
+        continue;
+      }
       const value = Draft18MessageCodec.readParameterValue(reader, type);
       if (type === RequestParameterDraft18.FORWARD) {
-        forwardState = value.length > 0 ? value[0] === 0x01 : true;
+        forwardState = value[0] === 0x01;
       } else {
         parameters.set(type, value);
       }
@@ -1161,6 +1334,7 @@ export class Draft18MessageCodec {
       type: MessageTypeDraft18.REQUEST_UPDATE,
       requestId,
       forwardState,
+      ...filterFields,
       parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
@@ -1173,7 +1347,9 @@ export class Draft18MessageCodec {
     // Draft-18: Request ID | Track Namespace | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespacePrefix);
-    Draft18MessageCodec.encodeMessageParameters(writer, []);
+    const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
+    Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
   private static decodePublishNamespace(reader: Draft18BufferReader): PublishNamespaceMessageDraft18 {
@@ -1181,18 +1357,19 @@ export class Draft18MessageCodec {
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_NAMESPACE);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'PUBLISH_NAMESPACE numParams', MessageTypeDraft18.PUBLISH_NAMESPACE);
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.PUBLISH_NAMESPACE, previousType, i);
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
     }
 
     return {
       type: MessageTypeDraft18.PUBLISH_NAMESPACE,
       requestId,
       trackNamespacePrefix,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 
@@ -1204,7 +1381,9 @@ export class Draft18MessageCodec {
     // Draft-18: Request ID | Track Namespace Prefix | Number of Parameters | Parameters
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespacePrefix);
-    Draft18MessageCodec.encodeMessageParameters(writer, []);
+    const params: Array<{ type: number; encode: (w: Draft18BufferWriter) => void }> = [];
+    Draft18MessageCodec.pushRawParameters(params, message.parameters);
+    Draft18MessageCodec.encodeMessageParameters(writer, params);
   }
 
   private static decodeSubscribeNamespace(reader: Draft18BufferReader): SubscribeNamespaceMessageDraft18 {
@@ -1212,18 +1391,19 @@ export class Draft18MessageCodec {
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_NAMESPACE numParams', MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
+    const parameters = new Map<number, Uint8Array>();
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE, previousType, i);
       previousType = type;
-      Draft18MessageCodec.readParameterValue(reader, type);
+      parameters.set(type, Draft18MessageCodec.readParameterValue(reader, type));
     }
 
     return {
       type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
       requestId,
       trackNamespacePrefix,
+      parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
 
@@ -1234,14 +1414,14 @@ export class Draft18MessageCodec {
   private static encodeNamespaceMessage(writer: Draft18BufferWriter, message: NamespaceMessageDraft18): void {
     encodeTrackNamespace(writer, message.trackNamespace);
     if (message.trackNamespaceParameters) {
-      Draft18MessageCodec.encodeKeyValuePairs(writer, message.trackNamespaceParameters);
+      encodeKeyValuePairs(writer, message.trackNamespaceParameters);
     }
   }
 
   private static decodeNamespaceMessage(reader: Draft18BufferReader): NamespaceMessageDraft18 {
     const trackNamespace = decodeTrackNamespace(reader);
     const trackNamespaceParameters = reader.hasMore
-      ? Draft18MessageCodec.decodeKeyValuePairsToEnd(reader)
+      ? decodeKeyValuePairsToEnd(reader)
       : undefined;
 
     return {
@@ -1313,33 +1493,16 @@ export class Draft18MessageCodec {
     const numParams = reader.readVarIntNumber();
     assertBound(numParams, MAX_PARAMETER_COUNT, 'SUBSCRIBE_TRACKS numParams', MessageTypeDraft18.SUBSCRIBE_TRACKS);
     let forwardState = true;
-    let filter = SubscriptionFilterDraft18.NEXT_GROUP_START;
-    let startLocation: Location | undefined;
-    let endGroupDelta: bigint | undefined;
     const parameters = new Map<number, Uint8Array>();
 
     let previousType = 0;
     for (let i = 0; i < numParams; i++) {
-      const delta = reader.readVarIntNumber();
-      const type = previousType + delta;
+      const type = Draft18MessageCodec.nextParameterType(reader, MessageTypeDraft18.SUBSCRIBE_TRACKS, previousType, i);
       previousType = type;
 
       if (type === RequestParameterDraft18.FORWARD) {
         // §10.2.12: single-byte value, no length prefix.
-        forwardState = reader.readByte() === 0x01;
-      } else if (type === RequestParameterDraft18.SUBSCRIPTION_FILTER) {
-        const length = reader.readVarIntNumber();
-        assertBound(length, MAX_STRING_LENGTH, 'SUBSCRIBE_TRACKS SUBSCRIPTION_FILTER length', MessageTypeDraft18.SUBSCRIBE_TRACKS);
-        const filterBytes = reader.readBytes(length);
-        const filterReader = new Draft18BufferReader(filterBytes, 0);
-        filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
-        if (filter === SubscriptionFilterDraft18.ABSOLUTE_START ||
-            filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-          startLocation = { group: filterReader.readVarInt(), object: filterReader.readVarInt() };
-        }
-        if (filter === SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
-          endGroupDelta = filterReader.readVarInt();
-        }
+        forwardState = Draft18MessageCodec.readUint8Parameter(reader, type) === 0x01;
       } else {
         const value = Draft18MessageCodec.readParameterValue(reader, type);
         parameters.set(type, value);
@@ -1351,9 +1514,8 @@ export class Draft18MessageCodec {
       requestId,
       trackNamespacePrefix,
       forwardState,
-      filter,
-      startLocation,
-      endGroupDelta,
+      // §10.2: SUBSCRIBE_TRACKS carries no SUBSCRIPTION_FILTER
+      filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
       parameters: parameters.size > 0 ? parameters : undefined,
     };
   }
@@ -1363,15 +1525,19 @@ export class Draft18MessageCodec {
   // ============================================================================
 
   private static encodePublishBlocked(writer: Draft18BufferWriter, message: PublishBlockedMessageDraft18): void {
-    writer.writeVarInt(message.trackAlias);
+    // Track Namespace Suffix | Track Name Length | Track Name
+    encodeTrackNamespace(writer, message.trackNamespaceSuffix);
+    encodeString(writer, message.trackName);
   }
 
   private static decodePublishBlocked(reader: Draft18BufferReader): PublishBlockedMessageDraft18 {
-    const trackAlias = reader.readVarInt();
+    const trackNamespaceSuffix = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_BLOCKED);
+    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH_BLOCKED);
 
     return {
       type: MessageTypeDraft18.PUBLISH_BLOCKED,
-      trackAlias,
+      trackNamespaceSuffix,
+      trackName,
     };
   }
 
@@ -1413,16 +1579,90 @@ export class Draft18MessageCodec {
   }
 
   /**
+   * Read a parameter's type. §10.2: an unknown parameter, or one the message
+   * may not carry, closes the session; so does a repeat, except for
+   * AUTHORIZATION_TOKEN (§10.2.2).
+   */
+  private static nextParameterType(
+    reader: Draft18BufferReader,
+    messageType: MessageTypeDraft18,
+    previousType: number,
+    index: number,
+  ): number {
+    const delta = reader.readVarIntNumber();
+    const type = previousType + delta;
+    const name = RequestParameterDraft18[type];
+    const scope = MessageTypeDraft18[messageType];
+
+    if (name === undefined) {
+      throw new Draft18CodecError(`Unknown parameter 0x${type.toString(16)} in ${scope} (PROTOCOL_VIOLATION)`, messageType);
+    }
+    if (!PARAMETER_SCOPES.get(messageType)?.has(type)) {
+      throw new Draft18CodecError(`${name} not allowed in ${scope} (PROTOCOL_VIOLATION)`, messageType);
+    }
+    if (index > 0 && delta === 0 && type !== RequestParameterDraft18.AUTHORIZATION_TOKEN) {
+      throw new Draft18CodecError(`Duplicate parameter ${name} in ${scope} (PROTOCOL_VIOLATION)`, messageType);
+    }
+
+    return type;
+  }
+
+  /** Read a uint8 parameter, closing the session on a value outside its range (§10.2.8, §10.2.12). */
+  private static readUint8Parameter(reader: Draft18BufferReader, type: number): number {
+    const value = reader.readByte();
+    const range = UINT8_RANGES.get(type);
+    if (range && (value < range[0] || value > range[1])) {
+      throw new Draft18CodecError(
+        `Invalid ${RequestParameterDraft18[type]} ${value} (PROTOCOL_VIOLATION)`,
+      );
+    }
+
+    return value;
+  }
+
+  /**
+   * Read a length-prefixed Subscription Filter (§5.1.2). An unknown filter
+   * type, or an AbsoluteRange ending past Group 2^64-1, closes the session.
+   */
+  private static readFilter(reader: Draft18BufferReader, messageType: MessageTypeDraft18): {
+    filter: SubscriptionFilterDraft18;
+    startLocation?: Location;
+    endGroupDelta?: bigint;
+  } {
+    const length = reader.readVarIntNumber();
+    assertBound(length, MAX_STRING_LENGTH, 'SUBSCRIPTION_FILTER length', messageType);
+    const filterReader = new Draft18BufferReader(reader.readBytes(length), 0);
+
+    const filter = filterReader.readVarIntNumber() as SubscriptionFilterDraft18;
+    if (!SubscriptionFilterDraft18[filter]) {
+      throw new Draft18CodecError(`Unknown filter type ${filter} (PROTOCOL_VIOLATION)`, messageType);
+    }
+    if (filter !== SubscriptionFilterDraft18.ABSOLUTE_START && filter !== SubscriptionFilterDraft18.ABSOLUTE_RANGE) {
+      return { filter };
+    }
+
+    const startLocation = { group: filterReader.readVarInt(), object: filterReader.readVarInt() };
+    if (filter === SubscriptionFilterDraft18.ABSOLUTE_START) {
+      return { filter, startLocation };
+    }
+
+    const endGroupDelta = filterReader.readVarInt();
+    if (startLocation.group + endGroupDelta > MOQT_VARINT_MAX) {
+      throw new Draft18CodecError('AbsoluteRange end Group exceeds 2^64-1 (PROTOCOL_VIOLATION)', messageType);
+    }
+
+    return { filter, startLocation, endGroupDelta };
+  }
+
+  /**
    * Read a parameter value based on type (for skipping unknown parameters)
    */
   private static readParameterValue(reader: Draft18BufferReader, type: number): Uint8Array {
     switch (type) {
       case RequestParameterDraft18.FORWARD:
       case RequestParameterDraft18.SUBSCRIBER_PRIORITY:
-      case RequestParameterDraft18.GROUP_ORDER: {
-        const b = reader.readByte();
-        return new Uint8Array([b]);
-      }
+      case RequestParameterDraft18.GROUP_ORDER:
+        return new Uint8Array([Draft18MessageCodec.readUint8Parameter(reader, type)]);
       case RequestParameterDraft18.EXPIRES:
       case RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT:
       case RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT:
@@ -1443,55 +1683,22 @@ export class Draft18MessageCodec {
       case RequestParameterDraft18.AUTHORIZATION_TOKEN: {
         const length = reader.readVarIntNumber();
         assertBound(length, MAX_AUTH_TOKEN_LENGTH, 'AUTHORIZATION_TOKEN parameter length');
-        return reader.readBytes(length);
+        const token = reader.readBytes(length);
+        decodeDraft18AuthToken(token);
+        return token;
+      }
+      case RequestParameterDraft18.TRACK_NAMESPACE_PREFIX: {
+        // §10.2.14: a Track Namespace, not a length-prefixed value
+        const writer = new Draft18BufferWriter();
+        encodeTrackNamespace(writer, decodeTrackNamespace(reader, MessageTypeDraft18.REQUEST_UPDATE));
+        return writer.toUint8Array();
       }
       case RequestParameterDraft18.SUBSCRIPTION_FILTER:
-      case RequestParameterDraft18.TRACK_NAMESPACE_PREFIX:
       default: {
         const length = reader.readVarIntNumber();
         assertBound(length, MAX_STRING_LENGTH, 'parameter value length');
         return reader.readBytes(length);
       }
     }
-  }
-
-  private static encodeKeyValuePairs(writer: Draft18BufferWriter, pairs: Map<number, Uint8Array>): void {
-    const sortedEntries = Array.from(pairs.entries()).sort((a, b) => a[0] - b[0]);
-    let previousKey = 0;
-
-    for (const [key, value] of sortedEntries) {
-      writer.writeVarInt(key - previousKey);
-      previousKey = key;
-
-      if (key % 2 === 0) {
-        writer.writeBytes(value);
-      } else {
-        writer.writeVarInt(value.length);
-        writer.writeBytes(value);
-      }
-    }
-  }
-
-
-  private static decodeKeyValuePairsToEnd(reader: Draft18BufferReader): Map<number, Uint8Array> {
-    const pairs = new Map<number, Uint8Array>();
-    let previousKey = 0;
-
-    while (reader.hasMore) {
-      const deltaKey = reader.readVarIntNumber();
-      const key = previousKey + deltaKey;
-      previousKey = key;
-
-      if (key % 2 === 0) {
-        const value = reader.readVarInt();
-        pairs.set(key, MOQTVarInt.encode(value));
-      } else {
-        const length = reader.readVarIntNumber();
-        assertBound(length, MAX_STRING_LENGTH, 'KVP value length');
-        pairs.set(key, reader.readBytes(length));
-      }
-    }
-
-    return pairs;
   }
 }

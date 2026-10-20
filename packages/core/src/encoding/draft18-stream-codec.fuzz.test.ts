@@ -151,7 +151,7 @@ describe('Draft18StreamCodec fuzz — arbitrary bytes', () => {
 describe('Draft18StreamCodec fuzz — properties length mutation', () => {
   it('decodeObjectHeader: propsLength > MAX_PROPERTIES_LENGTH throws bounds error', () => {
     fc.assert(
-      fc.property(fc.integer({ min: MAX_PROPERTIES_LENGTH + 1, max: 1_000_000 }), (n) => {
+      fc.property(fc.integer({ min: MAX_PROPERTIES_LENGTH + 1, max: 100_000_000 }), (n) => {
         const w = new Draft18BufferWriter();
         w.writeVarInt(0n); // objectIdDelta
         w.writeVarInt(BigInt(n)); // exploded propsLength
@@ -166,7 +166,7 @@ describe('Draft18StreamCodec fuzz — properties length mutation', () => {
 
   it('decodeObjectDatagram: propsLength > MAX_PROPERTIES_LENGTH throws bounds error', () => {
     fc.assert(
-      fc.property(fc.integer({ min: MAX_PROPERTIES_LENGTH + 1, max: 1_000_000 }), (n) => {
+      fc.property(fc.integer({ min: MAX_PROPERTIES_LENGTH + 1, max: 100_000_000 }), (n) => {
         const w = new Draft18BufferWriter();
         // Type = PROPERTIES(0x01) | ZERO_OBJECT_ID(0x04) | DEFAULT_PRIORITY(0x08) = 0x0d
         w.writeVarInt(0x0dn);
@@ -185,7 +185,7 @@ describe('Draft18StreamCodec fuzz — properties length mutation', () => {
 
   it('decodeFetchObject: propsLength > MAX_PROPERTIES_LENGTH throws bounds error', () => {
     fc.assert(
-      fc.property(fc.integer({ min: MAX_PROPERTIES_LENGTH + 1, max: 1_000_000 }), (n) => {
+      fc.property(fc.integer({ min: MAX_PROPERTIES_LENGTH + 1, max: 100_000_000 }), (n) => {
         const w = new Draft18BufferWriter();
         // Flags: subgroupMode=ZERO(0) | PROPERTIES(0x20) = 0x20; no deltas, priority, etc.
         w.writeVarInt(0x20n);
@@ -398,7 +398,7 @@ describe('Draft18StreamCodec fuzz — decodeProperties via ObjectHeader', () => 
         ([sortedKeys, values]) => {
           // Build a properties Map: even keys must be varint-encoded values,
           // odd keys are raw bytes. Use small byte payloads to stay well
-          // under MAX_PROPERTY_VALUE_LENGTH.
+          // under MAX_KVP_VALUE_LENGTH.
           const props = new Map<number, Uint8Array>();
           for (let i = 0; i < sortedKeys.length; i++) {
             const key = sortedKeys[i];

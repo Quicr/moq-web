@@ -85,7 +85,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.14 handleIncomingTrackStatusDraft18
       trackName: 'stream',
       priority: 128,
       deliveryMode: 'stream',
-      requestId: 1,
+      requestId: 1n,
       cleanupHandlers: [],
       forward: 1,
     };
@@ -139,7 +139,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.14 handleIncomingTrackStatusDraft18
       trackName: 'no-objects',
       priority: 128,
       deliveryMode: 'stream',
-      requestId: 1,
+      requestId: 1n,
       cleanupHandlers: [],
       forward: 1,
     });
@@ -171,7 +171,7 @@ describe('PublicationManager.updateLatest()', () => {
       trackName: 't',
       priority: 128,
       deliveryMode: 'stream',
-      requestId: 1,
+      requestId: 1n,
       cleanupHandlers: [],
       forward: 1,
     });
@@ -188,7 +188,7 @@ describe('PublicationManager.updateLatest()', () => {
       trackName: 't',
       priority: 128,
       deliveryMode: 'stream',
-      requestId: 1,
+      requestId: 1n,
       cleanupHandlers: [],
       forward: 1,
     });
@@ -206,7 +206,7 @@ describe('PublicationManager.updateLatest()', () => {
       trackName: 't',
       priority: 128,
       deliveryMode: 'stream',
-      requestId: 1,
+      requestId: 1n,
       cleanupHandlers: [],
       forward: 1,
     });
@@ -223,7 +223,7 @@ describe('PublicationManager.updateLatest()', () => {
       trackName: 't',
       priority: 128,
       deliveryMode: 'stream',
-      requestId: 1,
+      requestId: 1n,
       cleanupHandlers: [],
       forward: 1,
     });

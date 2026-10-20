@@ -45,6 +45,7 @@
 // Main session class
 export { MOQTSession } from './session.js';
 export type { MOQTSessionConfig, SessionDiagnostics } from './session.js';
+export { RequestRejectedError, type RequestRedirect } from './request-rejected-error.js';
 
 // Reconnect / backoff policy (B10 Ops)
 export {
@@ -73,6 +74,7 @@ export type {
   SessionState,
   SessionEventType,
   SubscribeOptions,
+  FillOptions,
   PublishOptions,
   AnnounceOptions,
   ObjectMetadata,
@@ -88,11 +90,13 @@ export type {
   RequestOkEvent,
   PublishDoneEvent,
   PublishBlockedEvent,
+  SubscriptionCancelledEvent,
   TrackProperties,
   MessageLogEvent,
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
+  IncomingSubscribeTracksEvent,
   NamespaceAnnouncedEvent,
   NamespaceDoneEvent,
   SubscribeNamespaceOptions,

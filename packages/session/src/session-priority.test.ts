@@ -41,13 +41,13 @@ interface PrivateSession {
     groupId: number,
   ) => number | undefined;
   publicationManager: {
-    getByRequestId: (id: number) => {
+    getByRequestId: (id: bigint | number) => {
       subscriberPriority?: number;
       subscriberGroupOrder?: GroupOrder;
     } | undefined;
   };
   announcedNamespaces: Map<string, {
-    subscribers: Map<number, { subscriberPriority: number; groupOrder: GroupOrder }>;
+    subscribers: Map<bigint, { subscriberPriority: number; groupOrder: GroupOrder }>;
   }>;
 }
 
@@ -61,6 +61,7 @@ async function announceForTest(session: MOQTSession, namespace: string[]): Promi
   // Directly seed the announced namespace map so we don't need the full
   // PUBLISH_NAMESPACE handshake to test the SUBSCRIBE-handler wiring.
   const namespaceStr = namespace.join('/');
+  const key = JSON.stringify(namespace);
   (session as unknown as {
     announcedNamespaces: Map<string, {
       namespace: string[];
@@ -69,7 +70,7 @@ async function announceForTest(session: MOQTSession, namespace: string[]): Promi
       options: { priority: number; groupOrder: GroupOrder; deliveryTimeout: number; deliveryMode: 'stream' };
       acknowledged: boolean;
     }>;
-  }).announcedNamespaces.set(namespaceStr, {
+  }).announcedNamespaces.set(key, {
     namespace,
     namespaceStr,
     subscribers: new Map(),
@@ -119,7 +120,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §7 SUBSCRIBE parameters land on publica
     expect(pub?.subscriberGroupOrder).toBe(GroupOrder.DESCENDING);
 
     // Also mirrored onto the announced-subscribers map.
-    const info = priv.announcedNamespaces.get('room');
+    const info = priv.announcedNamespaces.get(JSON.stringify(['room']));
     const sub = info?.subscribers.get(1n);
     expect(sub?.subscriberPriority).toBe(32);
     expect(sub?.groupOrder).toBe(GroupOrder.DESCENDING);
@@ -142,7 +143,7 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §7 SUBSCRIBE parameters land on publica
 });
 
 describe.skipIf(!IS_DRAFT_18)('draft-18 §10.9.1 REQUEST_UPDATE re-priorities in flight', () => {
-  it('updates subscriberPriority/groupOrder on the matching publication', async () => {
+  it('updates subscriberPriority, but not the group order, of the matching publication', async () => {
     const session = makeSession();
     const priv = session as unknown as PrivateSession;
     await announceForTest(session, ['room']);
@@ -167,7 +168,8 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.9.1 REQUEST_UPDATE re-priorities in
 
     const pub = priv.publicationManager.getByRequestId(7);
     expect(pub?.subscriberPriority).toBe(16);
-    expect(pub?.subscriberGroupOrder).toBe(GroupOrder.DESCENDING);
+    // The group order of an existing subscription cannot be changed (d22 §5.1.1)
+    expect(pub?.subscriberGroupOrder).toBe(GroupOrder.ASCENDING);
   });
 });
 

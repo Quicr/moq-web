@@ -61,12 +61,9 @@ describe('draft-18 §3.2.1 reserved namespace enforcement', () => {
     await expect(session.subscribeNamespace(['.ext'])).rejects.toThrow(/§3.2.1/);
   });
 
-  it.skipIf(!IS_DRAFT_18)('refuses SUBSCRIBE_TRACKS with a reserved prefix (top-level or namespacePrefixParam)', async () => {
+  it.skipIf(!IS_DRAFT_18)('refuses SUBSCRIBE_TRACKS with a reserved prefix', async () => {
     const session = makeReadySession();
     await expect(session.subscribeTracks(['.session'])).rejects.toThrow(/§3.2.1/);
-    await expect(
-      session.subscribeTracks(['ok'], undefined, { namespacePrefixParam: ['.reserved'] }),
-    ).rejects.toThrow(/§3.2.1/);
   });
 
   it('refuses ANNOUNCE under a reserved namespace', async () => {

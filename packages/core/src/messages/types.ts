@@ -489,7 +489,7 @@ export enum TrackPropertyDraft18 {
   MAX_CACHE_DURATION = 0x04,
   /** §12.1 — per-subgroup delivery timeout (ms) */
   SUBGROUP_DELIVERY_TIMEOUT = 0x06,
-  /** §12.7 — immutable-properties bitmap (Track + Object scope) */
+  /** §12.7 — Key-Value-Pairs of properties that no relay may change (Track + Object scope) */
   IMMUTABLE_PROPERTIES = 0x0b,
   /** §12.4 — default publisher priority (0-255) when object omits its own */
   DEFAULT_PUBLISHER_PRIORITY = 0x0e,
@@ -1433,6 +1433,11 @@ export interface SubgroupHeader {
   subgroupId: number;
   /** Publisher priority (byte 0-255) */
   publisherPriority: number;
+  /**
+   * Draft-18+: the stream starts at the subgroup's first object (FIRST_OBJECT
+   * bit, d22 §11.3.1). Defaults to true; false for a stream reopened mid-subgroup.
+   */
+  firstObject?: boolean;
 }
 
 /**
@@ -1580,7 +1585,7 @@ export interface ServerSetupMessageDraft18 {
   maxAuthTokenCacheSize?: number;
   /**
    * Raw AUTHORIZATION_TOKEN option bytes from the peer's SETUP (§10.2.2).
-   * Decode via `MessageCodec.decodeAuthorizationToken()` to inspect
+   * Decode via `decodeDraft18AuthToken()` to inspect
    * `aliasType` / `tokenType` / `tokenValue`.
    */
   authToken?: Uint8Array;
@@ -1624,7 +1629,8 @@ export interface SubscribeOkMessageDraft18 {
   type: MessageTypeDraft18.SUBSCRIBE_OK;
   requestId: bigint;
   trackAlias?: bigint;
-  largestLocation: Location;
+  /** §10.2.11 LARGEST_OBJECT: omitted until Objects have been published. {0, 0} is a real location. */
+  largestLocation?: Location;
   /** §10.2.10 EXPIRES parameter (ms). `undefined` omits, `0n` means no expiration. */
   expires?: bigint;
   trackProperties?: Map<number, Uint8Array>;
@@ -1640,7 +1646,10 @@ export interface PublishMessageDraft18 {
   trackNamespace: TrackNamespace;
   trackName: string;
   forwardState: boolean;
-  largestLocation: Location;
+  /** §10.2.11 LARGEST_OBJECT: omitted until Objects have been published. {0, 0} is a real location. */
+  largestLocation?: Location;
+  /** The other §10.2 parameters, by type: AUTHORIZATION_TOKEN and EXPIRES */
+  parameters?: Map<number, Uint8Array>;
   trackProperties?: Map<number, Uint8Array>;
 }
 
@@ -1679,6 +1688,14 @@ export interface RequestOkMessageDraft18 {
    * When absent, subscribers infer "no objects yet" for the track.
    */
   largestLocation?: Location;
+  /** §10.2.12 FORWARD in a PUBLISH_OK: the subscription's initial state; omitted is 1 */
+  forwardState?: boolean;
+  /** §10.2.9 SUBSCRIPTION_FILTER in a PUBLISH_OK; omitted is unfiltered */
+  filter?: SubscriptionFilterDraft18;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
+  /** Track Properties; only a TRACK_STATUS_OK has them (d22 §9.3, d18 §10.5) */
+  trackProperties?: Map<number, Uint8Array>;
 }
 
 /**
@@ -1760,6 +1777,8 @@ export interface TrackStatusMessageDraft18 {
   requestId: bigint;
   trackNamespace: TrackNamespace;
   trackName: string;
+  /** The §10.2 parameters, by type: AUTHORIZATION_TOKEN */
+  parameters?: Map<number, Uint8Array>;
 }
 
 /**
@@ -1897,13 +1916,18 @@ export interface PublishDoneMessageDraft18 {
 /**
  * Draft-18 REQUEST_UPDATE message (§10.9)
  * Wire format: Type | Length | Request ID | Number of Parameters | Parameters.
- * The Request ID is the ID of the request being updated (not a new ID). The
+ * The Request ID is a new ID: each REQUEST_UPDATE consumes one (§10.1). The
  * update is sent on the same bidi stream as the original request.
  */
 export interface RequestUpdateMessageDraft18 {
   type: MessageTypeDraft18.REQUEST_UPDATE;
   requestId: bigint;
-  forwardState: boolean;
+  /** Omitted leaves the subscription's forward state unchanged (§10.2.12) */
+  forwardState?: boolean;
+  /** SUBSCRIPTION_FILTER (§10.2.9) replacing the subscription's filter */
+  filter?: SubscriptionFilterDraft18;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
   parameters?: Map<number, Uint8Array>;
 }
 
@@ -1916,6 +1940,8 @@ export interface PublishNamespaceMessageDraft18 {
   requestId: bigint;
   trackNamespacePrefix: TrackNamespace;
   parameters?: Map<number, Uint8Array>;
+  /** Draft-22 AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
 }
 
 /**
@@ -1927,6 +1953,8 @@ export interface SubscribeNamespaceMessageDraft18 {
   requestId: bigint;
   trackNamespacePrefix: TrackNamespace;
   parameters?: Map<number, Uint8Array>;
+  /** Draft-22 AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
 }
 
 /**
@@ -1965,12 +1993,14 @@ export interface SubscribeTracksMessageDraft18 {
 }
 
 /**
- * Draft-18 PUBLISH_BLOCKED message
- * Publisher signals it is blocked from sending due to flow control
+ * Draft-18 PUBLISH_BLOCKED message (§10.20)
+ * Publisher signals on the SUBSCRIBE_TRACKS response stream that it cannot
+ * PUBLISH a track; the namespace is relative to the SUBSCRIBE_TRACKS prefix.
  */
 export interface PublishBlockedMessageDraft18 {
   type: MessageTypeDraft18.PUBLISH_BLOCKED;
-  trackAlias: bigint;
+  trackNamespaceSuffix: TrackNamespace;
+  trackName: string;
 }
 
 /**
@@ -2025,7 +2055,7 @@ export enum MessageTypeDraft22 {
   FETCH = 0x16,
   FETCH_OK = 0x18,
   PUBLISH = 0x1D,
-  PUBLISH_OK = 0x1E,
+  // 0x1E is reserved in draft-22 (formerly PUBLISH_OK)
   // New in draft-22
   PUBLISH_STATE_NOTIFY = 0x22,
   SUBSCRIBE_NAMESPACE = 0x50,
@@ -2188,11 +2218,14 @@ export interface RequestErrorMessageDraft22 {
 }
 
 /**
- * Draft-22 PUBLISH_STATE_NOTIFY
+ * Draft-22 PUBLISH_STATE_NOTIFY (§9.10): carries only the parameters whose
+ * values changed. Absent means unchanged.
  */
 export interface PublishStateNotifyMessageDraft22 {
   type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY;
-  parameters: Map<number, Uint8Array>;
+  forwardState?: boolean;
+  largestLocation?: Location;
+  locationFilter?: LocationFilterDraft22;
 }
 
 /**
@@ -2214,33 +2247,166 @@ export interface GoAwayMessageDraft22 {
 }
 
 /**
- * Draft-22 SUBSCRIBE_OK uses parameters + track properties (no groupOrder/contentExists)
+ * Draft-22 LOCATION_FILTER parameter value (§9.20.9)
  */
-export interface SubscribeOkMessageDraft22 {
-  type: MessageTypeDraft22.SUBSCRIBE_OK;
+export interface LocationFilterDraft22 {
+  type: LocationFilterTypeDraft22;
+  startLocation?: Location;
+  endGroupDelta?: bigint;
+  endObject?: bigint;
+}
+
+/**
+ * Draft-22 Range Filter parameter types (§3.3.2): 0x25-0x29
+ */
+export type RangeFilterTypeDraft22 =
+  | RequestParameterDraft22.SUBGROUP_FILTER
+  | RequestParameterDraft22.OBJECTID_FILTER
+  | RequestParameterDraft22.PRIORITY_FILTER
+  | RequestParameterDraft22.OBJECT_PROPERTY_FILTER
+  | RequestParameterDraft22.TRACK_PROPERTY_FILTER;
+
+/**
+ * One inclusive Range of a Range Filter (§8.6). Values are absolute; the wire
+ * delta encoding is the codec's business. Only the last Range may omit `end`,
+ * which makes it open-ended.
+ */
+export interface RangeDraft22 {
+  start: bigint;
+  end?: bigint;
+}
+
+/**
+ * Draft-22 Range Filter parameter value (§3.3.2, §9.20.10-9.20.14).
+ *
+ * No `setId` and no `ranges` is the Length 0 form that removes the filter in
+ * REQUEST_UPDATE (§8.6). `propertyType` is only for the Object and Track
+ * Property filters.
+ */
+export interface RangeFilterDraft22 {
+  type: RangeFilterTypeDraft22;
+  /** Filters with the same SetID are AND'd, distinct SetIDs are OR'd (uint8) */
+  setId?: number;
+  propertyType?: bigint;
+  ranges: RangeDraft22[];
+}
+
+/**
+ * Draft-22 FILL_PARAMETERS value (§9.20.15): the parameters that differ for
+ * the fill fetch stream. Absent fields take the subscription's value.
+ */
+export interface FillParametersDraft22 {
+  locationFilter?: LocationFilterDraft22;
+  /** FILL_TIMEOUT (§9.20.5) in milliseconds */
+  fillTimeoutMs?: bigint;
+  subscriberPriority?: number;
+  groupOrder?: GroupOrder;
+  rangeFilters?: RangeFilterDraft22[];
+}
+
+/**
+ * Draft-22 SUBSCRIBE (§9.6): filter is carried in LOCATION_FILTER and
+ * pause state in FORWARD. Absent filter means unfiltered.
+ *
+ * `parameters` holds the remaining §9.20 parameters keyed by type. Values are
+ * raw: uint8 as one byte, varint as its encoding, length-prefixed as its
+ * payload, Track Namespace as its encoding.
+ */
+export interface SubscribeMessageDraft22 {
+  type: MessageTypeDraft22.SUBSCRIBE;
+  requestId: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  forwardState: boolean;
+  locationFilter?: LocationFilterDraft22;
+  fill?: FillParametersDraft22;
+  rangeFilters?: RangeFilterDraft22[];
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 PUBLISH (§9.8). Omitted FORWARD means 1; omitted LARGEST_OBJECT
+ * means no Objects have been published.
+ */
+export interface PublishMessageDraft22 {
+  type: MessageTypeDraft22.PUBLISH;
+  requestId: bigint;
   trackAlias: bigint;
-  parameters: Map<number, Uint8Array>;
-  trackProperties: Map<number, Uint8Array>;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  forwardState: boolean;
+  largestLocation?: Location;
+  locationFilter?: LocationFilterDraft22;
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
+  parameters?: Map<number, Uint8Array>;
+  trackProperties?: Map<number, Uint8Array>;
 }
 
 /**
- * Draft-22 FETCH_OK has End Of Track, End Location, parameters, track properties
+ * Draft-22 REQUEST_UPDATE (§9.5). Absent fields leave the request's value
+ * unchanged.
  */
-export interface FetchOkMessageDraft22 {
-  type: MessageTypeDraft22.FETCH_OK;
-  endOfTrack: boolean;
-  endLocation: Location;
-  parameters: Map<number, Uint8Array>;
-  trackProperties: Map<number, Uint8Array>;
+export interface RequestUpdateMessageDraft22 {
+  type: MessageTypeDraft22.REQUEST_UPDATE;
+  requestId: bigint;
+  forwardState?: boolean;
+  locationFilter?: LocationFilterDraft22;
+  fill?: FillParametersDraft22;
+  rangeFilters?: RangeFilterDraft22[];
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
+  parameters?: Map<number, Uint8Array>;
 }
 
 /**
- * Draft-22 REQUEST_OK has parameters + track properties
+ * Draft-22 TRACK_STATUS (§9.13): AUTHORIZATION_TOKEN and INCLUDE_PROPERTIES
+ * live in `parameters` and `authTokens`.
  */
-export interface RequestOkMessageDraft22 {
-  type: MessageTypeDraft22.REQUEST_OK;
-  parameters: Map<number, Uint8Array>;
-  trackProperties: Map<number, Uint8Array>;
+export interface TrackStatusMessageDraft22 {
+  type: MessageTypeDraft22.TRACK_STATUS;
+  requestId: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 SUBSCRIBE_TRACKS (§9.18). Omitted FORWARD means 1.
+ */
+export interface SubscribeTracksMessageDraft22 {
+  type: MessageTypeDraft22.SUBSCRIBE_TRACKS;
+  requestId: bigint;
+  trackNamespacePrefix: TrackNamespace;
+  forwardState: boolean;
+  rangeFilters?: RangeFilterDraft22[];
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
+  parameters?: Map<number, Uint8Array>;
+}
+
+/**
+ * Draft-22 FETCH (§9.11): standalone only, range carried in LOCATION_FILTER.
+ * Omitted end means Largest Object; end is inclusive.
+ */
+export interface FetchMessageDraft22 {
+  type: MessageTypeDraft22.FETCH;
+  requestId: bigint;
+  trackNamespace: TrackNamespace;
+  trackName: string;
+  subscriberPriority: number;
+  groupOrder: GroupOrder;
+  locationFilter?: LocationFilterDraft22;
+  /** FILL_TIMEOUT (§9.20.5) in milliseconds */
+  fillTimeoutMs?: bigint;
+  rangeFilters?: RangeFilterDraft22[];
+  /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
+  authTokens?: Uint8Array[];
+  parameters?: Map<number, Uint8Array>;
 }
 
 /**
@@ -2249,21 +2415,21 @@ export interface RequestOkMessageDraft22 {
 export type ControlMessageDraft22 =
   | ClientSetupMessageDraft18  // Setup messages are the same
   | ServerSetupMessageDraft18
-  | SubscribeMessageDraft18
-  | SubscribeOkMessageDraft22
-  | PublishMessageDraft18
+  | SubscribeMessageDraft22
+  | SubscribeOkMessageDraft18
+  | PublishMessageDraft22
   | PublishDoneMessageDraft22
   | PublishStateNotifyMessageDraft22
   | PublishSkippedMessageDraft22
   | RequestErrorMessageDraft22
-  | RequestOkMessageDraft22
-  | RequestUpdateMessageDraft18
+  | RequestOkMessageDraft18
+  | RequestUpdateMessageDraft22
   | GoAwayMessageDraft22
-  | FetchMessageDraft18
-  | FetchOkMessageDraft22
-  | TrackStatusMessageDraft18
+  | FetchMessageDraft22
+  | FetchOkMessageDraft18
+  | TrackStatusMessageDraft22
   | PublishNamespaceMessageDraft18
   | SubscribeNamespaceMessageDraft18
   | NamespaceMessageDraft18
   | NamespaceDoneMessageDraft18
-  | SubscribeTracksMessageDraft18;
+  | SubscribeTracksMessageDraft22;

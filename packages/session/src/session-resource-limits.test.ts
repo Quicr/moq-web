@@ -5,16 +5,25 @@
  * Unit tests for B3 SEC per-session resource limits.
  *
  * The session gates subscribe/publish/stream-open on `maxSubscriptions`,
- * `maxTracks`, and `maxOpenStreams`. When a cap is exceeded the session
- * terminates with PROTOCOL_VIOLATION via the existing `close()` pattern.
+ * `maxTracks`, and `maxOpenStreams`. When a cap is exceeded the call throws.
+ * Draft-14/16 also terminate the session with PROTOCOL_VIOLATION; draft-18/22
+ * keep it and refuse the peer's request with EXCESSIVE_LOAD (d22 §12.3).
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { MOQTransport, SessionErrorCodeDraft18 } from '@moq-web/core';
+import {
+  MOQTransport,
+  MessageTypeDraft18,
+  RequestErrorCodeDraft18,
+  SessionErrorCodeDraft18,
+  SubscriptionFilterDraft18,
+  type DraftVersion,
+  type RequestErrorMessageDraft18,
+} from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 
-type PrivateSession = MOQTSession & {
+type PrivateSession = {
   _state: 'none' | 'setup-sent' | 'ready' | 'closing';
   maxSubscriptions: number;
   maxTracks: number;
@@ -30,8 +39,12 @@ type PrivateSession = MOQTSession & {
   handleIncomingSubscribe: (message: unknown) => Promise<void>;
 };
 
-function makeSession(): { session: MOQTSession; transport: MOQTransport; closeSpy: ReturnType<typeof vi.fn> } {
-  const transport = new MOQTransport();
+function makeSession(draft: DraftVersion = 'draft-16'): {
+  session: MOQTSession;
+  transport: MOQTransport;
+  closeSpy: ReturnType<typeof vi.fn>;
+} {
+  const transport = new MOQTransport({ draft });
   const closeSpy = vi.fn().mockResolvedValue(undefined);
   (transport as unknown as { close: typeof transport.close }).close = closeSpy;
   const session = new MOQTSession(transport);
@@ -96,7 +109,7 @@ describe('B3 SEC: per-session resource limits', () => {
     expect((caught as { code?: string }).code).toBe('resource-limit-exceeded');
   });
 
-  it('enforceResourceLimit closes the session with PROTOCOL_VIOLATION and a matching reason string', async () => {
+  it('draft-16 enforceResourceLimit closes the session with PROTOCOL_VIOLATION and a matching reason string', async () => {
     const { session, closeSpy } = makeSession();
     const priv = session as unknown as PrivateSession;
     expect(() => priv.enforceResourceLimit('subscriptions', 100, 10)).toThrow();
@@ -112,7 +125,7 @@ describe('B3 SEC: per-session resource limits', () => {
     );
   });
 
-  it('enforceResourceLimit is idempotent — a second trip does not re-close', () => {
+  it('draft-16 enforceResourceLimit is idempotent — a second trip does not re-close', () => {
     const { session, closeSpy } = makeSession();
     const priv = session as unknown as PrivateSession;
     // Two consecutive trips should only produce one close attempt.
@@ -121,7 +134,7 @@ describe('B3 SEC: per-session resource limits', () => {
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('maxOpenStreams: enforceResourceLimit trips when openStreamCount reaches maxOpenStreams', () => {
+  it('draft-16 maxOpenStreams: enforceResourceLimit trips when openStreamCount reaches maxOpenStreams', () => {
     const { session, closeSpy } = makeSession();
     const priv = session as unknown as PrivateSession;
     (priv as unknown as { maxOpenStreams: number }).maxOpenStreams = 2;
@@ -138,5 +151,67 @@ describe('B3 SEC: per-session resource limits', () => {
       SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
       expect.stringContaining('streams'),
     );
+  });
+});
+
+describe.each(['draft-18', 'draft-22'] as const)('resource limits (%s)', (draft) => {
+  it('throw without closing the session', () => {
+    const { session } = makeSession(draft);
+    const close = vi.spyOn(session, 'close');
+    const priv = session as unknown as PrivateSession;
+
+    expect(() => priv.enforceResourceLimit('subscriptions', 100, 10)).toThrow();
+
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  async function overCap(first: object, setCap: (p: PrivateSession) => void) {
+    const { session } = makeSession(draft);
+    const close = vi.spyOn(session, 'close');
+    const priv = session as unknown as PrivateSession & {
+      codec: {
+        encodeControlMessage: (m: unknown) => Uint8Array;
+        decodeControlMessage: (b: Uint8Array) => [RequestErrorMessageDraft18, number];
+      };
+      processIncomingBidiStream: (s: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }) => Promise<void>;
+    };
+    setCap(priv);
+    const written: Uint8Array[] = [];
+
+    await priv.processIncomingBidiStream({
+      readable: new ReadableStream<Uint8Array>({ start: (c) => { c.enqueue(priv.codec.encodeControlMessage(first)); } }),
+      writable: new WritableStream<Uint8Array>({ write: (chunk) => { written.push(chunk); } }),
+    });
+
+    return { close, reply: priv.codec.decodeControlMessage(written[0])[0] };
+  }
+
+  it('refuse a SUBSCRIBE over the track cap with EXCESSIVE_LOAD', async () => {
+    const { close, reply } = await overCap({
+      type: MessageTypeDraft18.SUBSCRIBE,
+      requestId: 1n,
+      trackNamespace: ['ns'],
+      trackName: 't',
+      forwardState: true,
+      ...(draft === 'draft-18' ? { filter: SubscriptionFilterDraft18.NEXT_GROUP_START } : {}),
+    }, (p) => { p.maxTracks = 0; });
+
+    expect(reply).toMatchObject({ type: MessageTypeDraft18.REQUEST_ERROR, errorCode: RequestErrorCodeDraft18.EXCESSIVE_LOAD });
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('refuse a PUBLISH over the subscription cap with EXCESSIVE_LOAD', async () => {
+    const { close, reply } = await overCap({
+      type: MessageTypeDraft18.PUBLISH,
+      requestId: 1n,
+      trackAlias: 9n,
+      trackNamespace: ['ns'],
+      trackName: 't',
+      forwardState: true,
+      ...(draft === 'draft-18' ? { largestLocation: { group: 0n, object: 0n } } : {}),
+    }, (p) => { p.maxSubscriptions = 0; });
+
+    expect(reply).toMatchObject({ type: MessageTypeDraft18.REQUEST_ERROR, errorCode: RequestErrorCodeDraft18.EXCESSIVE_LOAD });
+    expect(close).not.toHaveBeenCalled();
   });
 });

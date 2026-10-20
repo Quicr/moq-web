@@ -22,10 +22,17 @@ import { bytesEqual } from '../lib/verify.js';
 import chatStream from '../profiles/chat-stream.json';
 import chatDatagram from '../profiles/chat-datagram.json';
 
+// Enough large objects that the fetch stream arrives over many reads, so
+// objects straddle read boundaries; the profile default (30 x 64 B) arrives
+// in a single read on a local relay.
+const LARGE_PAYLOAD_BYTES = 2048;
+const LARGE_MESSAGES = 300;
+
 describe.each([
-  ['chat-stream', chatStream as Profile],
-  ['chat-datagram', chatDatagram as Profile],
-])('FETCH range [%s]', (label, raw) => {
+  ['chat-stream', 'default', chatStream as Profile, undefined],
+  ['chat-datagram', 'default', chatDatagram as Profile, undefined],
+  ['chat-stream', 'large', chatStream as Profile, LARGE_PAYLOAD_BYTES],
+])('FETCH range [%s, %s payload]', (label, _size, raw, sizeBytes) => {
   let pub: SessionHandle | undefined;
   let sub: SessionHandle | undefined;
 
@@ -42,7 +49,11 @@ describe.each([
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, `fetch-${label}`);
-    const perGroup = track.payload.objectsPerGroup ?? 10;
+    const isLarge = sizeBytes !== undefined;
+    const payload = isLarge
+      ? { ...track.payload, sizeBytes, messages: LARGE_MESSAGES }
+      : track.payload;
+    const perGroup = payload.objectsPerGroup ?? 10;
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -56,7 +67,7 @@ describe.each([
     });
 
     // Prime the cache with all messages so FETCH has data to return.
-    for (const msg of generateChat(track.payload)) {
+    for (const msg of generateChat(payload)) {
       await pub.session.sendObject(trackAlias, msg.bytes, {
         groupId: msg.groupId,
         objectId: msg.objectId,
@@ -65,9 +76,12 @@ describe.each([
     // Let the relay finish ingesting.
     await new Promise((r) => setTimeout(r, 500));
 
-    // Fetch group 1 in full.
-    const range = { startGroup: 1, startObject: 0, endGroup: 1, endObject: perGroup - 1 };
-    const expected = perGroup;
+    // Fetch group 1 in full, or every group for the large-payload case.
+    const lastGroup = Math.ceil(payload.messages / perGroup) - 1;
+    const range = isLarge
+      ? { startGroup: 0, startObject: 0, endGroup: lastGroup, endObject: perGroup - 1 }
+      : { startGroup: 1, startObject: 0, endGroup: 1, endObject: perGroup - 1 };
+    const expected = isLarge ? payload.messages : perGroup;
 
     const received: Array<{ groupId: number; objectId: number; data: Uint8Array }> = [];
     let fetchFailed: string | undefined;
@@ -96,7 +110,7 @@ describe.each([
 
     expect(received).toHaveLength(expected);
     for (const o of received) {
-      const want = expectedMessage(track.payload, o.groupId, o.objectId);
+      const want = expectedMessage(payload, o.groupId, o.objectId);
       expect(
         bytesEqual(o.data, want),
         `mismatch at (${o.groupId},${o.objectId})`,

@@ -19,9 +19,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { MOQTransport, StreamResetErrorCodeDraft18 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
+import { streamResetReason } from './stream-reset-reason.js';
 import type { StreamResetEvent } from './types.js';
 
-type PrivateSession = MOQTSession & {
+type PrivateSession = {
   activeVideoStreams: Map<string, {
     writer?: WritableStreamDefaultWriter<Uint8Array>;
     streamId?: number;
@@ -42,7 +43,7 @@ describe('draft-18 §11.4.3 publisher-side stream-reset event', () => {
   it('emits stream-reset with the requested §15.10.4 code and reason', async () => {
     const session = makeSession();
     const abortSpy = vi.fn().mockResolvedValue(undefined);
-    (session as PrivateSession).activeVideoStreams.set('42', {
+    (session as unknown as PrivateSession).activeVideoStreams.set('42', {
       writer: { abort: abortSpy } as unknown as WritableStreamDefaultWriter<Uint8Array>,
       groupId: 3,
       objectCount: 4,
@@ -67,13 +68,13 @@ describe('draft-18 §11.4.3 publisher-side stream-reset event', () => {
       trackAlias: 42n,
       groupId: 3,
     });
-    // Ensures we still tore down the underlying writer, not just emitted.
-    expect(abortSpy).toHaveBeenCalledWith('load-shedding');
+    // The writer is aborted with the code, which is what reaches the wire (d22 §12.5)
+    expect(abortSpy).toHaveBeenCalledWith(streamResetReason(StreamResetErrorCodeDraft18.EXCESSIVE_LOAD));
   });
 
   it('emits stream-reset with a code-derived reason when no reason is given', async () => {
     const session = makeSession();
-    (session as PrivateSession).activeVideoStreams.set('7', {
+    (session as unknown as PrivateSession).activeVideoStreams.set('7', {
       writer: { abort: vi.fn().mockResolvedValue(undefined) } as unknown as WritableStreamDefaultWriter<Uint8Array>,
       groupId: 0,
       objectCount: 0,
@@ -110,7 +111,7 @@ describe('draft-18 §11.4.3 publisher-side stream-reset event', () => {
   it('resetPublicationStreamTooFarBehind() short-circuits to §15.10.4 = 0x5', async () => {
     const session = makeSession();
     const abortSpy = vi.fn().mockResolvedValue(undefined);
-    (session as PrivateSession).activeVideoStreams.set('99', {
+    (session as unknown as PrivateSession).activeVideoStreams.set('99', {
       writer: { abort: abortSpy } as unknown as WritableStreamDefaultWriter<Uint8Array>,
       groupId: 5,
       objectCount: 2,
@@ -126,7 +127,7 @@ describe('draft-18 §11.4.3 publisher-side stream-reset event', () => {
     expect(events).toHaveLength(1);
     expect(events[0].code).toBe(StreamResetErrorCodeDraft18.TOO_FAR_BEHIND);
     expect(events[0].reason).toBe('sub lagged 4 groups');
-    expect(abortSpy).toHaveBeenCalledWith('sub lagged 4 groups');
+    expect(abortSpy).toHaveBeenCalledWith(streamResetReason(StreamResetErrorCodeDraft18.TOO_FAR_BEHIND));
   });
 });
 

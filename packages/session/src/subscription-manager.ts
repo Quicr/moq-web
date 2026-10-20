@@ -9,7 +9,7 @@
  * (server-assigned, client-assigned, request ID) and subscriptions.
  */
 
-import { Logger } from '@moq-web/core';
+import { Logger, type GroupOrder } from '@moq-web/core';
 import type { SubscriptionInfo } from './types.js';
 
 const log = Logger.create('moqt:session:subscription-manager');
@@ -24,13 +24,19 @@ export interface InternalSubscription extends SubscriptionInfo {
   onEndOfGroup?: (groupId: number) => void;
   /** Buffer for objects that arrive before onObject is set */
   pendingObjects?: Array<{ data: Uint8Array; groupId: number; objectId: number; timestamp: number }>;
+  /** Group order requested at subscribe time; fill streams default to it (draft-22 §3.4) */
+  groupOrder?: GroupOrder;
+  /** Ranges held per Range Filter, for the peer's MAX_FILTER_RANGES (draft-22 §9.1.6) */
+  rangeFilterCounts?: Map<string, number>;
+  /** The track has DYNAMIC_GROUPS=1, so NEW_GROUP_REQUEST is allowed (draft-22 §9.20.19) */
+  dynamicGroups?: boolean;
+  /** Largest Group ID known: from SUBSCRIBE_OK or PUBLISH, then every object delivered */
+  largestGroup?: number;
   /**
-   * Draft-18 §8 subscriber-side deadlines (ms) captured from SubscribeOptions
-   * so the ObjectRouter can arm per-subgroup/per-object timers on incoming
-   * streams. 0/undefined disables the corresponding timer.
+   * The larger of the delivery timeouts that apply (ms): how long objects may still be
+   * inbound after PUBLISH_DONE (draft-22 §9.9)
    */
-  subgroupDeliveryTimeoutMs?: number;
-  objectDeliveryTimeoutMs?: number;
+  drainMs?: number;
 }
 
 /**
@@ -227,7 +233,7 @@ export class SubscriptionManager {
    * Make a track name key from namespace and track name
    */
   private makeTrackNameKey(namespace: string[], trackName: string): string {
-    return [...namespace, trackName].join('/');
+    return JSON.stringify([namespace, trackName]);
   }
 
   /**

@@ -115,7 +115,8 @@ const arbAsciiString = (max: number): fc.Arbitrary<string> =>
 const arbBigintU62 = (max = 0xffff_ffffn): fc.Arbitrary<bigint> =>
   fc.bigInt({ min: 0n, max });
 
-const arbTrackNamespace = fc.array(arbAsciiString(64), {
+// §8.7: a Track Namespace Field has at least one byte.
+const arbTrackNamespace = fc.array(fc.string({ minLength: 1, maxLength: 64, unit: 'grapheme-ascii' }), {
   minLength: 1,
   maxLength: 4,
 });
@@ -203,7 +204,8 @@ const arbNamespaceDoneMessage: fc.Arbitrary<NamespaceDoneMessageDraft18> = fc.re
 
 const arbPublishBlockedMessage: fc.Arbitrary<PublishBlockedMessageDraft18> = fc.record({
   type: fc.constant(MessageTypeDraft18.PUBLISH_BLOCKED),
-  trackAlias: arbBigintU62(),
+  trackNamespaceSuffix: arbTrackNamespace,
+  trackName: arbAsciiString(64),
 });
 
 const arbGoAwayMessage: fc.Arbitrary<GoAwayMessageDraft18> = fc.record({
@@ -404,8 +406,7 @@ describe('Draft18MessageCodec fuzz — round-trip identity', () => {
         const [decoded] = Draft18MessageCodec.decode(encoded);
         const d = decoded as SubscribeOkMessageDraft18;
         expect(d.trackAlias).toBe(msg.trackAlias);
-        expect(d.largestLocation.group).toBe(msg.largestLocation.group);
-        expect(d.largestLocation.object).toBe(msg.largestLocation.object);
+        expect(d.largestLocation).toEqual(msg.largestLocation);
         if (msg.expires !== undefined) {
           expect(d.expires).toBe(msg.expires);
         }
@@ -532,7 +533,8 @@ describe('Draft18MessageCodec fuzz — round-trip identity', () => {
         const encoded = Draft18MessageCodec.encode(msg);
         const [decoded] = Draft18MessageCodec.decode(encoded);
         const d = decoded as PublishBlockedMessageDraft18;
-        expect(d.trackAlias).toBe(msg.trackAlias);
+        expect(d.trackNamespaceSuffix).toEqual(msg.trackNamespaceSuffix);
+        expect(d.trackName).toBe(msg.trackName);
       }),
       { numRuns: 200 },
     );

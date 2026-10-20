@@ -19,6 +19,13 @@
 import {
   MOQTransport,
   MessageCodec,
+  AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
+  AUTH_TOKEN_FORMAT_ERROR,
+  AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
+  AuthTokenAliasType,
+  Draft18BufferReader,
+  decodeTrackNamespace,
+  encodeDraft18AuthToken,
   MessageType,
   MessageTypeDraft18,
   Version,
@@ -30,13 +37,19 @@ import {
   RequestParameterDraft18,
   RequestErrorCode,
   RequestErrorCodeDraft18,
+  TrackStatusCode,
   PublishDoneErrorCodeDraft18,
   SessionErrorCodeDraft18,
+  Draft18CodecError,
+  isIncompleteDecode,
+  INVALID_FILTER_CODE,
   StreamResetErrorCodeDraft18,
   normalizeSessionErrorCode,
+  normalizeSessionErrorCodeDraft22,
   StreamTypeDraft18,
   DatagramTypeDraft18,
   MOQTVarInt,
+  SendOrder,
   SetupParameter,
   SubscriptionFilterDraft18,
   ObjectExtension,
@@ -71,6 +84,7 @@ import {
   type RequestUpdateMessageDraft18,
   type FetchMessageDraft18,
   type FetchOkMessageDraft18 as _FetchOkMessageDraft18,
+  type GoAwayEvent,
   type GoAwayMessageDraft18,
   type TrackStatusMessageDraft18,
   type PublishDoneMessageDraft18,
@@ -98,41 +112,80 @@ import {
   type TrackStatusOkMessage,
   type TrackStatusErrorMessage,
   MessageTypeDraft22,
+  LocationFilterTypeDraft22,
+  RequestParameterDraft22,
+  RequestErrorCodeDraft22,
+  countRanges,
+  validateRangeFilters,
+  type FetchMessageDraft22,
+  type FillParametersDraft22,
+  type Location,
+  type RangeFilterDraft22,
+  type SubscribeMessageDraft22,
+  type PublishMessageDraft22,
+  type RequestUpdateMessageDraft22,
+  type SubscribeTracksMessageDraft22,
+  type TrackStatusMessageDraft22,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
 } from '@moq-web/core';
 import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
   Draft18RequestStream,
-  addDeliveryTimeoutParams,
+  RequestStreamEnded,
+  addFetchTimeoutParams,
+  addSubscribeTimeoutParams,
+  parseDeliveryTimeoutParams,
+  assertNoAliasReference,
+  assertNoTokenAlias,
+  applyRangeFilters,
   assertNotReservedNamespace,
   buildTrackProperties,
-  decodeTrackNamespaceBytes,
+  disallowedUpdateParameter,
+  encodeDraft18AuthBytes,
   encodeRequestAuthTokenBytes,
   encodeTokenBytes,
-  encodeTrackNamespaceBytes,
   generateSessionId,
+  isUnservedNamespace,
+  mapFillParameters,
+  mapJoiningFetch,
+  mapLocationFilter,
   mapSubscribeFilter,
+  namespaceKey,
   namespacePrefixMatches,
   narrowBigIntToNumber,
   sessionStateToConnectionState,
+  webTransportUri,
 } from './session-helpers.js';
+import { RequestRejectedError } from './request-rejected-error.js';
+import { streamResetCode, streamResetReason } from './stream-reset-reason.js';
 import { SubscriptionManager, type InternalSubscription } from './subscription-manager.js';
 import { PublicationManager, type InternalPublication } from './publication-manager.js';
-import { ObjectRouter } from './object-router.js';
+import { ObjectRouter, type MalformedTrackTarget } from './object-router.js';
 import { DeliveryTimeoutTracker, type DeliveryTimeoutReason } from './delivery-timeout.js';
 import { IdleActivityTracker } from './idle-activity-tracker.js';
+import {
+  admits,
+  compareLocations,
+  endsBefore,
+  resolveLocationFilter,
+  resolveSubscriptionFilter,
+  WHOLE_TRACK,
+  type LocationRange,
+} from './location-filter.js';
+import { IncomingNamespaceSubscriptions, NamespaceChange } from './incoming-namespace-subscriptions.js';
 import { TransportWorkerClient } from './workers/index.js';
 import {
   JitteredExponentialBackoff,
   type ReconnectPolicy,
 } from './reconnect-policy.js';
-import { parseTrackProperties } from './track-properties.js';
+import { parseTrackProperties, TrackPropertyFault, trackPropertyFault } from './track-properties.js';
 import { parseSubscriberSchedulingParams, computeSendOrder } from './priority.js';
 import type {
   SessionState,
   SessionEventType,
   SubscribeOptions,
+  FillOptions,
   PublishOptions,
   AnnounceOptions,
   ObjectMetadata,
@@ -145,6 +198,7 @@ import type {
   RequestOkEvent,
   PublishDoneEvent,
   PublishBlockedEvent,
+  SubscriptionCancelledEvent,
   DeliveryTimeoutEvent,
   StreamResetEvent,
   NewGroupRequestEvent,
@@ -154,6 +208,7 @@ import type {
   AnnouncedNamespaceInfo,
   IncomingSubscriber,
   IncomingSubscribeEvent,
+  IncomingSubscribeTracksEvent,
   SubscribeNamespaceOptions,
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
@@ -180,6 +235,134 @@ import type {
 
 const log = Logger.create('moqt:session');
 
+/** Codec error tags that end the session, and the session error each one maps to */
+const FATAL_DECODE_CODES: ReadonlyMap<string | undefined, SessionErrorCodeDraft18> = new Map([
+  [AUTH_TOKEN_FORMAT_ERROR, SessionErrorCodeDraft18.KEY_VALUE_FORMATTING_ERROR],
+  [AUTH_TOKEN_CACHE_OVERFLOW_ERROR, SessionErrorCodeDraft18.AUTH_TOKEN_CACHE_OVERFLOW],
+  [AUTH_TOKEN_UNKNOWN_ALIAS_ERROR, SessionErrorCodeDraft18.UNKNOWN_AUTH_TOKEN_ALIAS],
+]);
+
+/** PUBLISH_DONE Stream Count meaning "publisher cannot give the exact number": 2^62-1 in draft-18 §10.11 */
+const STREAM_COUNT_UNKNOWN_DRAFT18 = (1n << 62n) - 1n;
+/** ... and 2^64-1 in draft-22 §9.9 */
+const STREAM_COUNT_UNKNOWN_DRAFT22 = (1n << 64n) - 1n;
+
+/**
+ * Draft-22 §9.1.6 MAX_FILTER_RANGES we accept. This endpoint applies no Range
+ * Filters, so it never advertises the option and keeps the default, 0.
+ */
+const OWN_MAX_FILTER_RANGES = 0;
+
+/** MOQT_IMPLEMENTATION we send unless the app replaces or removes it (draft-22 §9.1.5) */
+const DEFAULT_IMPLEMENTATION_STRING = 'moq-web';
+
+/** Delivery timeout the draft-14/16 PUBLISH advertised when the app set none */
+const LEGACY_DELIVERY_TIMEOUT_MS = 5000;
+
+/** The parts of an incoming draft-22 request that carry Range Filters (§3.3.2) */
+interface RangeFilteredRequest {
+  requestId: bigint;
+  rangeFilters?: readonly RangeFilterDraft22[];
+  fill?: FillParametersDraft22;
+}
+
+/** Messages that open a request stream (draft-22 §6.3) */
+const PEER_REQUEST_TYPES: ReadonlySet<number> = new Set([
+  MessageTypeDraft18.SUBSCRIBE,
+  MessageTypeDraft18.PUBLISH,
+  MessageTypeDraft18.FETCH,
+  MessageTypeDraft18.TRACK_STATUS,
+  MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
+  MessageTypeDraft18.PUBLISH_NAMESPACE,
+  MessageTypeDraft18.SUBSCRIBE_TRACKS,
+]);
+
+/** Request types that stay open once accepted (draft-22 §6.4.2). */
+const ACCEPTED_REQUEST_TYPES: ReadonlySet<number> = new Set([
+  MessageTypeDraft18.SUBSCRIBE,
+  MessageTypeDraft18.PUBLISH,
+  MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
+  MessageTypeDraft18.PUBLISH_NAMESPACE,
+  MessageTypeDraft18.SUBSCRIBE_TRACKS,
+]);
+
+/** The requests we send, each on its own bidi stream (draft-22 §6.3). */
+type OutgoingRequestKind =
+  | 'subscribe'
+  | 'publish'
+  | 'fetch'
+  | 'track-status'
+  | 'publish-namespace'
+  | 'subscribe-namespace'
+  | 'subscribe-tracks';
+
+/** What a request we sent has seen so far, keyed by its Request ID. */
+interface OutgoingRequest {
+  kind: OutgoingRequestKind;
+  /** The first response arrived (draft-22 §3.1, §3.6, §4.2) */
+  answered: boolean;
+  /** SUBSCRIBE_NAMESPACE: suffixes announced by NAMESPACE and not yet ended by NAMESPACE_DONE (§4.2) */
+  announced: Set<string>;
+}
+
+/** The response that answers each kind of request, besides REQUEST_ERROR (draft-22 §3.1, §3.2, §9.3). */
+function successResponseType(kind: OutgoingRequestKind): MessageTypeDraft18 {
+  switch (kind) {
+    case 'subscribe':
+      return MessageTypeDraft18.SUBSCRIBE_OK;
+    case 'fetch':
+      return MessageTypeDraft18.FETCH_OK;
+    default:
+      return MessageTypeDraft18.REQUEST_OK;
+  }
+}
+
+const GOAWAY = MessageTypeDraft18.GOAWAY;
+const REQUEST_UPDATE = MessageTypeDraft18.REQUEST_UPDATE;
+const REQUEST_OK = MessageTypeDraft18.REQUEST_OK;
+const REQUEST_ERROR = MessageTypeDraft18.REQUEST_ERROR;
+
+/**
+ * What the peer may send on a request stream we opened, after its response,
+ * by kind of request (draft-22 Table 5, §3.6, §4.2, §9.5, §9.10). REQUEST_OK
+ * and REQUEST_ERROR answer our REQUEST_UPDATEs; the sender of a request may
+ * also update it, so the subscriber of a PUBLISH of ours can.
+ */
+const INBOUND_ON_OUR_REQUEST: ReadonlyMap<OutgoingRequestKind, ReadonlySet<number>> = new Map([
+  ['subscribe', new Set<number>([
+    MessageTypeDraft18.PUBLISH_DONE, MessageTypeDraft22.PUBLISH_STATE_NOTIFY, REQUEST_OK, REQUEST_ERROR, GOAWAY,
+  ])],
+  ['publish', new Set<number>([REQUEST_UPDATE, REQUEST_OK, REQUEST_ERROR, GOAWAY])],
+  ['fetch', new Set<number>([REQUEST_OK, REQUEST_ERROR, GOAWAY])],
+  ['track-status', new Set<number>([GOAWAY])],
+  ['publish-namespace', new Set<number>([REQUEST_OK, REQUEST_ERROR, GOAWAY])],
+  ['subscribe-namespace', new Set<number>([
+    MessageTypeDraft18.NAMESPACE, MessageTypeDraft18.NAMESPACE_DONE, REQUEST_OK, REQUEST_ERROR, GOAWAY,
+  ])],
+  ['subscribe-tracks', new Set<number>([MessageTypeDraft18.PUBLISH_BLOCKED, REQUEST_OK, REQUEST_ERROR, GOAWAY])],
+]);
+
+/**
+ * What the peer may send on a request stream it opened and we accepted. A
+ * peer that PUBLISHed to us is the publisher: it ends the subscription and
+ * answers our REQUEST_UPDATEs. Everyone else only updates its own request.
+ */
+const INBOUND_ON_PEER_REQUEST: ReadonlyMap<RequestUpdateVariant, ReadonlySet<number>> = new Map([
+  ['publish', new Set<number>([
+    MessageTypeDraft18.PUBLISH_DONE, MessageTypeDraft22.PUBLISH_STATE_NOTIFY,
+    REQUEST_UPDATE, REQUEST_OK, REQUEST_ERROR, GOAWAY,
+  ])],
+  ['subscribe', new Set<number>([REQUEST_UPDATE, GOAWAY])],
+  ['subscribe-namespace', new Set<number>([REQUEST_UPDATE, GOAWAY])],
+  ['subscribe-tracks', new Set<number>([REQUEST_UPDATE, GOAWAY])],
+  ['publish-namespace', new Set<number>([REQUEST_UPDATE, GOAWAY])],
+]);
+
+/** A REQUEST_UPDATE waiting for its REQUEST_OK / REQUEST_ERROR (draft-22 §9.5, draft-18 §10.9). */
+interface PendingRequestUpdate {
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
 
 /**
  * Configuration for MOQTSession when using worker mode
@@ -232,7 +415,7 @@ export interface MOQTSessionConfig {
    */
   sessionId?: string;
   /**
-   * Draft-16 / draft-18 §6.3 MAX_REQUEST_ID advertised in SETUP. Also acts
+   * Draft-14/16 §6.3 MAX_REQUEST_ID advertised in SETUP (removed in draft-17; ignored by draft-18 and later). Also acts
    * as a client-side hard cap on how many outbound requests the session
    * will originate before it refuses to allocate a new request ID.
    * Defaults to 1000.
@@ -379,6 +562,8 @@ export class MOQTSession {
    * `sendObjectViaStream` / `sendObjectWithGOP` know when to arm timers.
    */
   private publisherTimeoutConfig = new Map<string, { subgroupDeliveryTimeoutMs?: number }>();
+  /** Draft-18/22 subgroup streams with a FIN pending commit, by timer key */
+  private finishingStreams = new Map<string, { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }>();
   /** Transport event cleanup handlers */
   private transportCleanup: Array<() => void> = [];
 
@@ -390,7 +575,7 @@ export class MOQTSession {
    * frames to keep the QUIC connection alive". WebTransport doesn't expose
    * PING, so we approximate it by sending a §11.5 padding datagram, and we
    * offer a mirror-image application-idle timer that closes the session
-   * with §15.10.3 CONTROL_MESSAGE_TIMEOUT if neither side has spoken for
+   * with NO_ERROR if neither side has spoken for
    * `idleTimeoutMs`.
    *
    * Both cadences are opt-in via `configureIdle()`. When disabled the
@@ -416,7 +601,7 @@ export class MOQTSession {
    */
   private nextRequestId: number;
   /**
-   * Advertised MAX_REQUEST_ID (SETUP §6.3) and client-side hard cap.
+   * Advertised MAX_REQUEST_ID (draft-14/16 SETUP §6.3) and client-side hard cap.
    * Also enforced by {@link getNextRequestId} so runaway callers surface as
    * a typed error rather than silently overflowing.
    */
@@ -438,9 +623,15 @@ export class MOQTSession {
   /** Announced namespaces (for announce flow) */
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
   /** Request ID to namespace mapping (for draft-16 PUBLISH_NAMESPACE_OK) */
-  private announceRequestIdToNamespace = new Map<bigint, string>();
-  /** Next track alias for incoming subscriptions (announce flow) */
+  private announceRequestIdToNamespace = new Map<bigint, string[]>();
+  /** Next track alias for incoming subscriptions (announce flow, draft-14/16) */
   private nextIncomingTrackAlias = BigInt(1000);
+  /**
+   * Next Track Alias for a track we publish on draft-18/22. SUBSCRIBE_OK and
+   * PUBLISH aliases both come from this counter, so two of our tracks never
+   * share one (draft-22 §3.1.3).
+   */
+  private nextPublicationAlias = 0n;
   /**
    * Draft-18 §10.9: map from a peer-initiated requestId to the kind of request
    * we accepted, so we can route a later REQUEST_UPDATE on the same request to
@@ -450,6 +641,24 @@ export class MOQTSession {
    */
   /** Peer-supplied request IDs are 62-bit varints; key by bigint to preserve precision. */
   private incomingRequestKinds = new Map<bigint, RequestUpdateVariant>();
+  /** SUBSCRIBE_TRACKS requests the peer made to us: a separate overlap space (draft-22 §3.6) */
+  private incomingTrackSubs = new IncomingNamespaceSubscriptions();
+  /** SUBSCRIBE_NAMESPACE requests the peer made to us, kept current as our announced set changes (draft-22 §4.2) */
+  private incomingNamespaces = new IncomingNamespaceSubscriptions();
+  /** Request IDs the peer has used on its request streams */
+  private seenPeerRequestIds = new Set<bigint>();
+  /** We sent GOAWAY: requests that arrive from now on are refused (draft-18 §10.4) */
+  private goAwaySent = false;
+  /** close() has begun, so the transport ending beneath it is expected */
+  private closeStarted = false;
+  /** Closes the session when our GOAWAY's Timeout ends with requests open */
+  private goAwayTimer?: ReturnType<typeof setTimeout>;
+  /** Subscriptions waiting out their drain time after PUBLISH_DONE, by subscription ID */
+  private retireTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** The peer sent its GOAWAY on the control stream (one is allowed, draft-22 §9.2) */
+  private goAwayReceived = false;
+  /** Request streams that already carried the peer's GOAWAY (one each) */
+  private goAwayStreams = new Set<bigint>();
   /** Namespace subscriptions (for subscribe namespace flow) */
   private namespaceSubscriptions = new Map<number, NamespaceSubscriptionInfo>();
   /** Request ID to namespace subscription mapping */
@@ -491,17 +700,22 @@ export class MOQTSession {
    */
   private _peerExtensions?: Map<number, import('@moq-web/core').SetupExtensionValue>;
   /**
-   * Draft-18 §13.8: implementation identifier the client advertises in the
-   * MOQT_IMPLEMENTATION SetupOption. `undefined` (the default) means we do
-   * NOT advertise, per §13.8 which cautions against unconditional
-   * fingerprintable identifiers. Callers can opt in with
-   * `setImplementationString(...)` before `setup()`.
+   * Implementation identifier the client advertises in the MOQT_IMPLEMENTATION
+   * SetupOption (draft-22 §9.1.5: an endpoint SHOULD send it unless configured
+   * not to). `undefined` means it was switched off with
+   * `setImplementationString(undefined)` before `setup()`.
    */
-  private _implementationString?: string;
+  private _implementationString: string | undefined = DEFAULT_IMPLEMENTATION_STRING;
   /** Peer's MAX_REQUEST_UPDATES from SETUP (draft-22 §9.1.7). 0 = unlimited. */
   private peerMaxRequestUpdates = 0;
-  /** Outstanding REQUEST_UPDATE count per request stream (keyed by requestId). */
-  private outstandingRequestUpdates = new Map<bigint, number>();
+  /** Peer's MAX_FILTER_RANGES from SETUP (draft-22 §9.1.6). Default 0: no Range Filters. */
+  private peerMaxFilterRanges = 0;
+  /**
+   * REQUEST_UPDATEs awaiting their REQUEST_OK / REQUEST_ERROR, oldest first,
+   * keyed by the request stream's Request ID (draft-22 §9.5, draft-18 §10.9).
+   * The queue length is the outstanding count for §9.1.7.
+   */
+  private pendingRequestUpdates = new Map<bigint, PendingRequestUpdate[]>();
   // @ts-expect-error Reserved for token alias caching support (aliasType 1/2)
   private tokenAliasCache = new Map<number, { tokenType: number; tokenValue: Uint8Array }>();
   // @ts-expect-error Reserved for token alias caching support
@@ -514,9 +728,8 @@ export class MOQTSession {
   // ============================================================================
   // Bound how much state a single peer can force us to hold. Every entry point
   // that would allocate a new subscription, publication (track), or transport
-  // stream first calls `enforceResourceLimit()`. Excess triggers a
-  // PROTOCOL_VIOLATION session close via the normal `close({...})` pattern —
-  // no new state-machine paths introduced.
+  // stream first calls `enforceResourceLimit()`. Excess throws; on draft-18/22
+  // a peer request over the cap is refused with EXCESSIVE_LOAD.
   /** Max concurrent subscriptions (client-initiated + peer-initiated). */
   private readonly maxSubscriptions = 4096;
   /** Max concurrent tracks we publish. */
@@ -548,6 +761,13 @@ export class MOQTSession {
   private activeFetches = new Map<bigint, FetchInfo>();
   /** Request ID to fetch stream mapping for receiving fetch data. Keyed by 62-bit varint request ID. */
   private fetchStreamBuffers = new Map<bigint, Uint8Array[]>();
+  /**
+   * Fill fetch streams (draft-22 §3.4; draft-18 Joining FETCHes) that may still
+   * arrive, keyed by the Request ID in their FETCH_HEADER, to the owning
+   * subscription. Entries go when the stream ends or the subscription is
+   * cancelled.
+   */
+  private fillStreams = new Map<bigint, number>();
 
   // ============================================================================
   // Track Status State (for live edge tracking)
@@ -622,14 +842,14 @@ export class MOQTSession {
         // idle path is a policy decision by *this* endpoint that consumers
         // should see explicitly.
         this.emit('session-terminated', {
-          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+          code: SessionErrorCodeDraft18.NO_ERROR,
           reason: `idle timeout (${sinceMs}ms)`,
           remote: false,
         } as SessionTerminatedEvent);
-        // CONTROL_MESSAGE_TIMEOUT (§15.10.3 / SessionErrorCodeDraft18 0x11)
-        // is the closest spec code for "the peer stopped talking to us."
+        // Going idle is an ordinary end, not a violation. CONTROL_MESSAGE_TIMEOUT means
+        // the peer took too long to answer a control message (d22 §12.2).
         this.close({
-          code: SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT,
+          code: SessionErrorCodeDraft18.NO_ERROR,
           reason: 'idle timeout',
         }).catch(() => {/* best effort */});
       },
@@ -672,6 +892,9 @@ export class MOQTSession {
     this.maxRequestId = configuredMax !== undefined && configuredMax > 0 ? configuredMax : 1000;
 
     this.objectRouter = new ObjectRouter(this.subscriptionManager, (sub, data, groupId, objectId, timestamp) => {
+      if (sub.largestGroup === undefined || groupId > sub.largestGroup) {
+        sub.largestGroup = groupId;
+      }
       this.emit('object', {
         subscriptionId: sub.subscriptionId,
         trackAlias: sub.trackAlias ?? BigInt(0),
@@ -690,25 +913,15 @@ export class MOQTSession {
       } as SubscribeStatsEvent);
     }, this._draft, this.metrics);
 
-    // §8: surface subscriber-side delivery deadline expiries to consumers.
-    this.objectRouter.setDeliveryTimeoutCallback((sub, reason, resetCode, detail) => {
-      log.warn('Delivery timeout expired (subscriber)', {
-        subscriptionId: sub.subscriptionId,
-        trackAlias: sub.trackAlias?.toString(),
-        reason,
-        resetCode,
-        ...detail,
-      });
-      this.emit('delivery-timeout', {
-        side: 'subscriber',
-        reason,
-        resetCode,
-        trackAlias: sub.trackAlias,
-        subscriptionId: sub.subscriptionId,
-        groupId: detail.groupId,
-        subgroupId: detail.subgroupId,
-        objectId: detail.objectId,
-      } as DeliveryTimeoutEvent);
+    // Data-plane violations (unknown stream types, malformed headers and
+    // objects) MUST close the session (d22 §6.4.1, §11).
+    this.objectRouter.setViolationCallback((reason) => {
+      void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    });
+
+    // A Track with a malformed Object is cancelled; the session stays (d22 §12.1)
+    this.objectRouter.setMalformedTrackCallback((target, reason) => {
+      void this.cancelMalformedTrack(target, reason).catch(() => {});
     });
 
     // Draft-18 §11.4.3: surface peer-initiated subgroup stream resets. We
@@ -739,6 +952,15 @@ export class MOQTSession {
     this.objectRouter.setFetchObjectCallback((requestId, data, groupId, objectId) => {
       // OPS-hi 1: per-object hot-path — demoted from .info to .trace.
       log.trace('FETCH object received', { requestId, groupId, objectId, dataSize: data.length });
+
+      // A fill stream's objects belong to its subscription (draft-22 §3.4),
+      // not to a fetch-object listener.
+      const fillOwner = this.fillStreams.get(requestId);
+      if (fillOwner !== undefined) {
+        this.subscriptionManager.get(fillOwner)?.onObject?.(data, groupId, objectId, performance.now() * 1000);
+        return;
+      }
+
       this.emit('fetch-object', {
         requestId,
         data,
@@ -747,17 +969,28 @@ export class MOQTSession {
       } as FetchObjectEvent);
     });
 
-    // Set up FETCH end-of-group callback - fires when FETCH stream completes
-    this.objectRouter.setFetchEndOfGroupCallback((requestId, groupId) => {
-      log.info('FETCH stream complete (all data received)', { requestId, lastGroupId: groupId });
-      this.emit('fetch-stream-complete', {
-        requestId,
-        lastGroupId: groupId,
-      });
+    // A reset or cancelled fill stream leaves its subscription alone (draft-22 §3.4.1).
+    // Any other FETCH stream ending, by FIN or reset, completes the fetch (§3.2.4).
+    this.objectRouter.setFetchStreamCloseCallback((requestId, lastGroupId) => {
+      if (this.fillStreams.delete(requestId)) {
+        return;
+      }
+
+      log.info('FETCH stream ended', { requestId, lastGroupId });
+      this.emit('fetch-stream-complete', { requestId, lastGroupId });
     });
 
     // Set up forward state change listener to emit events for MediaSession
     this.publicationManager.onForwardStateChange((trackAlias, forward) => {
+      // Objects omitted while paused still exist, so the open subgroup stream
+      // must be reset, not FINed (d22 §11.3.2, d18 §11.4.3).
+      if (this.isDraft18 && forward === 0) {
+        void this.resetPublicationStream(
+          trackAlias.toString(),
+          StreamResetErrorCodeDraft18.CANCELLED,
+          'subscription paused',
+        ).catch(() => {});
+      }
       this.emit('forward-state-change', { trackAlias, forward });
     });
 
@@ -819,7 +1052,8 @@ export class MOQTSession {
    */
   private getNextRequestId(): number {
     const id = this.nextRequestId;
-    if (id >= this.maxRequestId) {
+    // MAX_REQUEST_ID was removed in draft-17: the draft-18 family has no cap.
+    if (!this.isDraft18 && id >= this.maxRequestId) {
       throw new Error(
         `Session request-id cap reached (${this.maxRequestId}); peer has not raised MAX_REQUEST_ID`,
       );
@@ -829,7 +1063,7 @@ export class MOQTSession {
   }
 
   /**
-   * Advertised MAX_REQUEST_ID (draft-16 / draft-18 §6.3). Callers can read
+   * Advertised MAX_REQUEST_ID (draft-14/16 §6.3). Callers can read
    * this to size their own request queues.
    */
   get maxAdvertisedRequestId(): number {
@@ -887,6 +1121,22 @@ export class MOQTSession {
     return computeSendOrder(subP, pubP, go, groupId);
   }
 
+  /**
+   * Open a subgroup data stream for `trackAlias` and count it toward the
+   * publication's PUBLISH_DONE Stream Count (§9.9).
+   */
+  private async openSubgroupStream(
+    trackAlias: bigint,
+    opts?: { sendOrder?: number }
+  ): Promise<{ writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }> {
+    const streamInfo = await this.doCreateStream(opts);
+    const pub = this.publicationManager.get(trackAlias);
+    if (pub) {
+      pub.streamsOpened = (pub.streamsOpened ?? 0) + 1;
+    }
+    return streamInfo;
+  }
+
   private async doCreateStream(
     opts?: { sendOrder?: number }
   ): Promise<{ writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number }> {
@@ -897,9 +1147,7 @@ export class MOQTSession {
     this.openStreamCount++;
     try {
       if (this.useWorker) {
-        // The worker path does not yet plumb sendOrder — main-thread streams get
-        // §7 priority scheduling today; worker streams inherit the browser default.
-        const streamId = await this.transportWorker!.createStream();
+        const streamId = await this.transportWorker!.createStream(opts);
         return { streamId };
       } else {
         const stream = await this.transport!.createUnidirectionalStream(opts);
@@ -969,6 +1217,9 @@ export class MOQTSession {
         this.handleSetupMessage(data);
       });
       this.transportCleanup.push(setupCleanup);
+      this.transportCleanup.push(this.transport.on('setup-stream-ended', () => {
+        this.handleControlStreamEnded();
+      }));
 
       // Incoming bidi streams for server-initiated requests
       const bidiCleanup = this.transport.on('incoming-bidi-stream', (stream) => {
@@ -1020,6 +1271,9 @@ export class MOQTSession {
       this.transportWorker.on('setup-message', ({ data }) => {
         this.handleSetupMessage(data);
       });
+      this.transportWorker.on('setup-stream-ended', () => {
+        this.handleControlStreamEnded();
+      });
 
       // Draft-18: Incoming bidi streams for server-initiated requests
       this.transportWorker.on('incoming-bidi-stream', ({ streamId }) => {
@@ -1056,9 +1310,19 @@ export class MOQTSession {
       this.handleWorkerBidiStreamData(streamId, data);
     });
 
+    // Peer STOP_SENDING on one of our request streams
+    this.transportWorker.on('stream-send-stopped', ({ streamId }) => {
+      this.handleWorkerSendStopped(streamId);
+    });
+
     // Stream closed
     this.transportWorker.on('stream-closed', ({ streamId }) => {
       this.handleWorkerStreamClosed(streamId);
+    });
+
+    // Peer RESET_STREAM on an incoming data stream
+    this.transportWorker.on('stream-reset', ({ streamId, code, message }) => {
+      this.handleWorkerStreamReset(streamId, code, message);
     });
 
     // Error handler
@@ -1129,8 +1393,21 @@ export class MOQTSession {
     }
   }
 
+  /**
+   * Handle a peer reset of an incoming data stream: fail the router's read the
+   * way WebTransport does, with the reset code on the error.
+   */
+  private handleWorkerStreamReset(streamId: number, code?: number, message?: string): void {
+    this.workerStreamBuffers.delete(streamId);
+    const reader = this.workerStreamReaders.get(streamId);
+    this.workerStreamReaders.delete(streamId);
+    reader?.controller.error(Object.assign(new Error(message ?? 'Received RESET_STREAM'), { streamErrorCode: code }));
+  }
+
   /** Controllers for bidi streams (incoming and outgoing request streams) */
   private incomingBidiControllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+  /** Worker mode: what to do when the worker reports STOP_SENDING on a request stream. */
+  private sendStoppedHandlers = new Map<number, () => void>();
 
   /**
    * Long-lived per-request bidi stream (draft-18 §3.3, §10.9). Keys are the
@@ -1139,6 +1416,9 @@ export class MOQTSession {
    */
   private activeRequestStreams = new Map<bigint, Draft18RequestStream>();
 
+  /** The requests we sent that still have a stream, by Request ID. */
+  private outgoingRequests = new Map<bigint, OutgoingRequest>();
+
   /**
    * Open a new per-request bidi stream, write the initial request bytes, and
    * return a handle that supports sending more messages (e.g. REQUEST_UPDATE)
@@ -1146,7 +1426,8 @@ export class MOQTSession {
    */
   private async openRequestStream(
     requestId: bigint,
-    initialEncoded: Uint8Array
+    initialEncoded: Uint8Array,
+    kind: OutgoingRequestKind,
   ): Promise<Draft18RequestStream> {
     const existing = this.activeRequestStreams.get(requestId);
     if (existing) {
@@ -1171,8 +1452,17 @@ export class MOQTSession {
         () => {
           try { worker.closeStream(streamId); } catch { /* ignore */ }
           this.incomingBidiControllers.delete(streamId);
+          this.sendStoppedHandlers.delete(streamId);
+        },
+        (code) => {
+          try { worker.abortStream(streamId, code); } catch { /* ignore */ }
+          this.incomingBidiControllers.delete(streamId);
+          this.sendStoppedHandlers.delete(streamId);
         }
       );
+      this.sendStoppedHandlers.set(streamId, () => {
+        void this.handlePeerCancel(requestId, stream);
+      });
     } else if (this.transport) {
       const { readable, writable } = await this.transport.createRequestStream();
       const writer = writable.getWriter();
@@ -1188,13 +1478,19 @@ export class MOQTSession {
         async () => {
           try { await writer.close(); } catch { /* already closed */ }
           try { writer.releaseLock(); } catch { /* ignore */ }
+        },
+        async (code) => {
+          try { await writer.abort(streamResetReason(code)); } catch { /* already closed */ }
         }
       );
+      // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
+      writer.closed.catch(() => this.handlePeerCancel(requestId, stream));
     } else {
       throw new Error('No transport available');
     }
 
     this.activeRequestStreams.set(requestId, stream);
+    this.outgoingRequests.set(requestId, { kind, answered: false, announced: new Set() });
     await stream.write(initialEncoded);
     return stream;
   }
@@ -1206,26 +1502,724 @@ export class MOQTSession {
     const stream = this.activeRequestStreams.get(requestId);
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
+    this.outgoingRequests.delete(requestId);
+    this.goAwayStreams.delete(requestId);
+    this.failPendingUpdates(requestId);
     await stream.close();
+  }
+
+  /**
+   * The peer sent STOP_SENDING on our send side: it cancelled the request
+   * (draft-22 §3.1, §6.4.2.3). End it like a reset, and cancel the receive
+   * side too. Ignored for a stream we already closed or aborted ourselves.
+   */
+  private async handlePeerCancel(requestId: bigint, stream: Draft18RequestStream): Promise<void> {
+    if (this.activeRequestStreams.get(requestId) !== stream) {
+      return;
+    }
+    log.info('Peer sent STOP_SENDING', { requestId: requestId.toString() });
+    this.endRequest(requestId);
+    await this.abortRequestStream(requestId);
+  }
+
+  /**
+   * Cancel and forget a per-request bidi stream: RESET_STREAM the send side
+   * and STOP_SENDING the receive side (draft-22 §6.4.2.3, draft-18 §3.3.2).
+   */
+  private async abortRequestStream(requestId: bigint): Promise<void> {
+    const stream = this.activeRequestStreams.get(requestId);
+    if (!stream) return;
+    this.activeRequestStreams.delete(requestId);
+    this.outgoingRequests.delete(requestId);
+    this.goAwayStreams.delete(requestId);
+    this.failPendingUpdates(requestId);
+    await stream.abort(StreamResetErrorCodeDraft18.CANCELLED);
+  }
+
+  /** Reject every REQUEST_UPDATE still waiting on a request stream that is gone. */
+  private failPendingUpdates(requestId: bigint): void {
+    const pending = this.pendingRequestUpdates.get(requestId);
+    this.pendingRequestUpdates.delete(requestId);
+    for (const update of pending ?? []) {
+      update.reject(new Error(`Request stream closed for requestId=${requestId.toString()}`));
+    }
   }
 
   /**
    * Send an initial request on a new bidi stream and wait for its first
    * response message. The stream is registered under `requestId` and stays
-   * open so REQUEST_UPDATE can be sent on it later; call
-   * `closeRequestStream(requestId)` when the request is terminated.
+   * open so REQUEST_UPDATE can be sent on it later, and a reader keeps
+   * dispatching its later messages; call `closeRequestStream(requestId)` when
+   * the request is terminated.
    */
   private async sendRequestAndWaitResponse(
     encoded: Uint8Array,
-    requestId: bigint
+    requestId: bigint,
+    kind: OutgoingRequestKind,
   ): Promise<ControlMessageDraft18> {
-    const stream = await this.openRequestStream(requestId, encoded);
+    const stream = await this.openRequestStream(requestId, encoded, kind);
     try {
-      return await stream.readMessage();
+      const response = await stream.readMessage();
+      if (!this.acceptFirstResponse(requestId, response)) {
+        throw new Error(`Unexpected first response, message type ${response.type}`);
+      }
+      // §6.4.2.3: a REQUEST_ERROR ends the request; anything else may be
+      // followed by more messages (PUBLISH_DONE, REQUEST_OK, ...).
+      if (response.type !== MessageTypeDraft18.REQUEST_ERROR) {
+        void this.readRequestStream(requestId, stream);
+      }
+      return response;
     } catch (err) {
       // Failed to read the first response — the stream is unusable, drop it.
+      this.closeOnFatalDecode(err);
       await this.closeRequestStream(requestId);
       throw err;
+    }
+  }
+
+  /**
+   * Check the first message on the stream of a request we sent. Only the
+   * request's own response or a REQUEST_ERROR may come first; anything else
+   * closes the session (draft-22 §3.6, §4.2; draft-18 §10.18, §10.19).
+   * Returns whether the message was acceptable.
+   */
+  private acceptFirstResponse(requestId: bigint, response: ControlMessageDraft18): boolean {
+    const request = this.outgoingRequests.get(requestId);
+    if (!request) {
+      return true;
+    }
+
+    request.answered = true;
+    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      return this.acceptRedirect(response as RequestErrorMessageDraft18, request.kind);
+    }
+    if (!this.acceptOkProperties(response, request.kind)) {
+      return false;
+    }
+    if (response.type === successResponseType(request.kind)) {
+      return true;
+    }
+
+    const reason = `Message type ${response.type} cannot answer a ${request.kind} request`;
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+
+    return false;
+  }
+
+  /**
+   * The single reader of a request stream after its first message
+   * (draft-22 §6.4.2, draft-18 §3.3), for requests we sent and requests we
+   * accepted. Decodes every later message and dispatches it.
+   *
+   * A reset from the peer cancels the request. A FIN only means the peer
+   * sends no more (draft-22 §6.4.2.2): we answer it with our own FIN, unless
+   * we still owe PUBLISH_DONE on this stream.
+   */
+  private async readRequestStream(requestId: bigint, stream: Draft18RequestStream): Promise<void> {
+    while (this.activeRequestStreams.get(requestId) === stream) {
+      let message: ControlMessageDraft18;
+      try {
+        message = await stream.readMessage();
+      } catch (err) {
+        // A local close or abort removed the stream first; nothing to tear down.
+        if (this.activeRequestStreams.get(requestId) !== stream) {
+          return;
+        }
+        log.info('Request stream ended', { requestId: requestId.toString(), reason: (err as Error).message });
+        if (this.closeOnFatalDecode(err)) {
+          return;
+        }
+        if (!(err instanceof RequestStreamEnded)) {
+          this.endRequest(requestId, 'Request stream reset');
+          await this.closeRequestStream(requestId);
+          return;
+        }
+        this.endNamespaceSubscription(requestId);
+        this.failSubscription(requestId, 'Request stream closed before PUBLISH_DONE');
+        if (this.publicationManager.getByRequestId(requestId) === undefined) {
+          await this.closeRequestStream(requestId);
+        }
+        return;
+      }
+
+      try {
+        await this.dispatchStreamMessage(requestId, message);
+      } catch (err) {
+        log.error('Error handling request stream message', { requestId: requestId.toString(), error: (err as Error).message });
+      }
+    }
+  }
+
+  /**
+   * A message that breaks the framing or syntax rules is a protocol violation
+   * (draft-22 §9, draft-18 §10); a malformed or unusable Authorization Token
+   * has its own session error (§8.9). Close the session and return whether
+   * `err` was one. A Range Filter the receiver refuses is answered per request
+   * (INVALID_FILTER), not fatal.
+   */
+  private closeOnFatalDecode(err: unknown): boolean {
+    if (!(err instanceof Draft18CodecError) || isIncompleteDecode(err) || err.code === INVALID_FILTER_CODE) {
+      return false;
+    }
+    const code = FATAL_DECODE_CODES.get(err.code) ?? SessionErrorCodeDraft18.PROTOCOL_VIOLATION;
+    void this.close({ code, reason: err.message }).catch(() => {});
+
+    return true;
+  }
+
+  /**
+   * Drop the publisher-side state of a request the peer cancelled, so
+   * delivery for it stops: its publication and, for an accepted PUBLISH,
+   * the subscription it created.
+   */
+  private endRequest(requestId: bigint, reason = 'Request stream cancelled'): void {
+    const publication = this.publicationManager.getByRequestId(requestId);
+    if (publication) {
+      // The publisher resets every open stream of a cancelled subscription (d22 §3.1.2, §11.3.2)
+      void this.resetPublicationStream(
+        publication.trackAlias.toString(),
+        StreamResetErrorCodeDraft18.CANCELLED,
+        'subscription cancelled',
+      ).catch(() => {});
+      this.publicationManager.remove(publication.trackAlias);
+      this.emit('subscription-cancelled', { requestId, trackAlias: publication.trackAlias } as SubscriptionCancelledEvent);
+    }
+    for (const info of this.announcedNamespaces.values()) {
+      info.subscribers.delete(requestId);
+    }
+    this.failSubscription(requestId, reason);
+    this.incomingRequestKinds.delete(requestId);
+    this.goAwayStreams.delete(requestId);
+    this.endNamespaceSubscription(requestId);
+  }
+
+  /**
+   * Track Properties are only populated in a TRACK_STATUS_OK; in any other
+   * REQUEST_OK they close the session (draft-22 §9.3, draft-18 §10.5).
+   * Returns whether the message was fine.
+   */
+  private acceptOkProperties(response: ControlMessageDraft18, kind: OutgoingRequestKind | 'update'): boolean {
+    const hasProperties = response.type === MessageTypeDraft18.REQUEST_OK
+      && (response as RequestOkMessageDraft18).trackProperties !== undefined;
+    if (!hasProperties || kind === 'track-status') {
+      return true;
+    }
+
+    const reason = `REQUEST_OK for a ${kind} request has Track Properties`;
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+
+    return false;
+  }
+
+  /**
+   * A Redirect for a namespace-scoped request names no Track, so a Track Name
+   * in it closes the session (draft-22 §9.4.1). Returns whether it was fine.
+   */
+  private acceptRedirect(error: RequestErrorMessageDraft18, kind: OutgoingRequestKind): boolean {
+    const isNamespaceScoped = kind === 'subscribe-namespace' || kind === 'publish-namespace' || kind === 'subscribe-tracks';
+    if (!isNamespaceScoped || !error.redirect?.trackName) {
+      return true;
+    }
+
+    const reason = `Redirect for a ${kind} request names Track ${error.redirect.trackName}`;
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+
+    return false;
+  }
+
+  /**
+   * The stream of a subscription we hold ended, by FIN before PUBLISH_DONE or
+   * by reset, so the request failed (draft-22 §3.1.2, §6.4.2.2). Drop the
+   * subscription and report it as ended.
+   */
+  private failSubscription(
+    requestId: bigint,
+    reason: string,
+    statusCode: PublishDoneErrorCodeDraft18 = PublishDoneErrorCodeDraft18.INTERNAL_ERROR,
+  ): void {
+    const subscription = this.subscriptionManager.findByRequestId(requestId);
+    if (!subscription) {
+      return;
+    }
+
+    this.deleteSubscriptionState(subscription);
+    log.warn('Subscription failed', { requestId: requestId.toString(), reason });
+    this.emit('publish-done', {
+      requestId,
+      subscriptionId: subscription.subscriptionId,
+      finalGroupId: 0,
+      finalObjectId: 0,
+      statusCode,
+      reasonPhrase: reason,
+    } as PublishDoneEvent);
+  }
+
+  /**
+   * Cancel the subscription or fetch whose Track a received Object made
+   * malformed (draft-22 §12.1): cancel its request stream and tell the
+   * application, as PUBLISH_DONE or a FETCH error with MALFORMED_TRACK.
+   */
+  private async cancelMalformedTrack(target: MalformedTrackTarget, reason = 'Malformed Track'): Promise<void> {
+    if (target.fetchRequestId !== undefined) {
+      const requestId = target.fetchRequestId;
+      this.activeFetches.delete(requestId);
+      this.objectRouter.clearFetchGroupOrder(requestId);
+      await this.abortRequestStream(requestId);
+      this.emit('fetch-error', {
+        requestId,
+        errorCode: RequestErrorCodeDraft18.MALFORMED_TRACK,
+        reason,
+      } as FetchErrorEvent);
+      return;
+    }
+
+    const subscription = target.trackAlias === undefined ? undefined : this.subscriptionManager.getByAlias(target.trackAlias);
+    if (!subscription) {
+      return;
+    }
+
+    await this.abortRequestStream(subscription.requestId);
+    this.failSubscription(subscription.requestId, reason, PublishDoneErrorCodeDraft18.MALFORMED_TRACK);
+  }
+
+  /**
+   * A publisher's Track Alias must not already name a different Track with an
+   * Established subscription; if it does the session closes with
+   * DUPLICATE_TRACK_ALIAS (draft-22 §3.1.3, draft-18 §11.1). Subscriptions to
+   * the same Track may share one. Returns whether the alias is acceptable.
+   */
+  private acceptTrackAlias(
+    trackAlias: bigint,
+    namespace: string[],
+    trackName: string,
+    ownSubscriptionId?: number,
+  ): boolean {
+    const fullName = JSON.stringify([...namespace, trackName]);
+    const clash = this.subscriptionManager.getAllByAlias(trackAlias).find((other) => (
+      other.subscriptionId !== ownSubscriptionId
+      && JSON.stringify([...other.namespace, other.trackName]) !== fullName
+    ));
+    if (!clash) {
+      return true;
+    }
+
+    const reason = `Track Alias ${trackAlias.toString()} already names another track`;
+    log.error(reason);
+    void this.close({ code: SessionErrorCodeDraft18.DUPLICATE_TRACK_ALIAS, reason }).catch(() => {});
+
+    return false;
+  }
+
+  /**
+   * A SUBSCRIBE_NAMESPACE response stream ended by FIN or reset: treat each
+   * active namespace as done and forget the subscription (draft-22 §4.2.2,
+   * draft-18 §10.18). A stream that never got a response failed the request.
+   */
+  private endNamespaceSubscription(requestId: bigint): void {
+    this.incomingNamespaces.remove(requestId);
+    this.incomingTrackSubs.remove(requestId);
+    const request = this.outgoingRequests.get(requestId);
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
+      return;
+    }
+
+    const subscription = this.namespaceSubscriptions.get(subscriptionId);
+    this.namespaceSubscriptionByRequestId.delete(requestId);
+    this.namespaceSubscriptions.delete(subscriptionId);
+    if (!request.answered) {
+      this.emit('namespace-error', {
+        kind: 'subscribe-namespace',
+        namespace: subscription?.namespacePrefix ?? [],
+        errorCode: RequestErrorCodeDraft18.INTERNAL_ERROR,
+        reasonPhrase: 'Stream ended before a response',
+        requestId: Number(requestId),
+      });
+      return;
+    }
+
+    for (const key of request.announced) {
+      this.emit('namespace-done', {
+        namespaceSubscriptionId: subscriptionId,
+        namespace: [...(subscription?.namespacePrefix ?? []), ...(JSON.parse(key) as string[])],
+      });
+    }
+    request.announced.clear();
+  }
+
+  /**
+   * Route a message that follows the first message on a request stream. The
+   * stream's Request ID stands in for any ID the message lacks or, for a
+   * REQUEST_UPDATE, for its own new ID.
+   */
+  private async dispatchStreamMessage(requestId: bigint, message: ControlMessageDraft18): Promise<void> {
+    // Only the messages this request and our role allow (draft-22 Table 5, §9.5, §9.10)
+    const request = this.outgoingRequests.get(requestId);
+    const allowed = request
+      ? INBOUND_ON_OUR_REQUEST.get(request.kind)
+      : INBOUND_ON_PEER_REQUEST.get(this.incomingRequestKinds.get(requestId) ?? 'unknown');
+    if (!allowed?.has(message.type)) {
+      this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
+      return;
+    }
+
+    // A SUBSCRIBE_NAMESPACE stream is read from the start, so its first
+    // message is checked here (draft-22 §4.2).
+    const isFirstResponse = request !== undefined && !request.answered;
+    if (isFirstResponse && !this.acceptFirstResponse(requestId, message)) {
+      return;
+    }
+
+    switch (message.type) {
+      case MessageTypeDraft18.REQUEST_UPDATE: {
+        if (!this.acceptPeerRequestId(message.requestId)) {
+          break;
+        }
+        try {
+          assertNoTokenAlias(message);
+        } catch (err) {
+          this.closeOnFatalDecode(err);
+          break;
+        }
+        const target = request?.kind ?? this.incomingRequestKinds.get(requestId) ?? 'unknown';
+        const disallowed = disallowedUpdateParameter(message, target, this.isDraft22 ? 'draft-22' : 'draft-18');
+        if (disallowed !== undefined) {
+          const reason = `Parameter 0x${disallowed.toString(16)} cannot update a ${target} request`;
+          log.error(reason);
+          void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+          break;
+        }
+
+        // Draft-22 §9.5: exactly one REQUEST_OK or REQUEST_ERROR per update.
+        // Ranges are over our MAX_FILTER_RANGES (§9.1.6), so the update is refused unapplied.
+        if (this.exceedsOwnFilterRanges(message as RangeFilteredRequest)) {
+          await this.refuseUpdate(requestId, RequestErrorCodeDraft22.INVALID_FILTER, 'Range filters not supported (MAX_FILTER_RANGES 0)');
+          break;
+        }
+
+        // Draft-22 §9.5.2: the new prefix must not overlap another request of the same type
+        const newPrefix = this.updatedPrefix(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22);
+        if (newPrefix && this.prefixOverlaps(requestId, newPrefix)) {
+          await this.refuseUpdate(requestId, RequestErrorCodeDraft18.PREFIX_OVERLAP, 'Prefix overlaps another request');
+          break;
+        }
+
+        // Draft-18 §5.1.2: a range whose End Group is published has nothing to deliver
+        const range = this.updatedRange(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
+        if (!this.isDraft22 && range && endsBefore(range, this.largestOfRequest(requestId))) {
+          await this.refuseUpdate(requestId, RequestErrorCodeDraft18.INVALID_RANGE, 'End Group is already published');
+          break;
+        }
+
+        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22, requestId);
+        await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(this.updateOk(requestId)));
+        await this.fillForUpdate(requestId, message as unknown as RequestUpdateMessageDraft22);
+        if (newPrefix) {
+          await this.applyPrefixUpdate(requestId, newPrefix);
+        }
+        break;
+      }
+
+      case MessageTypeDraft18.REQUEST_OK:
+      case MessageTypeDraft18.REQUEST_ERROR:
+        if (isFirstResponse) {
+          this.settleNamespaceSubscription(requestId, message);
+          break;
+        }
+        this.settleRequestUpdate(requestId, message);
+        break;
+
+      case MessageTypeDraft18.NAMESPACE:
+        this.handleNamespaceMessage(requestId, message as NamespaceMessageDraft18);
+        break;
+
+      case MessageTypeDraft18.NAMESPACE_DONE:
+        this.handleNamespaceDone(requestId, message as NamespaceDoneMessageDraft18);
+        break;
+
+      case MessageTypeDraft18.PUBLISH_DONE:
+        this.handleIncomingPublishDoneDraft18({ ...(message as PublishDoneMessageDraft18), requestId });
+        break;
+
+      case MessageTypeDraft18.GOAWAY:
+        this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18, requestId);
+        break;
+
+      case MessageTypeDraft18.PUBLISH_BLOCKED:
+        if (this.isDraft22) {
+          this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22, requestId);
+        } else {
+          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18, requestId);
+        }
+        break;
+
+      case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
+        this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22, requestId);
+        break;
+
+      default:
+        log.warn('Unhandled message on request stream', { requestId: requestId.toString(), type: message.type });
+    }
+  }
+
+  /** The Track Namespace Prefix a REQUEST_UPDATE sets (draft-22 §9.20.20), if it sets one */
+  private updatedPrefix(update: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22): string[] | undefined {
+    const bytes = update.parameters?.get(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX);
+
+    return bytes && decodeTrackNamespace(new Draft18BufferReader(bytes, 0));
+  }
+
+  /** The overlap space of the namespace request `requestId`: its own type's (draft-22 §9.5.2) */
+  private subscriptionsOfKind(requestId: bigint): IncomingNamespaceSubscriptions | undefined {
+    switch (this.incomingRequestKinds.get(requestId)) {
+      case 'subscribe-namespace':
+        return this.incomingNamespaces;
+      case 'subscribe-tracks':
+        return this.incomingTrackSubs;
+      default:
+        return undefined;
+    }
+  }
+
+  private prefixOverlaps(requestId: bigint, prefix: string[]): boolean {
+    return this.subscriptionsOfKind(requestId)?.overlaps(prefix, requestId) === true;
+  }
+
+  /**
+   * Switch a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS to its updated prefix.
+   * A SUBSCRIBE_NAMESPACE is told the namespaces the new prefix adds, as
+   * suffixes relative to it (draft-22 §9.5.2). A SUBSCRIBE_TRACKS keeps the
+   * subscriptions it already made.
+   */
+  private async applyPrefixUpdate(requestId: bigint, prefix: string[]): Promise<void> {
+    const subscriptions = this.subscriptionsOfKind(requestId);
+    subscriptions?.update(requestId, prefix);
+    if (subscriptions !== this.incomingNamespaces) {
+      return;
+    }
+
+    for (const info of this.announcedNamespaces.values()) {
+      await this.notifyNamespace(info.namespace, NamespaceChange.ANNOUNCED);
+    }
+  }
+
+  /** Refuse a REQUEST_UPDATE: REQUEST_ERROR, then the request ends (draft-22 §9.5.1, draft-18 §10.9.1) */
+  private async refuseUpdate(requestId: bigint, errorCode: number, reasonPhrase: string): Promise<void> {
+    const refusal: RequestErrorMessageDraft18 = { type: MessageTypeDraft18.REQUEST_ERROR, requestId, errorCode, reasonPhrase };
+    await this.activeRequestStreams.get(requestId)?.write(this.codec.encodeControlMessage(refusal));
+    await this.endRefusedRequest(requestId);
+  }
+
+  /** The Largest Object of the track the subscription `requestId` publishes */
+  private largestOfRequest(requestId: bigint): Location | undefined {
+    const publication = this.publicationManager.getByRequestId(requestId);
+
+    return publication && this.publicationManager.largestOf(publication.namespace, publication.trackName);
+  }
+
+  /** The Locations a REQUEST_UPDATE selects, or undefined when it carries no filter (d22 §9.20.9, d18 §10.2.9) */
+  private updatedRange(
+    update: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22,
+    requestId: bigint,
+  ): LocationRange | undefined {
+    const largest = this.largestOfRequest(requestId);
+    if (this.isDraft22) {
+      const { locationFilter } = update as RequestUpdateMessageDraft22;
+
+      return locationFilter && resolveLocationFilter(locationFilter, largest);
+    }
+
+    const { filter, startLocation, endGroupDelta } = update as RequestUpdateMessageDraft18;
+
+    return filter === undefined ? undefined : resolveSubscriptionFilter(filter, startLocation, endGroupDelta, largest);
+  }
+
+  /** FILL_PARAMETERS in a REQUEST_UPDATE of a subscription we publish (draft-22 §3.4.1) */
+  private async fillForUpdate(requestId: bigint, update: RequestUpdateMessageDraft22): Promise<void> {
+    const publication = this.publicationManager.getByRequestId(requestId);
+    if (!this.isDraft22 || !update.fill || !publication || this.incomingRequestKinds.get(requestId) !== 'subscribe') {
+      return;
+    }
+
+    await this.openFillStream(update.requestId, publication, update.fill);
+  }
+
+  /**
+   * The REQUEST_OK for a REQUEST_UPDATE of the request on stream `requestId`.
+   * It carries LARGEST_OBJECT for a subscription once Objects were published
+   * (draft-22 §9.20.17).
+   */
+  private updateOk(requestId: bigint): RequestOkMessageDraft18 {
+    const publication = this.publicationManager.getByRequestId(requestId);
+
+    return {
+      type: MessageTypeDraft18.REQUEST_OK,
+      requestId,
+      largestLocation: publication && this.publicationManager.largestOf(publication.namespace, publication.trackName),
+    };
+  }
+
+  /**
+   * A REQUEST_UPDATE we refused also ends the request it updates: a
+   * subscription we publish ends with PUBLISH_DONE UPDATE_FAILED, and a
+   * namespace request's stream is closed (draft-22 §9.5.1).
+   */
+  private async endRefusedRequest(requestId: bigint): Promise<void> {
+    const publication = this.publicationManager.getByRequestId(requestId);
+    if (this.incomingRequestKinds.get(requestId) === 'subscribe') {
+      await this.sendPublishDone(
+        requestId,
+        Number(publication?.latestGroup ?? 0n),
+        Number(publication?.latestObject ?? 0n),
+        'REQUEST_UPDATE refused',
+        PublishDoneErrorCodeDraft18.UPDATE_FAILED,
+      );
+    } else if (this.incomingRequestKinds.has(requestId)) {
+      await this.closeRequestStream(requestId);
+    }
+    this.endRequest(requestId);
+  }
+
+  /** The response to our SUBSCRIBE_NAMESPACE (draft-22 §4.2). */
+  private settleNamespaceSubscription(requestId: bigint, response: ControlMessageDraft18): void {
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    const subscription = subscriptionId !== undefined ? this.namespaceSubscriptions.get(subscriptionId) : undefined;
+    if (response.type !== MessageTypeDraft18.REQUEST_ERROR) {
+      const expires = (response as RequestOkMessageDraft18).expires;
+      log.info('Namespace subscription accepted', { subscriptionId, requestId: requestId.toString() });
+      this.emit('request-ok', {
+        requestId,
+        requestKind: 'subscribe-namespace',
+        expiresMs: expires !== undefined ? Number(expires) : undefined,
+      } as RequestOkEvent);
+      return;
+    }
+
+    const error = response as RequestErrorMessageDraft18;
+    log.error('Namespace subscription rejected', { errorCode: error.errorCode, reasonPhrase: error.reasonPhrase });
+    this.namespaceSubscriptionByRequestId.delete(requestId);
+    if (subscriptionId !== undefined) {
+      this.namespaceSubscriptions.delete(subscriptionId);
+    }
+    const rejected = this.rejection('SUBSCRIBE_NAMESPACE', error);
+    this.emit('namespace-error', {
+      kind: 'subscribe-namespace',
+      namespace: subscription?.namespacePrefix ?? [],
+      errorCode: error.errorCode,
+      reasonPhrase: error.reasonPhrase,
+      requestId: Number(requestId),
+      retryAfterMs: rejected.retryAfterMs,
+      redirect: rejected.redirect,
+    });
+  }
+
+  /**
+   * Turn a REQUEST_ERROR into the error to throw or report. The Retry Interval
+   * is the wait plus one, and 0 means do not retry (draft-22 §9.4.2).
+   */
+  private rejection(what: string, error: RequestErrorMessageDraft18, detail = ''): RequestRejectedError {
+    const interval = error.retryInterval ?? 0n;
+
+    return new RequestRejectedError(
+      `${what} failed${detail}: ${error.reasonPhrase} (code ${error.errorCode})`,
+      error.errorCode,
+      error.reasonPhrase,
+      interval > 0n ? Number(interval - 1n) : undefined,
+      error.redirect,
+    );
+  }
+
+  /** A NAMESPACE on our SUBSCRIBE_NAMESPACE stream; the wire carries the suffix after our prefix (draft-22 §9.16). */
+  private handleNamespaceMessage(requestId: bigint, message: NamespaceMessageDraft18): void {
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    const request = this.outgoingRequests.get(requestId);
+    if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
+      this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
+      return;
+    }
+
+    request.announced.add(JSON.stringify(message.trackNamespace));
+    const prefix = this.namespaceSubscriptions.get(subscriptionId)?.namespacePrefix ?? [];
+    const namespace = [...prefix, ...message.trackNamespace];
+    log.info('Received NAMESPACE announcement', { namespace: namespace.join('/'), subscriptionId });
+    this.emit('namespace-announced', { namespaceSubscriptionId: subscriptionId, namespace });
+  }
+
+  /** A NAMESPACE_DONE before its NAMESPACE closes the session (draft-22 §4.2). */
+  private handleNamespaceDone(requestId: bigint, message: NamespaceDoneMessageDraft18): void {
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    const request = this.outgoingRequests.get(requestId);
+    if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
+      this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
+      return;
+    }
+
+    if (!request.announced.delete(JSON.stringify(message.finalNamespace))) {
+      this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
+      return;
+    }
+
+    const prefix = this.namespaceSubscriptions.get(subscriptionId)?.namespacePrefix ?? [];
+    const namespace = [...prefix, ...message.finalNamespace];
+    log.info('Received NAMESPACE_DONE', { namespace: namespace.join('/'), subscriptionId });
+    this.emit('namespace-done', { namespaceSubscriptionId: subscriptionId, namespace });
+  }
+
+  /**
+   * Check the Track Properties of a PUBLISH, SUBSCRIBE_OK or FETCH_OK. A value out of
+   * range closes the session (draft-22 §10.5, §10.6, §10.7); the caller refuses the
+   * track for a Mandatory Track Property we do not understand (§3.7).
+   */
+  private checkTrackProperties(raw: Map<number, Uint8Array> | undefined, where: string): TrackPropertyFault | undefined {
+    const fault = trackPropertyFault(raw);
+    if (fault === TrackPropertyFault.INVALID) {
+      const reason = `Invalid Track Properties in ${where}`;
+      log.error(reason);
+      void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    }
+
+    return fault;
+  }
+
+  /** The peer sent a message its role or the request's kind does not allow (draft-22 Table 5). */
+  private closeForUnexpectedMessage(message: ControlMessageDraft18, where: string): void {
+    const reason = `Message type ${message.type} is not allowed on ${where}`;
+    log.error(reason);
+    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+  }
+
+  /**
+   * Answer the oldest REQUEST_UPDATE on a request stream: the receiver sends
+   * exactly one REQUEST_OK or REQUEST_ERROR per update (draft-22 §9.5,
+   * draft-18 §10.9). A REQUEST_ERROR can stand for several coalesced updates
+   * and the sender cannot tell which failed (draft-22 §9.5, draft-18 §10.9.1),
+   * so it fails every update still pending on the stream.
+   */
+  private settleRequestUpdate(requestId: bigint, response: ControlMessageDraft18): void {
+    const pending = this.pendingRequestUpdates.get(requestId);
+    if (!pending || pending.length === 0) {
+      // A second response to a request, or one to no update, breaks "exactly one" (d22 §3.1, §9.5)
+      this.closeForUnexpectedMessage(response, `request ${requestId.toString()}, which has no REQUEST_UPDATE pending`);
+      return;
+    }
+
+    if (!this.acceptOkProperties(response, 'update')) {
+      return;
+    }
+
+    if (response.type !== MessageTypeDraft18.REQUEST_ERROR) {
+      pending.shift()!.resolve();
+      if (pending.length === 0) {
+        this.pendingRequestUpdates.delete(requestId);
+      }
+      log.info('REQUEST_UPDATE acknowledged', { subscriptionRequestId: requestId.toString() });
+      return;
+    }
+
+    const err = response as RequestErrorMessageDraft18;
+    this.pendingRequestUpdates.delete(requestId);
+    for (const update of pending) {
+      update.reject(this.rejection('REQUEST_UPDATE', err, ` for requestId=${requestId.toString()}`));
     }
   }
 
@@ -1238,19 +2232,40 @@ export class MOQTSession {
       start: (controller) => {
         this.incomingBidiControllers.set(streamId, controller);
       },
+      // STOP_SENDING / RESET_STREAM for the peer (d22 §6.4.2.3), done in the worker
+      cancel: (reason) => {
+        this.incomingBidiControllers.delete(streamId);
+        this.transportWorker?.abortStream(streamId, streamResetCode(reason));
+      },
     });
 
     // Create a WritableStream that sends data back via worker
     const writable = new WritableStream<Uint8Array>({
+      start: (controller) => {
+        // STOP_SENDING errors the send side, and cancels the receive side in the worker.
+        this.sendStoppedHandlers.set(streamId, () => {
+          controller.error(new Error('STOP_SENDING'));
+          this.transportWorker?.abortStream(streamId, StreamResetErrorCodeDraft18.CANCELLED);
+        });
+      },
       write: (chunk) => {
         this.transportWorker!.writeStream(streamId, chunk);
       },
       close: () => {
         this.transportWorker!.writeStream(streamId, new Uint8Array(0), true);
       },
+      abort: (reason) => {
+        this.transportWorker?.abortStream(streamId, streamResetCode(reason));
+      },
     });
 
     this.handleIncomingBidiStream({ readable, writable });
+  }
+
+  private handleWorkerSendStopped(streamId: number): void {
+    const handler = this.sendStoppedHandlers.get(streamId);
+    this.sendStoppedHandlers.delete(streamId);
+    handler?.();
   }
 
   /** Chunked buffers for bidi stream data - avoids copying on each receive */
@@ -1392,6 +2407,12 @@ export class MOQTSession {
         start(c) {
           controller = c;
         },
+        // STOP_SENDING for the peer (d22 §3.4.1), done in the worker
+        cancel: (reason) => {
+          this.workerStreamReaders.delete(streamId);
+          this.workerStreamBuffers.delete(streamId);
+          this.transportWorker?.abortStream(streamId, streamResetCode(reason));
+        },
       });
       this.workerStreamReaders.set(streamId, { controller: controller!, stream });
 
@@ -1485,14 +2506,12 @@ export class MOQTSession {
   }
 
   /**
-   * Draft-18 §13.8: opt in to sending the MOQT_IMPLEMENTATION SetupOption.
-   *
-   * §13.8 cautions endpoints against always advertising an implementation
-   * identifier because it enables passive fingerprinting. By default this
-   * client omits the field; call this before `setup()` with a string to
-   * advertise it, or with `undefined` to explicitly disable (also the
-   * default). Must be called before `setup()` — the value is read once when
-   * CLIENT_SETUP is encoded.
+   * Set the MOQT_IMPLEMENTATION SetupOption (draft-22 §9.1.5, draft-18
+   * §10.3.1.5). The client sends `moq-web` by default, since an endpoint
+   * SHOULD send one unless configured not to; the value should stay minimal
+   * because it enables passive fingerprinting (§15.8). Pass a string to
+   * replace it, or `undefined` to send none. Must be called before `setup()`:
+   * the value is read once when CLIENT_SETUP is encoded.
    */
   setImplementationString(value: string | undefined): void {
     if (this._state !== 'none') {
@@ -1517,8 +2536,8 @@ export class MOQTSession {
    *     datagram to reset the peer's idle timer. Omit or set to 0 to
    *     disable.
    *   - `idleTimeoutMs` — if *no* activity in either direction has been
-   *     seen for this many ms, close the session with §15.10.3
-   *     `CONTROL_MESSAGE_TIMEOUT`. Omit or set to 0 to disable.
+   *     seen for this many ms, close the session with `NO_ERROR`. Omit or set to
+   *     0 to disable.
    *
    * May be called before or after `setup()`. Calling it while `ready` will
    * reconfigure the running timer.
@@ -1547,6 +2566,22 @@ export class MOQTSession {
     log.info('Setting up MOQT session', { useWorker: this.useWorker, draft: this._draft });
     this.setState('setup');
 
+    // A new connection starts a new control stream (migrate() runs setup() again).
+    // Request IDs restart at 0 on a new connection (draft-22 §6.4.2.1)
+    if (this.isDraft18) {
+      this.nextRequestId = 0;
+    }
+    this.peerSetupSeen = false;
+    this.seenPeerRequestIds.clear();
+    this.goAwaySent = false;
+    this.goAwayReceived = false;
+    this.goAwayStreams.clear();
+    this.closeStarted = false;
+    this.setupBuffer = new Uint8Array(0);
+    this.setupBufferOffset = 0;
+    this.pendingSetupMessages = [];
+    this.onSetupMessage = undefined;
+
     // Set up event handlers based on mode
     if (this.useWorker) {
       this.setupWorkerHandlers();
@@ -1561,17 +2596,12 @@ export class MOQTSession {
       let setupAuthToken: Uint8Array | undefined;
       if (this.authToken) {
         const tokenBytes = encodeTokenBytes(this.authToken, this.authTokenType);
-        setupAuthToken = MessageCodec.encodeAuthorizationToken({
-          aliasType: 3, // USE_VALUE — inline, no caching
+        setupAuthToken = encodeDraft18AuthToken({
+          aliasType: AuthTokenAliasType.USE_VALUE, // inline, no caching
           tokenType: this.authTokenType,
           tokenValue: tokenBytes,
         });
       }
-      // §13.8: MOQT_IMPLEMENTATION aids interoperability debugging but also
-      // enables passive fingerprinting. The spec cautions against always
-      // advertising it, so this client omits it by default and only sends
-      // when the caller has explicitly opted in via
-      // `setImplementationString()`.
       const clientSetup: ClientSetupMessageDraft18 = {
         type: MessageTypeDraft18.CLIENT_SETUP,
         moqtImplementation: this._implementationString,
@@ -1641,7 +2671,7 @@ export class MOQTSession {
   /**
    * Send GOAWAY to signal graceful session termination
    *
-   * @param newSessionUri Optional URI for the client to migrate to (must be zero-length when sent by client, spec §10.4)
+   * @param newSessionUri Not allowed: a client must send a zero-length URI (draft-22 §9.2); a server closes the session on one
    * @param timeoutMs Grace period in milliseconds before the sender enforces closure (spec §10.4)
    */
   async goAway(newSessionUri?: string, timeoutMs: bigint = 0n): Promise<void> {
@@ -1649,17 +2679,77 @@ export class MOQTSession {
       log.warn('goAway only supported in draft-18');
       return;
     }
+    if (newSessionUri) {
+      throw new Error('A client cannot send a GOAWAY New Session URI (draft-22 §9.2)');
+    }
 
     const goAwayMessage: GoAwayMessageDraft18 = {
       type: MessageTypeDraft18.GOAWAY,
       newSessionUri,
       timeout: timeoutMs,
+      // Draft-18 §10.4: the smallest peer Request ID that might not have been processed
+      requestId: this.isDraft22 ? undefined : this.firstUnprocessedPeerRequestId(),
     };
 
     const bytes = this.codec.encodeControlMessage(goAwayMessage);
     await this.doSendControl(bytes);
+    this.goAwaySent = true;
+    this.armGoAwayTimeout(timeoutMs);
     this.setState('closing');
     log.info('Sent GOAWAY', { newSessionUri, timeoutMs: timeoutMs.toString() });
+  }
+
+  /**
+   * A peer Request ID must have the server's parity (odd, we are the client)
+   * and must be new, or the session closes with INVALID_REQUEST_ID
+   * (draft-22 §6.4.2.1, draft-18 §10.1). Returns whether it was acceptable.
+   */
+  private acceptPeerRequestId(requestId: bigint): boolean {
+    if (requestId % 2n === 1n && !this.seenPeerRequestIds.has(requestId)) {
+      this.seenPeerRequestIds.add(requestId);
+      return true;
+    }
+
+    const reason = `Invalid peer Request ID ${requestId.toString()}`;
+    log.error(reason);
+    void this.close({ code: SessionErrorCodeDraft18.INVALID_REQUEST_ID, reason }).catch(() => {});
+
+    return false;
+  }
+
+  /**
+   * After the Timeout of our GOAWAY the session closes with GOAWAY_TIMEOUT if
+   * requests are still open; 0 means no timeout (draft-22 §9.2, §6.6.1).
+   */
+  private armGoAwayTimeout(timeoutMs: bigint): void {
+    clearTimeout(this.goAwayTimer);
+    if (timeoutMs <= 0n) {
+      return;
+    }
+
+    this.goAwayTimer = setTimeout(() => {
+      if (this.closeStarted || this.activeRequestStreams.size === 0) {
+        return;
+      }
+
+      void this.close({
+        code: SessionErrorCodeDraft18.GOAWAY_TIMEOUT,
+        reason: 'Requests were still open when the GOAWAY timeout ended',
+      }).catch(() => {});
+    }, Number(timeoutMs));
+  }
+
+  /**
+   * The peer's next Request ID after the ones already seen: 1 when there are none,
+   * since the server uses odd IDs from 1 (draft-18 §10.4).
+   */
+  private firstUnprocessedPeerRequestId(): bigint {
+    let highest = -1n;
+    for (const id of this.seenPeerRequestIds) {
+      highest = id > highest ? id : highest;
+    }
+
+    return highest < 0n ? 1n : highest + 2n;
   }
 
   /**
@@ -1673,10 +2763,12 @@ export class MOQTSession {
    *
    * @param namespace - Track namespace
    * @param trackName - Track name
+   * @param timeoutMs - Cancel the request and reject after this long; waits indefinitely when omitted
    */
   async trackStatus(
     namespace: string[],
     trackName: string,
+    timeoutMs?: number,
   ): Promise<TrackStatusResult> {
     if (!this.isDraft18) {
       throw new Error('trackStatus() requires draft-18');
@@ -1704,12 +2796,18 @@ export class MOQTSession {
       trackName,
     });
 
+    let timedOut = false;
+    const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+      timedOut = true;
+      void this.abortRequestStream(requestId);
+    }, timeoutMs);
+
     try {
-      const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+      const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'track-status');
 
       if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
-        throw new Error(`TRACK_STATUS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+        throw this.rejection('TRACK_STATUS', error);
       }
 
       const ok = response as RequestOkMessageDraft18;
@@ -1724,6 +2822,7 @@ export class MOQTSession {
         expiresMs,
         latestGroup: ok.largestLocation?.group,
         latestObject: ok.largestLocation?.object,
+        trackProperties: parseTrackProperties(ok.trackProperties),
       };
       log.info('TRACK_STATUS response received', {
         requestId: requestId.toString(),
@@ -1732,7 +2831,13 @@ export class MOQTSession {
         latestObject: result.latestObject?.toString(),
       });
       return result;
+    } catch (err) {
+      if (timedOut) {
+        throw new Error(`TRACK_STATUS request ${requestId.toString()} timed out after ${timeoutMs}ms`);
+      }
+      throw err;
     } finally {
+      clearTimeout(timer);
       await this.closeRequestStream(requestId);
     }
   }
@@ -1746,9 +2851,6 @@ export class MOQTSession {
    * @param options.filter              SUBSCRIPTION_FILTER variant (default `NEXT_GROUP_START`).
    * @param options.startLocation       Absolute start (required for `ABSOLUTE_START` / `ABSOLUTE_RANGE`).
    * @param options.endGroupDelta       End-group delta (required for `ABSOLUTE_RANGE`).
-   * @param options.namespacePrefixParam §10.2.14 TRACK_NAMESPACE_PREFIX request parameter —
-   *                                    optional narrower prefix carried inside the params map;
-   *                                    supplements the top-level `namespacePrefix`.
    * @param options.parameters          Additional raw KVP request parameters (§10.2).
    */
   async subscribeTracks(
@@ -1759,7 +2861,6 @@ export class MOQTSession {
       filter?: SubscriptionFilterDraft18;
       startLocation?: { group: bigint; object: bigint };
       endGroupDelta?: bigint;
-      namespacePrefixParam?: string[];
       parameters?: Map<number, Uint8Array>;
     }
   ): Promise<number> {
@@ -1770,34 +2871,30 @@ export class MOQTSession {
       throw new Error('Session not ready');
     }
     assertNotReservedNamespace(namespacePrefix, 'SUBSCRIBE_TRACKS under');
-    if (options?.namespacePrefixParam) {
-      assertNotReservedNamespace(options.namespacePrefixParam, 'SUBSCRIBE_TRACKS under');
-    }
 
     // Local counter is small; widen for wire encode and state.
     const subscriptionId = this.getNextRequestId();
     const requestId = BigInt(subscriptionId);
 
-    // §10.2.14 TRACK_NAMESPACE_PREFIX — encoded as a namespace tuple (count |
-    // per-element length-prefixed UTF-8), then packed as the parameter value.
-    // Combine with any caller-supplied `parameters` map so both survive.
-    let mergedParameters = options?.parameters;
-    if (options?.namespacePrefixParam) {
-      const encoded = encodeTrackNamespaceBytes(options.namespacePrefixParam);
-      mergedParameters = new Map(mergedParameters ?? []);
-      mergedParameters.set(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX, encoded);
-    }
-
-    const subscribeTracksMessage: SubscribeTracksMessageDraft18 = {
-      type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
-      requestId,
-      trackNamespacePrefix: namespacePrefix,
-      forwardState: options?.forwardState ?? true,
-      filter: options?.filter ?? SubscriptionFilterDraft18.NEXT_GROUP_START,
-      startLocation: options?.startLocation,
-      endGroupDelta: options?.endGroupDelta,
-      parameters: mergedParameters,
-    };
+    // Draft-22 §9.18 has no SUBSCRIPTION_FILTER; filtering is by range filter parameters
+    const subscribeTracksMessage: SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22 = this.isDraft22
+      ? {
+        type: MessageTypeDraft22.SUBSCRIBE_TRACKS,
+        requestId,
+        trackNamespacePrefix: namespacePrefix,
+        forwardState: options?.forwardState ?? true,
+        parameters: options?.parameters,
+      }
+      : {
+        type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
+        requestId,
+        trackNamespacePrefix: namespacePrefix,
+        forwardState: options?.forwardState ?? true,
+        filter: options?.filter ?? SubscriptionFilterDraft18.NEXT_GROUP_START,
+        startLocation: options?.startLocation,
+        endGroupDelta: options?.endGroupDelta,
+        parameters: options?.parameters,
+      };
 
     const encoded = this.codec.encodeControlMessage(subscribeTracksMessage);
     log.info('Sent SUBSCRIBE_TRACKS', {
@@ -1805,12 +2902,12 @@ export class MOQTSession {
       prefix: namespacePrefix.join('/'),
     });
 
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'subscribe-tracks');
 
     if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
       const error = response as RequestErrorMessageDraft18;
       await this.closeRequestStream(requestId);
-      throw new Error(`SUBSCRIBE_TRACKS failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      throw this.rejection('SUBSCRIBE_TRACKS', error);
     }
 
     // Store the namespace subscription for incoming PUBLISH messages
@@ -1837,34 +2934,41 @@ export class MOQTSession {
   /**
    * Send REQUEST_UPDATE for an existing request (draft-18 §10.9).
    *
-   * MUST be sent on the same bidi stream as the original request; the Request
-   * ID field is the ID of the request being updated (not a new ID). The
-   * receiver MUST respond with exactly one REQUEST_OK or REQUEST_ERROR.
+   * MUST be sent on the same bidi stream as the original request, but
+   * consumes a new Request ID (draft-22 §6.4.2.1, draft-18 §10.1). The
+   * receiver MUST respond with exactly one REQUEST_OK or REQUEST_ERROR, which
+   * the request stream reader matches to this update.
    *
    * When `awaitAck` is false, the update is fire-and-forget. Terminal
    * operations (unsubscribe, FETCH cancel) use this because §10.9.1 lets the
    * responder reset the data stream or close the bidi on failure, and in
    * practice some relays close the stream without sending REQUEST_OK for
    * cancels — awaiting the ack would hang.
+   *
+   * `fill` (draft-22 §9.5.1) requests a fill fetch stream (§3.4) for the
+   * subscription; the new Request ID routes that stream's objects to it, and
+   * FORWARD is left out (unchanged).
+   *
+   * `rangeFilters` (draft-22 §3.3.2) replace the subscription's filters of the
+   * same type and SetID; a filter with no SetID and no Ranges removes every
+   * filter of its type. FORWARD is left out for these too.
    */
   async sendRequestUpdate(
     subscriptionRequestId: bigint | number,
     forwardState: boolean,
-    options?: { awaitAck?: boolean; newGroupRequest?: boolean | number },
+    options?: {
+      awaitAck?: boolean;
+      newGroupRequest?: boolean | number;
+      fill?: FillParametersDraft22;
+      rangeFilters?: RangeFilterDraft22[];
+      /** Move the subscription's start to this Location (draft-22 §9.5.1, draft-18 §10.9.1) */
+      seekTo?: { group: bigint; object: bigint };
+    },
   ): Promise<void> {
     if (!this.isDraft18) {
       throw new Error('sendRequestUpdate() requires draft-18');
     }
     const rid = typeof subscriptionRequestId === 'bigint' ? subscriptionRequestId : BigInt(subscriptionRequestId);
-
-    // Draft-22 §9.1.7: Check MAX_REQUEST_UPDATES limit
-    if (this.peerMaxRequestUpdates > 0) {
-      const outstanding = this.outstandingRequestUpdates.get(rid) ?? 0;
-      if (outstanding >= this.peerMaxRequestUpdates) {
-        throw new Error(`MAX_REQUEST_UPDATES limit exceeded for request ${rid.toString()}`);
-      }
-      this.outstandingRequestUpdates.set(rid, outstanding + 1);
-    }
 
     const stream = this.activeRequestStreams.get(rid);
     if (!stream) {
@@ -1873,25 +2977,88 @@ export class MOQTSession {
       );
     }
 
-    // §10.2.13 NEW_GROUP_REQUEST — subscriber asks the publisher to cut a new
-    // group. The wire value is a varint; `true` sends 1 (any nonzero triggers).
-    const extraParams = new Map<number, Uint8Array>();
-    if (options?.newGroupRequest !== undefined && options.newGroupRequest !== false) {
-      const val = typeof options.newGroupRequest === 'number' ? options.newGroupRequest : 1;
-      extraParams.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(BigInt(val)));
+    // Draft-22 §9.1.7: Check MAX_REQUEST_UPDATES limit
+    const pending = this.pendingRequestUpdates.get(rid) ?? [];
+    if (this.peerMaxRequestUpdates > 0 && pending.length >= this.peerMaxRequestUpdates) {
+      throw new Error(`MAX_REQUEST_UPDATES limit exceeded for request ${rid.toString()}`);
     }
 
-    const updateMessage: RequestUpdateMessageDraft18 = {
-      type: MessageTypeDraft18.REQUEST_UPDATE,
-      requestId: rid,
-      forwardState,
-      parameters: extraParams.size > 0 ? extraParams : undefined,
-    };
+    // Draft-22 §9.1.6: refuse Ranges over the peer's limit before queueing anything.
+    const filteredSubscription = this.subscriptionManager.findByRequestId(rid);
+    const rangeFilterCounts = this.planRangeFilters(
+      filteredSubscription?.rangeFilterCounts ?? new Map(),
+      options?.rangeFilters,
+      options?.fill?.rangeFilters,
+    );
+
+    // §9.20.19 NEW_GROUP_REQUEST — subscriber asks the publisher to cut a new group.
+    // The value is the largest Group ID the subscriber knows plus 1, or 0 when it knows none;
+    // `true` computes it. Only for a track that has DYNAMIC_GROUPS=1.
+    const extraParams = new Map<number, Uint8Array>();
+    const newGroup = options?.newGroupRequest;
+    if (newGroup !== undefined && newGroup !== false) {
+      if (!filteredSubscription?.dynamicGroups) {
+        throw new Error(`NEW_GROUP_REQUEST needs a track with DYNAMIC_GROUPS=1 (requestId=${rid.toString()})`);
+      }
+      const value = typeof newGroup === 'number' ? BigInt(newGroup) : BigInt((filteredSubscription.largestGroup ?? -1) + 1);
+      extraParams.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(value));
+    }
+
+    // Each REQUEST_UPDATE consumes a Request ID (draft-22 §6.4.2.1, draft-18 §10.1).
+    const updateId = BigInt(this.getNextRequestId());
+    const updateMessage: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22 = this.isDraft22
+      ? {
+        type: MessageTypeDraft22.REQUEST_UPDATE,
+        requestId: updateId,
+        // Draft-22 §9.5: FORWARD is not allowed when updating a FETCH
+        forwardState: this.activeFetches.has(rid) || options?.fill || options?.rangeFilters ? undefined : forwardState,
+        locationFilter: options?.seekTo && {
+          type: LocationFilterTypeDraft22.ABSOLUTE_START,
+          startLocation: options.seekTo,
+        },
+        fill: options?.fill,
+        rangeFilters: options?.rangeFilters,
+        parameters: extraParams.size > 0 ? extraParams : undefined,
+      }
+      : {
+        type: MessageTypeDraft18.REQUEST_UPDATE,
+        requestId: updateId,
+        forwardState,
+        ...(options?.seekTo && {
+          filter: SubscriptionFilterDraft18.ABSOLUTE_START,
+          startLocation: options.seekTo,
+        }),
+        parameters: extraParams.size > 0 ? extraParams : undefined,
+      };
+
+    // Queue before writing so the reader can match a fast response.
+    const acknowledged = new Promise<void>((resolve, reject) => {
+      pending.push({ resolve, reject });
+    });
+    this.pendingRequestUpdates.set(rid, pending);
+    // A fire-and-forget update, or one the stream outlives, must not leave an unhandled rejection.
+    acknowledged.catch(() => {});
+
+    // Register the fill stream before the write so its objects can't beat us to it.
+    const fillSubscription = options?.fill ? this.subscriptionManager.findByRequestId(rid) : undefined;
+    if (options?.fill && fillSubscription) {
+      this.registerFill(updateId, fillSubscription, options.fill);
+    }
 
     const bytes = this.codec.encodeControlMessage(updateMessage);
-    await stream.write(bytes);
+    try {
+      await stream.write(bytes);
+    } catch (err) {
+      this.dropFillStream(updateId);
+      this.failPendingUpdates(rid);
+      throw err;
+    }
+    if (filteredSubscription) {
+      filteredSubscription.rangeFilterCounts = rangeFilterCounts;
+    }
     log.info('Sent REQUEST_UPDATE', {
       subscriptionRequestId: rid.toString(),
+      updateRequestId: updateId.toString(),
       forwardState,
       newGroupRequest: options?.newGroupRequest ?? false,
     });
@@ -1900,32 +3067,134 @@ export class MOQTSession {
       return;
     }
 
-    const response = await stream.readMessage();
+    await acknowledged;
+  }
 
-    // Decrement outstanding REQUEST_UPDATE counter
-    const outstanding = this.outstandingRequestUpdates.get(rid);
-    if (outstanding !== undefined && outstanding > 0) {
-      this.outstandingRequestUpdates.set(rid, outstanding - 1);
+  /**
+   * Fill an existing subscription (ours, or one a relay pushed with PUBLISH)
+   * with past objects (draft-22 §3.4). They arrive in the subscription's
+   * object callback.
+   *
+   * Draft-22 sends REQUEST_UPDATE with FILL_PARAMETERS; draft-18 sends a
+   * Joining FETCH (§10.12.2). Neither waits for the peer's reply: a failed
+   * fill is a reset stream, which leaves the subscription alone (§3.4.1).
+   * Rejects while the subscription is paused (§3.4.1).
+   *
+   * @param subscriptionId - Subscription to fill
+   * @param fill - What to fill it with; see [[FillOptions]]
+   */
+  async requestFill(subscriptionId: number, fill: FillOptions): Promise<void> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+    if (!this.isDraft18) {
+      throw new Error('requestFill() requires draft-18');
+    }
+    const subscription = this.subscriptionManager.get(subscriptionId);
+    if (!subscription) {
+      throw new Error(`requestFill: no subscription ${subscriptionId}`);
+    }
+    if (subscription.paused) {
+      throw new Error(`requestFill: subscription ${subscriptionId} is paused (draft-22 §3.4.1)`);
     }
 
-    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
-      const err = response as RequestErrorMessageDraft18;
-      throw new Error(
-        `REQUEST_UPDATE failed for requestId=${rid.toString()}: ${err.reasonPhrase} (code ${err.errorCode})`,
-      );
+    if (!this.isDraft22) {
+      await this.fillWithJoiningFetch(subscription, fill);
+      return;
     }
-    if (response.type !== MessageTypeDraft18.REQUEST_OK) {
-      log.warn('Unexpected response to REQUEST_UPDATE', {
-        subscriptionRequestId: rid.toString(),
-        responseType: response.type,
-      });
-    } else {
-      log.info('REQUEST_UPDATE acknowledged', { subscriptionRequestId: rid.toString() });
+
+    await this.sendRequestUpdate(subscription.requestId, true, {
+      awaitAck: false,
+      fill: mapFillParameters(fill),
+    });
+  }
+
+  /**
+   * Change the Range Filters of a subscription (draft-22 §3.3.2) with a
+   * REQUEST_UPDATE. A filter replaces the one with its type and SetID; one
+   * with no SetID and no Ranges removes every filter of its type. Rejects
+   * with [[RequestRejectedError]] when the peer answers REQUEST_ERROR.
+   *
+   * @param subscriptionId - Subscription to update
+   * @param rangeFilters - Filters to replace or remove
+   */
+  async updateRangeFilters(subscriptionId: number, rangeFilters: RangeFilterDraft22[]): Promise<void> {
+    if (!this.isReady) {
+      throw new Error('Session not ready');
+    }
+    const subscription = this.subscriptionManager.get(subscriptionId);
+    if (!subscription) {
+      throw new Error(`updateRangeFilters: no subscription ${subscriptionId}`);
+    }
+
+    await this.sendRequestUpdate(subscription.requestId, true, { rangeFilters });
+  }
+
+  /** Draft-18 §10.12.2: the fill is a Joining FETCH of the subscription. */
+  private async fillWithJoiningFetch(subscription: InternalSubscription, fill: FillOptions): Promise<void> {
+    const { fetchType, joiningStart } = mapJoiningFetch(fill);
+    const requestId = BigInt(this.getNextRequestId());
+    this.fillStreams.set(requestId, subscription.subscriptionId);
+
+    // The joining fetch carries no range of its own (§10.12.2.1).
+    const range: FetchRange = { startGroup: 0, startObject: 0, endGroup: 0, endObject: 0 };
+    await this.sendFetch(requestId, subscription.namespace, subscription.trackName, range, {
+      fetchType,
+      joiningStart,
+      subscribeRequestId: subscription.requestId,
+      priority: fill.priority,
+      groupOrder: fill.groupOrder ?? subscription.groupOrder,
+      fillTimeout: fill.fillTimeout,
+    });
+
+    // A rejected FETCH never opens a stream; its entry would linger.
+    if (!this.activeFetches.has(requestId)) {
+      this.dropFillStream(requestId);
     }
   }
 
   /**
-   * Send PUBLISH_DONE to signal end of publishing on a track
+   * Route a fill fetch stream's objects to `subscription` (draft-22 §3.4),
+   * decoding its Group ID Delta in the fill's group order (§11.4.1.1).
+   */
+  private registerFill(requestId: bigint, subscription: InternalSubscription, fill: FillParametersDraft22): void {
+    this.fillStreams.set(requestId, subscription.subscriptionId);
+    this.objectRouter.setFetchGroupOrder(
+      requestId,
+      fill.groupOrder ?? subscription.groupOrder ?? GroupOrder.ASCENDING,
+    );
+  }
+
+  private dropFillStream(requestId: bigint): void {
+    this.fillStreams.delete(requestId);
+    this.objectRouter.clearFetchGroupOrder(requestId);
+  }
+
+  /**
+   * Stop every fill stream of a cancelled subscription (draft-22 §3.4.1),
+   * including ones that haven't arrived yet.
+   */
+  private async endFillStreams(subscriptionId: number): Promise<void> {
+    for (const [requestId, owner] of this.fillStreams) {
+      if (owner !== subscriptionId) {
+        continue;
+      }
+
+      this.dropFillStream(requestId);
+      // A Joining FETCH is a request of its own; a draft-22 fill stream is only a data stream.
+      if (this.activeFetches.has(requestId)) {
+        await this.cancelFetch(requestId);
+        continue;
+      }
+      this.objectRouter.cancelFetchStream(requestId);
+    }
+  }
+
+  /**
+   * Send PUBLISH_DONE to signal end of publishing on a track.
+   *
+   * Draft-22 §9.9: sent on the PUBLISH or accepted SUBSCRIBE request's bidi
+   * stream as its final message, after which the stream is closed.
    *
    * @param requestId - Request ID of the PUBLISH
    * @param finalGroup - Final group ID
@@ -1945,62 +3214,93 @@ export class MOQTSession {
       throw new Error('sendPublishDone() requires draft-18');
     }
 
+    const stream = this.activeRequestStreams.get(requestId);
+    if (!stream) {
+      throw new Error(`sendPublishDone(): no PUBLISH request stream for requestId ${requestId}`);
+    }
+
+    // §9.9 Stream Count: streams opened for this publication; unknown if we
+    // have no record of the publication.
+    const publication = this.publicationManager.getByRequestId(requestId);
+    const streamCountUnknown = this.isDraft22 ? STREAM_COUNT_UNKNOWN_DRAFT22 : STREAM_COUNT_UNKNOWN_DRAFT18;
+    const streamCount = publication ? BigInt(publication.streamsOpened ?? 0) : streamCountUnknown;
+
     const publishDone: PublishDoneMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH_DONE,
       requestId,
       finalLocation: { group: BigInt(finalGroup), object: BigInt(finalObject) },
       statusCode: BigInt(statusCode ?? PublishDoneErrorCodeDraft18.TRACK_ENDED),
+      streamCount,
       reasonPhrase,
     };
 
     const bytes = this.codec.encodeControlMessage(publishDone);
-    await this.doSendControl(bytes);
+    await stream.write(bytes);
+    await this.closeRequestStream(requestId);
     // PUBLISH_DONE terminates the incoming subscription; drop routing state so
     // any future REQUEST_UPDATE on this id doesn't route as §10.9.1 by default.
     this.incomingRequestKinds.delete(requestId);
-    log.info('Sent PUBLISH_DONE', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString() });
+    log.info('Sent PUBLISH_DONE', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString(), streamCount: streamCount.toString() });
   }
 
   /**
-   * Send PUBLISH_BLOCKED (draft-18 §10.20).
+   * Send PUBLISH_BLOCKED (draft-18 §10.20) on the response stream of a
+   * peer's SUBSCRIBE_TRACKS: the publisher cannot PUBLISH the track because
+   * the peer allows no more bidirectional streams. There is no reply.
    *
-   * The publisher tells the peer that it cannot open new subgroup streams for
-   * `trackAlias` right now because of transport-level flow control. The peer
-   * is expected to raise its stream limit; there is no reply.
+   * @param requestId - Request ID of the SUBSCRIBE_TRACKS
+   * @param trackNamespaceSuffix - Namespace of the track after the SUBSCRIBE_TRACKS prefix
+   * @param trackName - Name of the track
    */
-  async sendPublishBlocked(trackAlias: bigint | number | string): Promise<void> {
-    if (!this.isDraft18) {
-      throw new Error('sendPublishBlocked() requires draft-18');
+  async sendPublishBlocked(requestId: bigint, trackNamespaceSuffix: string[], trackName: string): Promise<void> {
+    if (!this.isDraft18 || this.isDraft22) {
+      throw new Error('sendPublishBlocked() requires draft-18; draft-22 uses sendPublishSkipped()');
     }
-    const alias = typeof trackAlias === 'bigint' ? trackAlias : BigInt(trackAlias);
     const message: PublishBlockedMessageDraft18 = {
       type: MessageTypeDraft18.PUBLISH_BLOCKED,
-      trackAlias: alias,
-    };
-    const bytes = this.codec.encodeControlMessage(message);
-    await this.doSendControl(bytes);
-    log.info('Sent PUBLISH_BLOCKED', { trackAlias: alias.toString() });
-  }
-
-  /**
-   * Send PUBLISH_SKIPPED to indicate the publisher will not send a PUBLISH
-   * for a track matched by SUBSCRIBE_TRACKS (draft-22 §9.19).
-   */
-  async sendPublishSkipped(trackNamespaceSuffix: string[], trackName: string): Promise<void> {
-    if (!this.isDraft22) {
-      throw new Error('sendPublishSkipped() requires draft-22');
-    }
-    const message = {
-      type: 0x0F as any, // MessageTypeDraft22.PUBLISH_SKIPPED
       trackNamespaceSuffix,
       trackName,
     };
-    const bytes = this.codec.encodeControlMessage(message);
-    await this.doSendControl(bytes);
+    await this.writeToSubscribeTracks(requestId, message);
+    log.info('Sent PUBLISH_BLOCKED', { requestId: requestId.toString(), trackName });
+  }
+
+  /**
+   * Send PUBLISH_SKIPPED on the response stream of a peer's SUBSCRIBE_TRACKS:
+   * the publisher will not PUBLISH a matching track (draft-22 §3.6.3, §9.19).
+   *
+   * @param requestId - Request ID of the SUBSCRIBE_TRACKS
+   * @param trackNamespaceSuffix - Namespace of the track after the SUBSCRIBE_TRACKS prefix
+   * @param trackName - Name of the track
+   */
+  async sendPublishSkipped(requestId: bigint, trackNamespaceSuffix: string[], trackName: string): Promise<void> {
+    if (!this.isDraft22) {
+      throw new Error('sendPublishSkipped() requires draft-22');
+    }
+    const message: PublishSkippedMessageDraft22 = {
+      type: MessageTypeDraft22.PUBLISH_SKIPPED,
+      trackNamespaceSuffix,
+      trackName,
+    };
+    await this.writeToSubscribeTracks(requestId, message);
     log.info('Sent PUBLISH_SKIPPED (draft-22)', {
+      requestId: requestId.toString(),
       trackNamespaceSuffix: trackNamespaceSuffix.join('/'),
       trackName,
     });
+  }
+
+  /** Write `message` on the response stream of the peer's SUBSCRIBE_TRACKS `requestId`. */
+  private async writeToSubscribeTracks(
+    requestId: bigint,
+    message: PublishBlockedMessageDraft18 | PublishSkippedMessageDraft22,
+  ): Promise<void> {
+    const stream = this.activeRequestStreams.get(requestId);
+    if (!stream || this.incomingRequestKinds.get(requestId) !== 'subscribe-tracks') {
+      throw new Error(`No SUBSCRIBE_TRACKS request stream for requestId ${requestId.toString()}`);
+    }
+
+    await stream.write(this.codec.encodeControlMessage(message as unknown as ControlMessageDraft18));
   }
 
   /**
@@ -2014,11 +3314,12 @@ export class MOQTSession {
    * B3 SEC: enforce a per-session resource cap.
    *
    * Called from subscribe/publish/stream-open entry points. If `currentCount`
-   * has reached or exceeded `limit`, terminate the session with
-   * PROTOCOL_VIOLATION via the existing `close()` path and throw so the
-   * caller unwinds without allocating additional state. The `code` on the
-   * thrown error is set to `'resource-limit-exceeded'` so callers can
-   * distinguish DoS caps from other failures.
+   * has reached or exceeded `limit`, throw so the caller unwinds without
+   * allocating additional state. The `code` on the thrown error is set to
+   * `'resource-limit-exceeded'` so callers can distinguish DoS caps from other
+   * failures. On draft-18/22 that is all: the peer broke no rule, so a request
+   * over the cap is refused with EXCESSIVE_LOAD by its handler and the session
+   * lives. Draft-14/16 also close the session with PROTOCOL_VIOLATION.
    *
    * @internal — this is a security gate, not a public API.
    */
@@ -2028,7 +3329,9 @@ export class MOQTSession {
     limit: number,
   ): void {
     if (currentCount < limit) return;
-    if (!this.resourceCapTripped) {
+    if (this.isDraft18) {
+      log.warn('Per-session resource cap exceeded', { what, currentCount, limit });
+    } else if (!this.resourceCapTripped) {
       this.resourceCapTripped = true;
       log.error('Per-session resource cap exceeded', { what, currentCount, limit });
       // Best-effort session termination. `close()` handles the two transport
@@ -2047,6 +3350,12 @@ export class MOQTSession {
   async close(options?: { code?: SessionErrorCodeDraft18; reason?: string }): Promise<void> {
     const code = options?.code ?? SessionErrorCodeDraft18.NO_ERROR;
     const reason = options?.reason ?? 'Normal closure';
+    this.closeStarted = true;
+    clearTimeout(this.goAwayTimer);
+    for (const timer of this.retireTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.retireTimers.clear();
     this._lastCloseReason = reason;
     this._lastCloseCode = code;
     this.metrics.counter('moq.session.close', 1, {
@@ -2085,9 +3394,10 @@ export class MOQTSession {
     this.subscriptionManager.clear();
     this.publicationManager.clear();
     this.incomingRequestKinds.clear();
+    this.incomingNamespaces.clear();
+    this.incomingTrackSubs.clear();
     // §8: cancel every pending delivery-timeout so stale timers can't fire
     // after the session is gone.
-    this.objectRouter.clearDeliveryTimeouts();
     this.publisherDeliveryTimeouts.clear();
 
     // Close underlying transport with the draft-18 session termination code.
@@ -2124,6 +3434,93 @@ export class MOQTSession {
   // ─── §8 publisher-side delivery-timeout helpers ─────────────────────────
 
   /**
+   * Effective delivery timeout of a publication: the smaller of the track's
+   * and the subscriber's non-zero values (d22 §5.2); none when neither is set.
+   */
+  private effectiveTimeoutMs(trackAlias: bigint | string, kind: 'subgroup' | 'object'): number | undefined {
+    const publication = this.publicationManager.get(trackAlias);
+    const trackMs = kind === 'subgroup'
+      ? this.publisherTimeoutConfig.get(trackAlias.toString())?.subgroupDeliveryTimeoutMs
+      : undefined;
+    const subscriberMs = kind === 'subgroup'
+      ? publication?.subscriberSubgroupTimeoutMs
+      : publication?.subscriberObjectTimeoutMs;
+    const set = [trackMs, subscriberMs].filter((ms): ms is number => ms !== undefined && ms > 0);
+
+    return set.length > 0 ? Math.min(...set) : undefined;
+  }
+
+  /**
+   * Reset a data stream with a Stream Reset Code so it reaches the peer as
+   * RESET_STREAM (d22 §11.3.2, §12.5).
+   */
+  private async abortStreamHandle(
+    stream: { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number },
+    code: StreamResetErrorCodeDraft18,
+  ): Promise<void> {
+    if (stream.writer) {
+      await stream.writer.abort(streamResetReason(code));
+    } else if (stream.streamId !== undefined && this.transportWorker) {
+      this.transportWorker.abortStream(stream.streamId, code);
+    }
+  }
+
+  /**
+   * Start the SUBGROUP_DELIVERY_TIMEOUT of a subgroup whose FIN is about to be
+   * written (d22 §5.2: it starts once all its objects are published). Returns
+   * the key to disarm once the stream is committed, or undefined if none applies.
+   */
+  private armFinishTimer(
+    aliasKey: string,
+    stream: { writer?: WritableStreamDefaultWriter<Uint8Array>; streamId?: number; groupId: number },
+  ): string | undefined {
+    const ms = this.isDraft18 ? this.effectiveTimeoutMs(aliasKey, 'subgroup') : undefined;
+    if (ms === undefined) {
+      return undefined;
+    }
+
+    const key = `pub-fin:${aliasKey}:${stream.groupId}:0`;
+    this.finishingStreams.set(key, stream);
+    this.publisherDeliveryTimeouts.arm(key, 'subgroup', ms);
+    return key;
+  }
+
+  private disarmFinishTimer(key: string | undefined): void {
+    if (key === undefined) {
+      return;
+    }
+    this.publisherDeliveryTimeouts.disarm(key);
+    this.finishingStreams.delete(key);
+  }
+
+  /**
+   * An object that waited longer than OBJECT_DELIVERY_TIMEOUT before reaching
+   * the transport must not be sent (d22 §5.2). The caller resets its stream.
+   */
+  private objectExpired(trackAlias: bigint, receivedAt: number): boolean {
+    const ms = this.effectiveTimeoutMs(trackAlias, 'object');
+    return ms !== undefined && performance.now() - receivedAt > ms;
+  }
+
+  /** Record an expired object: its group gets no new stream, and the app hears of it. */
+  private noteObjectExpired(trackAlias: bigint, metadata: ObjectMetadata): void {
+    const publication = this.publicationManager.get(trackAlias);
+    if (publication) {
+      publication.expiredGroup = metadata.groupId;
+    }
+
+    this.emit('delivery-timeout', {
+      side: 'publisher',
+      reason: 'object',
+      resetCode: StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT,
+      trackAlias,
+      groupId: metadata.groupId,
+      subgroupId: 0,
+      objectId: metadata.objectId,
+    } as DeliveryTimeoutEvent);
+  }
+
+  /**
    * Arm a subgroup-delivery deadline for an outgoing publisher stream.
    *
    * Returns the timer key if a timer was armed (so the caller can disarm it
@@ -2154,9 +3551,10 @@ export class MOQTSession {
     reason: DeliveryTimeoutReason,
     resetCode: StreamResetErrorCodeDraft18,
   ): void {
-    // Keys are `pub-sg:${alias}:${groupId}:${subgroupId}`.
+    // Keys are `pub-sg:${alias}:${groupId}:${subgroupId}` (draft-16/17, from
+    // stream open) or `pub-fin:...` (draft-18/22, from the subgroup's FIN).
     const parts = key.split(':');
-    if (parts[0] !== 'pub-sg' || parts.length < 4) return;
+    if ((parts[0] !== 'pub-sg' && parts[0] !== 'pub-fin') || parts.length < 4) return;
     const aliasKey = parts[1];
     const groupId = Number(parts[2]);
     const subgroupId = Number(parts[3]);
@@ -2169,15 +3567,22 @@ export class MOQTSession {
       resetCode,
     });
 
-    // Best-effort abort — if a GOP stream is still open for this alias, tear
-    // it down with the §15.10.4 DELIVERY_TIMEOUT reset code. If no stream is
-    // open, resetPublicationStream is a no-op.
-    void this.resetPublicationStream(aliasKey, resetCode, 'delivery-timeout').catch((err) => {
-      log.debug('resetPublicationStream on timeout failed', {
-        aliasKey,
-        error: (err as Error).message,
+    // A finished subgroup whose FIN was not committed in time: reset that stream
+    const finishing = this.finishingStreams.get(key);
+    if (finishing) {
+      this.finishingStreams.delete(key);
+      void this.abortStreamHandle(finishing, resetCode).catch(() => { /* already gone */ });
+    } else if (parts[0] === 'pub-sg') {
+      // Best-effort abort — if a GOP stream is still open for this alias, tear
+      // it down with the §15.10.4 DELIVERY_TIMEOUT reset code. If no stream is
+      // open, resetPublicationStream is a no-op.
+      void this.resetPublicationStream(aliasKey, resetCode, 'delivery-timeout').catch((err) => {
+        log.debug('resetPublicationStream on timeout failed', {
+          aliasKey,
+          error: (err as Error).message,
+        });
       });
-    });
+    }
 
     this.emit('delivery-timeout', {
       side: 'publisher',
@@ -2204,15 +3609,7 @@ export class MOQTSession {
     const codeName = StreamResetErrorCodeDraft18[code] ?? 'UNKNOWN';
     const abortReason = reason ?? `stream-reset code=${code} (${codeName})`;
     try {
-      if (existing.writer) {
-        await existing.writer.abort(abortReason);
-      } else if (existing.streamId !== undefined && this.transportWorker) {
-        // The worker's close-stream path swallows the STOP_SENDING/RESET_STREAM
-        // errors from writer.close(); using it here surfaces the same behavior
-        // for aborts. A dedicated abort-stream RPC can follow if we ever need
-        // to propagate the numeric code down to the QUIC layer.
-        this.transportWorker.closeStream(existing.streamId);
-      }
+      await this.abortStreamHandle(existing, code);
       log.info('Reset publication stream', {
         trackAlias,
         code,
@@ -2282,7 +3679,8 @@ export class MOQTSession {
     const payload = new Uint8Array(typeBytes.length + bytes);
     payload.set(typeBytes);
     // Remaining bytes are already zero-initialized by the Uint8Array constructor.
-    const streamInfo = await this.doCreateStream();
+    // §11.5: padding goes after all control and Object data
+    const streamInfo = await this.doCreateStream({ sendOrder: SendOrder.PADDING });
     await this.doWriteStream(streamInfo, payload, /* close */ true);
   }
 
@@ -2302,6 +3700,42 @@ export class MOQTSession {
     const datagram = new Uint8Array(typeBytes.length + bytes);
     datagram.set(typeBytes);
     await this.doSendDatagram(datagram);
+  }
+
+  /**
+   * Check the Range Filters of one outgoing request before anything is sent
+   * (draft-22 §3.3.2): the draft must be 22, the filters valid, and the Ranges
+   * within the peer's MAX_FILTER_RANGES (§9.1.6) counting those `held` stays
+   * with, plus the `fill` stream's. Returns what is held once `update` applies.
+   */
+  private planRangeFilters(
+    held: ReadonlyMap<string, number>,
+    update?: readonly RangeFilterDraft22[],
+    fill?: readonly RangeFilterDraft22[],
+  ): Map<string, number> {
+    const next = applyRangeFilters(held, update ?? []);
+    if (!update?.length && !fill?.length) {
+      return next;
+    }
+
+    if (!this.isDraft22) {
+      throw new Error(`Range filters require draft-22 (§3.3.2), not ${this._draft}`);
+    }
+    for (const filters of [update ?? [], fill ?? []]) {
+      validateRangeFilters(filters);
+      if (filters.some((filter) => filter.type === RequestParameterDraft22.TRACK_PROPERTY_FILTER)) {
+        throw new Error('TRACK_PROPERTY_FILTER only applies to SUBSCRIBE_TRACKS (§3.3.2)');
+      }
+    }
+
+    const total = countRanges(fill ?? []) +[...next.values()].reduce((sum, count) => sum + count, 0);
+    if (total > this.peerMaxFilterRanges) {
+      throw new Error(
+        `${total} filter Ranges exceed the peer's MAX_FILTER_RANGES ${this.peerMaxFilterRanges} (§9.1.6)`,
+      );
+    }
+
+    return next;
   }
 
   /**
@@ -2329,10 +3763,25 @@ export class MOQTSession {
     // B3 SEC: reject before allocating any request/subscription state.
     this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
 
+    // Refuse Range Filters the draft or the peer's MAX_FILTER_RANGES can't take (§9.1.6).
+    const rangeFilterCounts = this.planRangeFilters(new Map(), options?.rangeFilters, options?.fill?.rangeFilters);
+
+    // Refuse a fill this draft can't express before allocating any state.
+    const fill = this.isDraft18 ? options?.fill : undefined;
+    if (options?.fill && !fill) {
+      log.warn('Ignoring SubscribeOptions.fill: draft-14/16 have no fill');
+    }
+    const fillParameters = fill && this.isDraft22 ? mapFillParameters(fill) : undefined;
+    if (fill && !this.isDraft22) {
+      mapJoiningFetch(fill);
+    }
+
     // Local counter is small; widen for wire encode and state maps.
     const subscriptionId = this.getNextRequestId();
     const requestId = BigInt(subscriptionId);
-    const trackAlias = requestId;
+    // Draft-14/16: the subscriber chooses the alias. Draft-18/22: the publisher does, in
+    // SUBSCRIBE_OK or PUBLISH, so there is none until then (d22 §3.1.3).
+    const trackAlias = this.isDraft18 ? undefined : requestId;
 
     const fullTrackNameForLog = [...namespace, trackName].join('/');
     log.info('Subscribing', {
@@ -2341,7 +3790,6 @@ export class MOQTSession {
       trackName,
       fullTrackName: fullTrackNameForLog,
       subscriptionId,
-      trackAlias: trackAlias.toString(),
       isDraft18: this.isDraft18,
     });
 
@@ -2355,14 +3803,31 @@ export class MOQTSession {
       paused: false,
       onObject,
       onEndOfGroup,
-      subgroupDeliveryTimeoutMs: options?.subgroupDeliveryTimeout,
-      objectDeliveryTimeoutMs: options?.objectDeliveryTimeout,
+      groupOrder: options?.groupOrder,
+      rangeFilterCounts,
+      drainMs: Math.max(options?.subgroupDeliveryTimeout ?? 0, options?.objectDeliveryTimeout ?? 0),
     };
     this.subscriptionManager.add(subscription);
 
     if (this.isDraft18) {
+      // Draft-22 §3.4: the SUBSCRIBE's fill stream carries its Request ID.
+      if (fillParameters) {
+        this.registerFill(requestId, subscription, fillParameters);
+      }
+
       // Draft-18: Send SUBSCRIBE on a new bidirectional stream
-      await this.subscribeDraft18(requestId, namespace, trackName, trackAlias, options);
+      try {
+        await this.subscribeDraft18(requestId, namespace, trackName, options, fillParameters);
+
+        if (fill && !this.isDraft22) {
+          await this.requestFill(subscriptionId, fill);
+        }
+      } catch (err) {
+        // A failed SUBSCRIBE leaves nothing behind (d22 §3.1.2)
+        this.subscriptionManager.remove(subscriptionId);
+        this.dropFillStream(requestId);
+        throw err;
+      }
     } else {
       // Draft-16 exposes only LATEST_GROUP and ABSOLUTE_START on the wire. Any
       // draft-18-only filter selection collapses to ABSOLUTE_START when it has
@@ -2381,7 +3846,7 @@ export class MOQTSession {
       const subscribeMessage: SubscribeMessage = {
         type: MessageType.SUBSCRIBE,
         requestId,
-        trackAlias,
+        trackAlias: trackAlias!,
         fullTrackName: { namespace, trackName },
         subscriberPriority: options?.priority ?? 128,
         groupOrder: options?.groupOrder ?? GroupOrder.ASCENDING,
@@ -2405,11 +3870,11 @@ export class MOQTSession {
       await this.doSendControl(subscribeBytes);
       log.info('Sent SUBSCRIBE message', {
         requestId: requestId.toString(),
-        trackAlias: trackAlias.toString(),
+        trackAlias: trackAlias!.toString(),
         namespace: namespace.join('/'),
         trackName,
       });
-      this.emitMessageSent('SUBSCRIBE', subscribeBytes.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
+      this.emitMessageSent('SUBSCRIBE', subscribeBytes.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias!.toString() });
     }
 
     log.info('Subscription started', { subscriptionId });
@@ -2423,16 +3888,15 @@ export class MOQTSession {
     requestId: bigint,
     namespace: string[],
     trackName: string,
-    trackAlias: bigint,
-    options?: SubscribeOptions
+    options?: SubscribeOptions,
+    fill?: FillParametersDraft22,
   ): Promise<void> {
     const parameters = new Map<number, Uint8Array>();
-    addDeliveryTimeoutParams(parameters, options);
-    if (options?.authToken) {
-      parameters.set(
-        RequestParameterDraft18.AUTHORIZATION_TOKEN,
-        encodeRequestAuthTokenBytes(options.authToken),
-      );
+    addSubscribeTimeoutParams(parameters, options);
+    const authBytes = options?.authToken ? encodeDraft18AuthBytes(options.authToken) : undefined;
+    // §8.9: draft-22 carries Authorization Tokens in `authTokens`, which may repeat
+    if (authBytes && !this.isDraft22) {
+      parameters.set(RequestParameterDraft18.AUTHORIZATION_TOKEN, authBytes);
     }
     // §7 / §10.2 — advertise subscriber-side scheduling hints when the caller
     // provided them. Publisher schedulers use these to derive `sendOrder`.
@@ -2442,64 +3906,99 @@ export class MOQTSession {
         new Uint8Array([Math.max(0, Math.min(0xff, Math.floor(options.priority)))]),
       );
     }
-    if (options?.groupOrder !== undefined) {
-      parameters.set(
-        RequestParameterDraft18.GROUP_ORDER,
-        new Uint8Array([options.groupOrder === GroupOrder.DESCENDING ? 2 : 1]),
-      );
+    // §9.20.8: always sent, so a fill stream (which can arrive before
+    // SUBSCRIBE_OK) decodes Group ID Delta in an order we know.
+    parameters.set(
+      RequestParameterDraft18.GROUP_ORDER,
+      new Uint8Array([options?.groupOrder === GroupOrder.DESCENDING ? 2 : 1]),
+    );
+
+    // §9.20.9: draft-22 carries the filter as LOCATION_FILTER, with different type values
+    let subscribeMessage: SubscribeMessageDraft18 | SubscribeMessageDraft22;
+    if (this.isDraft22) {
+      subscribeMessage = {
+        type: MessageTypeDraft22.SUBSCRIBE,
+        requestId,
+        trackNamespace: namespace,
+        trackName,
+        forwardState: true,
+        locationFilter: mapLocationFilter(options),
+        fill,
+        rangeFilters: options?.rangeFilters?.length ? options.rangeFilters : undefined,
+        authTokens: authBytes ? [authBytes] : undefined,
+        parameters,
+      };
+    } else {
+      const { filter, startLocation, endGroupDelta } = mapSubscribeFilter(options);
+
+      subscribeMessage = {
+        type: MessageTypeDraft18.SUBSCRIBE,
+        requestId,
+        trackNamespace: namespace,
+        trackName,
+        forwardState: true,
+        filter,
+        startLocation,
+        endGroupDelta,
+        parameters,
+      };
     }
-
-    const { filter, startLocation, endGroupDelta } = mapSubscribeFilter(options);
-
-    const subscribeMessage: SubscribeMessageDraft18 = {
-      type: MessageTypeDraft18.SUBSCRIBE,
-      requestId,
-      trackNamespace: namespace,
-      trackName,
-      forwardState: true,
-      filter,
-      startLocation,
-      endGroupDelta,
-      parameters,
-    };
 
     const encoded = this.codec.encodeControlMessage(subscribeMessage);
     const subHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Sent SUBSCRIBE', {
       requestId: requestId.toString(),
-      trackAlias: trackAlias.toString(),
       namespace: namespace.join('/'),
       trackName,
       hex: subHex,
       length: encoded.length,
     });
-    this.emitMessageSent('SUBSCRIBE', encoded.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString(), trackAlias: trackAlias.toString() });
+    this.emitMessageSent('SUBSCRIBE', encoded.length, `${namespace.join('/')}/${trackName}`, { requestId: requestId.toString() });
 
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'subscribe');
 
     if (response.type === MessageTypeDraft18.SUBSCRIBE_OK) {
       const subscribeOk = response as SubscribeOkMessageDraft18;
       const relayTrackAlias = subscribeOk.trackAlias ?? subscribeOk.requestId;
       log.info('Received SUBSCRIBE_OK', {
         trackAlias: relayTrackAlias.toString(),
-        localTrackAlias: trackAlias.toString(),
-        largestGroup: subscribeOk.largestLocation.group.toString(),
-        largestObject: subscribeOk.largestLocation.object.toString(),
+        largestGroup: subscribeOk.largestLocation?.group.toString(),
+        largestObject: subscribeOk.largestLocation?.object.toString(),
       });
+      const fault = this.checkTrackProperties(subscribeOk.trackProperties, 'SUBSCRIBE_OK');
+      if (fault === TrackPropertyFault.INVALID) {
+        throw new Error('SUBSCRIBE_OK has invalid Track Properties');
+      }
+      if (fault === TrackPropertyFault.UNSUPPORTED) {
+        // Draft-22 §3.7: the track is not processed, so the subscription is cancelled
+        await this.abortRequestStream(requestId);
+        throw new RequestRejectedError(
+          'SUBSCRIBE failed: Mandatory Track Property not understood',
+          RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
+          'Mandatory Track Property not understood',
+        );
+      }
       const sub = this.subscriptionManager.findByRequestId(requestId);
-      // Update subscription's track alias to match what relay assigned
-      if (sub && relayTrackAlias !== trackAlias) {
+      if (sub && !this.acceptTrackAlias(relayTrackAlias, sub.namespace, sub.trackName, sub.subscriptionId)) {
+        throw new Error(`SUBSCRIBE_OK reuses Track Alias ${relayTrackAlias.toString()}`);
+      }
+      // The publisher's alias is what its data streams carry
+      if (sub) {
         this.subscriptionManager.updateTrackAlias(sub.subscriptionId, relayTrackAlias);
-        log.info('Updated subscription trackAlias', {
-          subscriptionId: sub.subscriptionId,
-          oldAlias: trackAlias.toString(),
-          newAlias: relayTrackAlias.toString(),
-        });
       }
       if (sub) {
-        const largestGroup = subscribeOk.largestLocation.group;
-        const largestObject = subscribeOk.largestLocation.object;
-        const contentExists = largestGroup > 0n || largestObject > 0n;
+        // An omitted LARGEST_OBJECT means no Object was published; {0, 0} is the first one
+        const largestGroup = subscribeOk.largestLocation?.group ?? 0n;
+        const largestObject = subscribeOk.largestLocation?.object ?? 0n;
+        const contentExists = subscribeOk.largestLocation !== undefined;
+        const properties = parseTrackProperties(subscribeOk.trackProperties);
+        sub.dynamicGroups = properties?.dynamicGroups === true;
+        sub.drainMs = Math.max(
+          sub.drainMs ?? 0,
+          properties?.subgroupDeliveryTimeoutMs ?? 0,
+          properties?.objectDeliveryTimeoutMs ?? 0,
+        );
+        sub.largestGroup = contentExists ? narrowBigIntToNumber(largestGroup, 'SUBSCRIBE_OK.largestGroup') : undefined;
         this.emit('subscribe-ok', {
           subscriptionId: sub.subscriptionId,
           requestId,
@@ -2518,7 +4017,7 @@ export class MOQTSession {
         reasonPhrase: error.reasonPhrase,
       });
       await this.closeRequestStream(requestId);
-      throw new Error(`SUBSCRIBE failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      throw this.rejection('SUBSCRIBE', error);
     }
   }
 
@@ -2537,19 +4036,35 @@ export class MOQTSession {
       maxCacheDuration: options?.maxCacheDuration,
       priority: options?.priority,
       groupOrder: options?.groupOrder,
-      priorGroupIdGap: options?.priorGroupIdGap,
-      priorObjectIdGap: options?.priorObjectIdGap,
+      dynamicGroups: options?.dynamicGroups,
     });
-    const publishMessage: PublishMessageDraft18 = {
-      type: MessageTypeDraft18.PUBLISH,
-      requestId,
-      trackAlias,
-      trackNamespace: namespace,
-      trackName,
-      forwardState: true,
-      largestLocation: { group: 0n, object: 0n },
-      trackProperties,
-    };
+    // LARGEST_OBJECT is omitted until Objects have been published (d22 §9.20.17, d18 §10.2.11)
+    const largestLocation = this.publicationManager.largestOf(namespace, trackName);
+    // §8.9: draft-22 carries Authorization Tokens in `authTokens`, which may repeat
+    const authBytes = options?.authToken ? encodeDraft18AuthBytes(options.authToken) : undefined;
+    const publishMessage: PublishMessageDraft18 | PublishMessageDraft22 = this.isDraft22
+      ? {
+        type: MessageTypeDraft22.PUBLISH,
+        requestId,
+        trackAlias,
+        trackNamespace: namespace,
+        trackName,
+        forwardState: true,
+        largestLocation,
+        authTokens: authBytes ? [authBytes] : undefined,
+        trackProperties,
+      }
+      : {
+        type: MessageTypeDraft18.PUBLISH,
+        requestId,
+        trackAlias,
+        trackNamespace: namespace,
+        trackName,
+        forwardState: true,
+        largestLocation,
+        parameters: authBytes ? new Map([[RequestParameterDraft18.AUTHORIZATION_TOKEN, authBytes]]) : undefined,
+        trackProperties,
+      };
 
     const encoded = this.codec.encodeControlMessage(publishMessage);
     const pubHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -2562,12 +4077,22 @@ export class MOQTSession {
       length: encoded.length,
     });
 
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'publish');
 
     if (response.type === MessageTypeDraft18.REQUEST_OK) {
       const ok = response as RequestOkMessageDraft18;
       const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
       log.info('Received REQUEST_OK for PUBLISH', { requestId: requestId.toString(), expiresMs });
+      // Draft-18 §5.1: a subscriber can start the subscription paused with FORWARD=0 in PUBLISH_OK
+      if (ok.forwardState === false) {
+        this.publicationManager.setForwardByRequestId(requestId, 0);
+      }
+      // §10.2.9: the PUBLISH_OK filter picks the Objects to send; omitted is unfiltered
+      const publication = this.publicationManager.getByRequestId(requestId);
+      if (publication && ok.filter !== undefined) {
+        const largest = this.publicationManager.largestOf(namespace, trackName);
+        publication.filter = resolveSubscriptionFilter(ok.filter, ok.startLocation, ok.endGroupDelta, largest);
+      }
       this.emit('request-ok', { requestId, requestKind: 'publish', expiresMs } as RequestOkEvent);
       if (!options?.skipForwardWait) {
         log.info('PUBLISH accepted, starting immediately');
@@ -2580,7 +4105,7 @@ export class MOQTSession {
         reasonPhrase: error.reasonPhrase,
       });
       await this.closeRequestStream(requestId);
-      throw new Error(`PUBLISH failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+      throw this.rejection('PUBLISH', error);
     }
   }
 
@@ -2598,17 +4123,12 @@ export class MOQTSession {
 
     log.info('Unsubscribing', { subscriptionId });
 
+    await this.endFillStreams(subscriptionId);
+
     if (this.isDraft18) {
-      // Draft-18: Send REQUEST_UPDATE with forwardState=false to unsubscribe.
-      // Fire-and-forget: the relay resets the data streams on cancel and
-      // may close the bidi without a REQUEST_OK.
-      try {
-        await this.sendRequestUpdate(subscription.requestId, false, { awaitAck: false });
-      } catch (err) {
-        log.error('Failed to send REQUEST_UPDATE for unsubscribe', { error: (err as Error).message });
-      }
-      // Terminate the per-request bidi stream now that the subscription is gone.
-      await this.closeRequestStream(subscription.requestId);
+      // Draft-22 §3.1, draft-18 §5.1: the subscriber terminates a subscription
+      // by STOP_SENDING (§6.4.2.3); a FORWARD=0 update only pauses it.
+      await this.abortRequestStream(subscription.requestId);
     } else {
       // Draft-14/16: Send UNSUBSCRIBE message
       const unsubscribeMessage = {
@@ -2626,7 +4146,7 @@ export class MOQTSession {
     }
 
     // Remove from manager
-    this.subscriptionManager.remove(subscriptionId);
+    this.deleteSubscriptionState(subscription);
     log.info('Unsubscribed', { subscriptionId });
   }
 
@@ -2679,12 +4199,26 @@ export class MOQTSession {
       throw new Error('Session not ready');
     }
     assertNotReservedNamespace(namespace, 'FETCH from');
+    this.planRangeFilters(new Map(), options?.rangeFilters);
 
     // Local counter is a small `number` (starts at 0/1, +2 per draft-16/18 request).
     // Widen to `bigint` immediately so downstream state, wire encode, and callback
     // comparisons all operate on the 62-bit varint type — no silent precision loss
     // for long-lived sessions.
     const requestId = BigInt(this.getNextRequestId());
+
+    return this.sendFetch(requestId, namespace, trackName, range, options, onObject);
+  }
+
+  /** Send a FETCH under an already allocated Request ID. */
+  private async sendFetch(
+    requestId: bigint,
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+    onObject?: (data: Uint8Array, groupId: number, objectId: number) => void
+  ): Promise<bigint> {
     const fullTrackNameStr = [...namespace, trackName].join('/');
 
     log.info('Fetching historical objects', {
@@ -2770,6 +4304,130 @@ export class MOQTSession {
     range: FetchRange,
     options?: FetchOptions,
   ): Promise<void> {
+    const fetchMessage = this.isDraft22
+      ? this.buildFetchDraft22(requestId, namespace, trackName, range, options)
+      : this.buildFetchDraft18(requestId, namespace, trackName, range, options);
+
+    // §11.4.1.1: the data stream needs the Group Order to apply Group ID Delta.
+    this.objectRouter.setFetchGroupOrder(requestId, fetchMessage.groupOrder);
+
+    const encoded = this.codec.encodeControlMessage(fetchMessage);
+    const fetchHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    log.info('Sent FETCH', {
+      requestId: requestId.toString(),
+      namespace: namespace.join('/'),
+      trackName,
+      range,
+      hex: fetchHex,
+      length: encoded.length,
+    });
+    this.emitMessageSent('FETCH', encoded.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId: requestId.toString(), range });
+
+    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'fetch');
+
+    if (response.type === MessageTypeDraft18.FETCH_OK) {
+      const fetchOk = response as _FetchOkMessageDraft18;
+      const fault = this.checkTrackProperties(fetchOk.trackProperties, 'FETCH_OK');
+      if (fault === TrackPropertyFault.INVALID) {
+        return;
+      }
+      if (fault === TrackPropertyFault.UNSUPPORTED) {
+        // Draft-22 §3.7: the track is not processed, so the fetch is cancelled
+        this.activeFetches.delete(requestId);
+        this.objectRouter.clearFetchGroupOrder(requestId);
+        await this.abortRequestStream(requestId);
+        this.emit('fetch-error', {
+          requestId,
+          errorCode: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
+          reason: 'Mandatory Track Property not understood',
+        } as FetchErrorEvent);
+        return;
+      }
+      log.info('Received FETCH_OK', {
+        requestId: requestId.toString(),
+        endGroup: fetchOk.endLocation.group.toString(),
+        endObject: fetchOk.endLocation.object.toString(),
+        endOfTrack: fetchOk.endOfTrack,
+      });
+      const end = this.fetchOkEnd(fetchOk.endLocation);
+      const isJoining = options?.fetchType !== undefined && options.fetchType !== FetchTypeDraft18.STANDALONE;
+      const endsBeforeStart = end.group < BigInt(range.startGroup)
+        || (end.group === BigInt(range.startGroup) && end.object !== undefined && end.object < BigInt(range.startObject));
+      if (!isJoining && endsBeforeStart) {
+        // d22 §9.12, d18 §10.13: an End Location before the FETCH's Start Location
+        const reason = `FETCH_OK End Location ${end.group}/${end.object} is before the Start Location`;
+        void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+        return;
+      }
+      const info = this.activeFetches.get(requestId);
+      if (info) {
+        info.completed = true;
+        info.largestGroupId = end.group;
+        info.largestObjectId = end.object;
+        info.endOfTrack = fetchOk.endOfTrack;
+      }
+      this.emit('fetch-complete', {
+        requestId,
+        largestGroupId: end.group,
+        largestObjectId: end.object,
+        endOfTrack: fetchOk.endOfTrack,
+      } as FetchCompleteEvent);
+    } else if (response.type === MessageTypeDraft18.REQUEST_OK) {
+      // Some relays send REQUEST_OK to accept the fetch and later stream data.
+      const ok = response as RequestOkMessageDraft18;
+      const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
+      log.info('Received REQUEST_OK for FETCH', { requestId: requestId.toString(), expiresMs });
+      this.emit('request-ok', { requestId, requestKind: 'fetch', expiresMs } as RequestOkEvent);
+    } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      log.error('Received REQUEST_ERROR for FETCH', {
+        requestId: requestId.toString(),
+        errorCode: error.errorCode,
+        reasonPhrase: error.reasonPhrase,
+      });
+      this.activeFetches.delete(requestId);
+      this.objectRouter.clearFetchGroupOrder(requestId);
+      await this.closeRequestStream(requestId);
+      const rejected = this.rejection('FETCH', error);
+      this.emit('fetch-error', {
+        requestId,
+        errorCode: error.errorCode,
+        reason: error.reasonPhrase,
+        retryAfterMs: rejected.retryAfterMs,
+        redirect: rejected.redirect,
+      } as FetchErrorEvent);
+    } else {
+      log.warn('Unexpected response to FETCH', {
+        requestId: requestId.toString(),
+        responseType: response.type,
+      });
+    }
+  }
+
+  /**
+   * The last Object FETCH_OK covers. Draft-22 sends it inclusive (§9.12);
+   * draft-18 sends the last Object plus 1, or 0 for the whole End Group
+   * (§10.13), which names no Object (`object` undefined).
+   */
+  private fetchOkEnd(endLocation: { group: bigint; object: bigint }): { group: bigint; object?: bigint } {
+    if (this.isDraft22) {
+      return endLocation;
+    }
+
+    return {
+      group: endLocation.group,
+      object: endLocation.object === 0n ? undefined : endLocation.object - 1n,
+    };
+  }
+
+  /** Draft-18 §10.12: FETCH with Fetch Type and raw start/end Locations. */
+  private buildFetchDraft18(
+    requestId: bigint,
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+  ): FetchMessageDraft18 {
     // Draft-18 endLocation is *exclusive* per spec §7.5 (relays such as moxygen
     // decrement the object component to derive the inclusive "last" location).
     // The API's FetchRange.endObject is inclusive, so we bump the wire value
@@ -2782,15 +4440,21 @@ export class MOQTSession {
     if (isJoining && options?.subscribeRequestId === undefined) {
       throw new Error('Joining FETCH requires options.subscribeRequestId');
     }
+    // §10.12.3: a standalone FETCH ends at or after its start; endObject 0 is the whole End Group
+    const endsBeforeStart = range.endGroup < range.startGroup
+      || (range.endGroup === range.startGroup && range.endObject !== 0 && range.endObject < range.startObject);
+    if (!isJoining && endsBeforeStart) {
+      throw new Error(`FETCH end ${range.endGroup}/${range.endObject} is before start ${range.startGroup}/${range.startObject}`);
+    }
     const parameters = new Map<number, Uint8Array>();
-    addDeliveryTimeoutParams(parameters, options);
+    addFetchTimeoutParams(parameters, options);
     if (options?.authToken) {
       parameters.set(
         RequestParameterDraft18.AUTHORIZATION_TOKEN,
-        encodeRequestAuthTokenBytes(options.authToken),
+        encodeDraft18AuthBytes(options.authToken),
       );
     }
-    const fetchMessage: FetchMessageDraft18 = {
+    return {
       type: MessageTypeDraft18.FETCH,
       requestId,
       fetchType,
@@ -2811,68 +4475,51 @@ export class MOQTSession {
       },
       parameters: parameters.size > 0 ? parameters : undefined,
     };
+  }
 
-    const encoded = this.codec.encodeControlMessage(fetchMessage);
-    const fetchHex = Array.from(encoded).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    log.info('Sent FETCH', {
-      requestId: requestId.toString(),
-      namespace: namespace.join('/'),
-      trackName,
-      range,
-      hex: fetchHex,
-      length: encoded.length,
-    });
-    this.emitMessageSent('FETCH', encoded.length, `${namespace.join('/')}/${trackName} (${range.startGroup},${range.startObject})-(${range.endGroup},${range.endObject})`, { requestId: requestId.toString(), range });
-
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId);
-
-    if (response.type === MessageTypeDraft18.FETCH_OK) {
-      const fetchOk = response as _FetchOkMessageDraft18;
-      log.info('Received FETCH_OK', {
-        requestId: requestId.toString(),
-        endGroup: fetchOk.endLocation.group.toString(),
-        endObject: fetchOk.endLocation.object.toString(),
-        endOfTrack: fetchOk.endOfTrack,
-      });
-      const info = this.activeFetches.get(requestId);
-      if (info) {
-        info.completed = true;
-        info.largestGroupId = fetchOk.endLocation.group;
-        info.largestObjectId = fetchOk.endLocation.object;
-        info.endOfTrack = fetchOk.endOfTrack;
-      }
-      this.emit('fetch-complete', {
-        requestId,
-        largestGroupId: fetchOk.endLocation.group,
-        largestObjectId: fetchOk.endLocation.object,
-        endOfTrack: fetchOk.endOfTrack,
-      } as FetchCompleteEvent);
-    } else if (response.type === MessageTypeDraft18.REQUEST_OK) {
-      // Some relays send REQUEST_OK to accept the fetch and later stream data.
-      const ok = response as RequestOkMessageDraft18;
-      const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
-      log.info('Received REQUEST_OK for FETCH', { requestId: requestId.toString(), expiresMs });
-      this.emit('request-ok', { requestId, requestKind: 'fetch', expiresMs } as RequestOkEvent);
-    } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
-      const error = response as RequestErrorMessageDraft18;
-      log.error('Received REQUEST_ERROR for FETCH', {
-        requestId: requestId.toString(),
-        errorCode: error.errorCode,
-        reasonPhrase: error.reasonPhrase,
-      });
-      this.activeFetches.delete(requestId);
-      await this.closeRequestStream(requestId);
-      this.emit('fetch-error', {
-        requestId,
-        errorCode: error.errorCode,
-        reason: error.reasonPhrase,
-      } as FetchErrorEvent);
-    } else {
-      log.warn('Unexpected response to FETCH', {
-        requestId: requestId.toString(),
-        responseType: response.type,
-      });
+  /**
+   * Draft-22 §9.11: FetchRange becomes a LOCATION_FILTER. The end is
+   * inclusive, so unlike draft-18 no +1 is applied; `endObject == 0` keeps
+   * its "whole End Group" meaning via ABSOLUTE_START_GROUP_END.
+   */
+  private buildFetchDraft22(
+    requestId: bigint,
+    namespace: string[],
+    trackName: string,
+    range: FetchRange,
+    options?: FetchOptions,
+  ): FetchMessageDraft22 {
+    const fetchType = options?.fetchType ?? FetchTypeDraft18.STANDALONE;
+    if (fetchType !== FetchTypeDraft18.STANDALONE) {
+      throw new Error('joining FETCH not supported in draft-22');
     }
+    if (range.endGroup < range.startGroup) {
+      throw new Error(`FETCH endGroup ${range.endGroup} is before startGroup ${range.startGroup}`);
+    }
+
+    const groupOrder = options?.groupOrder ?? GroupOrder.ASCENDING;
+    const wholeEndGroup = range.endObject === 0;
+
+    return {
+      type: MessageTypeDraft22.FETCH,
+      requestId,
+      trackNamespace: namespace,
+      trackName,
+      subscriberPriority: options?.priority ?? 128,
+      groupOrder,
+      locationFilter: {
+        type: wholeEndGroup
+          ? LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END
+          : LocationFilterTypeDraft22.ABSOLUTE_RANGE,
+        startLocation: { group: BigInt(range.startGroup), object: BigInt(range.startObject) },
+        endGroupDelta: BigInt(range.endGroup - range.startGroup),
+        endObject: wholeEndGroup ? undefined : BigInt(range.endObject),
+      },
+      // §9.20.5: 0 is meaningful (only immediately available Objects)
+      fillTimeoutMs: options?.fillTimeout !== undefined ? BigInt(options.fillTimeout) : undefined,
+      rangeFilters: options?.rangeFilters?.length ? options.rangeFilters : undefined,
+      authTokens: options?.authToken ? [encodeDraft18AuthBytes(options.authToken)] : undefined,
+    };
   }
 
   /**
@@ -2890,17 +4537,24 @@ export class MOQTSession {
 
     log.info('Cancelling fetch', { requestId: rid.toString() });
 
+    // Stop delivery and STOP_SENDING the data stream, now or when it arrives
+    this.objectRouter.cancelFetchStream(rid);
+
     if (this.isDraft18) {
       // Draft-18 has no FETCH_CANCEL message; the equivalent is REQUEST_UPDATE
       // with forwardState=false, which terminates delivery for this requestId.
       // The relay resets the fetch data stream in response; fire-and-forget.
-      try {
-        await this.sendRequestUpdate(rid, false, { awaitAck: false });
-        log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel', { requestId: rid.toString() });
-      } catch (err) {
-        log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
+      // Draft-22 cancels by aborting the request stream (§3.2.4, §6.4.2.3);
+      // FORWARD is not allowed in a FETCH update.
+      if (!this.isDraft22) {
+        try {
+          await this.sendRequestUpdate(rid, false, { awaitAck: false });
+          log.info('Sent REQUEST_UPDATE (forwardState=false) as FETCH cancel', { requestId: rid.toString() });
+        } catch (err) {
+          log.error('Failed to send REQUEST_UPDATE for FETCH cancel', { error: (err as Error).message });
+        }
       }
-      await this.closeRequestStream(rid);
+      await this.abortRequestStream(rid);
     } else {
       // Draft-14/16 send a dedicated FETCH_CANCEL message.
       const cancelMessage: FetchCancelMessage = {
@@ -2920,6 +4574,7 @@ export class MOQTSession {
     // Remove from active fetches
     this.activeFetches.delete(rid);
     this.fetchStreamBuffers.delete(rid);
+    this.objectRouter.clearFetchGroupOrder(rid);
     log.info('Fetch cancelled', { requestId: rid.toString() });
   }
 
@@ -2971,6 +4626,19 @@ export class MOQTSession {
   ): Promise<TrackStatusOkMessage> {
     if (!this.isReady) {
       throw new Error('Session not ready');
+    }
+
+    if (this.isDraft18) {
+      // Draft-22 §9.13: TRACK_STATUS has its own request stream and a REQUEST_OK reply.
+      const status = await this.trackStatus(namespace, trackName, timeoutMs);
+
+      return {
+        type: MessageType.TRACK_STATUS_OK,
+        requestId: status.requestId,
+        statusCode: status.latestGroup === undefined ? TrackStatusCode.NOT_YET_BEGUN : TrackStatusCode.IN_PROGRESS,
+        lastGroupId: status.latestGroup,
+        lastObjectId: status.latestObject,
+      };
     }
 
     // Local counter is small; widen to bigint for wire varint + state map key.
@@ -3057,7 +4725,7 @@ export class MOQTSession {
 
     if (this.isDraft18) {
       // Draft-18: Send SUBSCRIBE_NAMESPACE on per-request bidi stream
-      await this.subscribeNamespaceDraft18(requestId, namespacePrefix, subscriptionId);
+      await this.subscribeNamespaceDraft18(requestId, namespacePrefix);
     } else {
       // Build SUBSCRIBE_NAMESPACE message
       const message = {
@@ -3192,15 +4860,13 @@ export class MOQTSession {
   }
 
   /**
-   * Draft-18: Subscribe to namespace on per-request bidi stream
+   * Draft-18: Subscribe to namespace on per-request bidi stream. Its response
+   * and NAMESPACE messages are read like any other request stream.
    */
   private async subscribeNamespaceDraft18(
     requestId: bigint,
     namespacePrefix: string[],
-    subscriptionId: number
   ): Promise<void> {
-    const prefixStr = namespacePrefix.join('/');
-
     const subscribeNsMessage: SubscribeNamespaceMessageDraft18 = {
       type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE,
       requestId,
@@ -3208,212 +4874,10 @@ export class MOQTSession {
     };
 
     const encoded = this.codec.encodeControlMessage(subscribeNsMessage);
+    const stream = await this.openRequestStream(requestId, encoded, 'subscribe-namespace');
+    log.info('Sent SUBSCRIBE_NAMESPACE', { namespacePrefix: namespacePrefix.join('/'), requestId: requestId.toString() });
 
-    if (this.useWorker && this.transportWorker) {
-      const streamId = await this.transportWorker.createBidiStream();
-      this.transportWorker.writeStream(streamId, encoded);
-      log.info('Sent SUBSCRIBE_NAMESPACE via worker', { namespacePrefix: prefixStr, requestId: requestId.toString(), streamId });
-
-      // Create a ReadableStream for the bidi response
-      const readable = new ReadableStream<Uint8Array>({
-        start: (controller) => {
-          this.incomingBidiControllers.set(streamId, controller);
-        },
-      });
-      this.namespaceSubscriptionStreams.set(subscriptionId, streamId);
-      this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
-        log.error('Error reading namespace subscription stream', { error: (err as Error).message });
-      });
-    } else if (this.transport) {
-      const { readable, writable } = await this.transport.createRequestStream();
-      const writer = writable.getWriter();
-      await writer.write(encoded);
-      writer.releaseLock();
-      log.info('Sent SUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr, requestId: requestId.toString() });
-
-      this.readNamespaceSubscriptionStreamDraft18(readable, subscriptionId).catch(err => {
-        log.error('Error reading namespace subscription stream', { error: (err as Error).message });
-      });
-    } else {
-      throw new Error('No transport available');
-    }
-  }
-
-  /**
-   * Read namespace subscription responses
-   */
-  private async readNamespaceSubscriptionStreamDraft18(
-    readable: ReadableStream<Uint8Array>,
-    subscriptionId: number
-  ): Promise<void> {
-    const reader = readable.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-    let offset = 0;
-
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!value || value.length === 0) continue;
-
-        chunks.push(value);
-        totalLength += value.length;
-
-        const availableBytes = totalLength - offset;
-        if (availableBytes === 0) continue;
-
-        // Build buffer from chunks
-        let buffer: Uint8Array;
-        if (chunks.length === 1 && offset === 0) {
-          buffer = chunks[0];
-        } else {
-          buffer = new Uint8Array(availableBytes);
-          let writePos = 0;
-          let skip = offset;
-          for (const chunk of chunks) {
-            if (skip >= chunk.length) { skip -= chunk.length; continue; }
-            const src = skip > 0 ? chunk.subarray(skip) : chunk;
-            buffer.set(src, writePos);
-            writePos += src.length;
-            skip = 0;
-          }
-        }
-
-        // Decode messages
-        let consumed = 0;
-        while (consumed < buffer.length) {
-          try {
-            const view = buffer.subarray(consumed);
-            const [message, bytesRead] = this.codec.decodeControlMessage(view, 0, this.metrics);
-            consumed += bytesRead;
-
-            log.info('Received message on namespace subscription stream', {
-              type: MessageTypeDraft18[message.type],
-              subscriptionId,
-            });
-
-            this.routeMessageDraft18(message as ControlMessageDraft18, subscriptionId);
-          } catch (err) {
-            const msg = (err as Error).message ?? '';
-            if (/incomplete|buffer|underflow/i.test(msg)) {
-              break;
-            }
-            throw err;
-          }
-        }
-
-        offset += consumed;
-        if (offset > 4096) {
-          const remaining = totalLength - offset;
-          if (remaining === 0) {
-            chunks.length = 0; totalLength = 0; offset = 0;
-          } else {
-            const leftover = buffer.subarray(consumed);
-            chunks.length = 0;
-            chunks.push(new Uint8Array(leftover));
-            totalLength = leftover.length;
-            offset = 0;
-          }
-        }
-      }
-    } catch (err) {
-      log.error('Namespace subscription stream error', { error: (err as Error).message });
-    } finally {
-      reader.releaseLock();
-    }
-  }
-
-  /**
-   * Route a draft-18 message received on a namespace subscription stream
-   */
-  private routeMessageDraft18(message: ControlMessageDraft18, subscriptionId: number): void {
-    switch (message.type) {
-      case MessageTypeDraft18.REQUEST_OK: {
-        const ok = message as RequestOkMessageDraft18;
-        const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
-        const sub = this.namespaceSubscriptions.get(subscriptionId);
-        log.info('Namespace subscription accepted', {
-          subscriptionId,
-          requestId: sub?.requestId,
-          expiresMs,
-        });
-        if (sub) {
-          this.emit('request-ok', {
-            requestId: sub.requestId,
-            requestKind: 'subscribe-namespace',
-            expiresMs,
-          } as RequestOkEvent);
-        }
-        break;
-      }
-
-      case MessageTypeDraft18.REQUEST_ERROR: {
-        const error = message as RequestErrorMessageDraft18;
-        log.error('Namespace subscription rejected', {
-          errorCode: error.errorCode,
-          reasonPhrase: error.reasonPhrase,
-        });
-        const failedSub = this.namespaceSubscriptions.get(subscriptionId);
-        this.namespaceSubscriptions.delete(subscriptionId);
-        this.emit('namespace-error', {
-          kind: 'subscribe-namespace',
-          namespace: failedSub?.namespacePrefix ?? [],
-          errorCode: error.errorCode,
-          reasonPhrase: error.reasonPhrase,
-          requestId: Number(error.requestId),
-        });
-        break;
-      }
-
-      case MessageTypeDraft18.NAMESPACE: {
-        const nsMsg = message as NamespaceMessageDraft18;
-        const subscription = this.namespaceSubscriptions.get(subscriptionId);
-        // Wire carries the suffix relative to the subscribed prefix; the
-        // absolute namespace is prefix ++ suffix.
-        const absolute = subscription
-          ? [...subscription.namespacePrefix, ...nsMsg.trackNamespace]
-          : nsMsg.trackNamespace;
-        log.info('Received NAMESPACE announcement', {
-          namespace: absolute.join('/'),
-          subscriptionId,
-        });
-        this.emit('namespace-announced', {
-          namespaceSubscriptionId: subscriptionId,
-          namespace: absolute,
-        });
-        break;
-      }
-
-      case MessageTypeDraft18.NAMESPACE_DONE: {
-        const nsDone = message as NamespaceDoneMessageDraft18;
-        const subscription = this.namespaceSubscriptions.get(subscriptionId);
-        const absolute = subscription
-          ? [...subscription.namespacePrefix, ...nsDone.finalNamespace]
-          : nsDone.finalNamespace;
-        log.info('Received NAMESPACE_DONE', {
-          namespace: absolute.join('/'),
-          subscriptionId,
-        });
-        this.emit('namespace-done', {
-          namespaceSubscriptionId: subscriptionId,
-          namespace: absolute,
-        });
-        break;
-      }
-
-      case MessageTypeDraft18.PUBLISH: {
-        // Server sends PUBLISH to announce a track under the subscribed namespace
-        const pubMsg = message as PublishMessageDraft18;
-        this.handleIncomingPublishDraft18(pubMsg, new WritableStream()).catch(err => {
-          log.error('Error handling PUBLISH from namespace stream', { error: (err as Error).message });
-        });
-        break;
-      }
-
-      default:
-        log.warn('Unhandled message on namespace subscription stream', { type: message.type });
-    }
+    void this.readRequestStream(requestId, stream);
   }
 
   /**
@@ -3431,18 +4895,23 @@ export class MOQTSession {
     const prefixStr = subscription.namespacePrefix.join('/');
     log.info('Unsubscribing from namespace', { namespacePrefix: prefixStr });
 
-    // Send UNSUBSCRIBE_NAMESPACE
-    const message = {
-      type: MessageType.UNSUBSCRIBE_NAMESPACE as const,
-      namespacePrefix: subscription.namespacePrefix,
-    };
+    if (this.isDraft18) {
+      // Draft-22 §4.2, draft-18 §6.1: cancelled by ending the request stream.
+      await this.abortRequestStream(subscription.requestId);
+    } else {
+      // Send UNSUBSCRIBE_NAMESPACE
+      const message = {
+        type: MessageType.UNSUBSCRIBE_NAMESPACE as const,
+        namespacePrefix: subscription.namespacePrefix,
+      };
 
-    try {
-      const bytes = this.codec.encodeControlMessage(message);
-      await this.doSendControl(bytes);
-      log.info('Sent UNSUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr });
-    } catch (err) {
-      log.error('Failed to send UNSUBSCRIBE_NAMESPACE', { error: (err as Error).message });
+      try {
+        const bytes = this.codec.encodeControlMessage(message);
+        await this.doSendControl(bytes);
+        log.info('Sent UNSUBSCRIBE_NAMESPACE', { namespacePrefix: prefixStr });
+      } catch (err) {
+        log.error('Failed to send UNSUBSCRIBE_NAMESPACE', { error: (err as Error).message });
+      }
     }
 
     // Clean up
@@ -3523,14 +4992,15 @@ export class MOQTSession {
     // B3 SEC: reject before allocating any request/publication state.
     this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
 
-    // Check for existing subscription with same track name to use its alias.
     // Local counter is small; widen to bigint for wire varint and state keys.
     const requestId = BigInt(this.getNextRequestId());
-    let trackAlias = requestId;
+    let trackAlias = this.isDraft18 ? this.nextPublicationAlias++ : requestId;
     const fullTrackName = [...namespace, trackName].join('/');
 
+    // Draft-14/16: use the alias of an existing subscription to the same track.
+    // A peer's alias is not ours to reuse on draft-18/22 (different alias space).
     const existingSub = this.subscriptionManager.getByTrackName(namespace, trackName);
-    if (existingSub && existingSub.trackAlias !== undefined) {
+    if (!this.isDraft18 && existingSub && existingSub.trackAlias !== undefined) {
       trackAlias = existingSub.trackAlias;
       log.info('Using track alias from existing subscription', {
         trackAlias: trackAlias.toString(),
@@ -3538,7 +5008,8 @@ export class MOQTSession {
       });
     }
     const priority = options?.priority ?? 128;
-    const deliveryTimeout = options?.deliveryTimeout ?? 5000;
+    // Draft-18/22 enforce and advertise only what the app set (d22 §5.2)
+    const deliveryTimeout = options?.deliveryTimeout ?? (this.isDraft18 ? 0 : LEGACY_DELIVERY_TIMEOUT_MS);
     const deliveryMode = options?.deliveryMode ?? 'stream';
     const audioDeliveryMode = options?.audioDeliveryMode ?? 'datagram';
 
@@ -3579,7 +5050,9 @@ export class MOQTSession {
       audioDeliveryMode,
       requestId,
       cleanupHandlers: [],
-      forward: 0, // Will be updated after PUBLISH_OK
+      // Draft-18/22: our PUBLISH sets the initial Forward State to 1 (§3.1.1); the
+      // draft-14/16 PUBLISH_OK decides
+      forward: this.isDraft18 ? 1 : 0,
     };
     this.publicationManager.add(publication);
 
@@ -3693,10 +5166,11 @@ export class MOQTSession {
     assertNotReservedNamespace(namespace, 'ANNOUNCE');
 
     const namespaceStr = namespace.join('/');
+    const key = namespaceKey(namespace);
     log.info('Announcing namespace', { namespace: namespaceStr });
 
     // Check if already announced
-    if (this.announcedNamespaces.has(namespaceStr)) {
+    if (this.announcedNamespaces.has(key)) {
       log.warn('Namespace already announced', { namespace: namespaceStr });
       return;
     }
@@ -3714,7 +5188,8 @@ export class MOQTSession {
       },
       acknowledged: false,
     };
-    this.announcedNamespaces.set(namespaceStr, announceInfo);
+    this.announcedNamespaces.set(key, announceInfo);
+    await this.notifyNamespace(namespace, NamespaceChange.ANNOUNCED);
 
     // Local counter is small; widen for wire encode + state maps.
     const requestId = BigInt(this.getNextRequestId());
@@ -3734,7 +5209,7 @@ export class MOQTSession {
       const hexBytes = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
       log.info('PUBLISH_NAMESPACE bytes', { length: bytes.length, hex: hexBytes, namespace: namespaceStr, requestId: requestId.toString() });
 
-      this.announceRequestIdToNamespace.set(requestId, namespaceStr);
+      this.announceRequestIdToNamespace.set(requestId, namespace);
 
       await this.doSendControl(bytes);
       log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId: requestId.toString() });
@@ -3745,14 +5220,14 @@ export class MOQTSession {
 
       return new Promise<void>((resolve, reject) => {
         const checkAcknowledged = () => {
-          const info = this.announcedNamespaces.get(namespaceStr);
+          const info = this.announcedNamespaces.get(key);
           if (info?.acknowledged) {
             resolve();
             return;
           }
 
           if (Date.now() - startTime > timeout) {
-            this.announcedNamespaces.delete(namespaceStr);
+            this.announcedNamespaces.delete(key);
             reject(new Error(`Timeout waiting for PUBLISH_NAMESPACE_OK for ${namespaceStr}`));
             return;
           }
@@ -3780,11 +5255,12 @@ export class MOQTSession {
     };
 
     const encoded = this.codec.encodeControlMessage(publishNsMessage);
+    announceInfo.requestId = requestId;
 
     if ((this.useWorker && this.transportWorker) || this.transport) {
       log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId: requestId.toString() });
 
-      const response = await this.sendRequestAndWaitResponse(encoded, requestId);
+      const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'publish-namespace');
       if (response.type === MessageTypeDraft18.REQUEST_OK) {
         const ok = response as RequestOkMessageDraft18;
         const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
@@ -3798,9 +5274,10 @@ export class MOQTSession {
         log.info('PUBLISH_NAMESPACE accepted', { namespace: namespaceStr, expiresMs });
       } else if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
         const error = response as RequestErrorMessageDraft18;
-        this.announcedNamespaces.delete(namespaceStr);
+        this.announcedNamespaces.delete(namespaceKey(namespace));
+        await this.notifyNamespace(namespace, NamespaceChange.WITHDRAWN);
         await this.closeRequestStream(requestId);
-        throw new Error(`Namespace announcement failed: ${error.reasonPhrase} (code ${error.errorCode})`);
+        throw this.rejection('Namespace announcement', error);
       }
     } else {
       throw new Error('No transport available');
@@ -3814,7 +5291,7 @@ export class MOQTSession {
    */
   async cancelAnnounce(namespace: string[]): Promise<void> {
     const namespaceStr = namespace.join('/');
-    const announceInfo = this.announcedNamespaces.get(namespaceStr);
+    const announceInfo = this.announcedNamespaces.get(namespaceKey(namespace));
 
     if (!announceInfo) {
       log.warn('No announced namespace found', { namespace: namespaceStr });
@@ -3823,16 +5300,23 @@ export class MOQTSession {
 
     log.info('Cancelling namespace announcement', { namespace: namespaceStr });
 
-    // Send PUBLISH_NAMESPACE_CANCEL
-    const cancelMessage = {
-      type: MessageType.PUBLISH_NAMESPACE_CANCEL,
-      namespace,
-    };
-    const bytes = this.codec.encodeControlMessage(cancelMessage as ControlMessage);
-    await this.doSendControl(bytes);
+    if (this.isDraft18 && announceInfo.requestId !== undefined) {
+      // Draft-22 §4.1, draft-18 §6.2: withdrawn by cancelling the request.
+      await this.abortRequestStream(announceInfo.requestId);
+    } else if (!this.isDraft18) {
+      // Send PUBLISH_NAMESPACE_CANCEL
+      const cancelMessage = {
+        type: MessageType.PUBLISH_NAMESPACE_CANCEL,
+        namespace,
+      };
+      const bytes = this.codec.encodeControlMessage(cancelMessage as ControlMessage);
+      await this.doSendControl(bytes);
+    }
 
     // Clean up local state
-    this.announcedNamespaces.delete(namespaceStr);
+    this.announcedNamespaces.delete(namespaceKey(namespace));
+    this.publicationManager.forgetUnder(namespace);
+    await this.notifyNamespace(namespace, NamespaceChange.WITHDRAWN);
     log.info('Namespace announcement cancelled', { namespace: namespaceStr });
   }
 
@@ -3849,8 +5333,7 @@ export class MOQTSession {
    * @param namespace - Namespace to get subscribers for
    */
   getSubscribers(namespace: string[]): IncomingSubscriber[] {
-    const namespaceStr = namespace.join('/');
-    const announceInfo = this.announcedNamespaces.get(namespaceStr);
+    const announceInfo = this.announcedNamespaces.get(namespaceKey(namespace));
     if (!announceInfo) {
       return [];
     }
@@ -4196,7 +5679,7 @@ export class MOQTSession {
 
     // Local counter is small; widen to bigint for wire varint + state keys.
     const requestId = BigInt(this.getNextRequestId());
-    const trackAlias = requestId;
+    const trackAlias = this.isDraft18 ? this.nextPublicationAlias++ : requestId;
     const fullTrackName = [...namespace, trackName].join('/');
 
     log.info('Publishing VOD content', {
@@ -4726,23 +6209,38 @@ export class MOQTSession {
     const deliveryMode = publication?.deliveryMode ?? 'stream';
     const audioDeliveryMode = publication?.audioDeliveryMode ?? 'datagram';
 
+    // Nothing is sent for a track no subscription wants, e.g. after it was cancelled
+    if (this.isDraft18 && !publication) {
+      log.debug('sendObject: no publication for track alias', { trackAlias: trackAlias.toString() });
+      return;
+    }
+
+    // Draft-18 §10.11: past the End Group of its filter, the subscription ends
+    if (!this.isDraft22 && publication && this.isPastFilterEnd(publication, metadata)) {
+      await this.endAtFilterEnd(publication);
+      return;
+    }
+
+    // A paused subscription gets no Objects, though they still exist (d22 §3.1.1). Nor does
+    // one get Objects outside its filter (d22 §3.3.1, d18 §5.1.2).
+    if (this.isDraft18 && publication && (publication.forward === 0 || !this.passesFilter(publication, metadata))) {
+      this.publicationManager.updateLatest(trackAlias, BigInt(metadata.groupId), BigInt(metadata.objectId));
+      return;
+    }
+
     if (deliveryMode === 'datagram') {
       await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
-    } else {
+    } else if (metadata.newGroup === undefined && metadata.type === 'audio' && audioDeliveryMode === 'datagram') {
+      // Audio uses configured audioDeliveryMode (default: datagram for low latency)
+      await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
+    } else if (this.isDraft18) {
+      // Draft-18/22 §2.2: a subgroup is one stream, whatever the object type
+      await this.sendSubgroupObject(trackAlias, data, metadata, priority);
+    } else if (metadata.newGroup !== undefined) {
       // newGroup flag triggers group-based stream batching (one stream per group)
-      if (metadata.newGroup !== undefined) {
-        await this.sendObjectWithGOP(trackAlias, data, metadata, priority);
-      } else if (metadata.type === 'audio') {
-        // Audio uses configured audioDeliveryMode (default: datagram for low latency)
-        if (audioDeliveryMode === 'datagram') {
-          await this.sendObjectViaDatagram(trackAlias, data, metadata, priority);
-        } else {
-          await this.sendObjectViaStream(trackAlias, data, metadata, priority);
-        }
-      } else {
-        // Other data uses individual streams
-        await this.sendObjectViaStream(trackAlias, data, metadata, priority);
-      }
+      await this.sendObjectWithGOP(trackAlias, data, metadata, priority);
+    } else {
+      await this.sendObjectViaStream(trackAlias, data, metadata, priority);
     }
 
     // Track largest (group, object) tuple for §10.14 TRACK_STATUS replies.
@@ -4756,6 +6254,36 @@ export class MOQTSession {
       objectId: metadata.objectId,
       bytes: data.byteLength,
     } as PublishStatsEvent);
+  }
+
+  /** Whether the Object is in a group after the End Group of the subscriber's filter */
+  private isPastFilterEnd(publication: InternalPublication, metadata: ObjectMetadata): boolean {
+    const end = publication.filter?.end;
+
+    return end !== undefined && BigInt(metadata.groupId) > end.group;
+  }
+
+  /** End a subscription that reached the end of its filter: PUBLISH_DONE SUBSCRIPTION_ENDED (draft-18 §10.11) */
+  private async endAtFilterEnd(publication: InternalPublication): Promise<void> {
+    const endGroup = publication.filter!.end!.group;
+    const lastObject = publication.latestGroup === endGroup ? publication.latestObject ?? 0n : 0n;
+    try {
+      await this.sendPublishDone(
+        publication.requestId,
+        Number(endGroup),
+        Number(lastObject),
+        'End of subscription filter',
+        PublishDoneErrorCodeDraft18.SUBSCRIPTION_ENDED,
+      );
+    } catch (err) {
+      log.warn('Could not send PUBLISH_DONE at the end of a filter', { error: (err as Error).message });
+    }
+    this.publicationManager.remove(publication.trackAlias);
+  }
+
+  /** Whether the Object is inside the Locations the subscriber asked for */
+  private passesFilter(publication: InternalPublication, metadata: ObjectMetadata): boolean {
+    return !publication.filter || admits(publication.filter, BigInt(metadata.groupId), BigInt(metadata.objectId));
   }
 
   /**
@@ -4800,6 +6328,7 @@ export class MOQTSession {
         await this.sendObjectViaStream(trackAlias, data, metadata, priority);
       }
     } else {
+      // Delivery Mode is per Object, set by how it is first sent (d22 §2)
       log.debug('Object too large for datagram, using stream', {
         size: datagram.byteLength,
         maxSize: this.maxDatagramSize,
@@ -4817,6 +6346,11 @@ export class MOQTSession {
     metadata: ObjectMetadata,
     priority?: number
   ): Promise<void> {
+    if (this.isDraft18) {
+      await this.sendSubgroupObject(trackAlias, data, metadata, priority ?? 128);
+      return;
+    }
+
     // §8: arm the subgroup-delivery deadline before touching the wire so a
     // stalled create/write path is caught by the same timer that guards
     // long-running GOP streams. Since sendObjectViaStream sends one whole
@@ -4824,7 +6358,7 @@ export class MOQTSession {
     const timeoutKey = this.armPublisherSubgroupTimer(trackAlias, metadata.groupId, 0);
     try {
       const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-      const streamInfo = await this.doCreateStream(sendOrder !== undefined ? { sendOrder } : undefined);
+      const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
 
       // Set END_OF_GROUP=true since this stream contains one complete object/group
       const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
@@ -4888,6 +6422,157 @@ export class MOQTSession {
   }
 
   /**
+   * Draft-18/22: send an object on its subgroup's stream (§2.2: objects of a
+   * subgroup MUST NOT span streams). Subgroup 0 of each group gets one stream,
+   * kept open across objects; the next group finishes it with a FIN.
+   *
+   *   (G,0) (G,1) (G,2)  -> stream A: header | obj 0 | obj 1 | obj 2
+   *   (G+1,0)            -> FIN A; stream B: header | obj 0
+   */
+  private async sendSubgroupObject(
+    trackAlias: bigint,
+    data: Uint8Array,
+    metadata: ObjectMetadata,
+    priority: number
+  ): Promise<void> {
+    const aliasKey = trackAlias.toString();
+    const receivedAt = performance.now();
+
+    // After an object timeout the subgroup is not reopened (d22 §5.2)
+    if (this.publicationManager.get(trackAlias)?.expiredGroup === metadata.groupId) {
+      log.debug('Dropping object of a subgroup reset for a delivery timeout', {
+        trackAlias: aliasKey,
+        groupId: metadata.groupId,
+        objectId: metadata.objectId,
+      });
+      return;
+    }
+
+    try {
+      let existing = this.activeVideoStreams.get(aliasKey);
+      if (existing && existing.groupId !== metadata.groupId) {
+        await this.closeVideoGOPStream(aliasKey);
+        existing = undefined;
+      }
+
+      if (!existing) {
+        await this.openSubgroupWithObject(trackAlias, data, metadata, priority, receivedAt);
+        return;
+      }
+
+      if (this.objectExpired(trackAlias, receivedAt)) {
+        await this.resetPublicationStream(aliasKey, StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT, 'delivery-timeout');
+        this.noteObjectExpired(trackAlias, metadata);
+        return;
+      }
+
+      const maxCacheDuration = metadata.maxCacheDuration ?? existing.maxCacheDuration;
+      const objectData = this.codec.encodeStreamObject(
+        metadata.objectId,
+        data,
+        ObjectStatus.NORMAL,
+        existing.previousObjectId,
+        existing.hasExtensions,
+        maxCacheDuration ? new Map([[ObjectExtension.MAX_CACHE_DURATION, maxCacheDuration]]) : undefined,
+      );
+
+      try {
+        await this.doWriteStream({ writer: existing.writer, streamId: existing.streamId }, objectData);
+        existing.objectCount++;
+        existing.previousObjectId = metadata.objectId;
+      } catch (writeErr) {
+        const errMsg = (writeErr as Error).message;
+        if (!errMsg.includes('not found') && !errMsg.includes('STOP_SENDING')) {
+          throw writeErr;
+        }
+
+        // The peer stopped the stream: carry on in a new one for the same subgroup
+        log.info('Subgroup stream closed by peer, reopening', {
+          trackAlias: aliasKey,
+          groupId: metadata.groupId,
+          objectId: metadata.objectId,
+        });
+        this.activeVideoStreams.delete(aliasKey);
+        this.decrementOpenStreamCount();
+        await this.openSubgroupWithObject(trackAlias, data, metadata, priority, receivedAt);
+      }
+    } catch (err) {
+      log.error('Failed to send subgroup object', {
+        trackAlias: aliasKey,
+        groupId: metadata.groupId,
+        objectId: metadata.objectId,
+        error: (err as Error).message,
+      });
+      this.activeVideoStreams.delete(aliasKey);
+    }
+  }
+
+  /**
+   * Open the stream of subgroup 0 of the object's group and write the
+   * subgroup header and the object. FIRST_OBJECT only when no earlier stream
+   * of this group went out (§11.3.1); END_OF_GROUP because the group's stream
+   * is finished when the next group starts.
+   */
+  private async openSubgroupWithObject(
+    trackAlias: bigint,
+    data: Uint8Array,
+    metadata: ObjectMetadata,
+    priority: number,
+    receivedAt: number
+  ): Promise<void> {
+    const publication = this.publicationManager.get(trackAlias);
+    const reopened = publication?.lastStreamGroup === metadata.groupId;
+    if (publication) {
+      publication.lastStreamGroup = metadata.groupId;
+    }
+
+    const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+    const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
+
+    // Opening the stream may have taken longer than the object may wait
+    if (this.objectExpired(trackAlias, receivedAt)) {
+      await this.abortStreamHandle(streamInfo, StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT).catch(() => {});
+      this.decrementOpenStreamCount();
+      this.noteObjectExpired(trackAlias, metadata);
+      return;
+    }
+
+    const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
+      trackAlias,
+      groupId: metadata.groupId,
+      subgroupId: 0,
+      publisherPriority: priority,
+      firstObject: !reopened,
+    }, true /* endOfGroup */);
+
+    const maxCacheDuration = metadata.maxCacheDuration;
+    const objectData = this.codec.encodeStreamObject(
+      metadata.objectId,
+      data,
+      ObjectStatus.NORMAL,
+      -1, // first object on this stream
+      hasExtensions,
+      maxCacheDuration ? new Map([[ObjectExtension.MAX_CACHE_DURATION, maxCacheDuration]]) : undefined,
+    );
+
+    const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
+    combinedData.set(subgroupHeader, 0);
+    combinedData.set(objectData, subgroupHeader.length);
+
+    // Tracked before the write so a delivery timeout can reset a stalled first write
+    this.activeVideoStreams.set(trackAlias.toString(), {
+      writer: streamInfo.writer,
+      streamId: streamInfo.streamId,
+      groupId: metadata.groupId,
+      objectCount: 1,
+      previousObjectId: metadata.objectId,
+      hasExtensions,
+      maxCacheDuration,
+    });
+    await this.doWriteStream(streamInfo, combinedData);
+  }
+
+  /**
    * Send object with GOP batching for video
    */
   private async sendObjectWithGOP(
@@ -4939,7 +6624,7 @@ export class MOQTSession {
         // Create new stream for this GOP — §7.2 sendOrder pulls priority
         // from the subscribing peer's SUBSCRIBER_PRIORITY / GROUP_ORDER.
         const gopSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-        const streamInfo = await this.doCreateStream(gopSendOrder !== undefined ? { sendOrder: gopSendOrder } : undefined);
+        const streamInfo = await this.openSubgroupStream(trackAlias, gopSendOrder !== undefined ? { sendOrder: gopSendOrder } : undefined);
 
         // Set END_OF_GROUP=true since each stream contains exactly one complete group (one GOP)
         const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
@@ -5002,7 +6687,7 @@ export class MOQTSession {
           });
 
           const pfSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-          const streamInfo = await this.doCreateStream(pfSendOrder !== undefined ? { sendOrder: pfSendOrder } : undefined);
+          const streamInfo = await this.openSubgroupStream(trackAlias, pfSendOrder !== undefined ? { sendOrder: pfSendOrder } : undefined);
           const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
             trackAlias,
             groupId: metadata.groupId,
@@ -5093,7 +6778,7 @@ export class MOQTSession {
 
             // Reopen stream and retry as if this is a new keyframe for the same group
             const reopenSendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-            const streamInfo = await this.doCreateStream(reopenSendOrder !== undefined ? { sendOrder: reopenSendOrder } : undefined);
+            const streamInfo = await this.openSubgroupStream(trackAlias, reopenSendOrder !== undefined ? { sendOrder: reopenSendOrder } : undefined);
             const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
               trackAlias,
               groupId: metadata.groupId,
@@ -5148,6 +6833,7 @@ export class MOQTSession {
     if (existing) {
       // §8: stream is closing cleanly — cancel the pending deadline.
       this.publisherDeliveryTimeouts.disarm(`pub-sg:${trackAlias}:${existing.groupId}:0`);
+      const finishKey = this.armFinishTimer(trackAlias, existing);
       try {
         await this.doCloseStream({ writer: existing.writer, streamId: existing.streamId });
         // OPS-hi 1: fires per group boundary — demoted from .info to .debug.
@@ -5161,6 +6847,8 @@ export class MOQTSession {
           trackAlias,
           error: (err as Error).message,
         });
+      } finally {
+        this.disarmFinishTimer(finishKey);
       }
       this.activeVideoStreams.delete(trackAlias);
     }
@@ -5253,8 +6941,9 @@ export class MOQTSession {
   }
 
   /**
-   * Seek a subscription to a specific position using SUBSCRIBE_UPDATE
-   * Used for live trick play to change the start position
+   * Seek a subscription to a specific position. Draft-18/22 move its start
+   * with a REQUEST_UPDATE on the subscription's request stream and resume
+   * delivery; earlier drafts send SUBSCRIBE_UPDATE. Used for live trick play.
    */
   async seekSubscription(
     subscriptionId: number,
@@ -5268,6 +6957,14 @@ export class MOQTSession {
     }
 
     log.info('Seeking subscription', { subscriptionId, groupId, objectId });
+
+    if (this.isDraft18) {
+      await this.sendRequestUpdate(subscription.requestId, true, {
+        seekTo: { group: BigInt(groupId), object: BigInt(objectId) },
+      });
+      subscription.paused = false;
+      return;
+    }
 
     const subscribeUpdateMessage = {
       type: MessageType.SUBSCRIBE_UPDATE as const,
@@ -5347,10 +7044,12 @@ export class MOQTSession {
   on(event: 'request-ok', handler: (event: RequestOkEvent) => void): () => void;
   on(event: 'publish-done', handler: (event: PublishDoneEvent) => void): () => void;
   on(event: 'publish-blocked', handler: (event: PublishBlockedEvent) => void): () => void;
+  on(event: 'subscription-cancelled', handler: (event: SubscriptionCancelledEvent) => void): () => void;
   on(event: 'session-terminated', handler: (event: SessionTerminatedEvent) => void): () => void;
   on(event: 'session-migrating', handler: (event: SessionMigrationEvent) => void): () => void;
   on(event: 'session-migrated', handler: (event: SessionMigrationEvent) => void): () => void;
   on(event: 'incoming-subscribe', handler: (event: IncomingSubscribeEvent) => void): () => void;
+  on(event: 'incoming-subscribe-tracks', handler: (event: IncomingSubscribeTracksEvent) => void): () => void;
   on(event: 'incoming-publish', handler: (event: IncomingPublishEvent) => void): () => void;
   on(event: 'namespace-acknowledged', handler: (data: { namespace: string[] }) => void): () => void;
   on(event: 'namespace-announced', handler: (event: NamespaceAnnouncedEvent) => void): () => void;
@@ -5366,10 +7065,14 @@ export class MOQTSession {
   on(event: 'message-received', handler: (event: MessageLogEvent) => void): () => void;
   // Forward state events
   on(event: 'forward-state-change', handler: (event: ForwardStateChangeEvent) => void): () => void;
+  on(event: 'forward-paused', handler: (event: { subscriptionRequestId: bigint }) => void): () => void;
+  on(event: 'forward-resumed', handler: (event: { requestId: bigint }) => void): () => void;
   on(event: 'namespace-forward-paused', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'namespace-forward-resumed', handler: (event: NamespaceForwardEvent) => void): () => void;
   on(event: 'new-group-request', handler: (event: NewGroupRequestEvent) => void): () => void;
   on(event: 'stream-reset', handler: (event: StreamResetEvent) => void): () => void;
+  on(event: 'delivery-timeout', handler: (event: DeliveryTimeoutEvent) => void): () => void;
+  on(event: 'goaway', handler: (event: GoAwayEvent) => void): () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: SessionEventType, handler: (data: any) => void): () => void {
     if (!this.handlers.has(event)) {
@@ -5434,6 +7137,7 @@ export class MOQTSession {
           if ((serverSetup as any).maxRequestUpdates !== undefined) {
             this.peerMaxRequestUpdates = (serverSetup as any).maxRequestUpdates;
           }
+          this.peerMaxFilterRanges = serverSetup.maxFilterRanges ?? 0;
           log.debug('Received SERVER_SETUP', {
             version: serverSetup.selectedVersion,
             role: serverSetup.role,
@@ -5463,108 +7167,142 @@ export class MOQTSession {
   /** Setup message buffer for draft-18 */
   private setupBuffer = new Uint8Array(0);
   private setupBufferOffset = 0;
+  /** True once the peer's SETUP arrived; the control stream then carries GOAWAY only (draft-22 §9, §9.2). */
+  private peerSetupSeen = false;
 
   /**
-   * Handle incoming setup stream messages
+   * Handle bytes from the peer's control stream: its SETUP (Length | Options,
+   * the type is implicit), then framed messages. GOAWAY is the only other
+   * message allowed there (draft-22 Table 5).
    */
   private handleSetupMessage(data: Uint8Array): void {
     const hex = Array.from(data.subarray(0, Math.min(32, data.length)))
       .map(b => b.toString(16).padStart(2, '0')).join(' ');
     log.info('Setup message received', { size: data.length, hex });
 
-    try {
-      // Append to buffer
-      if (this.setupBuffer.length === 0) {
-        this.setupBuffer = new Uint8Array(data);
-        this.setupBufferOffset = 0;
-      } else {
-        const remaining = this.setupBuffer.length - this.setupBufferOffset;
-        const newBuffer = new Uint8Array(remaining + data.length);
-        newBuffer.set(this.setupBuffer.subarray(this.setupBufferOffset));
-        newBuffer.set(data, remaining);
-        this.setupBuffer = newBuffer;
-        this.setupBufferOffset = 0;
-      }
+    // Append to buffer
+    if (this.setupBuffer.length === 0) {
+      this.setupBuffer = new Uint8Array(data);
+      this.setupBufferOffset = 0;
+    } else {
+      const remaining = this.setupBuffer.length - this.setupBufferOffset;
+      const newBuffer = new Uint8Array(remaining + data.length);
+      newBuffer.set(this.setupBuffer.subarray(this.setupBufferOffset));
+      newBuffer.set(data, remaining);
+      this.setupBuffer = newBuffer;
+      this.setupBufferOffset = 0;
+    }
 
-      // Try to decode messages (setup stream has no message type prefix)
-      while (this.setupBufferOffset < this.setupBuffer.length) {
-        try {
-          const view = this.setupBuffer.subarray(this.setupBufferOffset);
-          const [message, bytesRead] = this.codec.decodeSetupStream(view);
+    while (this.setupBufferOffset < this.setupBuffer.length) {
+      try {
+        const view = this.setupBuffer.subarray(this.setupBufferOffset);
+        const [message, bytesRead] = this.peerSetupSeen
+          ? this.codec.decodeControlMessage(view)
+          : this.codec.decodeSetupStream(view);
+        this.setupBufferOffset += bytesRead;
 
-          this.setupBufferOffset += bytesRead;
+        log.info('Received control stream message', {
+          type: MessageTypeDraft18[message.type],
+        });
 
-          log.info('Received setup message', {
-            type: MessageTypeDraft18[message.type],
-          });
-
-          // Handle setup callback (used during initial setup). If the waiter
-          // hasn't subscribed yet (draft-18 allows SERVER_SETUP to arrive
-          // before or in parallel with CLIENT_SETUP), queue for later drain.
-          if (this.onSetupMessage) {
-            this.onSetupMessage(message);
-          } else if (this._state !== 'ready' && this._state !== 'closing') {
-            this.pendingSetupMessages.push(message);
-          }
-
-          // Route post-setup messages (GOAWAY, REQUEST_UPDATE on setup stream)
-          if (this._state === 'ready' || this._state === 'closing') {
-            this.routeSetupStreamMessage(message);
-          }
-        } catch (err) {
-          const msg = (err as Error).message ?? '';
-          if (/incomplete|buffer|underflow/i.test(msg)) {
-            break;
-          }
-          throw err;
+        if (this.peerSetupSeen) {
+          this.routeSetupStreamMessage(message as ControlMessageDraft18);
+          continue;
         }
-      }
 
-      // Reset buffer if all consumed
-      if (this.setupBufferOffset >= this.setupBuffer.length) {
-        this.setupBuffer = new Uint8Array(0);
-        this.setupBufferOffset = 0;
+        this.peerSetupSeen = true;
+        if (!this.acceptServerSetup(message as ServerSetupMessageDraft18)) {
+          return;
+        }
+        this.deliverPeerSetup(message as ControlMessageDraft18);
+      } catch (err) {
+        if (isIncompleteDecode(err)) {
+          break;
+        }
+        if (!this.closeOnFatalDecode(err)) {
+          log.error('Error handling setup message', err as Error);
+        }
+        return;
       }
-    } catch (err) {
-      log.error('Error handling setup message', err as Error);
+    }
+
+    // Reset buffer if all consumed
+    if (this.setupBufferOffset >= this.setupBuffer.length) {
+      this.setupBuffer = new Uint8Array(0);
+      this.setupBufferOffset = 0;
     }
   }
 
   /**
-   * Route messages received on the setup stream after connection established
+   * The peer's control stream ended, by FIN or reset. It MUST stay open for
+   * the session's lifetime, so the session closes as a PROTOCOL_VIOLATION
+   * (draft-22 §6.3). Ignored once the session is over or being closed by us.
+   */
+  private handleControlStreamEnded(): void {
+    // A transport close ends the stream too; let that close arrive first
+    setTimeout(() => {
+      if (this.closeStarted || this._state === 'none' || this._state === 'error') {
+        return;
+      }
+
+      void this.close({
+        code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
+        reason: 'The peer closed its control stream',
+      }).catch(() => {});
+    }, 0);
+  }
+
+  /**
+   * A server must not send PATH or AUTHORITY; a client that receives one
+   * closes the session (draft-22 §9.1.1, §9.1.2). Returns whether the SETUP
+   * is acceptable.
+   */
+  private acceptServerSetup(setup: ServerSetupMessageDraft18): boolean {
+    // Draft-22 §9.1.4: a REGISTER in SETUP is treated as USE_VALUE, but we have no Alias to use or delete
+    if (setup.authToken) {
+      assertNoAliasReference(setup.authToken);
+    }
+
+    const code = setup.path !== undefined
+      ? SessionErrorCodeDraft18.INVALID_PATH
+      : setup.authority !== undefined ? SessionErrorCodeDraft18.INVALID_AUTHORITY : undefined;
+    if (code === undefined) {
+      return true;
+    }
+
+    void this.close({ code, reason: 'The server sent a PATH or AUTHORITY setup option' }).catch(() => {});
+
+    return false;
+  }
+
+  /**
+   * Hand the peer's SETUP to the waiter in `setup()`. SERVER_SETUP can arrive
+   * before the waiter subscribes (draft-18 lets either side send first), so
+   * it is queued until then.
+   */
+  private deliverPeerSetup(message: ControlMessageDraft18): void {
+    if (this.onSetupMessage) {
+      this.onSetupMessage(message);
+    } else {
+      this.pendingSetupMessages.push(message);
+    }
+  }
+
+  /**
+   * Route a message on the peer's control stream after its SETUP. Only GOAWAY
+   * belongs there (draft-22 §9.2, Table 5); anything else, including a second
+   * SETUP, closes the session.
    */
   private routeSetupStreamMessage(message: ControlMessageDraft18): void {
-    switch (message.type) {
-      case MessageTypeDraft18.GOAWAY:
-        this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
-        break;
-
-      case MessageTypeDraft18.REQUEST_UPDATE:
-        this.dispatchRequestUpdateDraft18(message as RequestUpdateMessageDraft18);
-        break;
-
-      case MessageTypeDraft18.PUBLISH_BLOCKED:
-        if (this.isDraft22) {
-          this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22);
-        } else {
-          this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
-        }
-        break;
-
-      case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
-        this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22);
-        break;
-
-      case MessageTypeDraft18.PUBLISH_DONE:
-        this.handleIncomingPublishDoneDraft18(message as PublishDoneMessageDraft18);
-        break;
-
-      default:
-        // SERVER_SETUP messages are ignored post-setup
-        if (message.type !== MessageTypeDraft18.SERVER_SETUP) {
-          log.warn('Unhandled message on setup stream', { type: MessageTypeDraft18[message.type] });
-        }
+    if (message.type === MessageTypeDraft18.GOAWAY) {
+      this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
+      return;
     }
+
+    void this.close({
+      code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
+      reason: `Message type ${message.type} is not allowed on the control stream`,
+    }).catch(() => {});
   }
 
   /**
@@ -5578,114 +7316,140 @@ export class MOQTSession {
   }
 
   /**
-   * Process incoming bidi stream: read request, dispatch, respond
+   * Process incoming bidi stream: read request, dispatch, respond. A request
+   * we accept stays open and keeps being read (see `readRequestStream`); any
+   * other ends here with our FIN.
    */
   private async processIncomingBidiStream(stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): Promise<void> {
-    const reader = stream.readable.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
+    // The request stream owns the only writer. Handlers get `handlerWritable`,
+    // which forwards their writes to it, so they can respond (and emit events
+    // that write, like a REQUEST_UPDATE) while it is already registered.
+    const held = stream.writable.getWriter();
+    const requestStream = new Draft18RequestStream(
+      this.codec,
+      stream.readable,
+      async (data) => {
+        await held.write(data);
+      },
+      async () => {
+        try { await held.close(); } catch { /* already closed */ }
+      },
+      async (code) => {
+        try { await held.abort(streamResetReason(code)); } catch { /* already closed */ }
+      },
+    );
+    const handlerWritable = new WritableStream<Uint8Array>({
+      write: (data) => requestStream.write(data),
+      close: () => requestStream.close(),
+    });
+    let registeredId: bigint | undefined;
 
     try {
-      // Read until we have a complete message
-      let message: ControlMessageDraft18 | null = null;
-      while (!message) {
-        const { value, done } = await reader.read();
-        if (done) {
-          log.warn('Incoming bidi stream closed before message received');
-          return;
-        }
-        chunks.push(value);
-        totalLength += value.length;
-
-        const buffer = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          buffer.set(chunk, offset);
-          offset += chunk.length;
-        }
-
-        try {
-          const [decoded] = this.codec.decodeControlMessage(buffer, 0, this.metrics);
-          message = decoded as ControlMessageDraft18;
-        } catch (err) {
-          const msg = (err as Error).message ?? '';
-          if (/incomplete|buffer|underflow/i.test(msg)) {
-            continue;
-          }
-          throw err;
-        }
-      }
+      const message = (await requestStream.readMessage()) as ControlMessageDraft18;
 
       log.info('Received message on incoming bidi stream', { type: MessageTypeDraft18[message.type] });
+
+      // A bidi stream begins with a request; any other message closes the session (draft-22 §6.3)
+      if (!PEER_REQUEST_TYPES.has(message.type)) {
+        this.closeForUnexpectedMessage(message, 'a new bidirectional stream');
+        return;
+      }
+
+      assertNoTokenAlias(message);
+
+      const peerRequestId = (message as { requestId: bigint }).requestId;
+      if (!this.acceptPeerRequestId(peerRequestId)) {
+        return;
+      }
+
+      // After our GOAWAY a request is refused, not served (draft-18 §10.4, draft-22 §9.2)
+      if (this.goAwaySent) {
+        await this.sendRequestErrorOnStream(
+          handlerWritable,
+          peerRequestId,
+          RequestErrorCodeDraft18.GOING_AWAY,
+          'Session is going away',
+        );
+        return;
+      }
+
+      // Draft-22 §2.4.3, §6.5: a reserved namespace we do not serve does not exist
+      if (isUnservedNamespace(this.referencedNamespace(message))) {
+        await this.sendRequestErrorOnStream(
+          handlerWritable,
+          peerRequestId,
+          RequestErrorCodeDraft18.DOES_NOT_EXIST,
+          'Reserved namespace',
+        );
+        return;
+      }
+
+      // Register before dispatch: a handler's events can reach for this stream.
+      // The peer's STOP_SENDING rejects `closed` (draft-22 §3.1).
+      if (ACCEPTED_REQUEST_TYPES.has(message.type)) {
+        registeredId = (message as { requestId: bigint }).requestId;
+        const id = registeredId;
+        this.activeRequestStreams.set(id, requestStream);
+        held.closed.catch(() => this.handlePeerCancel(id, requestStream));
+      }
 
       // Dispatch based on message type
       switch (message.type) {
         case MessageTypeDraft18.SUBSCRIBE:
-          await this.handleIncomingSubscribeDraft18(message as SubscribeMessageDraft18, stream.writable);
+          await this.handleIncomingSubscribeDraft18(message as SubscribeMessageDraft18, handlerWritable);
           break;
 
         case MessageTypeDraft18.PUBLISH:
-          await this.handleIncomingPublishDraft18(message as PublishMessageDraft18, stream.writable);
+          await this.handleIncomingPublishDraft18(message as PublishMessageDraft18 | PublishMessageDraft22, handlerWritable);
           break;
 
         case MessageTypeDraft18.FETCH:
-          await this.handleIncomingFetchDraft18(message as FetchMessageDraft18, stream.writable);
+          await this.handleIncomingFetchDraft18(message as FetchMessageDraft18, handlerWritable);
           break;
 
         case MessageTypeDraft18.TRACK_STATUS:
-          await this.handleIncomingTrackStatusDraft18(message as TrackStatusMessageDraft18, stream.writable);
+          await this.handleIncomingTrackStatusDraft18(message as TrackStatusMessageDraft18 | TrackStatusMessageDraft22, handlerWritable);
           break;
 
         case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
-          await this.handleIncomingSubscribeNamespaceDraft18(message as SubscribeNamespaceMessageDraft18, stream.writable, reader);
+          await this.handleIncomingSubscribeNamespaceDraft18(message as SubscribeNamespaceMessageDraft18, handlerWritable);
           break;
 
         case MessageTypeDraft18.PUBLISH_NAMESPACE:
-          await this.handleIncomingPublishNamespaceDraft18(message as PublishNamespaceMessageDraft18, stream.writable);
+          await this.handleIncomingPublishNamespaceDraft18(message as PublishNamespaceMessageDraft18, handlerWritable);
           break;
 
         case MessageTypeDraft18.SUBSCRIBE_TRACKS:
-          await this.handleIncomingSubscribeTracksDraft18(message as SubscribeTracksMessageDraft18, stream.writable);
+          await this.handleIncomingSubscribeTracksDraft18(message as SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22, handlerWritable);
           break;
+      }
 
-        case MessageTypeDraft18.REQUEST_UPDATE:
-          await this.handleIncomingRequestUpdateDraft18(message as RequestUpdateMessageDraft18, stream.writable);
-          break;
-
-        case MessageTypeDraft18.PUBLISH_DONE:
-          this.handleIncomingPublishDoneDraft18(message as PublishDoneMessageDraft18);
-          break;
-
-        case MessageTypeDraft18.GOAWAY:
-          this.handleIncomingGoAwayDraft18(message as GoAwayMessageDraft18);
-          break;
-
-        case MessageTypeDraft18.PUBLISH_BLOCKED:
-          if (this.isDraft22) {
-            this.handleIncomingPublishSkippedDraft22(message as unknown as PublishSkippedMessageDraft22);
-          } else {
-            this.handleIncomingPublishBlockedDraft18(message as PublishBlockedMessageDraft18);
-          }
-          break;
-
-        case MessageTypeDraft22.PUBLISH_STATE_NOTIFY as unknown as MessageTypeDraft18:
-          this.handleIncomingPublishStateNotifyDraft22(message as unknown as PublishStateNotifyMessageDraft22);
-          break;
-
-        default:
-          log.warn('Unhandled message type on incoming bidi stream', { type: message.type });
-          await this.sendRequestErrorOnStream(
-            stream.writable,
-            0n,
-            RequestErrorCodeDraft18.NOT_SUPPORTED,
-            'Unsupported message type',
-          );
+      // An accepted request can still get REQUEST_UPDATEs and must end with
+      // our own message, so it stays registered and read.
+      if (registeredId !== undefined && this.incomingRequestKinds.has(registeredId)) {
+        void this.readRequestStream(registeredId, requestStream);
+        return;
       }
     } catch (err) {
-      log.error('Error reading incoming bidi stream', { error: (err as Error).message });
-    } finally {
-      reader.releaseLock();
+      if (!this.closeOnFatalDecode(err)) {
+        log.error('Error reading incoming bidi stream', { error: (err as Error).message });
+      }
     }
+
+    // Not accepted: unregister, unless the stream already ended itself.
+    if (registeredId !== undefined && this.activeRequestStreams.get(registeredId) === requestStream) {
+      this.activeRequestStreams.delete(registeredId);
+    }
+
+    // Anything else is finished: FIN our direction (draft-22 §6.4.2.2).
+    await requestStream.close();
+  }
+
+  /** The Track Namespace or prefix a request names; none for a Joining FETCH, which names a subscription. */
+  private referencedNamespace(request: ControlMessageDraft18): string[] {
+    const { trackNamespace, trackNamespacePrefix } = request as { trackNamespace?: string[]; trackNamespacePrefix?: string[] };
+
+    return trackNamespace ?? trackNamespacePrefix ?? [];
   }
 
   /**
@@ -5705,11 +7469,21 @@ export class MOQTSession {
       trackName,
     });
 
+    if (await this.rejectRangeFilters(message, writable)) {
+      return;
+    }
+
     // B3 SEC: peer-initiated draft-18 subscribe creates a publication for
     // this subscriber; gate on maxTracks before accepting.
     try {
       this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
     } catch {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.EXCESSIVE_LOAD,
+        'Too many tracks',
+      );
       return;
     }
 
@@ -5727,8 +7501,33 @@ export class MOQTSession {
       return;
     }
 
+    const largestLocation = this.publicationManager.largestOf(namespace, trackName);
+
+    // Draft-18 §5.1.2: a range whose End Group is published has nothing to deliver. A d22 filter is always valid (§3.3.1).
+    const range = this.subscribeRange(message, largestLocation);
+    if (!this.isDraft22 && endsBefore(range, largestLocation)) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.INVALID_RANGE,
+        'End Group is already published',
+      );
+      return;
+    }
+
+    // Draft-18 §5.1: at most one subscription per Track and role (d22 allows several)
+    if (!this.isDraft22 && this.publicationManager.getByTrackName(namespace, trackName)) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.DUPLICATE_SUBSCRIPTION,
+        'Track already has a subscriber',
+      );
+      return;
+    }
+
     // Assign track alias
-    const trackAlias = BigInt(this.nextIncomingTrackAlias++);
+    const trackAlias = this.nextPublicationAlias++;
 
     // Send SUBSCRIBE_OK with the track alias we'll use on data streams.
     // Advertise §10.2.10 EXPIRES when the announcer configured it — 0 means
@@ -5738,7 +7537,7 @@ export class MOQTSession {
       type: MessageTypeDraft18.SUBSCRIBE_OK,
       requestId: message.requestId,
       trackAlias,
-      largestLocation: { group: 0n, object: 0n },
+      largestLocation,
       expires: expires !== undefined ? BigInt(expires) : undefined,
     };
     const responseBytes = this.codec.encodeControlMessage(subscribeOk);
@@ -5755,6 +7554,12 @@ export class MOQTSession {
     const sched = parseSubscriberSchedulingParams(message.parameters);
     const subscriberPriority = sched.subscriberPriority ?? 128;
     const subscriberGroupOrder = sched.groupOrder ?? GroupOrder.ASCENDING;
+    // The subscriber's delivery timeouts (d22 §5.2) bound ours
+    const timeouts = parseDeliveryTimeoutParams(message.parameters);
+    const subscriberTimeouts = {
+      subscriberSubgroupTimeoutMs: timeouts.subgroupMs,
+      subscriberObjectTimeoutMs: timeouts.objectMs,
+    };
 
     // Create publication entry
     const publication: InternalPublication = {
@@ -5766,9 +7571,12 @@ export class MOQTSession {
       audioDeliveryMode: announceInfo.options.audioDeliveryMode ?? 'datagram',
       requestId: message.requestId,
       cleanupHandlers: [],
-      forward: 1,
+      // The subscriber sets the initial Forward State (d22 §3.1.1, d18 §5.1)
+      forward: message.forwardState === false ? 0 : 1,
+      filter: range,
       subscriberPriority,
       subscriberGroupOrder,
+      ...subscriberTimeouts,
     };
     this.publicationManager.add(publication);
 
@@ -5795,13 +7603,63 @@ export class MOQTSession {
     } as IncomingSubscribeEvent);
 
     log.info('Accepted SUBSCRIBE', { trackAlias: trackAlias.toString(), fullTrackName: fullTrackNameStr });
+
+    if (this.isDraft22) {
+      const { fill } = message as unknown as SubscribeMessageDraft22;
+      if (fill) {
+        await this.openFillStream(message.requestId, publication, fill);
+      }
+    }
+  }
+
+  /** The Locations a SUBSCRIBE selects, resolved against the Largest Object now (d22 §3.3.1, d18 §5.1.2). */
+  private subscribeRange(message: SubscribeMessageDraft18, largest: Location | undefined): LocationRange {
+    if (this.isDraft22) {
+      return resolveLocationFilter((message as unknown as SubscribeMessageDraft22).locationFilter, largest);
+    }
+
+    return resolveSubscriptionFilter(message.filter, message.startLocation, message.endGroupDelta, largest);
+  }
+
+  /**
+   * Serve FILL_PARAMETERS (draft-22 §3.4, §3.4.1). We keep no object cache,
+   * so the fill fails: the fill fetch stream is opened with the Request ID of
+   * the SUBSCRIBE or REQUEST_UPDATE and reset right after its FETCH_HEADER.
+   * Nothing is opened for a paused subscription or an empty fill range, one
+   * that is empty or starts after the Largest Object.
+   */
+  private async openFillStream(
+    requestId: bigint,
+    publication: InternalPublication,
+    fill: FillParametersDraft22,
+  ): Promise<void> {
+    const largest = this.publicationManager.largestOf(publication.namespace, publication.trackName);
+    if (publication.forward === 0 || largest === undefined) {
+      return;
+    }
+
+    const range = fill.locationFilter ? resolveLocationFilter(fill.locationFilter, largest) : publication.filter ?? WHOLE_TRACK;
+    if (compareLocations(range.start, largest) > 0) {
+      return;
+    }
+
+    try {
+      const stream = await this.doCreateStream();
+      publication.streamsOpened = (publication.streamsOpened ?? 0) + 1;
+      await this.doWriteStream(stream, this.codec.encodeFetchHeader({ requestId }));
+      await this.abortStreamHandle(stream, StreamResetErrorCodeDraft18.INTERNAL_ERROR);
+      this.decrementOpenStreamCount();
+      log.info('Reset a fill stream: no objects are kept', { requestId: requestId.toString() });
+    } catch (err) {
+      log.warn('Could not open a fill stream', { requestId: requestId.toString(), error: (err as Error).message });
+    }
   }
 
   /**
    * Handle incoming PUBLISH on bidi stream (we are the subscriber)
    */
   private async handleIncomingPublishDraft18(
-    message: PublishMessageDraft18,
+    message: PublishMessageDraft18 | PublishMessageDraft22,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     const namespace = message.trackNamespace;
@@ -5814,6 +7672,12 @@ export class MOQTSession {
     try {
       this.enforceResourceLimit('subscriptions', this.subscriptionManager.size, this.maxSubscriptions);
     } catch {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.EXCESSIVE_LOAD,
+        'Too many subscriptions',
+      );
       return;
     }
 
@@ -5824,21 +7688,21 @@ export class MOQTSession {
       trackAlias: message.trackAlias.toString(),
     });
 
-    // Check if this is our own publish
-    if (this.ownNamespacePrefix && namespaceStr.startsWith(this.ownNamespacePrefix)) {
-      log.debug('Ignoring own PUBLISH', { namespace: namespaceStr });
+    // Our own track, echoed back to us: not wanted, but still answered (d22 §3.1, d18 §5.1)
+    if (this.ownNamespacePrefix && namespacePrefixMatches(this.ownNamespacePrefix.split('/'), namespace)) {
+      log.debug('Refusing own PUBLISH', { namespace: namespaceStr });
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.UNINTERESTED,
+        'Own track',
+      );
       return;
     }
 
-    // Find matching namespace subscription
-    let matchingSubscription: NamespaceSubscriptionInfo | undefined;
-    for (const sub of this.namespaceSubscriptions.values()) {
-      const prefix = sub.namespacePrefix.join('/');
-      if (namespaceStr.startsWith(prefix)) {
-        matchingSubscription = sub;
-        break;
-      }
-    }
+    // Find matching namespace subscription, field by field (d22 §2.4.2)
+    const matchingSubscription = [...this.namespaceSubscriptions.values()]
+      .find((sub) => namespacePrefixMatches(sub.namespacePrefix, namespace));
 
     if (!matchingSubscription) {
       log.warn('PUBLISH does not match any namespace subscription', { publishNamespace: namespaceStr });
@@ -5848,6 +7712,28 @@ export class MOQTSession {
         RequestErrorCodeDraft18.UNINTERESTED,
         'No matching subscription',
       );
+      return;
+    }
+
+    const fault = this.checkTrackProperties(message.trackProperties, 'PUBLISH');
+    if (fault === TrackPropertyFault.INVALID) {
+      return;
+    }
+    if (fault === TrackPropertyFault.UNSUPPORTED) {
+      // Draft-22 §3.7: the subscriber MUST respond with PUBLISH_ERROR UNSUPPORTED_EXTENSION
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
+        'Mandatory Track Property not understood',
+      );
+      return;
+    }
+
+    if (!this.acceptTrackAlias(message.trackAlias, namespace, trackName)) {
+      return;
+    }
+    if (!this.isDraft22 && !(await this.resolveDuplicatePublish(message, writable))) {
       return;
     }
 
@@ -5866,16 +7752,23 @@ export class MOQTSession {
 
     this.incomingRequestKinds.set(message.requestId, 'publish');
 
-    // Register as subscription for object routing
-    const subscriptionId = this.getNextRequestId();
+    // Register as subscription for object routing. The peer's Request ID (odd) is unique
+    // among our own subscription IDs (even) and spends none of ours (d22 §6.4.2.1).
+    const subscriptionId = narrowBigIntToNumber(message.requestId, 'PUBLISH.requestId');
     const subscription: InternalSubscription = {
       subscriptionId,
       requestId: message.requestId,
       namespace,
       trackName,
       trackAlias: message.trackAlias,
-      paused: false,
+      // Draft-22 §3.1.1: the PUBLISH sets the initial state. Our draft-18 PUBLISH_OK sets it to 1.
+      paused: this.isDraft22 && message.forwardState === false,
       onObject: matchingSubscription.onObject,
+      dynamicGroups: parseTrackProperties(message.trackProperties)?.dynamicGroups === true,
+      drainMs: Math.max(
+        parseTrackProperties(message.trackProperties)?.subgroupDeliveryTimeoutMs ?? 0,
+        parseTrackProperties(message.trackProperties)?.objectDeliveryTimeoutMs ?? 0,
+      ),
     };
     this.subscriptionManager.add(subscription);
 
@@ -5888,7 +7781,7 @@ export class MOQTSession {
       groupOrder: GroupOrder.ASCENDING,
       acknowledged: true,
     };
-    matchingSubscription.tracks.set(fullTrackNameStr, trackInfo);
+    matchingSubscription.tracks.set(JSON.stringify([namespace, trackName]), trackInfo);
 
     this.emit('incoming-publish', {
       namespaceSubscriptionId: matchingSubscription.subscriptionId,
@@ -5904,32 +7797,115 @@ export class MOQTSession {
   }
 
   /**
-   * Handle incoming FETCH on bidi stream
+   * Draft-18 §5.1: an endpoint has at most one subscription per Track and role.
+   * A PUBLISH for a Track we already hold Established is refused with
+   * DUPLICATE_SUBSCRIPTION; for one our own SUBSCRIBE is still Pending on, that
+   * SUBSCRIBE ends first. Returns whether the PUBLISH may go on.
    */
-  private async handleIncomingFetchDraft18(
-    message: FetchMessageDraft18,
-    writable: WritableStream<Uint8Array>
-  ): Promise<void> {
-    log.info('Received FETCH', { requestId: message.requestId.toString() });
-    // For now, respond with REQUEST_ERROR since we don't cache objects
+  private async resolveDuplicatePublish(
+    message: PublishMessageDraft18 | PublishMessageDraft22,
+    writable: WritableStream<Uint8Array>,
+  ): Promise<boolean> {
+    const existing = this.subscriptionManager.getByTrackName(message.trackNamespace, message.trackName);
+    if (!existing) {
+      return true;
+    }
+
+    if (existing.trackAlias === undefined) {
+      await this.abortRequestStream(existing.requestId);
+      this.subscriptionManager.remove(existing.subscriptionId);
+      this.dropFillStream(existing.requestId);
+
+      return true;
+    }
+
     await this.sendRequestErrorOnStream(
       writable,
       message.requestId,
-      RequestErrorCodeDraft18.NOT_SUPPORTED,
-      'Fetch not supported',
+      RequestErrorCodeDraft18.DUPLICATE_SUBSCRIPTION,
+      'Already subscribed to this track',
     );
+
+    return false;
   }
 
   /**
-   * Handle incoming TRACK_STATUS on bidi stream (draft-18 §10.14).
+   * Handle incoming FETCH on bidi stream. We keep no objects, so every FETCH
+   * is refused; the error says why (see `fetchRefusal`).
+   */
+  private async handleIncomingFetchDraft18(
+    message: FetchMessageDraft18 | FetchMessageDraft22,
+    writable: WritableStream<Uint8Array>
+  ): Promise<void> {
+    log.info('Received FETCH', { requestId: message.requestId.toString() });
+    if (await this.rejectRangeFilters(message, writable)) {
+      return;
+    }
+
+    const refusal = this.fetchRefusal(message);
+    await this.sendRequestErrorOnStream(writable, message.requestId, refusal.code, refusal.reason);
+  }
+
+  /**
+   * The error for a FETCH we cannot serve. The ones the spec mandates come
+   * first: DOES_NOT_EXIST for a track we do not publish, INVALID_RANGE when no
+   * Object was published or the Start Location is past the Largest Object
+   * (d22 §3.2, d18 §10.12.3). A Joining FETCH (d18 §10.12.2) needs one of our
+   * subscriptions that has Forward State 1. NOT_SUPPORTED is left for a range
+   * that is valid but that we have no objects to serve.
+   */
+  private fetchRefusal(message: FetchMessageDraft18 | FetchMessageDraft22): { code: RequestErrorCodeDraft18; reason: string } {
+    const joiningId = (message as FetchMessageDraft18).subscribeRequestId;
+    const joined = joiningId === undefined ? undefined : this.publicationManager.getByRequestId(joiningId);
+    if (joiningId !== undefined && !joined) {
+      return { code: RequestErrorCodeDraft18.INVALID_JOINING_REQUEST_ID, reason: 'No such subscription to join' };
+    }
+
+    const namespace = joined?.namespace ?? message.trackNamespace ?? [];
+    const trackName = joined?.trackName ?? message.trackName ?? '';
+    const exists = this.matchesAnnouncedNamespace(namespace) !== undefined || this.publicationManager.getByTrackName(namespace, trackName) !== undefined;
+    if (!exists) {
+      return { code: RequestErrorCodeDraft18.DOES_NOT_EXIST, reason: 'Track not published by this session' };
+    }
+
+    const largest = this.publicationManager.largestOf(namespace, trackName);
+    if (largest === undefined || joined?.forward === 0) {
+      return { code: RequestErrorCodeDraft18.INVALID_RANGE, reason: 'No Objects to fetch' };
+    }
+
+    const start = this.fetchStart(message, largest);
+    if (compareLocations(start, largest) > 0) {
+      return { code: RequestErrorCodeDraft18.INVALID_RANGE, reason: 'Start Location is after the Largest Object' };
+    }
+
+    return { code: RequestErrorCodeDraft18.NOT_SUPPORTED, reason: 'Fetch not supported' };
+  }
+
+  /** The Start Location of a FETCH (d22 §9.20.9; d18 §10.12.1, §10.12.2). */
+  private fetchStart(message: FetchMessageDraft18 | FetchMessageDraft22, largest: Location): Location {
+    if (this.isDraft22) {
+      return resolveLocationFilter((message as FetchMessageDraft22).locationFilter, largest).start;
+    }
+
+    const { fetchType, joiningStart, startLocation } = message as FetchMessageDraft18;
+    if (fetchType === FetchTypeDraft18.JOINING_ABSOLUTE) {
+      return { group: joiningStart ?? 0n, object: 0n };
+    }
+
+    return startLocation;
+  }
+
+  /**
+   * Handle incoming TRACK_STATUS on bidi stream (draft-22 §9.13, draft-18 §10.14).
    *
-   * If we're publishing the queried track, reply with REQUEST_OK carrying
-   * LARGEST_OBJECT (0x09) so the requester knows the live edge; otherwise
-   * reply with REQUEST_ERROR DOES_NOT_EXIST (§15.10.2). LARGEST_OBJECT is
-   * omitted when the publication has not yet sent any objects.
+   * Handled like a SUBSCRIBE that creates no state: a track under a namespace
+   * we announce, or one we publish, answers with REQUEST_OK carrying the
+   * LARGEST_OBJECT the track has published (omitted before any), and any
+   * other with REQUEST_ERROR DOES_NOT_EXIST. The Track Properties are those a
+   * SUBSCRIBE_OK would carry, and we send none.
    */
   private async handleIncomingTrackStatusDraft18(
-    message: TrackStatusMessageDraft18,
+    message: TrackStatusMessageDraft18 | TrackStatusMessageDraft22,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
     log.info('Received TRACK_STATUS', {
@@ -5938,8 +7914,9 @@ export class MOQTSession {
       trackName: message.trackName,
     });
 
-    const pub = this.publicationManager.getByTrackName(message.trackNamespace, message.trackName);
-    if (!pub) {
+    const known = this.matchesAnnouncedNamespace(message.trackNamespace) !== undefined
+      || this.publicationManager.getByTrackName(message.trackNamespace, message.trackName) !== undefined;
+    if (!known) {
       await this.sendRequestErrorOnStream(
         writable,
         message.requestId,
@@ -5952,10 +7929,8 @@ export class MOQTSession {
     const requestOk: RequestOkMessageDraft18 = {
       type: MessageTypeDraft18.REQUEST_OK,
       requestId: message.requestId,
+      largestLocation: this.publicationManager.largestOf(message.trackNamespace, message.trackName),
     };
-    if (pub.latestGroup !== undefined && pub.latestObject !== undefined) {
-      requestOk.largestLocation = { group: pub.latestGroup, object: pub.latestObject };
-    }
     const writer = writable.getWriter();
     try {
       await writer.write(this.codec.encodeControlMessage(requestOk));
@@ -5969,14 +7944,24 @@ export class MOQTSession {
    */
   private async handleIncomingSubscribeNamespaceDraft18(
     message: SubscribeNamespaceMessageDraft18,
-    writable: WritableStream<Uint8Array>,
-    _reader: ReadableStreamDefaultReader<Uint8Array>
+    writable: WritableStream<Uint8Array>
   ): Promise<void> {
-    const prefix = message.trackNamespacePrefix.join('/');
+    const prefix = message.trackNamespacePrefix;
     log.info('Received SUBSCRIBE_NAMESPACE', {
       requestId: message.requestId.toString(),
-      prefix,
+      prefix: prefix.join('/'),
     });
+
+    // Draft-22 §4.2: a prefix that shares a common prefix with an established subscription is refused
+    if (this.incomingNamespaces.overlaps(prefix)) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.PREFIX_OVERLAP,
+        'Prefix overlaps an established SUBSCRIBE_NAMESPACE',
+      );
+      return;
+    }
 
     // Send REQUEST_OK
     const requestOk: RequestOkMessageDraft18 = {
@@ -5985,29 +7970,33 @@ export class MOQTSession {
     };
     const writer = writable.getWriter();
     await writer.write(this.codec.encodeControlMessage(requestOk));
+    writer.releaseLock();
 
     // Remember the kind so a later REQUEST_UPDATE (§10.9.2) routes correctly
     this.incomingRequestKinds.set(message.requestId, 'subscribe-namespace');
 
-    // Send NAMESPACE messages for matching announced namespaces
-    for (const [, announceInfo] of this.announcedNamespaces) {
-      const nsStr = announceInfo.namespace.join('/');
-      if (nsStr.startsWith(prefix)) {
-        const nsMsg: NamespaceMessageDraft18 = {
-          type: MessageTypeDraft18.NAMESPACE,
-          trackNamespace: announceInfo.namespace,
-        };
-        await writer.write(this.codec.encodeControlMessage(nsMsg));
+    // Tell it every matching namespace we announce now, and later changes (§4.2)
+    this.incomingNamespaces.add(message.requestId, prefix);
+    for (const announceInfo of this.announcedNamespaces.values()) {
+      await this.notifyNamespace(announceInfo.namespace, NamespaceChange.ANNOUNCED);
+    }
+  }
+
+  /**
+   * Send NAMESPACE or NAMESPACE_DONE to each SUBSCRIBE_NAMESPACE the change
+   * concerns, as the suffix after its prefix (draft-22 §9.16, §9.17).
+   */
+  private async notifyNamespace(namespace: string[], change: NamespaceChange): Promise<void> {
+    for (const notice of this.incomingNamespaces.record(namespace, change)) {
+      const message: NamespaceMessageDraft18 | NamespaceDoneMessageDraft18 = change === NamespaceChange.ANNOUNCED
+        ? { type: MessageTypeDraft18.NAMESPACE, trackNamespace: notice.suffix }
+        : { type: MessageTypeDraft18.NAMESPACE_DONE, finalNamespace: notice.suffix };
+      try {
+        await this.activeRequestStreams.get(notice.requestId)?.write(this.codec.encodeControlMessage(message));
+      } catch (err) {
+        log.warn('Could not send a namespace change', { requestId: notice.requestId.toString(), error: (err as Error).message });
       }
     }
-
-    // Send NAMESPACE_DONE
-    const nsDone: NamespaceDoneMessageDraft18 = {
-      type: MessageTypeDraft18.NAMESPACE_DONE,
-      finalNamespace: message.trackNamespacePrefix,
-    };
-    await writer.write(this.codec.encodeControlMessage(nsDone));
-    writer.releaseLock();
   }
 
   /**
@@ -6042,26 +8031,32 @@ export class MOQTSession {
    * Handle incoming SUBSCRIBE_TRACKS on bidi stream
    */
   private async handleIncomingSubscribeTracksDraft18(
-    message: SubscribeTracksMessageDraft18,
+    message: SubscribeTracksMessageDraft18 | SubscribeTracksMessageDraft22,
     writable: WritableStream<Uint8Array>
   ): Promise<void> {
-    const prefix = message.trackNamespacePrefix.join('/');
-
-    // §10.2.14 TRACK_NAMESPACE_PREFIX narrows the top-level prefix. When the
-    // parameter is present and parseable we require publications to match the
-    // narrower tuple; malformed parameters are ignored so we don't drop matches
-    // due to a decoder bug on the peer.
-    const paramPrefixBytes = message.parameters?.get(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX);
-    const paramPrefix = paramPrefixBytes ? decodeTrackNamespaceBytes(paramPrefixBytes) : undefined;
-    const paramPrefixStr = paramPrefix?.join('/');
+    const prefix = message.trackNamespacePrefix;
 
     log.info('Received SUBSCRIBE_TRACKS', {
       requestId: message.requestId.toString(),
-      prefix,
-      paramPrefix: paramPrefixStr,
+      prefix: prefix.join('/'),
       forwardState: message.forwardState,
-      filter: message.filter,
+      filter: 'filter' in message ? message.filter : undefined,
     });
+
+    if (await this.rejectRangeFilters(message as RangeFilteredRequest, writable)) {
+      return;
+    }
+
+    // Draft-22 §3.6: a prefix that shares a common prefix with an established SUBSCRIBE_TRACKS is refused
+    if (this.incomingTrackSubs.overlaps(prefix)) {
+      await this.sendRequestErrorOnStream(
+        writable,
+        message.requestId,
+        RequestErrorCodeDraft18.PREFIX_OVERLAP,
+        'Prefix overlaps an established SUBSCRIBE_TRACKS',
+      );
+      return;
+    }
 
     // Accept with REQUEST_OK
     const requestOk: RequestOkMessageDraft18 = {
@@ -6075,48 +8070,33 @@ export class MOQTSession {
 
     // SUBSCRIBE_TRACKS is a namespace-scoped subscription for track discovery;
     // future REQUEST_UPDATE on this requestId is §10.9.2 namespace-scoped.
-    this.incomingRequestKinds.set(message.requestId, 'subscribe-namespace');
+    this.incomingRequestKinds.set(message.requestId, 'subscribe-tracks');
+    this.incomingTrackSubs.add(message.requestId, prefix);
 
-    // Emit incoming-subscribe for each track we publish under this prefix,
-    // applying the §10.2.14 narrower prefix filter when supplied.
-    for (const [, pub] of this.publicationManager) {
-      const pubNs = pub.namespace.join('/');
-      if (!pubNs.startsWith(prefix)) continue;
-      if (paramPrefixStr && !pubNs.startsWith(paramPrefixStr)) continue;
-      this.emit('incoming-subscribe', {
-        requestId: message.requestId,
-        namespace: pub.namespace,
-        trackName: pub.trackName,
-        trackAlias: pub.trackAlias,
-      } as IncomingSubscribeEvent);
-    }
-  }
-
-  /**
-   * Handle incoming REQUEST_UPDATE on bidi stream
-   */
-  private async handleIncomingRequestUpdateDraft18(
-    message: RequestUpdateMessageDraft18,
-    _writable: WritableStream<Uint8Array>
-  ): Promise<void> {
-    this.dispatchRequestUpdateDraft18(message);
+    // The application publishes the tracks the peer wants; a PUBLISH needs a track only it knows
+    this.emit('incoming-subscribe-tracks', {
+      requestId: message.requestId,
+      namespacePrefix: prefix,
+      forwardState: message.forwardState !== false,
+    } as IncomingSubscribeTracksEvent);
   }
 
   /**
    * Route a draft-18 REQUEST_UPDATE (§10.9) to the correct variant handler
-   * based on the request kind we previously accepted for `requestId`:
+   * based on the request kind we previously accepted for `requestId`, the
+   * request whose stream carried it (the update's own ID is a new one):
    * - §10.9.1 subscription-scoped → forward-paused / forward-resumed
    * - §10.9.2 namespace-scoped   → namespace-forward-paused / -resumed
    *
-   * If the target requestId is unknown we log and fall back to the
-   * subscription variant, which matches prior behaviour and keeps backward
-   * compatibility with peers that don't set up state before updating.
    */
-  private dispatchRequestUpdateDraft18(message: RequestUpdateMessageDraft18): void {
-    const requestId = message.requestId;
+  private dispatchRequestUpdateDraft18(
+    message: RequestUpdateMessageDraft18 | RequestUpdateMessageDraft22,
+    requestId: bigint = message.requestId,
+  ): void {
     const kind = this.incomingRequestKinds.get(requestId) ?? 'unknown';
     log.info('Received REQUEST_UPDATE', {
-      requestId: message.requestId.toString(),
+      requestId: requestId.toString(),
+      updateRequestId: message.requestId.toString(),
       forwardState: message.forwardState,
       variant: kind,
     });
@@ -6132,60 +8112,75 @@ export class MOQTSession {
       } catch {
         value = BigInt(ngrBytes[0] ?? 0);
       }
-      if (value !== 0n) {
-        const targetedPub = this.publicationManager.getByRequestId(requestId);
+      // §9.20.19: act on 0 ("no Group information") or a value above the current Group
+      const targetedPub = this.publicationManager.getByRequestId(requestId);
+      if (value === 0n || targetedPub?.latestGroup === undefined || value > targetedPub.latestGroup) {
         this.emit('new-group-request', {
           requestId,
           value,
-          forwardState: message.forwardState,
+          forwardState: message.forwardState === true,
           ...(targetedPub ? { trackAlias: targetedPub.trackAlias } : {}),
         });
       }
     }
 
-    if (kind === 'subscribe-namespace') {
+    if (kind === 'subscribe-namespace' || kind === 'subscribe-tracks') {
       // §10.9.2 — namespace-scoped update; do not touch per-track publications.
+      // Draft-22 §9.20.18: an omitted FORWARD leaves the state unchanged
+      if (message.forwardState === undefined) {
+        return;
+      }
       const event: NamespaceForwardEvent = { namespaceRequestId: requestId };
       this.emit(message.forwardState ? 'namespace-forward-resumed' : 'namespace-forward-paused', event);
       return;
     }
 
-    // §7 / §10.9.1 — if the update carries new SUBSCRIBER_PRIORITY or
-    // GROUP_ORDER, mirror them onto the matching publication and the
-    // announced-subscriber entry. The spec says a best effort SHOULD be made
-    // to apply the change to objects not yet scheduled; we update state so
-    // future streams pick up the new values via `computeSendOrder`.
+    // §7 / §10.9.1 — if the update carries a new SUBSCRIBER_PRIORITY, mirror
+    // it onto the matching publication and the announced-subscriber entry. The
+    // spec says a best effort SHOULD be made to apply the change to objects not
+    // yet scheduled; we update state so future streams pick up the new value
+    // via `computeSendOrder`. A GROUP_ORDER in the update is ignored: the group
+    // order of an existing subscription cannot be changed (d22 §5.1.1).
     const sched = parseSubscriberSchedulingParams(message.parameters);
-    if (sched.subscriberPriority !== undefined || sched.groupOrder !== undefined) {
+    if (sched.subscriberPriority !== undefined) {
       const pub = this.publicationManager.getByRequestId(requestId);
       if (pub) {
-        if (sched.subscriberPriority !== undefined) pub.subscriberPriority = sched.subscriberPriority;
-        if (sched.groupOrder !== undefined) pub.subscriberGroupOrder = sched.groupOrder;
+        pub.subscriberPriority = sched.subscriberPriority;
       }
       for (const info of this.announcedNamespaces.values()) {
         const sub = info.subscribers.get(requestId);
         if (sub) {
-          if (sched.subscriberPriority !== undefined) sub.subscriberPriority = sched.subscriberPriority;
-          if (sched.groupOrder !== undefined) sub.groupOrder = sched.groupOrder;
+          sub.subscriberPriority = sched.subscriberPriority;
           break;
         }
       }
     }
 
-    // §10.9.1 — subscription-scoped update. Narrow the forward-state flip to
-    // the publication bound to this requestId so a pause from one subscriber
-    // doesn't stall the session's other tracks. If we don't have a matching
-    // publication (kind === 'unknown'), fall back to the session-wide update
-    // for backward compatibility with peers that don't set up state first.
-    const forward = message.forwardState ? 1 : 0;
-    const matched = this.publicationManager.setForwardByRequestId(requestId, forward);
-    if (!matched) {
-      if (message.forwardState) {
-        this.publicationManager.resolveAllForward();
+    // §5.2: new delivery timeouts replace the subscriber's earlier ones
+    const timeouts = parseDeliveryTimeoutParams(message.parameters);
+    if (timeouts.subgroupMs !== undefined || timeouts.objectMs !== undefined) {
+      const pub = this.publicationManager.getByRequestId(requestId);
+      if (pub) {
+        pub.subscriberSubgroupTimeoutMs = timeouts.subgroupMs ?? pub.subscriberSubgroupTimeoutMs;
+        pub.subscriberObjectTimeoutMs = timeouts.objectMs ?? pub.subscriberObjectTimeoutMs;
       }
-      // No matching publication → nothing to pause on our side; still emit
-      // the event so any bespoke listener can react.
     }
+
+    // The filter of the update replaces the subscription's (d22 §9.20.9, d18 §10.2.9)
+    const range = this.updatedRange(message, requestId);
+    const filtered = this.publicationManager.getByRequestId(requestId);
+    if (range && filtered) {
+      filtered.filter = range;
+    }
+
+    // §10.9.1 — subscription-scoped update. The forward-state flip applies to
+    // the publication bound to this requestId, so a pause from one subscriber
+    // doesn't stall the session's other tracks.
+    if (message.forwardState === undefined) {
+      return;
+    }
+    const forward = message.forwardState ? 1 : 0;
+    this.publicationManager.setForwardByRequestId(requestId, forward);
     if (message.forwardState) {
       this.emit('forward-resumed', { requestId });
     } else {
@@ -6222,9 +8217,41 @@ export class MOQTSession {
     } as PublishDoneEvent);
 
     if (sub) {
-      this.subscriptionManager.remove(sub.subscriptionId);
-      log.info('Subscription removed after PUBLISH_DONE', { subscriptionId: sub.subscriptionId });
+      this.retireSubscription(sub, message.streamCount);
     }
+  }
+
+  /**
+   * PUBLISH_DONE ends a subscription, but objects can still be inbound through
+   * prioritization or loss, so its routing stays for the larger of the
+   * delivery timeouts. Nothing is awaited when it names no streams or no
+   * timeout applies (draft-22 §9.9, §3.1.3).
+   */
+  private retireSubscription(subscription: InternalSubscription, streamCount: bigint | undefined): void {
+    const drainMs = subscription.drainMs ?? 0;
+    if (drainMs <= 0 || streamCount === 0n) {
+      this.deleteSubscriptionState(subscription);
+
+      return;
+    }
+
+    this.retireTimers.set(subscription.subscriptionId, setTimeout(() => {
+      this.deleteSubscriptionState(subscription);
+    }, drainMs));
+    log.info('Subscription draining after PUBLISH_DONE', { subscriptionId: subscription.subscriptionId, drainMs });
+  }
+
+  /**
+   * Delete a subscription's state and STOP_SENDING the streams still inbound
+   * for it (draft-22 §9.9).
+   */
+  private deleteSubscriptionState(subscription: InternalSubscription): void {
+    clearTimeout(this.retireTimers.get(subscription.subscriptionId));
+    this.retireTimers.delete(subscription.subscriptionId);
+    if (subscription.trackAlias !== undefined && this.isDraft18) {
+      this.objectRouter.cancelSubgroupStreams(subscription.trackAlias);
+    }
+    this.subscriptionManager.remove(subscription.subscriptionId);
   }
 
   /**
@@ -6235,42 +8262,85 @@ export class MOQTSession {
    * — when `autoMigrate` was set on the session config — kick off migration
    * automatically after the current tick. The `goaway` event is emitted
    * regardless so callers can react (drain pending publishes, warn UI, etc.).
+   *
+   * A GOAWAY on a request stream (draft-22 §9.2) migrates only that request,
+   * so `streamRequestId` is its stream, the event carries it as
+   * `streamRequestId`, and the session keeps running.
    */
-  private handleIncomingGoAwayDraft18(message: GoAwayMessageDraft18): void {
+  private handleIncomingGoAwayDraft18(message: GoAwayMessageDraft18, streamRequestId?: bigint): void {
     const uri = message.newSessionUri && message.newSessionUri.length > 0
-      ? message.newSessionUri
+      ? webTransportUri(message.newSessionUri)
       : undefined;
     log.info('Received GOAWAY', {
       newSessionUri: uri,
       timeoutMs: message.timeout.toString(),
       requestId: message.requestId?.toString(),
+      streamRequestId: streamRequestId?.toString(),
     });
 
-    if (uri) {
-      this._pendingMigrationUri = uri;
+    if (!this.acceptGoAway(message, streamRequestId)) {
+      return;
+    }
+
+    // On the control stream an empty URI means the current one (draft-22 §9.2)
+    const migrationUri = uri ?? this._lastConnectUrl;
+    if (migrationUri && streamRequestId === undefined) {
+      this._pendingMigrationUri = migrationUri;
     }
 
     this.emit('goaway', {
       newSessionUri: uri,
       timeoutMs: message.timeout,
       requestId: message.requestId,
+      streamRequestId,
     });
+    if (streamRequestId !== undefined) {
+      return;
+    }
     this.setState('closing');
 
     // §3.6 auto-migration: only meaningful in worker mode, since main-thread
     // callers own the transport lifecycle themselves.
-    if (uri && this.useWorker && this.workerConfig?.autoMigrate) {
+    if (migrationUri && this.useWorker && this.workerConfig?.autoMigrate) {
       // Defer to the next microtask so the caller's `goaway` handler runs
       // first and can veto by clearing `_pendingMigrationUri` if needed.
       queueMicrotask(() => {
-        if (this._pendingMigrationUri === uri) {
-          this.autoMigrateWithBackoff(uri).catch((err) => {
+        if (this._pendingMigrationUri === migrationUri) {
+          this.autoMigrateWithBackoff(migrationUri).catch((err) => {
             log.error('Auto-migrate failed after retries', err as Error);
             this.emit('error', err as Error);
           });
         }
       });
     }
+  }
+
+  /**
+   * One GOAWAY per control stream and per request stream; a second closes the
+   * session (draft-22 §9.2). In draft-18 a control-stream GOAWAY names one of
+   * our Request IDs, so it must have our parity (even) or the session closes
+   * with INVALID_REQUEST_ID (§10.4). Returns whether the GOAWAY is acceptable.
+   */
+  private acceptGoAway(message: GoAwayMessageDraft18, streamRequestId?: bigint): boolean {
+    const isRepeat = streamRequestId === undefined
+      ? this.goAwayReceived
+      : this.goAwayStreams.has(streamRequestId);
+    if (streamRequestId === undefined) {
+      this.goAwayReceived = true;
+    } else {
+      this.goAwayStreams.add(streamRequestId);
+    }
+
+    const wrongParity = message.requestId !== undefined && message.requestId % 2n !== 0n;
+    if (!isRepeat && !wrongParity) {
+      return true;
+    }
+
+    const code = isRepeat ? SessionErrorCodeDraft18.PROTOCOL_VIOLATION : SessionErrorCodeDraft18.INVALID_REQUEST_ID;
+    const reason = isRepeat ? 'More than one GOAWAY' : `GOAWAY Request ID ${message.requestId} has the wrong parity`;
+    void this.close({ code, reason }).catch(() => {});
+
+    return false;
   }
 
   /**
@@ -6359,9 +8429,11 @@ export class MOQTSession {
     // §14 grease: normalize unknown Session Termination codes to
     // INTERNAL_ERROR before emitting. Preserve the raw code on the event so
     // callers with newer registry knowledge can still inspect it if needed.
-    const normalizedCode = this.isDraft18
-      ? normalizeSessionErrorCode(info.closeCode)
-      : info.closeCode;
+    const normalizedCode = this.isDraft22
+      ? normalizeSessionErrorCodeDraft22(info.closeCode)
+      : this.isDraft18
+        ? normalizeSessionErrorCode(info.closeCode)
+        : info.closeCode;
     this._lastCloseCode = normalizedCode;
     this._lastCloseReason = info.reason;
     this.metrics.counter('moq.session.close', 1, {
@@ -6403,10 +8475,11 @@ export class MOQTSession {
       throw new Error('migrate() is only available in worker mode');
     }
 
-    const target = newSessionUri ?? this._pendingMigrationUri;
-    if (!target) {
+    const requested = newSessionUri ?? this._pendingMigrationUri ?? this._lastConnectUrl;
+    if (!requested) {
       throw new Error('migrate(): no target URI (pass newSessionUri or wait for GOAWAY with newSessionUri)');
     }
+    const target = webTransportUri(requested);
 
     const oldSessionUri = this._lastConnectUrl;
     this.sessionLog.info('Migrating session (draft-18 §3.6)', { from: oldSessionUri, to: target });
@@ -6452,33 +8525,79 @@ export class MOQTSession {
   /**
    * Handle incoming PUBLISH_BLOCKED
    */
-  private handleIncomingPublishBlockedDraft18(message: PublishBlockedMessageDraft18): void {
-    log.info('Received PUBLISH_BLOCKED', { trackAlias: message.trackAlias.toString() });
-    this.emit('publish-blocked', { trackAlias: message.trackAlias } as PublishBlockedEvent);
+  private handleIncomingPublishBlockedDraft18(message: PublishBlockedMessageDraft18, requestId?: bigint): void {
+    log.info('Received PUBLISH_BLOCKED', {
+      trackNamespaceSuffix: message.trackNamespaceSuffix.join('/'),
+      trackName: message.trackName,
+    });
+    this.emit('publish-blocked', {
+      requestId,
+      trackNamespaceSuffix: message.trackNamespaceSuffix,
+      trackName: message.trackName,
+    } as PublishBlockedEvent);
   }
 
-  private handleIncomingPublishSkippedDraft22(message: PublishSkippedMessageDraft22): void {
+  private handleIncomingPublishSkippedDraft22(message: PublishSkippedMessageDraft22, requestId?: bigint): void {
     log.info('Received PUBLISH_SKIPPED (draft-22)', {
       trackNamespaceSuffix: message.trackNamespaceSuffix.join('/'),
       trackName: message.trackName,
     });
     this.emit('publish-skipped', {
+      requestId,
       trackNamespaceSuffix: message.trackNamespaceSuffix,
       trackName: message.trackName,
     });
   }
 
-  private handleIncomingPublishStateNotifyDraft22(message: PublishStateNotifyMessageDraft22): void {
+  private handleIncomingPublishStateNotifyDraft22(message: PublishStateNotifyMessageDraft22, requestId: bigint): void {
+    // It reports whether the publisher has the subscription paused (§9.20.18)
+    const subscription = this.subscriptionManager.findByRequestId(requestId);
+    if (subscription && message.forwardState !== undefined) {
+      subscription.paused = !message.forwardState;
+    }
+
     log.info('Received PUBLISH_STATE_NOTIFY (draft-22)', {
-      paramCount: message.parameters.size,
+      forwardState: message.forwardState,
+      largestLocation: message.largestLocation && `${message.largestLocation.group}/${message.largestLocation.object}`,
+      locationFilter: message.locationFilter?.type,
     });
     this.emit('publish-state-notify', {
-      parameters: message.parameters,
+      forwardState: message.forwardState,
+      largestLocation: message.largestLocation,
+      locationFilter: message.locationFilter,
     });
   }
 
   /**
-   * Send REQUEST_ERROR on a bidi stream
+   * Draft-22 §9.1.6: we advertise no MAX_FILTER_RANGES, so the peer's limit is
+   * the default 0 and any Range exceeds it. §3.3.2 and §9.1.6 require
+   * REQUEST_ERROR INVALID_FILTER for that; no Range Filter is ever applied.
+   */
+  private exceedsOwnFilterRanges(message: RangeFilteredRequest): boolean {
+    const ranges = countRanges(message.rangeFilters ?? []) + countRanges(message.fill?.rangeFilters ?? []);
+
+    return ranges > OWN_MAX_FILTER_RANGES;
+  }
+
+  /** Answer a new request carrying Range Filters with INVALID_FILTER. Returns whether it did. */
+  private async rejectRangeFilters(message: RangeFilteredRequest, writable: WritableStream<Uint8Array>): Promise<boolean> {
+    if (!this.exceedsOwnFilterRanges(message)) {
+      return false;
+    }
+
+    log.warn('Rejecting request with Range Filters', { requestId: message.requestId.toString() });
+    await this.sendRequestErrorOnStream(
+      writable,
+      message.requestId,
+      RequestErrorCodeDraft22.INVALID_FILTER,
+      'Range filters not supported (MAX_FILTER_RANGES 0)',
+    );
+
+    return true;
+  }
+
+  /**
+   * Reject a new request: send REQUEST_ERROR on its bidi stream and FIN it
    */
   private async sendRequestErrorOnStream(
     writable: WritableStream<Uint8Array>,
@@ -6494,6 +8613,8 @@ export class MOQTSession {
     };
     const writer = writable.getWriter();
     await writer.write(this.codec.encodeControlMessage(errorMsg));
+    // §6.4.2.3: a rejection is REQUEST_ERROR followed by a FIN
+    await writer.close();
     writer.releaseLock();
   }
 
@@ -6812,8 +8933,8 @@ export class MOQTSession {
 
         if (this.isDraft16 && publishNamespaceOk.requestId !== undefined) {
           // Draft-16: Look up namespace by requestId
-          namespaceStr = this.announceRequestIdToNamespace.get(publishNamespaceOk.requestId) ?? '';
-          namespace = namespaceStr ? namespaceStr.split('/') : [];
+          namespace = this.announceRequestIdToNamespace.get(publishNamespaceOk.requestId) ?? [];
+          namespaceStr = namespace.join('/');
           log.info('Received PUBLISH_NAMESPACE_OK (draft-16)', {
             requestId: publishNamespaceOk.requestId,
             expires: publishNamespaceOk.expires,
@@ -6829,7 +8950,7 @@ export class MOQTSession {
         }
 
         // Mark namespace as acknowledged
-        const announceInfo = this.announcedNamespaces.get(namespaceStr);
+        const announceInfo = this.announcedNamespaces.get(namespaceKey(namespace));
         if (announceInfo) {
           announceInfo.acknowledged = true;
           this.emit('namespace-acknowledged', { namespace });
@@ -6853,7 +8974,7 @@ export class MOQTSession {
         });
 
         // Remove the failed namespace announcement
-        this.announcedNamespaces.delete(namespaceStr);
+        this.announcedNamespaces.delete(namespaceKey(publishNamespaceError.namespace));
         this.emit('namespace-error', {
           kind: 'publish-namespace',
           namespace: publishNamespaceError.namespace,

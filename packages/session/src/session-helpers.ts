@@ -10,19 +10,33 @@
  */
 
 import {
-  BufferWriter,
+  AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
+  AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
+  AuthTokenAliasType,
+  decodeDraft18AuthToken,
+  Draft18CodecError,
+  isIncompleteDecode,
   ConnectionStateMachine as _ConnectionStateMachine,
+  encodeDraft18AuthToken,
   MessageCodec,
   MOQTVarInt,
+  FetchTypeDraft18,
+  LocationFilterTypeDraft22,
   RequestParameterDraft18,
+  RequestParameterDraft22,
   SubscriptionFilterDraft18,
   TrackPropertyDraft18,
   type ConnectionState,
   type ControlMessageDraft18,
+  type FillParametersDraft22,
+  type LocationFilterDraft22,
+  type RangeFilterDraft22,
   type IProtocolCodec,
+  type StreamResetErrorCodeDraft18,
 } from '@moq-web/core';
 import { base64urlDecode, C4M_TOKEN_TYPE, coseSign1Encode } from '@moq-web/cat';
-import type { RequestAuthToken, SessionState } from './types.js';
+import type { FillOptions, RequestAuthToken, SessionState } from './types.js';
+import { streamResetReason } from './stream-reset-reason.js';
 
 /** Draft-18 subscription filter shape used by the SUBSCRIBE builder. */
 export type Location = { group: bigint; object: bigint };
@@ -42,16 +56,94 @@ export function narrowBigIntToNumber(value: bigint, field: string): number {
   return Number(value);
 }
 
+const P18 = RequestParameterDraft18;
+const P22 = RequestParameterDraft22;
+
+/** The parameters a REQUEST_UPDATE may carry, by the request it updates (d22 §9.5; d18 §10.2) */
+const UPDATE_PARAMETERS: Record<'draft-18' | 'draft-22', Record<string, ReadonlySet<number>>> = {
+  'draft-18': {
+    subscription: new Set([
+      P18.OBJECT_DELIVERY_TIMEOUT, P18.AUTHORIZATION_TOKEN, P18.SUBGROUP_DELIVERY_TIMEOUT, P18.FORWARD,
+      P18.SUBSCRIBER_PRIORITY, P18.SUBSCRIPTION_FILTER, P18.NEW_GROUP_REQUEST,
+    ]),
+    fetch: new Set([P18.AUTHORIZATION_TOKEN, P18.SUBSCRIBER_PRIORITY]),
+    'publish-namespace': new Set([P18.AUTHORIZATION_TOKEN]),
+    'subscribe-namespace': new Set([P18.AUTHORIZATION_TOKEN, P18.TRACK_NAMESPACE_PREFIX]),
+    'subscribe-tracks': new Set([P18.AUTHORIZATION_TOKEN, P18.FORWARD, P18.TRACK_NAMESPACE_PREFIX]),
+  },
+  'draft-22': {
+    subscription: new Set([
+      P22.OBJECT_DELIVERY_TIMEOUT, P22.AUTHORIZATION_TOKEN, P22.SUBGROUP_DELIVERY_TIMEOUT, P22.FORWARD,
+      P22.SUBSCRIBER_PRIORITY, P22.LOCATION_FILTER, P22.FILL_PARAMETERS, P22.SUBGROUP_FILTER,
+      P22.OBJECTID_FILTER, P22.PRIORITY_FILTER, P22.OBJECT_PROPERTY_FILTER, P22.NEW_GROUP_REQUEST,
+    ]),
+    fetch: new Set([P22.AUTHORIZATION_TOKEN, P22.SUBSCRIBER_PRIORITY]),
+    'publish-namespace': new Set([P22.AUTHORIZATION_TOKEN]),
+    'subscribe-namespace': new Set([P22.AUTHORIZATION_TOKEN, P22.TRACK_NAMESPACE_PREFIX]),
+    'subscribe-tracks': new Set([
+      P22.AUTHORIZATION_TOKEN, P22.FORWARD, P22.TRACK_PROPERTY_FILTER, P22.TRACK_NAMESPACE_PREFIX,
+    ]),
+  },
+};
+
+/** A request's kind as the REQUEST_UPDATE parameter lists group it: SUBSCRIBE and PUBLISH are both a subscription */
+function updateTarget(kind: string): string {
+  return kind === 'subscribe' || kind === 'publish' ? 'subscription' : kind;
+}
+
 /**
- * Draft-18 §10.2 subscriber-side delivery timeouts on SUBSCRIBE/FETCH.
- * Each is an even-key MOQT varint; a value of 0 or undefined omits it.
+ * The parameter a REQUEST_UPDATE carries that the request it updates does not
+ * allow, if any: such a parameter closes the session (d22 §9.5, §9.20.1).
  */
-export function addDeliveryTimeoutParams(
+export function disallowedUpdateParameter(
+  message: {
+    forwardState?: boolean;
+    filter?: number;
+    locationFilter?: unknown;
+    fill?: unknown;
+    rangeFilters?: ReadonlyArray<{ type: number }>;
+    authTokens?: readonly unknown[];
+    parameters?: ReadonlyMap<number, unknown>;
+  },
+  kind: string,
+  draft: 'draft-18' | 'draft-22',
+): number | undefined {
+  const allowed = UPDATE_PARAMETERS[draft][updateTarget(kind)];
+  if (!allowed) {
+    return undefined;
+  }
+
+  const carried: number[] = [...(message.parameters?.keys() ?? [])];
+  if (message.forwardState !== undefined) carried.push(P18.FORWARD);
+  if (message.filter !== undefined) carried.push(P18.SUBSCRIPTION_FILTER);
+  if (message.locationFilter !== undefined) carried.push(P22.LOCATION_FILTER);
+  if (message.fill !== undefined) carried.push(P22.FILL_PARAMETERS);
+  if (message.authTokens?.length) carried.push(P18.AUTHORIZATION_TOKEN);
+  for (const filter of message.rangeFilters ?? []) {
+    carried.push(filter.type);
+  }
+
+  return carried.find((type) => !allowed.has(type));
+}
+
+/**
+ * The https URI a client connects a WebTransport session to: a moqt URI has
+ * its scheme replaced by https (draft-22 §6.2.1).
+ */
+export function webTransportUri(uri: string): string {
+  return uri.replace(/^moqt:/i, 'https:');
+}
+
+/**
+ * Subscriber-side timeouts a SUBSCRIBE may carry (d22 §9.20.2-9.20.6, d18
+ * §10.2.3-10.2.6). Each is an even-key MOQT varint; a value of 0 or
+ * undefined omits it.
+ */
+export function addSubscribeTimeoutParams(
   parameters: Map<number, Uint8Array>,
   options?: {
     subgroupDeliveryTimeout?: number;
     objectDeliveryTimeout?: number;
-    fillTimeout?: number;
     rendezvousTimeout?: number;
   },
 ): void {
@@ -62,8 +154,41 @@ export function addDeliveryTimeoutParams(
   };
   set(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
   set(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
-  set(RequestParameterDraft18.FILL_TIMEOUT, options.fillTimeout);
   set(RequestParameterDraft18.RENDEZVOUS_TIMEOUT, options.rendezvousTimeout);
+}
+
+/**
+ * The one timeout a draft-18 FETCH may carry: FILL_TIMEOUT (§10.2.5). 0 is
+ * meaningful there ("only what is immediately available"), so it is sent.
+ */
+export function addFetchTimeoutParams(
+  parameters: Map<number, Uint8Array>,
+  options?: { fillTimeout?: number },
+): void {
+  if (options?.fillTimeout === undefined) return;
+  parameters.set(RequestParameterDraft18.FILL_TIMEOUT, MOQTVarInt.encode(BigInt(options.fillTimeout)));
+}
+
+/**
+ * Delivery timeouts a subscriber sent as message parameters (d22 §5.2, d18
+ * §8). Each is an even-key vi64 in milliseconds; 0 or absent means none.
+ */
+export function parseDeliveryTimeoutParams(
+  params: Map<number, Uint8Array> | undefined,
+): { subgroupMs?: number; objectMs?: number } {
+  const read = (key: number): number | undefined => {
+    const bytes = params?.get(key);
+    if (!bytes || bytes.length === 0) {
+      return undefined;
+    }
+    const ms = MOQTVarInt.decodeNumber(bytes)[0];
+    return ms > 0 ? ms : undefined;
+  };
+
+  return {
+    subgroupMs: read(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT),
+    objectMs: read(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT),
+  };
 }
 
 /**
@@ -116,6 +241,185 @@ export function mapSubscribeFilter(options: {
 }
 
 /**
+ * Draft-22 §9.20.9 LOCATION_FILTER mapping for SUBSCRIBE.
+ *
+ * Same inputs as `mapSubscribeFilter`, but yields draft-22 filter types.
+ * 'absolute-range' has no end object in the API (the whole end group is
+ * included), so it maps to ABSOLUTE_START_GROUP_END. Unknown / omitted values
+ * start at the Next Group (RELATIVE_START 0).
+ */
+export function mapLocationFilter(
+  options: Parameters<typeof mapSubscribeFilter>[0],
+): LocationFilterDraft22 {
+  const startGroup = BigInt(options?.startGroup ?? 0);
+  const startObject = BigInt(options?.startObject ?? 0);
+
+  switch (options?.filterType) {
+    case 'largest-object':
+      return { type: LocationFilterTypeDraft22.NEXT_OBJECT };
+    case 'absolute':
+    case 'absolute-start':
+      return {
+        type: LocationFilterTypeDraft22.ABSOLUTE_START,
+        startLocation: { group: startGroup, object: startObject },
+      };
+    case 'absolute-range': {
+      const endGroup = BigInt(options.endGroup ?? options.startGroup ?? 0);
+      if (endGroup < startGroup) {
+        throw new Error(`SUBSCRIBE endGroup ${endGroup} is before startGroup ${startGroup}`);
+      }
+
+      return {
+        type: LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END,
+        startLocation: { group: startGroup, object: startObject },
+        endGroupDelta: endGroup - startGroup,
+      };
+    }
+    case 'latest':
+    case 'next-group':
+    default:
+      return {
+        type: LocationFilterTypeDraft22.RELATIVE_START,
+        startLocation: { group: 0n, object: 0n },
+      };
+  }
+}
+
+/** Reject a `lastGroups` that is not a positive integer, or that clashes with `startGroup`. */
+function assertFillRange(fill: FillOptions): void {
+  if (fill.lastGroups === undefined) {
+    return;
+  }
+  if (!Number.isInteger(fill.lastGroups) || fill.lastGroups < 1) {
+    throw new Error(`Fill lastGroups must be a positive integer, got ${fill.lastGroups}`);
+  }
+  if (fill.startGroup !== undefined) {
+    throw new Error('Fill lastGroups and startGroup are mutually exclusive');
+  }
+}
+
+/** The fill's range as a Location filter, or undefined to inherit the subscription's. */
+function mapFillFilter(fill: FillOptions): LocationFilterDraft22 | undefined {
+  if (fill.lastGroups !== undefined) {
+    return {
+      type: LocationFilterTypeDraft22.RELATIVE_START,
+      startLocation: { group: BigInt(fill.lastGroups), object: 0n },
+    };
+  }
+  if (fill.startGroup === undefined) {
+    if (fill.endGroup !== undefined) {
+      throw new Error('Fill endGroup requires startGroup');
+    }
+
+    return undefined;
+  }
+
+  const startLocation = { group: BigInt(fill.startGroup), object: BigInt(fill.startObject ?? 0) };
+  if (fill.endGroup === undefined) {
+    return { type: LocationFilterTypeDraft22.ABSOLUTE_START, startLocation };
+  }
+  if (fill.endGroup < fill.startGroup) {
+    throw new Error(`Fill endGroup ${fill.endGroup} is before startGroup ${fill.startGroup}`);
+  }
+
+  return {
+    type: LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END,
+    startLocation,
+    endGroupDelta: BigInt(fill.endGroup - fill.startGroup),
+  };
+}
+
+/**
+ * Draft-22 §9.20.15 FILL_PARAMETERS mapping for SUBSCRIBE / REQUEST_UPDATE.
+ *
+ * `lastGroups` N is RELATIVE_START N (§9.20.9: 1 is the current group); an
+ * absolute start is ABSOLUTE_START, or ABSOLUTE_START_GROUP_END with an
+ * `endGroup`. Only the fields set in `fill` are carried (§9.20.15); a fill
+ * without a range inherits the subscription's Location filter (§3.4).
+ */
+export function mapFillParameters(fill: FillOptions): FillParametersDraft22 {
+  assertFillRange(fill);
+
+  const parameters: FillParametersDraft22 = {};
+  const locationFilter = mapFillFilter(fill);
+  if (locationFilter) {
+    parameters.locationFilter = locationFilter;
+  }
+  // §9.20.5: 0 is meaningful (only immediately available Objects)
+  if (fill.fillTimeout !== undefined) {
+    parameters.fillTimeoutMs = BigInt(fill.fillTimeout);
+  }
+  if (fill.priority !== undefined) {
+    parameters.subscriberPriority = fill.priority;
+  }
+  if (fill.groupOrder !== undefined) {
+    parameters.groupOrder = fill.groupOrder;
+  }
+  if (fill.rangeFilters?.length) {
+    parameters.rangeFilters = fill.rangeFilters;
+  }
+
+  return parameters;
+}
+
+/** Identity of a Range Filter within a request (§3.3.2): type + SetID + Property Type */
+function rangeFilterKey(filter: RangeFilterDraft22): string {
+  return `${filter.type}:${filter.setId}:${filter.propertyType}`;
+}
+
+/**
+ * Ranges held per filter after a REQUEST_UPDATE (§3.3.2, §8.6): a filter
+ * replaces the one with its type, SetID and Property Type; Length 0 (no SetID)
+ * removes every filter of its type; filters not named stay.
+ */
+export function applyRangeFilters(
+  held: ReadonlyMap<string, number>,
+  update: readonly RangeFilterDraft22[],
+): Map<string, number> {
+  const next = new Map(held);
+
+  for (const filter of update) {
+    if (filter.setId !== undefined) {
+      next.set(rangeFilterKey(filter), filter.ranges.length);
+      continue;
+    }
+
+    for (const key of next.keys()) {
+      if (key.startsWith(`${filter.type}:`)) {
+        next.delete(key);
+      }
+    }
+  }
+
+  return next;
+}
+
+/**
+ * Draft-18 §10.12.2 Joining FETCH equivalent of a fill. The publisher starts
+ * at {Joining Location.Group - Joining Start, 0} (relative) or
+ * {Joining Start, 0} (absolute) and ends at the Joining Location, so a start
+ * object, an end group, or no range cannot be expressed.
+ */
+export function mapJoiningFetch(fill: FillOptions): { fetchType: FetchTypeDraft18; joiningStart: bigint } {
+  assertFillRange(fill);
+  if (fill.endGroup !== undefined) {
+    throw new Error('Draft-18 Joining FETCH cannot express fill endGroup');
+  }
+  if (fill.startObject) {
+    throw new Error('Draft-18 Joining FETCH cannot express fill startObject');
+  }
+
+  if (fill.lastGroups !== undefined) {
+    return { fetchType: FetchTypeDraft18.JOINING_RELATIVE, joiningStart: BigInt(fill.lastGroups - 1) };
+  }
+  if (fill.startGroup !== undefined) {
+    return { fetchType: FetchTypeDraft18.JOINING_ABSOLUTE, joiningStart: BigInt(fill.startGroup) };
+  }
+
+  throw new Error('Draft-18 Joining FETCH needs fill lastGroups or startGroup');
+}
+
+/**
  * Draft-18 §3.2.1 — a Track Namespace whose first tuple field begins with
  * '.' (0x2e) is reserved. Refuse to originate outbound requests under any
  * reserved namespace by default; this endpoint has no IANA-registered
@@ -130,45 +434,17 @@ export function assertNotReservedNamespace(namespace: string[], action: string):
   );
 }
 
-/**
- * Draft-18 §10.2.14 TRACK_NAMESPACE_PREFIX serializer. Encodes a namespace
- * tuple as `varint(count) [varint(len) utf8(field)]*`, matching what the wire
- * codec produces.
- */
-export function encodeTrackNamespaceBytes(namespace: string[]): Uint8Array {
-  const writer = new BufferWriter();
-  writer.writeVarInt(BigInt(namespace.length));
-  const encoder = new TextEncoder();
-  for (const field of namespace) {
-    const bytes = encoder.encode(field);
-    writer.writeVarInt(BigInt(bytes.length));
-    writer.writeBytes(bytes);
-  }
-  return writer.toUint8Array();
-}
+/** The only reserved first fields that are rejected rather than passed to the application */
+const UNSERVED_FIRST_FIELDS: ReadonlySet<string> = new Set(['.', '.session']);
 
 /**
- * Inverse of {@link encodeTrackNamespaceBytes}. Returns `undefined` for
- * malformed input rather than throwing — the caller (parameter parser) treats
- * a malformed prefix as best-effort ignored.
+ * Whether a request referencing `namespace` is rejected with DOES_NOT_EXIST.
+ * A namespace whose first field is exactly "." is unusable, and we define no
+ * session-level tracks or namespaces under ".session" (draft-22 §2.4.3, §6.5).
+ * Other reserved namespaces go to the application.
  */
-export function decodeTrackNamespaceBytes(bytes: Uint8Array): string[] | undefined {
-  try {
-    const [count, offset0] = MOQTVarInt.decode(bytes);
-    let offset = offset0;
-    const out: string[] = [];
-    const decoder = new TextDecoder();
-    for (let i = 0; i < Number(count); i++) {
-      const [len, next] = MOQTVarInt.decode(bytes.subarray(offset));
-      offset += next;
-      const l = Number(len);
-      out.push(decoder.decode(bytes.subarray(offset, offset + l)));
-      offset += l;
-    }
-    return out;
-  } catch {
-    return undefined;
-  }
+export function isUnservedNamespace(namespace: string[]): boolean {
+  return namespace.length > 0 && UNSERVED_FIRST_FIELDS.has(namespace[0]);
 }
 
 /**
@@ -182,18 +458,13 @@ export function buildTrackProperties(options?: {
   maxCacheDuration?: number;
   priority?: number;
   groupOrder?: number;
-  priorGroupIdGap?: number;
-  priorObjectIdGap?: number;
+  dynamicGroups?: boolean;
 }): Map<number, Uint8Array> | undefined {
   if (!options) return undefined;
   const props = new Map<number, Uint8Array>();
   const setMs = (key: number, ms: number | undefined) => {
     if (!ms || ms <= 0) return;
     props.set(key, MOQTVarInt.encode(BigInt(ms)));
-  };
-  const setNonNegative = (key: number, n: number | undefined) => {
-    if (n === undefined || n < 0) return;
-    props.set(key, MOQTVarInt.encode(BigInt(Math.floor(n))));
   };
   setMs(TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT, options.subgroupDeliveryTimeout);
   setMs(TrackPropertyDraft18.OBJECT_DELIVERY_TIMEOUT, options.objectDeliveryTimeout);
@@ -210,8 +481,9 @@ export function buildTrackProperties(options?: {
       MOQTVarInt.encode(BigInt(options.groupOrder)),
     );
   }
-  setNonNegative(TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, options.priorGroupIdGap);
-  setNonNegative(TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP, options.priorObjectIdGap);
+  if (options.dynamicGroups) {
+    props.set(TrackPropertyDraft18.DYNAMIC_GROUPS, MOQTVarInt.encode(1n));
+  }
   return props.size > 0 ? props : undefined;
 }
 
@@ -320,6 +592,68 @@ export function encodeRequestAuthTokenBytes(authToken: RequestAuthToken): Uint8A
 }
 
 /**
+ * §8.9: this session advertises no token cache (MAX_AUTH_TOKEN_CACHE_SIZE 0),
+ * so no Alias is registered. Throws a codec error tagged for a session close
+ * with AUTH_TOKEN_CACHE_OVERFLOW if a request's Token registers one, and with
+ * UNKNOWN_AUTH_TOKEN_ALIAS if it uses or deletes one.
+ */
+export function assertNoTokenAlias(message: ControlMessageDraft18): void {
+  // Draft-22 requests carry every Token in `authTokens`; draft-18 keeps one in `parameters`
+  const { authTokens, parameters } = message as {
+    authTokens?: Uint8Array[];
+    parameters?: Map<number, Uint8Array>;
+  };
+  const tokens = authTokens ?? [parameters?.get(RequestParameterDraft18.AUTHORIZATION_TOKEN)];
+
+  for (const bytes of tokens) {
+    if (!bytes) {
+      continue;
+    }
+    if (decodeDraft18AuthToken(bytes).aliasType === AuthTokenAliasType.REGISTER) {
+      throw new Draft18CodecError(
+        'Authorization Token registers an Alias with no token cache (AUTH_TOKEN_CACHE_OVERFLOW)',
+        undefined,
+        AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
+      );
+    }
+    assertNoAliasReference(bytes);
+  }
+}
+
+/**
+ * §8.9: with no token cache an Alias is never registered, so a Token that
+ * uses or deletes one names an Alias that is not currently registered.
+ * Throws a codec error tagged for a session close with UNKNOWN_AUTH_TOKEN_ALIAS.
+ */
+export function assertNoAliasReference(token: Uint8Array): void {
+  const { aliasType } = decodeDraft18AuthToken(token);
+  if (aliasType === AuthTokenAliasType.USE_ALIAS || aliasType === AuthTokenAliasType.DELETE) {
+    throw new Draft18CodecError(
+      'Authorization Token references an Alias that is not registered (UNKNOWN_AUTH_TOKEN_ALIAS)',
+      undefined,
+      AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
+    );
+  }
+}
+
+/**
+ * Draft-18/22 variant of {@link encodeRequestAuthTokenBytes}: the §8.9 Token
+ * structure uses MOQT vi64 integers instead of QUIC varints.
+ */
+export function encodeDraft18AuthBytes(authToken: RequestAuthToken): Uint8Array {
+  return encodeDraft18AuthToken({
+    aliasType: AuthTokenAliasType.USE_VALUE,
+    tokenType: authToken.tokenType ?? C4M_TOKEN_TYPE,
+    tokenValue: authToken.tokenBytes,
+  });
+}
+
+/** Key of a Track Namespace in a map: its fields stay distinct when they contain '/'. */
+export function namespaceKey(namespace: string[]): string {
+  return JSON.stringify(namespace);
+}
+
+/**
  * Draft-18 §7.1 namespace prefix match. Returns true when `prefix` is a
  * proper (or equal) prefix of `candidate` under tuple-equality. Callers use
  * this to route incoming SUBSCRIBEs against locally announced namespaces.
@@ -330,6 +664,18 @@ export function namespacePrefixMatches(prefix: string[], candidate: string[]): b
     if (candidate[i] !== prefix[i]) return false;
   }
   return true;
+}
+
+/**
+ * The peer finished its direction of a request stream (FIN) before the next
+ * full message arrived. Distinct from a reset, which surfaces as the stream's
+ * own error.
+ */
+export class RequestStreamEnded extends Error {
+  constructor() {
+    super('Request stream closed before a full control message was received');
+    this.name = 'RequestStreamEnded';
+  }
 }
 
 /**
@@ -346,6 +692,7 @@ export class Draft18RequestStream {
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   private readonly writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>;
   private readonly closeFn: () => void | Promise<void>;
+  private readonly abortFn: (code: StreamResetErrorCodeDraft18) => void | Promise<void>;
   private readonly codec: IProtocolCodec;
   private pending: Uint8Array = new Uint8Array(0);
   private eof = false;
@@ -355,11 +702,13 @@ export class Draft18RequestStream {
     readable: ReadableStream<Uint8Array>,
     writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>,
     closeFn: () => void | Promise<void>,
+    abortFn: (code: StreamResetErrorCodeDraft18) => void | Promise<void>,
   ) {
     this.codec = codec;
     this.reader = readable.getReader();
     this.writeFn = writeFn;
     this.closeFn = closeFn;
+    this.abortFn = abortFn;
   }
 
   async write(data: Uint8Array): Promise<void> {
@@ -378,15 +727,14 @@ export class Draft18RequestStream {
           this.pending = this.pending.subarray(bytesRead);
           return message as ControlMessageDraft18;
         } catch (err) {
-          const msg = (err as Error).message ?? '';
-          if (!/incomplete|buffer|underflow/i.test(msg)) {
+          if (!isIncompleteDecode(err)) {
             throw err;
           }
         }
       }
 
       if (this.eof) {
-        throw new Error('Request stream closed before a full control message was received');
+        throw new RequestStreamEnded();
       }
 
       const { value, done } = await this.reader.read();
@@ -415,6 +763,23 @@ export class Draft18RequestStream {
     }
     try {
       await this.closeFn();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Cancel the request: STOP_SENDING on the receive side and RESET_STREAM on
+   * the send side (draft-22 §6.4.2.3).
+   */
+  async abort(code: StreamResetErrorCodeDraft18): Promise<void> {
+    try {
+      await this.reader.cancel(streamResetReason(code));
+    } catch {
+      /* ignore */
+    }
+    try {
+      await this.abortFn(code);
     } catch {
       /* ignore */
     }

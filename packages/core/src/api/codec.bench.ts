@@ -163,11 +163,11 @@ describe('Comparison: Direct vs Unified Codec', () => {
   });
 
   // Baseline: direct object construction (no codec overhead)
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  let baselineWire: unknown;
+  // Property writes keep the construction from being optimised away
+  const sink: { wire?: unknown } = {};
   if (DEFAULT_DRAFT !== 'draft-18') {
     bench('direct v14 wire type construction', () => {
-      baselineWire = {
+      sink.wire = {
         type: 0x03,
         requestId: 1,
         trackAlias: 0,
@@ -181,7 +181,7 @@ describe('Comparison: Direct vs Unified Codec', () => {
     });
   } else {
     bench('direct v18 wire type construction', () => {
-      baselineWire = {
+      sink.wire = {
         type: 0x03,
         requestId: 1n,
         trackNamespace: request.trackNamespace,

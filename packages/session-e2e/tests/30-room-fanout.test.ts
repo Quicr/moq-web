@@ -11,7 +11,7 @@
  * peer joining a room learns about every other peer already in the room.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';

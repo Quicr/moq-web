@@ -16,8 +16,8 @@
  * The adapter is intentionally minimal: it captures the shape every demo app
  * needs (connect, publish, subscribe, chat over a well-known namespace).
  * Draft-specific features like `sendRequestUpdate({ newGroupRequest })` or
- * `subscribeTracks({ namespacePrefixParam })` live on optional method groups
- * so callers can feature-detect.
+ * `subscribeTracks()` live on optional method groups so callers can
+ * feature-detect.
  */
 
 import type {

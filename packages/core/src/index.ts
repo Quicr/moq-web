@@ -288,9 +288,17 @@ export type {
   PublishStateNotifyMessageDraft22,
   PublishSkippedMessageDraft22,
   GoAwayMessageDraft22,
-  SubscribeOkMessageDraft22,
-  FetchOkMessageDraft22,
-  RequestOkMessageDraft22,
+  FetchMessageDraft22,
+  LocationFilterDraft22,
+  SubscribeMessageDraft22,
+  FillParametersDraft22,
+  RangeDraft22,
+  RangeFilterDraft22,
+  RangeFilterTypeDraft22,
+  PublishMessageDraft22,
+  RequestUpdateMessageDraft22,
+  TrackStatusMessageDraft22,
+  SubscribeTracksMessageDraft22,
 } from './messages/types.js';
 
 // Type guards
@@ -320,8 +328,8 @@ export {
   MOQT_VARINT_MAX_4BYTE,
   MOQT_VARINT_MAX_5BYTE,
   MOQT_VARINT_MAX_6BYTE,
+  MOQT_VARINT_MAX_7BYTE,
   MOQT_VARINT_MAX_8BYTE,
-  MOQT_VARINT_INVALID_PATTERN,
 } from './encoding/moqt-varint.js';
 
 // VarInt codec abstraction (switchable between QUIC and MOQT)
@@ -355,7 +363,20 @@ export {
 export type { IProtocolCodec, ProtocolCodecCapabilities } from './encoding/protocol-codec.js';
 
 // Draft-18 message codec
-export { Draft18MessageCodec, Draft18CodecError } from './encoding/draft18-message-codec.js';
+export { Draft18MessageCodec, Draft18CodecError, isIncompleteDecode } from './encoding/draft18-message-codec.js';
+export {
+  AUTH_TOKEN_CACHE_OVERFLOW_ERROR,
+  AUTH_TOKEN_FORMAT_ERROR,
+  AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
+  AuthTokenAliasType,
+  decodeDraft18AuthToken,
+  decodeKeyValuePairsToEnd,
+  decodeTrackNamespace,
+  encodeDraft18AuthToken,
+  encodeKeyValuePairs,
+  encodeTrackNamespace,
+} from './encoding/codec-helpers.js';
+export { countRanges, validateRangeFilters, INVALID_FILTER_CODE } from './encoding/draft22-range-filter.js';
 
 // Draft-22 message codec (delegates to Draft18MessageCodec for shared messages)
 export { Draft22MessageCodec } from './encoding/draft22-message-codec.js';
@@ -367,6 +388,7 @@ export {
   normalizePublishDoneErrorCode,
   normalizeSessionErrorCode,
   normalizeStreamResetErrorCode,
+  normalizeSessionErrorCodeDraft22,
 } from './encoding/grease.js';
 
 // Draft-18 §13.3.1 authorization-token replay protection
@@ -463,6 +485,7 @@ export {
 
 // WebTransport wrapper
 export { MOQTransport } from './transport/transport.js';
+export { SendOrder } from './transport/send-order.js';
 
 export type {
   TransportState,

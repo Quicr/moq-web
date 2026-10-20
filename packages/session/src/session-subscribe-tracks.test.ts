@@ -14,10 +14,8 @@ import {
   Draft18MessageCodec,
   MOQTransport,
   MessageTypeDraft18,
-  RequestParameterDraft18,
   SubscriptionFilterDraft18,
   type ControlMessageDraft18,
-  type PublishBlockedMessageDraft18,
   type SubscribeTracksMessageDraft18,
   DEFAULT_DRAFT,
 } from '@moq-web/core';
@@ -105,56 +103,5 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.19 subscribeTracks() send path', ()
     expect(m.filter).toBe(SubscriptionFilterDraft18.NEXT_GROUP_START);
     expect(m.startLocation).toBeUndefined();
     expect(m.endGroupDelta).toBeUndefined();
-  });
-
-  it('carries pass-through raw parameters (e.g. TRACK_NAMESPACE_PREFIX)', async () => {
-    const session = makeSession();
-    const chunks: Uint8Array[] = [];
-    (session as unknown as {
-      sendRequestAndWaitResponse: (bytes: Uint8Array, id: number) => Promise<ControlMessageDraft18>;
-    }).sendRequestAndWaitResponse = async (bytes) => {
-      chunks.push(bytes);
-      return { type: MessageTypeDraft18.REQUEST_OK, requestId: 0n } as ControlMessageDraft18;
-    };
-
-    const extra = new Map<number, Uint8Array>([
-      [RequestParameterDraft18.TRACK_NAMESPACE_PREFIX, new Uint8Array([0x01, 0x02, 0x03])],
-    ]);
-    await session.subscribeTracks(['ns'], undefined, { parameters: extra });
-
-    const [decoded] = Draft18MessageCodec.decode(chunks[0]);
-    const m = decoded as SubscribeTracksMessageDraft18;
-    expect(m.parameters?.get(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX)).toEqual(
-      new Uint8Array([0x01, 0x02, 0x03]),
-    );
-  });
-});
-
-describe.skipIf(!IS_DRAFT_18)('draft-18 §10.20 sendPublishBlocked()', () => {
-  it('writes a PUBLISH_BLOCKED message carrying the trackAlias', async () => {
-    const session = makeSession();
-    const chunks = captureControlWrites(session);
-
-    await session.sendPublishBlocked(0xDECAFn);
-
-    expect(chunks.length).toBe(1);
-    const [decoded] = Draft18MessageCodec.decode(chunks[0]);
-    const m = decoded as PublishBlockedMessageDraft18;
-    expect(m.type).toBe(MessageTypeDraft18.PUBLISH_BLOCKED);
-    expect(m.trackAlias).toBe(0xDECAFn);
-  });
-
-  it('accepts number and string trackAlias inputs and coerces to bigint', async () => {
-    const session = makeSession();
-    const chunks = captureControlWrites(session);
-
-    await session.sendPublishBlocked(7);
-    await session.sendPublishBlocked('42');
-
-    expect(chunks.length).toBe(2);
-    const [m0] = Draft18MessageCodec.decode(chunks[0]);
-    const [m1] = Draft18MessageCodec.decode(chunks[1]);
-    expect((m0 as PublishBlockedMessageDraft18).trackAlias).toBe(7n);
-    expect((m1 as PublishBlockedMessageDraft18).trackAlias).toBe(42n);
   });
 });

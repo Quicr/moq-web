@@ -40,6 +40,7 @@ import {
 } from '../version/constants.js';
 import { MOQTVarInt } from '../encoding/moqt-varint.js';
 import { StreamTypeDraft18 } from '../messages/types.js';
+import { SendOrder } from './send-order.js';
 
 const log = Logger.create('moqt:transport');
 
@@ -63,6 +64,7 @@ export type TransportEventType =
   | 'unidirectional-stream'
   | 'control-message'
   | 'setup-message'
+  | 'setup-stream-ended'
   | 'incoming-bidi-stream'
   | 'error'
   | 'closed';
@@ -88,6 +90,8 @@ export interface TransportEvents {
   'unidirectional-stream': ReadableStream<Uint8Array>;
   'control-message': Uint8Array;
   'setup-message': Uint8Array;
+  /** The peer's control stream ended; `reset` tells a RESET_STREAM from a FIN */
+  'setup-stream-ended': { reset: boolean };
   'incoming-bidi-stream': { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> };
   'error': Error;
   'closed': TransportClosedInfo;
@@ -108,7 +112,8 @@ export interface TransportConfig {
    * MOQT draft version to speak on this connection.
    *
    * Selects the ALPN protocol string and the setup-stream layout.
-   * Defaults to the build-time DEFAULT_DRAFT (draft-16 unless overridden).
+   * Defaults to DEFAULT_DRAFT: draft-18 for the published packages, or
+   * MOQT_VERSION where a Vite/Vitest build defines it.
    * Pass explicitly when your relay fleet mixes drafts.
    */
   draft?: DraftVersion;
@@ -314,7 +319,7 @@ export class MOQTransport {
       if (this.isDraft18) {
         // Draft-18: Setup uses pair of unidirectional streams with 0x2F00 type
         // Create outgoing setup stream
-        const setupStream = await this.transport.createUnidirectionalStream();
+        const setupStream = await this.transport.createUnidirectionalStream({ sendOrder: SendOrder.CONTROL });
         this.setupWriter = setupStream.getWriter();
 
         // Write stream type (0x2F00 as MOQT varint)
@@ -421,16 +426,32 @@ export class MOQTransport {
     const streamReader = stream.getReader();
 
     try {
-      // Read stream type (MOQT varint)
-      const { value: firstChunk, done } = await streamReader.read();
-      if (done || !firstChunk || firstChunk.length === 0) {
-        log.warn('Empty unidirectional stream received');
-        streamReader.releaseLock();
-        return;
+      // Read the stream type (a vi64). It can arrive split across reads, so
+      // keep reading until it decodes (d22 §6.4.1).
+      let firstChunk = new Uint8Array(0);
+      let type: [bigint, number] | undefined;
+      while (!type) {
+        try {
+          type = MOQTVarInt.decode(firstChunk);
+          break;
+        } catch {
+          // Need more bytes
+        }
+
+        const { value, done } = await streamReader.read();
+        if (done || !value) {
+          log.warn('Unidirectional stream ended before its stream type');
+          streamReader.releaseLock();
+          return;
+        }
+
+        const merged = new Uint8Array(firstChunk.length + value.length);
+        merged.set(firstChunk);
+        merged.set(value, firstChunk.length);
+        firstChunk = merged;
       }
 
-      // Decode stream type from first bytes
-      const [streamType, bytesRead] = MOQTVarInt.decode(firstChunk);
+      const [streamType, bytesRead] = type;
       const streamTypeNum = Number(streamType);
 
       log.debug('Draft-18 unidirectional stream received', {
@@ -509,8 +530,9 @@ export class MOQTransport {
         }
         controller.enqueue(value);
       },
-      cancel() {
-        reader.releaseLock();
+      // Reaches the receive stream, so the peer gets STOP_SENDING (d22 §3.4.1)
+      cancel(reason) {
+        return reader.cancel(reason);
       },
     });
   }
@@ -570,6 +592,7 @@ export class MOQTransport {
           const { value, done } = await reader.read();
           if (done) {
             log.debug('Setup stream ended');
+            this.emitSetupStreamEnded(false);
             break;
           }
 
@@ -577,14 +600,23 @@ export class MOQTransport {
           this.emit('setup-message', value);
         }
       } catch (err) {
-        if (this._state === 'connected') {
-          log.error('Setup listener error', err as Error);
-          this.handleError(err as Error);
-        }
+        log.error('Setup listener error', err as Error);
+        this.emitSetupStreamEnded(true);
       }
     };
 
     readLoop();
+  }
+
+  /**
+   * The peer's control stream must stay open for the session's lifetime
+   * (draft-22 §6.3), so its end is reported while the connection is live and
+   * the session decides what to close.
+   */
+  private emitSetupStreamEnded(reset: boolean): void {
+    if (this._state === 'connected' && !this.localCloseInitiated) {
+      this.emit('setup-stream-ended', { reset });
+    }
   }
 
   /**
@@ -685,7 +717,7 @@ export class MOQTransport {
     }
 
     log.debug('Creating bidirectional request stream');
-    const stream = await this.transport.createBidirectionalStream();
+    const stream = await this.transport.createBidirectionalStream({ sendOrder: SendOrder.REQUEST });
     return {
       readable: stream.readable,
       writable: stream.writable,

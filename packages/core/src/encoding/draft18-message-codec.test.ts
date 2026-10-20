@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec';
 import { MOQTVarInt } from './moqt-varint';
+import { AuthTokenAliasType, encodeDraft18AuthToken, encodeFramed, encodeString, encodeTrackNamespace } from './codec-helpers';
 import {
   MessageTypeDraft18,
   Version,
@@ -267,7 +268,6 @@ describe('Draft18MessageCodec', () => {
       const params = new Map<number, Uint8Array>([
         [RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, MOQTVarInt.encode(2000n)],
         [RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, MOQTVarInt.encode(200n)],
-        [RequestParameterDraft18.FILL_TIMEOUT, MOQTVarInt.encode(750n)],
         [RequestParameterDraft18.RENDEZVOUS_TIMEOUT, MOQTVarInt.encode(1500n)],
       ]);
       const message: SubscribeMessageDraft18 = {
@@ -286,7 +286,6 @@ describe('Draft18MessageCodec', () => {
       const p = d.parameters!;
       expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT)!)[0])).toBe(2000);
       expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT)!)[0])).toBe(200);
-      expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.FILL_TIMEOUT)!)[0])).toBe(750);
       expect(Number(MOQTVarInt.decode(p.get(RequestParameterDraft18.RENDEZVOUS_TIMEOUT)!)[0])).toBe(1500);
     });
   });
@@ -362,6 +361,23 @@ describe('Draft18MessageCodec', () => {
       expect(d.trackNamespace).toEqual(['pub', 'ns']);
       expect(d.trackName).toBe('audio');
       expect(d.forwardState).toBe(true);
+    });
+
+    it('roundtrips PUBLISH with an AUTHORIZATION_TOKEN (§10.2.2)', () => {
+      const token = encodeDraft18AuthToken({ aliasType: AuthTokenAliasType.USE_VALUE, tokenType: 7, tokenValue: new Uint8Array([1, 2]) });
+      const message: PublishMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH,
+        requestId: 5n,
+        trackAlias: 1n,
+        trackNamespace: ['pub'],
+        trackName: 'audio',
+        forwardState: true,
+        parameters: new Map([[RequestParameterDraft18.AUTHORIZATION_TOKEN, token]]),
+      };
+
+      const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+      expect((decoded as PublishMessageDraft18).parameters).toEqual(message.parameters);
     });
 
     it('roundtrips PUBLISH with §12 track properties', () => {
@@ -556,6 +572,24 @@ describe('Draft18MessageCodec', () => {
       expect(d.largestLocation).toEqual({ group: 100n, object: 3n });
     });
 
+    it('roundtrips REQUEST_OK with the SUBSCRIPTION_FILTER of a PUBLISH_OK (§10.2.9)', () => {
+      const message: RequestOkMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_OK,
+        requestId: 0n,
+        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
+        startLocation: { group: 4n, object: 1n },
+        endGroupDelta: 3n,
+      };
+
+      const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+      expect(decoded).toMatchObject({
+        filter: SubscriptionFilterDraft18.ABSOLUTE_RANGE,
+        startLocation: { group: 4n, object: 1n },
+        endGroupDelta: 3n,
+      });
+    });
+
     it('leaves largestLocation undefined when omitted on the wire', () => {
       const message: RequestOkMessageDraft18 = {
         type: MessageTypeDraft18.REQUEST_OK,
@@ -597,6 +631,42 @@ describe('Draft18MessageCodec', () => {
       expect(d.trackName).toBe('history');
       expect(d.startLocation).toEqual({ group: 0n, object: 0n });
       expect(d.endLocation).toEqual({ group: 100n, object: 50n });
+    });
+
+    it('keeps SUBSCRIBER_PRIORITY 0 on the wire (§10.2.7)', () => {
+      const message: FetchMessageDraft18 = {
+        type: MessageTypeDraft18.FETCH,
+        requestId: 22n,
+        fetchType: FetchTypeDraft18.STANDALONE,
+        joiningFlag: false,
+        trackNamespace: ['ns'],
+        trackName: 't',
+        subscriberPriority: 0,
+        groupOrder: GroupOrder.ASCENDING,
+        startLocation: { group: 0n, object: 0n },
+        endLocation: { group: 1n, object: 0n },
+      };
+
+      const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+      expect((decoded as FetchMessageDraft18).subscriberPriority).toBe(0);
+    });
+
+    it('decodes an omitted SUBSCRIBER_PRIORITY as 128 (§10.2.7)', () => {
+      const wire = encodeFramed(MessageTypeDraft18.FETCH, (w) => {
+        w.writeVarInt(22n); // request id
+        w.writeVarInt(BigInt(FetchTypeDraft18.STANDALONE));
+        encodeTrackNamespace(w, ['ns']);
+        encodeString(w, 't');
+        for (const value of [0n, 0n, 1n, 0n]) {
+          w.writeVarInt(value); // start and end locations
+        }
+        w.writeVarInt(0n); // no parameters
+      });
+
+      const [decoded] = Draft18MessageCodec.decode(wire);
+
+      expect((decoded as FetchMessageDraft18).subscriberPriority).toBe(128);
     });
 
     it('roundtrips JOINING_RELATIVE fetch (type 0x2)', () => {
@@ -732,12 +802,9 @@ describe('Draft18MessageCodec', () => {
       expect(() => Draft18MessageCodec.decode(bad)).toThrow(Draft18CodecError);
     });
 
-    it('roundtrips FETCH with subscriber delivery-timeout parameters', () => {
+    it('roundtrips FETCH with FILL_TIMEOUT', () => {
       const params = new Map<number, Uint8Array>([
-        [RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT, MOQTVarInt.encode(500n)],
-        [RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT, MOQTVarInt.encode(50n)],
         [RequestParameterDraft18.FILL_TIMEOUT, MOQTVarInt.encode(250n)],
-        [RequestParameterDraft18.RENDEZVOUS_TIMEOUT, MOQTVarInt.encode(1000n)],
       ]);
       const message: FetchMessageDraft18 = {
         type: MessageTypeDraft18.FETCH,
@@ -756,10 +823,7 @@ describe('Draft18MessageCodec', () => {
       const [decoded] = Draft18MessageCodec.decode(encoded);
       const d = decoded as FetchMessageDraft18;
       const decodedParams = d.parameters!;
-      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.SUBGROUP_DELIVERY_TIMEOUT)!)[0])).toBe(500);
-      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.OBJECT_DELIVERY_TIMEOUT)!)[0])).toBe(50);
       expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.FILL_TIMEOUT)!)[0])).toBe(250);
-      expect(Number(MOQTVarInt.decode(decodedParams.get(RequestParameterDraft18.RENDEZVOUS_TIMEOUT)!)[0])).toBe(1000);
     });
 
     it('encodeFetch throws when joining without subscribeRequestId', () => {
@@ -797,7 +861,7 @@ describe('Draft18MessageCodec', () => {
   });
 
   describe('GOAWAY', () => {
-    it('roundtrips GOAWAY without URI (control stream)', () => {
+    it('roundtrips GOAWAY without URI', () => {
       const message: GoAwayMessageDraft18 = {
         type: MessageTypeDraft18.GOAWAY,
         timeout: 5000n,
@@ -813,7 +877,7 @@ describe('Draft18MessageCodec', () => {
       expect(d.requestId).toBeUndefined();
     });
 
-    it('roundtrips GOAWAY with URI (control stream)', () => {
+    it('roundtrips GOAWAY with URI', () => {
       const message: GoAwayMessageDraft18 = {
         type: MessageTypeDraft18.GOAWAY,
         newSessionUri: 'moqt://new-relay.example.com/moq',
@@ -829,7 +893,7 @@ describe('Draft18MessageCodec', () => {
       expect(d.requestId).toBeUndefined();
     });
 
-    it('roundtrips GOAWAY with Request ID (request stream)', () => {
+    it('roundtrips GOAWAY with Request ID (control stream)', () => {
       const message: GoAwayMessageDraft18 = {
         type: MessageTypeDraft18.GOAWAY,
         timeout: 2000n,
@@ -1025,6 +1089,23 @@ describe('Draft18MessageCodec', () => {
       expect(d.type).toBe(MessageTypeDraft18.REQUEST_UPDATE);
       expect(d.requestId).toBe(1n);
       expect(d.forwardState).toBe(false);
+    });
+
+    it('roundtrips REQUEST_UPDATE with a SUBSCRIPTION_FILTER (§10.9.1)', () => {
+      const message: RequestUpdateMessageDraft18 = {
+        type: MessageTypeDraft18.REQUEST_UPDATE,
+        requestId: 3n,
+        forwardState: true,
+        filter: SubscriptionFilterDraft18.ABSOLUTE_START,
+        startLocation: { group: 42n, object: 5n },
+      };
+
+      const [decoded] = Draft18MessageCodec.decode(Draft18MessageCodec.encode(message));
+
+      const d = decoded as RequestUpdateMessageDraft18;
+      expect(d.filter).toBe(SubscriptionFilterDraft18.ABSOLUTE_START);
+      expect(d.startLocation).toEqual({ group: 42n, object: 5n });
+      expect(d.parameters).toBeUndefined();
     });
   });
 
@@ -1222,24 +1303,17 @@ describe('Draft18MessageCodec', () => {
       expect(d.endGroupDelta).toBeUndefined();
     });
 
-    it('preserves unknown pass-through parameters', () => {
-      const passThrough = new Map<number, Uint8Array>([
-        [0x40, new Uint8Array([0xde, 0xad, 0xbe, 0xef])],
-      ]);
+    it('rejects an unknown parameter (§10.2)', () => {
       const message: SubscribeTracksMessageDraft18 = {
         type: MessageTypeDraft18.SUBSCRIBE_TRACKS,
         requestId: 10n,
         trackNamespacePrefix: ['ns'],
         forwardState: true,
         filter: SubscriptionFilterDraft18.NEXT_GROUP_START,
-        parameters: passThrough,
+        parameters: new Map([[0x40, new Uint8Array([0xde, 0xad, 0xbe, 0xef])]]),
       };
 
-      const encoded = Draft18MessageCodec.encode(message);
-      const [decoded] = Draft18MessageCodec.decode(encoded);
-
-      const d = decoded as SubscribeTracksMessageDraft18;
-      expect(d.parameters?.get(0x40)).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+      expect(() => Draft18MessageCodec.decode(Draft18MessageCodec.encode(message))).toThrow(/Unknown parameter 0x40/);
     });
   });
 
@@ -1247,7 +1321,8 @@ describe('Draft18MessageCodec', () => {
     it('roundtrips PUBLISH_BLOCKED', () => {
       const message: PublishBlockedMessageDraft18 = {
         type: MessageTypeDraft18.PUBLISH_BLOCKED,
-        trackAlias: 999n,
+        trackNamespaceSuffix: ['a', 'b'],
+        trackName: 't',
       };
 
       const encoded = Draft18MessageCodec.encode(message);
@@ -1255,7 +1330,8 @@ describe('Draft18MessageCodec', () => {
 
       const d = decoded as PublishBlockedMessageDraft18;
       expect(d.type).toBe(MessageTypeDraft18.PUBLISH_BLOCKED);
-      expect(d.trackAlias).toBe(999n);
+      expect(d.trackNamespaceSuffix).toEqual(['a', 'b']);
+      expect(d.trackName).toBe('t');
     });
   });
 
@@ -1268,7 +1344,7 @@ describe('Draft18MessageCodec', () => {
   // and §1.4.1 (MOQT varints).
   // ==========================================================================
   describe('golden bytes (§10 wire format)', () => {
-    it('GOAWAY control-stream with empty URI and zero timeout (§10.4)', () => {
+    it('GOAWAY on a request stream with empty URI and zero timeout (§10.4)', () => {
       // Framing: Type=0x10 (vi) | Length=2 (16-bit BE) | UriLen=0 (vi) | Timeout=0 (vi)
       const expected = new Uint8Array([0x10, 0x00, 0x02, 0x00, 0x00]);
       const encoded = Draft18MessageCodec.encode({
@@ -1278,7 +1354,7 @@ describe('Draft18MessageCodec', () => {
       expect(Array.from(encoded)).toEqual(Array.from(expected));
     });
 
-    it('GOAWAY control-stream with URI "/v2" and timeout=5000 (§10.4)', () => {
+    it('GOAWAY on a request stream with URI "/v2" and timeout=5000 (§10.4)', () => {
       // Type=0x10 | Length=6 | UriLen=3 | "/v2" | Timeout=5000 (14-bit vi = 0x93 0x88)
       const expected = new Uint8Array([
         0x10, 0x00, 0x06,
@@ -1293,7 +1369,7 @@ describe('Draft18MessageCodec', () => {
       expect(Array.from(encoded)).toEqual(Array.from(expected));
     });
 
-    it('GOAWAY request-stream includes trailing Request ID (§10.4)', () => {
+    it('GOAWAY on the control stream includes trailing Request ID (§10.4)', () => {
       // Type=0x10 | Length=3 | UriLen=0 | Timeout=0 | RequestID=42
       const expected = new Uint8Array([0x10, 0x00, 0x03, 0x00, 0x00, 0x2a]);
       const encoded = Draft18MessageCodec.encode({
@@ -1314,12 +1390,13 @@ describe('Draft18MessageCodec', () => {
       expect(Array.from(encoded)).toEqual(Array.from(expected));
     });
 
-    it('PUBLISH_BLOCKED with small track alias (§10.19)', () => {
-      // Type=0x0F | Length=1 | TrackAlias=5 (vi)
-      const expected = new Uint8Array([0x0f, 0x00, 0x01, 0x05]);
+    it('PUBLISH_BLOCKED carries a Track Namespace Suffix and Track Name (§10.20)', () => {
+      // Type=0x0F | Length=6 | 1 field | len 2 "ab" | name len 1 "t"
+      const expected = new Uint8Array([0x0f, 0x00, 0x06, 0x01, 0x02, 0x61, 0x62, 0x01, 0x74]);
       const encoded = Draft18MessageCodec.encode({
         type: MessageTypeDraft18.PUBLISH_BLOCKED,
-        trackAlias: 5n,
+        trackNamespaceSuffix: ['ab'],
+        trackName: 't',
       });
       expect(Array.from(encoded)).toEqual(Array.from(expected));
     });

@@ -162,6 +162,23 @@ export class MSFSession {
   }
 
   /**
+   * Follow a peer's catalog through a subscription that already exists, such
+   * as one a relay pushed (SUBSCRIBE_TRACKS, `incoming-publish`). Catalogs go
+   * to `onCatalog`, and the current group is filled so a late joiner gets the
+   * current catalog. The caller keeps the returned follower.
+   */
+  async followCatalog(
+    subscriptionId: number,
+    onCatalog: (catalog: FullCatalog, isIndependent: boolean) => void,
+    onError?: (error: Error) => void
+  ): Promise<CatalogSubscriber> {
+    const follower = createCatalogSubscriber(this.session, this.namespace, { onCatalog, onError });
+    await follower.follow(subscriptionId);
+
+    return follower;
+  }
+
+  /**
    * Unsubscribe from the catalog track
    */
   async unsubscribeCatalog(): Promise<void> {

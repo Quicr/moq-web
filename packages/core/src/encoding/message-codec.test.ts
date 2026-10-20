@@ -26,21 +26,16 @@ import {
   RequestsBlockedMessage,
   SubscribeMessage,
   SubscribeUpdateMessage,
-  SubscribeOkMessage,
   SubscribeErrorMessage,
   UnsubscribeMessage,
-  PublishDoneMessage,
   PublishMessage,
   PublishOkMessage,
   PublishErrorMessage,
   PublishNamespaceMessage,
-  PublishNamespaceOkMessage,
   PublishNamespaceErrorMessage,
   PublishNamespaceDoneMessage,
   PublishNamespaceCancelMessage,
   SubscribeNamespaceMessage,
-  SubscribeNamespaceOkMessage,
-  SubscribeNamespaceErrorMessage,
   UnsubscribeNamespaceMessage,
   FetchMessage,
   FetchOkMessage,
@@ -63,7 +58,7 @@ describe('MessageCodec', () => {
         const message: ClientSetupMessage = {
           type: MessageType.CLIENT_SETUP,
           supportedVersions: [Version.DRAFT_16],
-          parameters: new Map([
+          parameters: new Map<SetupParameter, number | string | Uint8Array>([
             [SetupParameter.PATH, '/moq'],
             [SetupParameter.MAX_REQUEST_ID, 100],
           ]),
@@ -818,7 +813,7 @@ describe('ObjectCodec', () => {
       expect(bytesConsumed).toBe(encoded.length);
     });
 
-    it.skipIf(DEFAULT_DRAFT === 'draft-18')('decodes standard MOQT subgroup header (0x04)', () => {
+    it.skipIf(DEFAULT_DRAFT === 'draft-18' || DEFAULT_DRAFT === 'draft-22')('decodes standard MOQT subgroup header (0x04)', () => {
       // Manually construct a standard MOQT subgroup header
       // Standard MOQT format: type(varint) + trackAlias(varint) + groupId(varint) + subgroupId(varint) + publisherPriority(varint)
       const buffer = new Uint8Array([
@@ -1055,7 +1050,7 @@ describe('AuthorizationToken', () => {
     const message: ClientSetupMessage = {
       type: MessageType.CLIENT_SETUP,
       supportedVersions: [Version.DRAFT_16],
-      parameters: new Map([
+      parameters: new Map<SetupParameter, number | string | Uint8Array>([
         [SetupParameter.MAX_REQUEST_ID, 100],
         [SetupParameter.AUTHORIZATION_TOKEN, authTokenBytes],
       ]),

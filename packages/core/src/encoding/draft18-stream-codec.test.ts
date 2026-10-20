@@ -349,6 +349,18 @@ describe('Draft18StreamCodec', () => {
       expect(decoded.objectIdDelta).toBeUndefined();
     });
 
+    it('accepts the PROPERTIES flag with Properties Length 0 (§11.1.2)', () => {
+      // Flags: ZERO subgroup | PROPERTIES = 0x20, then Properties Length 0,
+      // then Payload Length 0.
+      const encoded = new Uint8Array([FetchObjectFlags.PROPERTIES, 0x00, 0x00]);
+
+      const [decoded, bytesRead] = Draft18StreamCodec.decodeFetchObject(encoded);
+
+      expect(decoded.objectProperties?.size).toBe(0);
+      expect(decoded.payloadLength).toBe(0n);
+      expect(bytesRead).toBe(encoded.length);
+    });
+
     it('encodes 0x40 for datagram-mode object', () => {
       const obj: FetchObjectDraft18 = {
         subgroupMode: FetchSubgroupMode.ZERO,

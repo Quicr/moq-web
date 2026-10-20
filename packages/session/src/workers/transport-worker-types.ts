@@ -49,10 +49,11 @@ export type TransportWorkerRequest =
   | { type: 'disconnect'; code?: number; reason?: string }
   | { type: 'send-control'; data: Uint8Array }
   | { type: 'send-datagram'; data: Uint8Array }
-  | { type: 'create-stream'; id: number }
+  | { type: 'create-stream'; id: number; sendOrder?: number }
   | { type: 'create-bidi-stream'; id: number }
   | { type: 'write-stream'; streamId: number; data: Uint8Array; close?: boolean }
-  | { type: 'close-stream'; streamId: number };
+  | { type: 'close-stream'; streamId: number }
+  | { type: 'abort-stream'; streamId: number; code: number };
 
 /**
  * A single metric event forwarded from the transport worker to the main
@@ -81,6 +82,7 @@ export type TransportWorkerResponse =
   | { type: 'state-change'; state: TransportState }
   | { type: 'control-message'; data: Uint8Array }
   | { type: 'setup-message'; data: Uint8Array }
+  | { type: 'setup-stream-ended'; reset: boolean }
   | { type: 'datagram'; data: Uint8Array }
   | { type: 'stream-created'; id: number; streamId: number }
   | { type: 'bidi-stream-created'; id: number; streamId: number }
@@ -89,6 +91,8 @@ export type TransportWorkerResponse =
   | { type: 'incoming-bidi-stream'; streamId: number }
   | { type: 'stream-data'; streamId: number; data: Uint8Array }
   | { type: 'stream-closed'; streamId: number }
+  | { type: 'stream-reset'; streamId: number; code?: number; message?: string }
+  | { type: 'stream-send-stopped'; streamId: number }
   | { type: 'metric'; metric: TransportWorkerMetricEvent }
   | { type: 'error'; message: string; code?: number };
 

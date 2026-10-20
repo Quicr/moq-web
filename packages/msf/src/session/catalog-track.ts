@@ -8,7 +8,7 @@
  */
 
 import { Logger } from '@moq-web/core';
-import type { MOQTSession } from '@moq-web/session';
+import type { FillOptions, MOQTSession, SubscribeOptions } from '@moq-web/session';
 import { CATALOG_TRACK_NAME } from '../version.js';
 import { parseCatalogFromBytes, serializeCatalogToBytes } from '../catalog/index.js';
 import { applyDelta } from '../catalog/delta.js';
@@ -21,6 +21,13 @@ import {
 } from './group-numbering.js';
 
 const log = Logger.create('moqt:msf:catalog-track');
+
+/**
+ * A catalog group starts with a full catalog (object 0) followed by its
+ * deltas (§5.7), so the current group is the current catalog. Fill it for
+ * late joiners (draft-22 §3.5).
+ */
+const CURRENT_GROUP_FILL: FillOptions = { lastGroups: 1 };
 
 /**
  * Error thrown when catalog operations fail
@@ -86,8 +93,8 @@ export class CatalogSubscriber {
   /**
    * Start subscribing to the catalog
    *
-   * Uses SUBSCRIBE to establish the subscription, then FETCHes from
-   * largestGroupId to retrieve the current catalog (for late subscribers).
+   * Uses SUBSCRIBE to establish the subscription, with a fill of the current
+   * group so late subscribers get the current catalog.
    */
   async subscribe(): Promise<void> {
     if (this.subscriptionId !== null) {
@@ -104,9 +111,47 @@ export class CatalogSubscriber {
     this.subscriptionId = await this.session.subscribe(
       this.namespace,
       CATALOG_TRACK_NAME,
-      {},
+      this.catalogSubscribeOptions,
       this.handleObject.bind(this)
     );
+  }
+
+  /**
+   * Follow a catalog track whose subscription already exists, such as one a
+   * relay pushed with PUBLISH: parse its objects and fill the current group.
+   */
+  async follow(subscriptionId: number): Promise<void> {
+    if (this.subscriptionId !== null) {
+      throw new CatalogTrackError('Already subscribed');
+    }
+
+    this.subscriptionId = subscriptionId;
+    this.session.setSubscriptionCallback(subscriptionId, this.handleObject.bind(this));
+    if (this.catalogFill) {
+      await this.session.requestFill(subscriptionId, this.catalogFill);
+    }
+  }
+
+  /**
+   * Draft-22 starts the subscription at the Next Object and fills the current
+   * group up to the Largest Object, so a delta added to the group after the
+   * SUBSCRIBE is processed is in neither gap (draft-22 §3.4, §3.5). Draft-18
+   * has no fill here, so it starts at the Next Group.
+   */
+  private get catalogSubscribeOptions(): SubscribeOptions {
+    if (this.session.draft !== 'draft-22') {
+      return { fill: this.catalogFill };
+    }
+
+    return { filterType: 'largest-object', fill: this.catalogFill };
+  }
+
+  /**
+   * Draft-22 only. Draft-18 fills with a Joining FETCH, which the Akamai
+   * relay answers by tearing down the session (see `handleSubscribeOk`).
+   */
+  private get catalogFill(): FillOptions | undefined {
+    return this.session.draft === 'draft-22' ? CURRENT_GROUP_FILL : undefined;
   }
 
   /**
@@ -179,10 +224,10 @@ export class CatalogSubscriber {
         this.callback(catalog, isIndependent);
       } else if (isDeltaCatalog(catalog)) {
         // Delta update - apply to current state
+        // A live delta can beat the fill to the group's full catalog.
         if (this.currentCatalog === null) {
-          throw new CatalogTrackError(
-            'Received delta before full catalog'
-          );
+          log.debug('Skipping delta received before the full catalog');
+          return;
         }
         this.currentCatalog = applyDelta(this.currentCatalog, catalog);
         this.callback(this.currentCatalog, false);

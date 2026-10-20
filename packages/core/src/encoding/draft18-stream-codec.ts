@@ -14,6 +14,7 @@
 import { Logger } from '../utils/logger.js';
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
+import { MAX_SAFE_KEY, readKvpKey, readKvpLength, skipKvpValue } from './codec-helpers.js';
 import {
   StreamTypeDraft18,
   FetchSubgroupMode,
@@ -97,12 +98,11 @@ export class Draft18StreamCodecError extends Error {
 // =============================================================================
 // Stream Codec Safety Bounds (B2 SEC)
 // =============================================================================
-// Data-stream object headers, datagrams, and fetch objects carry small metadata
-// blocks (properties, KVPs). None of these should legitimately exceed a few KiB
-// on the wire. Any decoded length beyond MAX_PROPERTIES_LENGTH is treated as a
+// Data-stream object headers, datagrams, and fetch objects carry metadata
+// blocks (properties, KVPs) that stay far below MAX_PROPERTIES_LENGTH. Any
+// decoded length beyond it is treated as a
 // malicious peer and rejected before we allocate a buffer or copy bytes.
-export const MAX_PROPERTIES_LENGTH = 4096;
-export const MAX_PROPERTY_VALUE_LENGTH = 4096;
+export const MAX_PROPERTIES_LENGTH = 1 << 20;
 
 function assertStreamBound(actual: number, limit: number, what: string): void {
   // Reject NaN/negatives from a corrupt varint decode as well as overflows.
@@ -321,9 +321,8 @@ export class Draft18StreamCodec {
    * Type values with both STATUS (0x20) and END_OF_GROUP (0x02) set are invalid.
    */
   static isDatagramType(type: number): boolean {
-    if ((type & 0xd0) !== 0x00 && (type & 0xd0) !== 0x00) {
-      // sanity — bits 4, 6, 7 must be 0
-    }
+    // Type is a vi64: a value past one byte is not a datagram type, whatever its low byte
+    if (type > 0xff) return false;
     // Form check: bits 4, 6, 7 must be zero → (type & 0xd0) === 0
     if ((type & 0xd0) !== 0) return false;
     // Invalid: STATUS + END_OF_GROUP
@@ -582,9 +581,6 @@ export class Draft18StreamCodec {
     let objectProperties: Map<number, Uint8Array> | undefined;
     if (hasProperties) {
       const propsLength = reader.readVarIntNumber();
-      if (propsLength === 0) {
-        throw new Draft18StreamCodecError('PROPERTIES flag set with zero-length properties (spec §11.4.4)');
-      }
       assertStreamBound(propsLength, MAX_PROPERTIES_LENGTH, 'FetchObject propsLength');
       const propsEnd = reader.offset + propsLength;
       objectProperties = Draft18StreamCodec.decodeProperties(reader, propsEnd);
@@ -650,23 +646,34 @@ export class Draft18StreamCodec {
 
   private static decodeProperties(reader: Draft18BufferReader, endOffset: number): Map<number, Uint8Array> {
     const props = new Map<number, Uint8Array>();
-    let previousKey = 0;
+    let previousKey = 0n;
 
     while (reader.offset < endOffset) {
-      const deltaKey = reader.readVarIntNumber();
-      const key = previousKey + deltaKey;
-      previousKey = key;
+      const bigKey = readKvpKey(reader, previousKey);
+      previousKey = bigKey;
 
+      // §13: grease codepoints above 2^53 are unknown properties; skip them.
+      if (bigKey > MAX_SAFE_KEY) {
+        skipKvpValue(reader, bigKey);
+        continue;
+      }
+
+      const key = Number(bigKey);
       if (key % 2 === 0) {
         // Even key: value is a single varint
         const value = reader.readVarInt();
         props.set(key, MOQTVarInt.encode(value));
       } else {
         // Odd key: length + bytes
-        const length = reader.readVarIntNumber();
-        assertStreamBound(length, MAX_PROPERTY_VALUE_LENGTH, 'property value length');
-        props.set(key, reader.readBytes(length));
+        props.set(key, reader.readBytes(readKvpLength(reader, 'property value length')));
       }
+    }
+
+    // §8.3: the length bounds the sequence, so the last property must end on it
+    if (reader.offset !== endOffset) {
+      throw new Draft18StreamCodecError(
+        `Property overruns Properties Length by ${reader.offset - endOffset} bytes`,
+      );
     }
 
     return props;
