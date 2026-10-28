@@ -37,7 +37,7 @@ export interface ConnectMoqtOptions {
    * What the caller intends to do on this session. When a relay-vendor auth
    * adapter is selected in transport config, the connector mints a token
    * with matching capability and attaches it per the adapter (Cloudflare =
-   * `?jwt=<token>` on the URL). When no adapter is selected this hint is
+   * token as the first URL path segment). When no adapter is selected this hint is
    * ignored and the connect path is unchanged.
    */
   auth?: { operations: AuthOperation[] };

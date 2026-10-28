@@ -25,9 +25,11 @@
  *     3. `mintToken` serves from this cache only — no API call is made, and
  *        apiToken/accountId are not required.
  *
- * In both modes `applyToUrl` appends `?jwt=<token>` to the WebTransport URL
- * — the token rides the HTTP/3 CONNECT and the relay sees it either as the
- * query string (browser) or as a MOQT SETUP-carried URL (raw QUIC).
+ * In both modes `applyToUrl` puts the token in the first path segment of the
+ * WebTransport URL (`https://<relay-host>/<token>`) — the relay uses it to
+ * select the tenant relay; a missing/invalid token closes the session with
+ * `scope resolution failed` (code 3). With CAT enabled the CAT rides
+ * separately in SETUP AUTHORIZATION_TOKEN (type 1); both are required.
  */
 
 import type {
@@ -409,11 +411,14 @@ export const cloudflareAdapter: AuthAdapter = {
   id: 'cloudflare-moq-rs',
   displayName: 'Cloudflare moq-rs',
   description:
-    'Provisions scoped JWTs against the Cloudflare MoQ API and passes them to the relay via ?jwt=<token>.',
+    'Provisions scoped JWTs against the Cloudflare MoQ API and passes them to the relay as the first URL path segment.',
   mintToken: mintCloudflareToken,
   applyToUrl(url, token) {
     const u = new URL(url);
-    u.searchParams.set('jwt', token.token);
+    // Token is the first path segment; keep any path the user configured after it.
+    const rest = u.pathname.replace(/^\/+/, '');
+    u.pathname = `/${token.token}${rest ? `/${rest}` : ''}`;
+    u.searchParams.delete('jwt');
     return u.toString();
   },
   SettingsPanel: CloudflareAuthPanel,
