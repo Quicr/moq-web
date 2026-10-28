@@ -47,7 +47,10 @@ function diffCatalogs(prev: FullCatalog | undefined, next: FullCatalog): string[
 
 export function App() {
   const cfg = useTransportConfig();
-  const { applyProfile, setRelay, setPublisher, setSubscriber, setPlayback, setTargetLatency } = useTransportActions();
+  const {
+    applyProfile, setRelay, setPublisher, setSubscriber, setPlayback, setTargetLatency,
+    setAuthProvider, setAuthProviderState,
+  } = useTransportActions();
 
   useEffect(() => {
     if (cfg.profile === 'interactive') applyProfile('live-streaming');
@@ -64,14 +67,21 @@ export function App() {
       if (shared.subscriber) setSubscriber(shared.subscriber);
       if (shared.playback) setPlayback(shared.playback);
       if (shared.targetLatencyMs != null) setTargetLatency(shared.targetLatencyMs);
+      if (typeof shared.auth?.providerId === 'string') {
+        setAuthProvider(shared.auth.providerId);
+        if (shared.auth.providerState) setAuthProviderState(shared.auth.providerState);
+      }
     } catch { /* ignore malformed config */ }
-  }, [applyProfile, setRelay, setPublisher, setSubscriber, setPlayback, setTargetLatency]);
+  }, [applyProfile, setRelay, setPublisher, setSubscriber, setPlayback, setTargetLatency, setAuthProvider, setAuthProviderState]);
 
   // C4M mode: the relay requires a CAT, so identity + rooms come from moat
   // (sign-in gate, room directory) instead of the free-text room field.
   const catRequired = isCloudflareCatEnabled(cfg.auth);
   const [moatSession, setMoatSession] = useState<MoatSession | null>(() => loadSession());
   const [catRoom, setCatRoom] = useState<StudioRoom | null>(null);
+  const [liveRoomId, setLiveRoomId] = useState<string | null>(null);
+  // Set when the user picks another room while live: leave + join on next render.
+  const [switchPending, setSwitchPending] = useState(false);
   const [freeRoomId, setFreeRoomId] = useState<string>(INITIAL_ROOM_ID);
   const roomId = catRequired ? (catRoom?.slug ?? '') : freeRoomId;
   const [status, setStatus] = useState<StatusState>('idle');
@@ -95,6 +105,7 @@ export function App() {
     const r = roomRef.current;
     roomRef.current = null;
     if (r) await r.close();
+    setLiveRoomId(null);
     setStatus('idle');
     setEntries([]);
     setRoster({});
@@ -233,6 +244,7 @@ export function App() {
         ...cur,
         [SELF_ID]: { peerId: SELF_ID, role: 'host', delivery: 'stream', priority: cfg.publisher.publisherPriority },
       }));
+      setLiveRoomId(catRequired ? (catRoom?.id ?? null) : null);
       setStatus('ready');
       await broadcast.emitEvent({ t: Date.now() - startedAtRef.current, kind: 'join', label: `${SELF_ID} live` });
     } catch (err) {
@@ -244,6 +256,18 @@ export function App() {
       setStatus('error');
     }
   }, [cfg, disconnect, publishMedia, roomId, catRequired, moatSession, catRoom]);
+
+  // Picking a room: while live in another room, leave it and join the new one.
+  const selectRoom = useCallback((room: StudioRoom) => {
+    setCatRoom(room);
+    if (liveRoomId && liveRoomId !== room.id) setSwitchPending(true);
+  }, [liveRoomId]);
+
+  useEffect(() => {
+    if (!switchPending || !catRoom) return;
+    setSwitchPending(false);
+    void connect(); // connect() disconnects the current room first
+  }, [switchPending, catRoom, connect]);
 
   const emit = useCallback(async (kind: TimelineEvent['kind'], label: string) => {
     const room = roomRef.current;
@@ -316,12 +340,21 @@ export function App() {
       subscriber: cfg.subscriber,
       playback: cfg.playback,
       targetLatencyMs: cfg.targetLatencyMs,
+      // C4M rooms: the recipient needs the relay connection token too. It only
+      // selects the relay; without a CAT (sign-in + room) the relay refuses
+      // the session, so the token is only shared when C4M is required.
+      ...(catRequired ? {
+        auth: {
+          providerId: cfg.auth.providerId,
+          providerState: { relayJwt: (cfg.auth.providerState as { relayJwt?: string }).relayJwt, catEnabled: true },
+        },
+      } : {}),
     };
     url.searchParams.set('config', btoa(JSON.stringify(shared)));
     try {
       void navigator.clipboard.writeText(url.toString());
     } catch { /* clipboard may be unavailable */ }
-  }, [roomId, cfg]);
+  }, [roomId, cfg, catRequired]);
 
   useEffect(() => {
     if (!roomId) return; // C4M mode before a room is picked: keep ?room= for preselect
@@ -395,7 +428,9 @@ export function App() {
             disabled={status !== 'ready' && !canGoLive}
             title={canGoLive ? undefined : 'Sign in and pick a room first'}
           >
-            {status === 'ready' ? 'Stop' : 'Go live'}
+            {catRequired
+              ? (status === 'ready' ? 'Leave room' : 'Join room')
+              : (status === 'ready' ? 'Stop' : 'Go live')}
           </button>
         </>
       }
@@ -414,13 +449,14 @@ export function App() {
             </GlassPanel>
           ) : null}
           {catRequired && !moatSession ? <LoginPanel onSignedIn={signIn} /> : null}
-          {catRequired && moatSession && !roomLocked ? (
+          {catRequired && moatSession ? (
             <RoomPicker
               session={moatSession}
               selected={catRoom}
+              liveRoomId={liveRoomId}
               initialSlug={INITIAL_PARAMS.get('room')}
-              disabled={roomLocked}
-              onSelect={setCatRoom}
+              disabled={status === 'connecting'}
+              onSelect={selectRoom}
               onSignOut={signOut}
             />
           ) : null}

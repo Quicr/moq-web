@@ -12,6 +12,8 @@ import {
 export interface RoomPickerProps {
   session: MoatSession;
   selected: StudioRoom | null;
+  /** Room currently joined (live), if any — picking another room switches to it. */
+  liveRoomId: string | null;
   /** Slug from `?room=` to preselect once the list loads. */
   initialSlug: string | null;
   disabled: boolean;
@@ -20,7 +22,7 @@ export interface RoomPickerProps {
 }
 
 /** Room directory for C4M mode: pick an existing studio room or create one. */
-export function RoomPicker({ session, selected, initialSlug, disabled, onSelect, onSignOut }: RoomPickerProps) {
+export function RoomPicker({ session, selected, liveRoomId, initialSlug, disabled, onSelect, onSignOut }: RoomPickerProps) {
   const isGuest = session.provider === 'guest';
   const [rooms, setRooms] = useState<StudioRoom[] | null>(null);
   const [name, setName] = useState('');
@@ -97,7 +99,8 @@ export function RoomPicker({ session, selected, initialSlug, disabled, onSelect,
               className="ak-row-between"
               onClick={() => onSelect(r)}
               disabled={disabled || !ok}
-              title={ok ? `Namespace ${r.namespace_prefix}` : 'Sign in with Google to join this room'}
+              title={!ok ? 'Sign in with Google to join this room'
+                : liveRoomId && liveRoomId !== r.id ? `Switch to ${r.name}` : `Namespace ${r.namespace_prefix}`}
               style={{
                 padding: '6px 10px',
                 borderRadius: 6,
@@ -110,8 +113,11 @@ export function RoomPicker({ session, selected, initialSlug, disabled, onSelect,
               }}
             >
               <span>{r.name} <span className="ak-subtle" style={{ fontSize: 10 }}>/{r.slug}</span></span>
-              <span className="ak-chip ak-chip-neutral" style={{ fontSize: 10 }}>
-                {r.visibility === 'authenticated' ? 'sign-in only' : 'public'}
+              <span className="ak-row" style={{ gap: 4 }}>
+                {liveRoomId === r.id ? <span className="ak-chip ak-chip-success" style={{ fontSize: 10 }}>live</span> : null}
+                <span className="ak-chip ak-chip-neutral" style={{ fontSize: 10 }}>
+                  {r.visibility === 'authenticated' ? 'sign-in only' : 'public'}
+                </span>
               </span>
             </button>
           );
