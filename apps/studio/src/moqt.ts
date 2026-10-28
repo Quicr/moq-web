@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
+import { cloudflareAdapter } from '@moq-web/app-kit/auth';
 import { connectMoqtSession, type ConnectedSession } from '@moq-web/app-kit/moqt';
 import type { TransportConfig } from '@moq-web/app-kit/transport';
 import { MediaSession, SubscribePipeline, type MediaConfig, type SubscribePipelineConfig } from '@moq-web/media';
@@ -317,12 +318,18 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
         video: { width: 1280, height: 720 },
         audio: true,
       });
+      // Cloudflare's draft-18 relay rejects a PUBLISH carrying
+      // SUBGROUP_DELIVERY_TIMEOUT / DYNAMIC_GROUPS with REQUEST_ERROR 3
+      // ("track extensions not supported"); send publisher priority only.
+      const publishConfig: MediaConfig = opts.transport.auth?.providerId === cloudflareAdapter.id
+        ? { ...MEDIA_CONFIG, deliveryTimeout: 0, dynamicGroups: false }
+        : MEDIA_CONFIG;
       videoTrackAlias = await mediaSession.publish(selfNamespace, VIDEO_TRACK, localStream, {
-        ...MEDIA_CONFIG,
+        ...publishConfig,
         audioEnabled: false,
       });
       await mediaSession.publish(selfNamespace, AUDIO_TRACK, localStream, {
-        ...MEDIA_CONFIG,
+        ...publishConfig,
         videoEnabled: false,
       });
       mediaTimelineAlias = await session.publish(selfNamespace, MEDIA_TIMELINE_TRACK, {

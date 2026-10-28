@@ -14,7 +14,15 @@ export function streamResetReason(code: StreamResetErrorCodeDraft18): unknown {
     return code;
   }
 
-  return new WebTransportError('', { streamErrorCode: code });
+  try {
+    return new WebTransportError('', { streamErrorCode: code });
+  } catch {
+    // Chrome implements the older single-dictionary constructor
+    // (`new WebTransportError({ streamErrorCode })`) and throws on the
+    // spec's (message, options) form.
+    const LegacyCtor = WebTransportError as unknown as new (init: { streamErrorCode: number }) => unknown;
+    return new LegacyCtor({ streamErrorCode: code });
+  }
 }
 
 /**

@@ -467,7 +467,7 @@ export class MediaSession {
       audioDeliveryMode: config.audioDeliveryMode ?? 'datagram',
       authToken: config.authToken,
       // The `new-group-request` handler below forces a keyframe, i.e. a new Group
-      dynamicGroups: true,
+      dynamicGroups: config.dynamicGroups ?? true,
     };
 
     // Publish to the session (get track alias)

@@ -32,6 +32,24 @@ describe('streamResetReason', () => {
     expect(reason).toBeInstanceOf(FakeWebTransportError);
     expect(reason.init.streamErrorCode).toBe(StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT);
   });
+
+  it('falls back to the single-dictionary constructor Chrome implements', () => {
+    class ChromeWebTransportError {
+      readonly streamErrorCode: number;
+      constructor(init: unknown) {
+        if (typeof init !== 'object' || init === null) {
+          throw new TypeError("The provided value is not of type 'WebTransportErrorInit'.");
+        }
+        this.streamErrorCode = (init as { streamErrorCode: number }).streamErrorCode;
+      }
+    }
+    vi.stubGlobal('WebTransportError', ChromeWebTransportError);
+
+    const reason = streamResetReason(StreamResetErrorCodeDraft18.SESSION_CLOSED) as ChromeWebTransportError;
+
+    expect(reason).toBeInstanceOf(ChromeWebTransportError);
+    expect(reason.streamErrorCode).toBe(StreamResetErrorCodeDraft18.SESSION_CLOSED);
+  });
 });
 
 describe('Draft18RequestStream.abort', () => {

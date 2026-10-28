@@ -103,6 +103,12 @@ export interface MediaConfig {
   maxCacheDuration?: number;
   /** Publisher priority (0 = highest, 255 = lowest) */
   priority?: number;
+  /**
+   * Advertise the DYNAMIC_GROUPS track property on PUBLISH (default true) so
+   * subscribers may request a new group (keyframe). Set false for relays that
+   * reject unknown track properties.
+   */
+  dynamicGroups?: boolean;
   /** Delivery mode: 'stream' for reliable ordered delivery, 'datagram' for low-latency unreliable */
   deliveryMode?: 'stream' | 'datagram';
   /** Audio delivery mode when main delivery mode is 'stream' (default: 'datagram' for low latency) */
