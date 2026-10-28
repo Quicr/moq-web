@@ -15,12 +15,7 @@ export function CloudflareAuthPanel({ state, updateState, resetState }: Settings
   const [jwtDraft, setJwtDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  let saved: ReturnType<typeof parseCloudflareJwt> | null = null;
-  try {
-    saved = s.relayJwt ? parseCloudflareJwt(s.relayJwt) : null;
-  } catch {
-    saved = null;
-  }
+  const saved = tryParseJwt(s.relayJwt);
 
   const save = () => {
     setError(null);
@@ -114,6 +109,15 @@ export function CloudflareAuthPanel({ state, updateState, resetState }: Settings
       </div>
     </div>
   );
+}
+
+function tryParseJwt(jwt: string | undefined): ReturnType<typeof parseCloudflareJwt> | null {
+  if (!jwt) return null;
+  try {
+    return parseCloudflareJwt(jwt);
+  } catch {
+    return null;
+  }
 }
 
 function formatExpiry(epochMs: number): string {
