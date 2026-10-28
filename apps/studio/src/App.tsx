@@ -3,6 +3,7 @@ import {
   AppShell,
   GlassPanel,
   StatusDot,
+  isCloudflareCatEnabled,
   useTransportActions,
   useTransportConfig,
   type GroupPtsPoint,
@@ -14,7 +15,10 @@ import { StreamRoster, type RosterEntry } from './components/StreamRoster';
 import { MediaGrid, type MediaTile } from './components/MediaGrid';
 import { EventComposer } from './components/EventComposer';
 import { PeerDvrPanel } from './components/PeerDvrPanel';
+import { LoginPanel } from './components/LoginPanel';
+import { RoomPicker } from './components/RoomPicker';
 import { openStudioBroadcast, type PeerDvrHandle, type StudioBroadcast, type TimelineEvent } from './moqt';
+import { loadSession, MoatAuthError, mintCat, saveSession, type MoatSession, type StudioRoom } from './moat';
 
 const INITIAL_PARAMS = new URLSearchParams(globalThis.location?.search ?? '');
 const INITIAL_ROOM_ID = INITIAL_PARAMS.get('room') ?? 'default';
@@ -63,7 +67,13 @@ export function App() {
     } catch { /* ignore malformed config */ }
   }, [applyProfile, setRelay, setPublisher, setSubscriber, setPlayback, setTargetLatency]);
 
-  const [roomId, setRoomId] = useState<string>(INITIAL_ROOM_ID);
+  // C4M mode: the relay requires a CAT, so identity + rooms come from moat
+  // (sign-in gate, room directory) instead of the free-text room field.
+  const catRequired = isCloudflareCatEnabled(cfg.auth);
+  const [moatSession, setMoatSession] = useState<MoatSession | null>(() => loadSession());
+  const [catRoom, setCatRoom] = useState<StudioRoom | null>(null);
+  const [freeRoomId, setFreeRoomId] = useState<string>(INITIAL_ROOM_ID);
+  const roomId = catRequired ? (catRoom?.slug ?? '') : freeRoomId;
   const [status, setStatus] = useState<StatusState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [entries, setEntries] = useState<TimelineEntry[]>([]);
@@ -103,17 +113,36 @@ export function App() {
 
   useEffect(() => () => { void disconnect(); }, [disconnect]);
 
+  const signIn = useCallback((s: MoatSession) => {
+    saveSession(s);
+    setMoatSession(s);
+  }, []);
+
+  const signOut = useCallback(() => {
+    void disconnect();
+    saveSession(null);
+    setMoatSession(null);
+    setCatRoom(null);
+  }, [disconnect]);
+
   const connect = useCallback(async () => {
     await disconnect();
     setError(null);
     setStatus('connecting');
     startedAtRef.current = Date.now();
     try {
+      let authToken: { raw: string; type: number } | undefined;
+      if (catRequired) {
+        if (!moatSession || !catRoom) throw new Error('Sign in and pick a room first');
+        // Fresh CAT per connect: scoped to this room, short-lived (moat default 1h).
+        authToken = await mintCat(moatSession, catRoom);
+      }
       const broadcast = await openStudioBroadcast({
         transport: cfg,
         roomId,
         selfId: SELF_ID,
         publishMedia,
+        authToken,
         onPeerJoined: (peerId) => {
           setRoster((cur) => ({ ...cur, [peerId]: { peerId, role: 'guest', delivery: 'stream', priority: cfg.publisher.publisherPriority } }));
         },
@@ -207,10 +236,14 @@ export function App() {
       setStatus('ready');
       await broadcast.emitEvent({ t: Date.now() - startedAtRef.current, kind: 'join', label: `${SELF_ID} live` });
     } catch (err) {
+      if (err instanceof MoatAuthError) {
+        saveSession(null);
+        setMoatSession(null);
+      }
       setError((err as Error).message);
       setStatus('error');
     }
-  }, [cfg, disconnect, publishMedia, roomId]);
+  }, [cfg, disconnect, publishMedia, roomId, catRequired, moatSession, catRoom]);
 
   const emit = useCallback(async (kind: TimelineEvent['kind'], label: string) => {
     const room = roomRef.current;
@@ -291,6 +324,7 @@ export function App() {
   }, [roomId, cfg]);
 
   useEffect(() => {
+    if (!roomId) return; // C4M mode before a room is picked: keep ?room= for preselect
     const url = new URL(globalThis.location.href);
     const current = url.searchParams.get('room') ?? '';
     if (current !== roomId) {
@@ -300,6 +334,7 @@ export function App() {
   }, [roomId]);
 
   const roomLocked = status === 'ready' || status === 'connecting';
+  const canGoLive = !catRequired || (moatSession !== null && catRoom !== null);
 
   return (
     <AppShell
@@ -316,21 +351,28 @@ export function App() {
             draft={cfg.relay.draft}
             error={error}
           />
-          <label className="ak-row" style={{ gap: 6, fontSize: 12 }}>
-            <span className="ak-subtle">Room</span>
-            <input
-              className="ak-input"
-              style={{ width: 120, fontSize: 12, padding: '4px 8px' }}
-              value={roomId}
-              onChange={(e) => setRoomId(e.target.value.trim() || 'default')}
-              disabled={roomLocked}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              placeholder="room"
-              title={roomLocked ? 'Disconnect to change the room' : 'Type a room name to join a different room'}
-            />
-          </label>
+          {catRequired ? (
+            <span className="ak-row" style={{ gap: 6, fontSize: 12 }}>
+              <span className="ak-subtle">Room</span>
+              <b>{catRoom ? catRoom.name : moatSession ? 'pick a room' : 'sign in'}</b>
+            </span>
+          ) : (
+            <label className="ak-row" style={{ gap: 6, fontSize: 12 }}>
+              <span className="ak-subtle">Room</span>
+              <input
+                className="ak-input"
+                style={{ width: 120, fontSize: 12, padding: '4px 8px' }}
+                value={freeRoomId}
+                onChange={(e) => setFreeRoomId(e.target.value.trim() || 'default')}
+                disabled={roomLocked}
+                spellCheck={false}
+                autoCorrect="off"
+                autoCapitalize="off"
+                placeholder="room"
+                title={roomLocked ? 'Disconnect to change the room' : 'Type a room name to join a different room'}
+              />
+            </label>
+          )}
           <label className="ak-row" style={{ gap: 6, fontSize: 12 }}>
             <input
               type="checkbox"
@@ -350,6 +392,8 @@ export function App() {
           <button
             className="ak-btn ak-btn-primary"
             onClick={() => (status === 'ready' ? void disconnect() : void connect())}
+            disabled={status !== 'ready' && !canGoLive}
+            title={canGoLive ? undefined : 'Sign in and pick a room first'}
           >
             {status === 'ready' ? 'Stop' : 'Go live'}
           </button>
@@ -368,6 +412,17 @@ export function App() {
                 <button className="ak-btn ak-btn-ghost" onClick={() => setError(null)}>Dismiss</button>
               </div>
             </GlassPanel>
+          ) : null}
+          {catRequired && !moatSession ? <LoginPanel onSignedIn={signIn} /> : null}
+          {catRequired && moatSession && !roomLocked ? (
+            <RoomPicker
+              session={moatSession}
+              selected={catRoom}
+              initialSlug={INITIAL_PARAMS.get('room')}
+              disabled={roomLocked}
+              onSelect={setCatRoom}
+              onSignOut={signOut}
+            />
           ) : null}
           {isDraft16 && status === 'ready' ? (
             <div className="ak-glass" style={{ padding: '8px 12px', fontSize: 12, color: 'var(--ak-fg-muted)' }}>

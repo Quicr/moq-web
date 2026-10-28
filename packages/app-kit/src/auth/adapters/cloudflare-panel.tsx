@@ -1,710 +1,108 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
-import { useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
 import type { SettingsPanelProps } from '../types.js';
-import {
-  createCloudflareToken,
-  listCloudflareRelays,
-  moatGuestLogin,
-  parseCloudflareJwt,
-  relayUrlFromRelay,
-  runtimeCache,
-  moatCatCache,
-  type CloudflareCachedToken,
-  type CloudflareRelay,
-  type CloudflareState,
-} from './cloudflare.js';
+import { parseCloudflareJwt, type CloudflareState } from './cloudflare.js';
 
-type Step = 'credentials' | 'relay' | 'tokens';
-type AuthMode = 'api' | 'preminted';
-
+/**
+ * Cloudflare settings: the relay connection JWT and whether the relay
+ * requires a CAT. Login, rooms and CAT minting are app UX, not settings.
+ */
 export function CloudflareAuthPanel({ state, updateState, resetState }: SettingsPanelProps) {
   const s = state as CloudflareState;
-  const mode: AuthMode = s.authMode === 'preminted' ? 'preminted' : 'api';
-  const [apiTokenDraft, setApiTokenDraft] = useState(s.apiToken ?? '');
-  const [accountIdDraft, setAccountIdDraft] = useState(s.accountId ?? '');
-  const [relays, setRelays] = useState<CloudflareRelay[] | null>(null);
-  const [loading, setLoading] = useState<null | 'relays' | 'publish' | 'subscribe'>(null);
+  const [jwtDraft, setJwtDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const [showToken, setShowToken] = useState(false);
 
-  // Preminted-mode drafts. Seeded from persisted state so re-opening the panel
-  // shows the previously saved values.
-  const [preRelayUrlDraft, setPreRelayUrlDraft] = useState(s.relayUrl ?? '');
-  const [preRelayIdDraft, setPreRelayIdDraft] = useState(s.relayId ?? '');
-  const [prePublishJwtDraft, setPrePublishJwtDraft] = useState('');
-  const [preSubscribeJwtDraft, setPreSubscribeJwtDraft] = useState('');
+  let saved: ReturnType<typeof parseCloudflareJwt> | null = null;
+  try {
+    saved = s.relayJwt ? parseCloudflareJwt(s.relayJwt) : null;
+  } catch {
+    saved = null;
+  }
 
-  const step: Step = useMemo(() => {
-    if (!s.apiToken || !s.accountId) return 'credentials';
-    if (!s.relayId) return 'relay';
-    return 'tokens';
-  }, [s.apiToken, s.accountId, s.relayId]);
-
-  // Reconcile any tokens minted on-demand by connectMoqtSession into
-  // persisted state so a page reload doesn't re-mint.
-  useEffect(() => {
-    if (runtimeCache.length === 0) return;
-    const existing = s.tokens ?? [];
-    const merged = [...existing];
-    let changed = false;
-    for (const t of runtimeCache) {
-      if (!merged.find((m) => m.jti === t.jti)) {
-        merged.push(t);
-        changed = true;
-      }
-    }
-    if (changed) updateState({ tokens: merged });
-
-  }, []);
-
-  const saveCredentials = () => {
+  const save = () => {
     setError(null);
-    updateState({
-      apiToken: apiTokenDraft.trim(),
-      accountId: accountIdDraft.trim(),
-    });
-  };
-
-  const loadRelays = async () => {
-    if (!s.apiToken || !s.accountId) return;
-    setLoading('relays');
-    setError(null);
+    const raw = jwtDraft.trim();
     try {
-      const list = await listCloudflareRelays(s.accountId, s.apiToken);
-      setRelays(list);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(null);
-    }
-  };
-
-  const pickRelay = (relay: CloudflareRelay) => {
-    const url = relayUrlFromRelay(relay);
-    updateState({ relayId: relay.uid, relayUrl: url ?? undefined });
-  };
-
-  const mint = async (op: 'publish' | 'subscribe') => {
-    if (!s.apiToken || !s.accountId || !s.relayId) return;
-    setLoading(op);
-    setError(null);
-    try {
-      const fresh = await createCloudflareToken(
-        s.accountId,
-        s.relayId,
-        [op],
-        s.apiToken,
-        undefined,
-        `moq-web ${op} ${new Date().toISOString().slice(0, 19)}`,
-      );
-      const next = [...(s.tokens ?? []).filter((t) => t.jti !== fresh.jti), fresh];
-      updateState({ tokens: next });
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(null);
-    }
-  };
-
-  const removeToken = (jti: string) => {
-    const next = (s.tokens ?? []).filter((t) => t.jti !== jti);
-    updateState({ tokens: next });
-  };
-
-  const setMode = (next: AuthMode) => {
-    if (next === mode) return;
-    // Switching modes clears the error banner but preserves cached tokens so a
-    // user who went 'api' → mint → switch to 'preminted' doesn't lose them.
-    setError(null);
-    updateState({ authMode: next });
-  };
-
-  // Attempt to extract the sub claim from a pasted JWT and auto-populate the
-  // Relay ID field. Called from either JWT textarea onChange — the sub claim
-  // is the Cloudflare relay UUID, so re-typing it in the dedicated field is
-  // pure friction. Only fills when the Relay ID field is currently empty, so
-  // user edits aren't clobbered.
-  const maybeAutofillRelayId = (jwtDraft: string) => {
-    if (preRelayIdDraft.trim()) return;
-    const trimmed = jwtDraft.trim();
-    if (!trimmed) return;
-    try {
-      const info = parseCloudflareJwt(trimmed);
-      if (info.sub) setPreRelayIdDraft(info.sub);
-    } catch {
-      /* ignore — user may still be mid-paste */
-    }
-  };
-
-  const setPublishJwtWithAutofill = (v: string) => {
-    setPrePublishJwtDraft(v);
-    maybeAutofillRelayId(v);
-  };
-  const setSubscribeJwtWithAutofill = (v: string) => {
-    setPreSubscribeJwtDraft(v);
-    maybeAutofillRelayId(v);
-  };
-
-  const savePreminted = () => {
-    setError(null);
-    setStatus(null);
-    const relayUrl = preRelayUrlDraft.trim();
-    const relayId = preRelayIdDraft.trim();
-    if (!relayUrl || !relayId) {
-      setError('Relay URL and relay ID are both required.');
-      return;
-    }
-    const parsed: CloudflareCachedToken[] = [];
-    try {
-      for (const raw of [prePublishJwtDraft.trim(), preSubscribeJwtDraft.trim()]) {
-        if (!raw) continue;
-        const info = parseCloudflareJwt(raw);
-        parsed.push({ ...info, jwt: raw });
+      const info = parseCloudflareJwt(raw);
+      if (info.expiresAt <= Date.now()) {
+        setError(`Token expired ${new Date(info.expiresAt).toLocaleString()}`);
+        return;
       }
     } catch (err) {
       setError(`Failed to parse JWT: ${(err as Error).message}`);
       return;
     }
-    if (parsed.length === 0) {
-      setError('Paste at least one JWT (publish and/or subscribe).');
-      return;
-    }
-    const existing = (s.tokens ?? []).filter(
-      (t) => !parsed.some((p) => p.jti === t.jti),
-    );
-    const nextTokens = [...existing, ...parsed];
-    updateState({
-      authMode: 'preminted',
-      relayUrl,
-      relayId,
-      tokens: nextTokens,
-    });
-    setPrePublishJwtDraft('');
-    setPreSubscribeJwtDraft('');
-    setStatus(`Saved ${parsed.length} token(s). Cache has ${nextTokens.length}.`);
+    updateState({ relayJwt: raw, tokens: undefined });
+    setJwtDraft('');
   };
 
   return (
     <div className="ak-stack" style={{ gap: 12 }}>
       {error ? (
-        <div
-          className="ak-caption"
-          style={{ color: 'var(--ak-danger)', fontSize: 12 }}
-        >
+        <div className="ak-caption" style={{ color: 'var(--ak-danger)', fontSize: 12 }}>
           {error}
         </div>
       ) : null}
-      {status ? (
-        <div
-          className="ak-caption"
-          style={{ color: 'var(--ak-accent)', fontSize: 12 }}
-        >
-          {status}
-        </div>
-      ) : null}
-
-      <ModeToggle mode={mode} onChange={setMode} />
-
-      {mode === 'preminted' ? (
-        <PremintedForm
-          relayUrl={preRelayUrlDraft}
-          relayId={preRelayIdDraft}
-          publishJwt={prePublishJwtDraft}
-          subscribeJwt={preSubscribeJwtDraft}
-          cachedTokens={s.tokens ?? []}
-          setRelayUrl={setPreRelayUrlDraft}
-          setRelayId={setPreRelayIdDraft}
-          setPublishJwt={setPublishJwtWithAutofill}
-          setSubscribeJwt={setSubscribeJwtWithAutofill}
-          onSave={savePreminted}
-          onRemoveToken={removeToken}
-          onReset={resetState}
-        />
-      ) : (
-        <ApiModeBody />
-      )}
-
-      <CatSection state={s} updateState={updateState} />
-    </div>
-  );
-
-  function ApiModeBody() {
-  return (
-    <>
-      <StepIndicator step={step} />
-
-      {step === 'credentials' && (
-        <div className="ak-stack" style={{ gap: 8 }}>
-          <label>
-            <div className="ak-caption" style={{ marginBottom: 4 }}>
-              Cloudflare API token
-            </div>
-            <div className="ak-row" style={{ gap: 6 }}>
-              <input
-                className="ak-input ak-input-mono"
-                type={showToken ? 'text' : 'password'}
-                placeholder="cf-api-token"
-                value={apiTokenDraft}
-                onChange={(e) => setApiTokenDraft(e.target.value)}
-                style={{ flex: 1, fontSize: 12 }}
-              />
-              <button
-                className="ak-btn ak-btn-ghost"
-                onClick={() => setShowToken((v) => !v)}
-                type="button"
-                title={showToken ? 'Hide' : 'Show'}
-                style={{ padding: '4px 8px' }}
-              >
-                {showToken ? '👁' : '👁‍🗨'}
-              </button>
-            </div>
-            <div className="ak-caption" style={{ fontSize: 10, marginTop: 4 }}>
-              Needs <code>MoQ:Edit</code> permission. Create at
-              dash.cloudflare.com ▸ My Profile ▸ API Tokens.
-            </div>
-          </label>
-          <label>
-            <div className="ak-caption" style={{ marginBottom: 4 }}>
-              Cloudflare account ID
-            </div>
-            <input
-              className="ak-input ak-input-mono"
-              placeholder="32-hex-char-account-id"
-              value={accountIdDraft}
-              onChange={(e) => setAccountIdDraft(e.target.value)}
-              style={{ fontSize: 12, width: '100%' }}
-            />
-          </label>
-          <div className="ak-row" style={{ justifyContent: 'flex-end' }}>
-            <button
-              className="ak-btn ak-btn-primary"
-              onClick={saveCredentials}
-              disabled={!apiTokenDraft.trim() || !accountIdDraft.trim()}
-            >
-              Save & continue
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === 'relay' && (
-        <div className="ak-stack" style={{ gap: 8 }}>
-          <div className="ak-caption" style={{ fontSize: 12 }}>
-            Pick a relay to connect and mint tokens against.
-          </div>
-          <div className="ak-row" style={{ gap: 6 }}>
-            <button
-              className="ak-btn"
-              onClick={() => void loadRelays()}
-              disabled={loading === 'relays'}
-            >
-              {loading === 'relays' ? 'Loading…' : relays ? 'Refresh relays' : 'Load relays'}
-            </button>
-            <button className="ak-btn ak-btn-ghost" onClick={resetState}>
-              Change credentials
-            </button>
-          </div>
-          {relays && relays.length === 0 ? (
-            <div className="ak-caption" style={{ fontSize: 12 }}>
-              No relays found. Create one at{' '}
-              <a
-                href="https://developers.cloudflare.com/api/resources/moq/subresources/relays/methods/create/"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Cloudflare API
-              </a>
-              .
-            </div>
-          ) : null}
-          {relays?.map((r) => (
-            <button
-              key={r.uid}
-              className="ak-btn"
-              onClick={() => pickRelay(r)}
-              style={{ textAlign: 'left', padding: 10 }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 12 }}>{r.name}</div>
-              <div className="ak-subtle" style={{ fontSize: 10 }}>
-                {relayUrlFromRelay(r) ?? '(no upstream URL)'}
-              </div>
-              <div className="ak-caption" style={{ fontSize: 10 }}>
-                uid: <code>{r.uid}</code>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {step === 'tokens' && (
-        <div className="ak-stack" style={{ gap: 8 }}>
-          <div className="ak-caption" style={{ fontSize: 12 }}>
-            Relay <code>{s.relayId}</code> selected. Mint the tokens this app
-            will need — publish for broadcast, subscribe for viewer-only.
-          </div>
-          {s.relayUrl ? (
-            <div className="ak-caption" style={{ fontSize: 11 }}>
-              WebTransport endpoint: <code>{s.relayUrl}</code>
-            </div>
-          ) : null}
-          <div className="ak-row" style={{ gap: 6 }}>
-            <button
-              className="ak-btn ak-btn-primary"
-              onClick={() => void mint('publish')}
-              disabled={loading !== null}
-            >
-              {loading === 'publish' ? 'Minting…' : 'Mint publish token'}
-            </button>
-            <button
-              className="ak-btn"
-              onClick={() => void mint('subscribe')}
-              disabled={loading !== null}
-            >
-              {loading === 'subscribe' ? 'Minting…' : 'Mint subscribe token'}
-            </button>
-            <button className="ak-btn ak-btn-ghost" onClick={resetState}>
-              Reset
-            </button>
-          </div>
-          {(s.tokens ?? []).length === 0 ? (
-            <div className="ak-caption" style={{ fontSize: 11 }}>
-              No cached tokens yet. Tokens are also minted on demand at
-              connect time.
-            </div>
-          ) : (
-            <div className="ak-stack" style={{ gap: 4 }}>
-              {(s.tokens ?? []).map((t) => (
-                <div
-                  key={t.jti}
-                  className="ak-row"
-                  style={{
-                    gap: 6,
-                    padding: '6px 8px',
-                    border: '1px solid var(--ak-border)',
-                    borderRadius: 6,
-                    fontSize: 11,
-                  }}
-                >
-                  <div style={{ flex: 1 }}>
-                    <div>
-                      <b>{t.operations.join(' + ')}</b> · jti{' '}
-                      <code>{t.jti.slice(0, 12)}…</code>
-                    </div>
-                    <div className="ak-subtle" style={{ fontSize: 10 }}>
-                      expires {formatExpiry(t.expiresAt)}
-                    </div>
-                  </div>
-                  <button
-                    className="ak-btn ak-btn-ghost"
-                    onClick={() => removeToken(t.jti)}
-                    title="Remove from local cache (does not revoke on Cloudflare)"
-                    style={{ padding: '2px 6px', color: 'var(--ak-danger)' }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
-  }
-}
-
-interface ModeToggleProps {
-  mode: AuthMode;
-  onChange: (next: AuthMode) => void;
-}
-
-function ModeToggle({ mode, onChange }: ModeToggleProps) {
-  const btn = (id: AuthMode, label: string) => (
-    <button
-      type="button"
-      className="ak-btn"
-      onClick={() => onChange(id)}
-      style={{
-        padding: '4px 10px',
-        fontSize: 11,
-        background:
-          mode === id ? 'var(--ak-accent-soft)' : 'var(--ak-bg-elev-strong)',
-        border:
-          mode === id
-            ? '1px solid var(--ak-accent)'
-            : '1px solid var(--ak-border)',
-      }}
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div className="ak-row" style={{ gap: 6 }}>
-      {btn('api', 'Mint via API')}
-      {btn('preminted', 'Pre-minted tokens')}
-    </div>
-  );
-}
-
-interface PremintedFormProps {
-  relayUrl: string;
-  relayId: string;
-  publishJwt: string;
-  subscribeJwt: string;
-  cachedTokens: CloudflareCachedToken[];
-  setRelayUrl: (v: string) => void;
-  setRelayId: (v: string) => void;
-  setPublishJwt: (v: string) => void;
-  setSubscribeJwt: (v: string) => void;
-  onSave: () => void;
-  onRemoveToken: (jti: string) => void;
-  onReset: () => void;
-}
-
-function PremintedForm(p: PremintedFormProps) {
-  return (
-    <div className="ak-stack" style={{ gap: 8 }}>
-      <div className="ak-caption" style={{ fontSize: 12 }}>
-        Paste JWTs you minted out-of-band (via the Cloudflare dashboard, CLI,
-        or a direct API call). The adapter will serve them from cache and will
-        not call the Cloudflare REST API.
-      </div>
 
       <label>
         <div className="ak-caption" style={{ marginBottom: 4 }}>
-          Relay WebTransport URL
+          Relay connection token (JWT from Cloudflare)
         </div>
-        <input
+        <textarea
           className="ak-input ak-input-mono"
-          placeholder="https://draft-18.cloudflare.mediaoverquic.com"
-          value={p.relayUrl}
-          onChange={(e) => p.setRelayUrl(e.target.value)}
-          style={{ fontSize: 12, width: '100%' }}
+          placeholder="eyJhbGciOi…"
+          value={jwtDraft}
+          onChange={(e) => setJwtDraft(e.target.value)}
+          rows={3}
+          style={{ fontSize: 10, width: '100%', fontFamily: 'monospace' }}
         />
         <div className="ak-caption" style={{ fontSize: 10, marginTop: 4 }}>
-          Written to <code>relayUrl</code>. You also need to add this URL to
-          the relay list in the Transport tab.
+          Sent as the first URL path segment. Set the relay URL (e.g.{' '}
+          <code>https://draft-18.cloudflare.mediaoverquic.com</code>) in the Relay tab.
         </div>
-      </label>
-
-      <label>
-        <div className="ak-caption" style={{ marginBottom: 4 }}>
-          Relay ID (JWT <code>sub</code> claim)
-        </div>
-        <input
-          className="ak-input ak-input-mono"
-          placeholder="dc5826e468a4f3df1cb4393d394b6092"
-          value={p.relayId}
-          onChange={(e) => p.setRelayId(e.target.value)}
-          style={{ fontSize: 12, width: '100%' }}
-        />
-      </label>
-
-      <label>
-        <div className="ak-caption" style={{ marginBottom: 4 }}>
-          Publish JWT (optional)
-        </div>
-        <textarea
-          className="ak-input ak-input-mono"
-          placeholder="eyJhbGciOi…"
-          value={p.publishJwt}
-          onChange={(e) => p.setPublishJwt(e.target.value)}
-          rows={3}
-          style={{ fontSize: 10, width: '100%', fontFamily: 'monospace' }}
-        />
-      </label>
-
-      <label>
-        <div className="ak-caption" style={{ marginBottom: 4 }}>
-          Subscribe JWT (optional)
-        </div>
-        <textarea
-          className="ak-input ak-input-mono"
-          placeholder="eyJhbGciOi…"
-          value={p.subscribeJwt}
-          onChange={(e) => p.setSubscribeJwt(e.target.value)}
-          rows={3}
-          style={{ fontSize: 10, width: '100%', fontFamily: 'monospace' }}
-        />
       </label>
 
       <div className="ak-row" style={{ gap: 6, justifyContent: 'flex-end' }}>
-        <button className="ak-btn ak-btn-ghost" onClick={p.onReset}>
+        <button className="ak-btn ak-btn-ghost" onClick={resetState}>
           Reset
         </button>
-        <button
-          className="ak-btn ak-btn-primary"
-          onClick={p.onSave}
-          disabled={
-            !p.relayUrl.trim() ||
-            !p.relayId.trim() ||
-            (!p.publishJwt.trim() && !p.subscribeJwt.trim())
-          }
-        >
-          Save tokens
+        <button className="ak-btn ak-btn-primary" onClick={save} disabled={!jwtDraft.trim()}>
+          Save token
         </button>
       </div>
 
-      {p.cachedTokens.length === 0 ? (
-        <div className="ak-caption" style={{ fontSize: 11 }}>
-          No cached tokens yet.
-        </div>
-      ) : (
-        <div className="ak-stack" style={{ gap: 4 }}>
-          <div className="ak-caption" style={{ fontSize: 11 }}>
-            Cached tokens
-          </div>
-          {p.cachedTokens.map((t) => (
-            <div
-              key={t.jti}
-              className="ak-row"
-              style={{
-                gap: 6,
-                padding: '6px 8px',
-                border: '1px solid var(--ak-border)',
-                borderRadius: 6,
-                fontSize: 11,
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div>
-                  <b>{t.operations.join(' + ')}</b> · jti{' '}
-                  <code>{t.jti.slice(0, 12)}…</code>
-                </div>
-                <div className="ak-subtle" style={{ fontSize: 10 }}>
-                  expires {formatExpiry(t.expiresAt)}
-                </div>
-              </div>
-              <button
-                className="ak-btn ak-btn-ghost"
-                onClick={() => p.onRemoveToken(t.jti)}
-                title="Remove from local cache"
-                style={{ padding: '2px 6px', color: 'var(--ak-danger)' }}
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StepIndicator({ step }: { step: Step }) {
-  const steps: Array<{ id: Step; label: string }> = [
-    { id: 'credentials', label: '1. Credentials' },
-    { id: 'relay', label: '2. Pick relay' },
-    { id: 'tokens', label: '3. Mint tokens' },
-  ];
-  return (
-    <div className="ak-row" style={{ gap: 4, fontSize: 11 }}>
-      {steps.map((s, i) => (
-        <span
-          key={s.id}
-          className="ak-chip"
+      {saved ? (
+        <div
           style={{
-            padding: '2px 8px',
-            background:
-              s.id === step ? 'var(--ak-accent-soft)' : 'var(--ak-bg-elev-strong)',
-            border:
-              s.id === step
-                ? '1px solid var(--ak-accent)'
-                : '1px solid var(--ak-border)',
-            borderRadius: 999,
-            color: 'var(--ak-fg)',
-            opacity: stepIndex(s.id) <= stepIndex(step) ? 1 : 0.5,
+            padding: '6px 8px',
+            border: '1px solid var(--ak-border)',
+            borderRadius: 6,
+            fontSize: 11,
           }}
         >
-          {s.label}
-          {i < steps.length - 1 ? ' ›' : ''}
-        </span>
-      ))}
-    </div>
-  );
-}
+          <div>
+            <b>{saved.operations.join(' + ')}</b> · relay <code>{saved.sub ?? '?'}</code>
+          </div>
+          <div className="ak-subtle" style={{ fontSize: 10 }}>
+            expires {formatExpiry(saved.expiresAt)}
+          </div>
+        </div>
+      ) : (
+        <div className="ak-caption" style={{ fontSize: 11 }}>
+          No relay token saved.
+        </div>
+      )}
 
-function stepIndex(s: Step): number {
-  return s === 'credentials' ? 0 : s === 'relay' ? 1 : 2;
-}
-
-function formatExpiry(epochMs: number): string {
-  if (!Number.isFinite(epochMs)) return 'unknown';
-  const delta = epochMs - Date.now();
-  if (delta < 0) return `expired ${new Date(epochMs).toLocaleString()}`;
-  const hours = Math.round(delta / 3_600_000);
-  if (hours < 48) return `in ${hours}h (${new Date(epochMs).toLocaleString()})`;
-  const days = Math.round(hours / 24);
-  return `in ${days}d (${new Date(epochMs).toLocaleDateString()})`;
-}
-
-// ============================================================================
-// CAT Authorization Section (Cloudflare pilot)
-// ============================================================================
-
-function CatSection({
-  state: s,
-  updateState,
-}: {
-  state: CloudflareState;
-  updateState: (patch: Record<string, unknown>) => void;
-}) {
-  const [moatUrlDraft, setMoatUrlDraft] = useState(s.moatUrl ?? '');
-  const [displayNameDraft, setDisplayNameDraft] = useState(s.moatDisplayName ?? 'studio-user');
-  const [roomIdDraft, setRoomIdDraft] = useState(s.moatRoomId ?? '');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Reconcile runtime cache into state
-  useEffect(() => {
-    if (moatCatCache.token && moatCatCache.expiresAt) {
-      if (s.moatCatToken !== moatCatCache.token) {
-        updateState({
-          moatCatToken: moatCatCache.token,
-          moatCatExpiresAt: moatCatCache.expiresAt,
-        });
-      }
-    }
-  }, []);
-
-  const handleLogin = async () => {
-    if (!moatUrlDraft) { setError('Enter moat URL'); return; }
-    setLoading(true);
-    setError(null);
-    try {
-      const resp = await moatGuestLogin(moatUrlDraft, displayNameDraft);
-      updateState({
-        moatUrl: moatUrlDraft,
-        moatSessionToken: resp.session_token,
-        moatDisplayName: displayNameDraft,
-      });
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSaveRoom = () => {
-    updateState({ moatRoomId: roomIdDraft });
-  };
-
-  return (
-    <div
-      style={{
-        borderTop: '1px solid var(--ak-border)',
-        paddingTop: 12,
-        marginTop: 4,
-      }}
-    >
-      <div className="ak-row-between" style={{ marginBottom: 8 }}>
+      <div
+        className="ak-row-between"
+        style={{ borderTop: '1px solid var(--ak-border)', paddingTop: 12 }}
+      >
         <div>
-          <div className="ak-heading" style={{ fontSize: 13 }}>CAT Authorization</div>
+          <div className="ak-heading" style={{ fontSize: 13 }}>Require C4M (CAT)</div>
           <div className="ak-subtle" style={{ fontSize: 11 }}>
-            Cloudflare pilot — COSE_Sign1 token type 1 via moat
+            Relay has CAT authorization enabled — sign-in and rooms are required to connect
           </div>
         </div>
         <label className="ak-toggle">
@@ -716,90 +114,15 @@ function CatSection({
           <span />
         </label>
       </div>
-
-      {s.catEnabled && (
-        <div className="ak-stack" style={{ gap: 8 }}>
-          {error && (
-            <div className="ak-caption" style={{ color: 'var(--ak-danger)', fontSize: 11 }}>
-              {error}
-            </div>
-          )}
-
-          {/* Moat URL */}
-          <label>
-            <div className="ak-caption" style={{ marginBottom: 4 }}>Moat service URL</div>
-            <input
-              className="ak-input ak-input-mono"
-              type="text"
-              placeholder="https://moat.example.com"
-              value={moatUrlDraft}
-              onChange={(e) => setMoatUrlDraft(e.target.value)}
-            />
-          </label>
-
-          {/* Display name + login */}
-          <div className="ak-row" style={{ gap: 6 }}>
-            <input
-              className="ak-input"
-              type="text"
-              placeholder="Display name"
-              value={displayNameDraft}
-              onChange={(e) => setDisplayNameDraft(e.target.value)}
-              style={{ flex: 1 }}
-            />
-            <button
-              className="ak-btn ak-btn-primary"
-              onClick={handleLogin}
-              disabled={loading || !moatUrlDraft}
-              style={{ whiteSpace: 'nowrap' }}
-            >
-              {loading ? 'Logging in...' : s.moatSessionToken ? 'Re-login' : 'Guest login'}
-            </button>
-          </div>
-
-          {/* Status */}
-          {s.moatSessionToken && (
-            <div className="ak-chip ak-chip-success" style={{ fontSize: 11 }}>
-              Logged in to moat
-            </div>
-          )}
-
-          {/* Room ID */}
-          <label>
-            <div className="ak-caption" style={{ marginBottom: 4 }}>Room ID (for token scoping)</div>
-            <div className="ak-row" style={{ gap: 6 }}>
-              <input
-                className="ak-input ak-input-mono"
-                type="text"
-                placeholder="room-uuid-or-name"
-                value={roomIdDraft}
-                onChange={(e) => setRoomIdDraft(e.target.value)}
-                style={{ flex: 1 }}
-              />
-              <button
-                className="ak-btn ak-btn-ghost"
-                onClick={handleSaveRoom}
-                disabled={!roomIdDraft}
-              >
-                Save
-              </button>
-            </div>
-          </label>
-
-          {/* Cached CAT info */}
-          {s.moatCatToken && (
-            <div style={{ fontSize: 11, color: 'var(--ak-fg-muted)' }}>
-              CAT cached · expires {formatExpiry(s.moatCatExpiresAt ?? 0)}
-              · token type 1 · SETUP AUTHORIZATION_TOKEN
-            </div>
-          )}
-
-          {/* Interop note */}
-          <div className="ak-chip ak-chip-warn" style={{ fontSize: 10 }}>
-            Requires moat with c4m-01 encoding (tag 18, raw r‖s sig, claim 327)
-          </div>
-        </div>
-      )}
     </div>
   );
+}
+
+function formatExpiry(epochMs: number): string {
+  if (!Number.isFinite(epochMs)) return 'unknown';
+  const delta = epochMs - Date.now();
+  if (delta < 0) return `expired ${new Date(epochMs).toLocaleString()}`;
+  const hours = Math.round(delta / 3_600_000);
+  if (hours < 48) return `in ${hours}h (${new Date(epochMs).toLocaleString()})`;
+  return `in ${Math.round(hours / 24)}d (${new Date(epochMs).toLocaleString()})`;
 }

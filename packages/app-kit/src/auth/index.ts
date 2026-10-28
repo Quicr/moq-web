@@ -17,9 +17,5 @@ export type {
   SettingsPanelProps,
 } from './types.js';
 export { registerAuthAdapter, getAuthAdapter, listAuthAdapters } from './registry.js';
-export { cloudflareAdapter, parseCloudflareJwt } from './adapters/cloudflare.js';
-export type {
-  CloudflareState,
-  CloudflareRelay,
-  CloudflareCachedToken,
-} from './adapters/cloudflare.js';
+export { cloudflareAdapter, parseCloudflareJwt, isCloudflareCatEnabled } from './adapters/cloudflare.js';
+export type { CloudflareState, CloudflareCachedToken } from './adapters/cloudflare.js';

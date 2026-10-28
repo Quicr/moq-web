@@ -4,32 +4,22 @@
 /**
  * Cloudflare moq-rs auth adapter.
  *
- * Cloudflare provisions per-relay JWT tokens scoped to `publish` or
- * `subscribe` (docs at https://developers.cloudflare.com/api/resources/moq/).
- * This adapter supports two modes, selected by `state.authMode`:
+ * Cloudflare relays need a relay connection token (a JWT issued by
+ * Cloudflare, `sub` = relay UID) to select the tenant relay. The user pastes
+ * one JWT in the settings panel; `mintToken` serves it from state — no
+ * Cloudflare API call is made (api.cloudflare.com has no CORS, so a browser
+ * can't mint them anyway; operators mint them out-of-band).
  *
- *   'api' (default):
- *     1. User pastes a Cloudflare API token + account ID (persisted in the
- *        transport store's provider state, localStorage).
- *     2. Adapter lists relays and lets the user pick one — its
- *        `config.upstreams` URL is treated as the WebTransport endpoint.
- *     3. On demand (`mintToken({operations:['publish']})`) the adapter first
- *        returns a cached JWT for those operations if unexpired; otherwise it
- *        POSTs to `/relays/{id}/tokens` and caches the returned `secret`.
+ * `applyToUrl` puts the token in the first path segment of the WebTransport
+ * URL (`https://<relay-host>/<token>`) — the relay uses it to select the
+ * tenant relay; a missing/invalid token closes the session with
+ * `scope resolution failed` (code 3).
  *
- *   'preminted':
- *     1. User pastes a relay WebTransport URL, a relayId, and one or more
- *        pre-minted JWTs (publish and/or subscribe) obtained out-of-band.
- *     2. The adapter decodes `jti`/`exp`/`operations` from each JWT and stores
- *        them in `state.tokens`.
- *     3. `mintToken` serves from this cache only — no API call is made, and
- *        apiToken/accountId are not required.
- *
- * In both modes `applyToUrl` puts the token in the first path segment of the
- * WebTransport URL (`https://<relay-host>/<token>`) — the relay uses it to
- * select the tenant relay; a missing/invalid token closes the session with
- * `scope resolution failed` (code 3). With CAT enabled the CAT rides
- * separately in SETUP AUTHORIZATION_TOKEN (type 1); both are required.
+ * `catEnabled` records whether the relay also requires a CAT (Cloudflare
+ * draft-18 pilot, draft-ietf-moq-c4m). The adapter does not mint CATs: the
+ * app owns login/room business logic, mints the CAT from its token service,
+ * and passes it as `connectMoqtSession({ authToken })`, which rides SETUP
+ * AUTHORIZATION_TOKEN (type 1). Both credentials are required when enabled.
  */
 
 import type {
@@ -41,28 +31,6 @@ import type {
 } from '../types.js';
 import { CloudflareAuthPanel } from './cloudflare-panel.js';
 
-/**
- * Base URL for the Cloudflare API. `api.cloudflare.com` does not emit CORS
- * headers, so a browser cannot call it directly — apps that host this
- * adapter must reverse-proxy `/cf-api/*` to `https://api.cloudflare.com/client/v4/*`
- * (see `apps/studio/vite.config.ts` for the dev-server setup). In non-browser
- * environments (SSR, tests) we fall back to the direct API base.
- */
-const CF_API_BASE =
-  typeof window !== 'undefined' ? '/cf-api' : 'https://api.cloudflare.com/client/v4';
-
-export interface CloudflareRelay {
-  uid: string;
-  name: string;
-  status?: string;
-  config?: {
-    upstreams?: {
-      enabled?: boolean;
-      upstreams?: Array<{ url: string }>;
-    };
-  };
-}
-
 export interface CloudflareCachedToken {
   operations: AuthOperation[];
   jwt: string;
@@ -72,139 +40,22 @@ export interface CloudflareCachedToken {
 
 /**
  * Persisted state for the Cloudflare adapter.
- * `apiToken`+`accountId` are credentials the user pastes in.
- * `relayId` selects which relay we mint tokens against and connect to.
- * `tokens` caches minted JWTs so a page reload doesn't re-mint.
+ * `relayJwt` is the pasted relay connection token; `catEnabled` tells the app
+ * that the relay requires a CAT in SETUP.
  */
 export interface CloudflareState extends ProviderState {
-  apiToken?: string;
-  accountId?: string;
-  relayId?: string;
-  relayUrl?: string;
-  tokens?: CloudflareCachedToken[];
-  /**
-   * How this adapter obtains tokens:
-   *   - 'api' (default): drive the Cloudflare REST API via apiToken+accountId
-   *     to list relays and mint tokens on demand.
-   *   - 'preminted': user has already minted JWTs out-of-band and pasted them
-   *     in; the adapter only reads `tokens` and never calls the API.
-   */
-  authMode?: 'api' | 'preminted';
-
-  // ---- CAT authorization (Cloudflare pilot) ----
-  /** Enable CAT authorization via moat token service */
+  relayJwt?: string;
   catEnabled?: boolean;
-  /** Moat token service base URL */
-  moatUrl?: string;
-  /** Session token from moat /v1/auth/guest or /v1/auth/google */
-  moatSessionToken?: string;
-  /** Display name used for moat guest login */
-  moatDisplayName?: string;
-  /** Room ID to request tokens for */
-  moatRoomId?: string;
-  /** Cached moat CAT token (base64url-encoded COSE_Sign1) */
-  moatCatToken?: string;
-  /** Cached moat CAT token expiry (epoch ms) */
-  moatCatExpiresAt?: number;
-}
-
-interface CloudflareEnvelope<T> {
-  success: boolean;
-  result?: T;
-  errors?: Array<{ code: number; message: string }>;
-}
-
-async function cfFetch<T>(
-  path: string,
-  init: RequestInit,
-  apiToken: string,
-): Promise<T> {
-  const res = await fetch(`${CF_API_BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiToken}`,
-      ...(init.headers ?? {}),
-    },
-  });
-  const body = (await res.json().catch(() => null)) as CloudflareEnvelope<T> | null;
-  if (!res.ok || !body || body.success === false) {
-    const msg = body?.errors?.map((e) => `${e.code}: ${e.message}`).join('; ')
-      ?? `HTTP ${res.status}`;
-    throw new Error(`Cloudflare API error: ${msg}`);
-  }
-  if (!body.result) throw new Error('Cloudflare API returned no result');
-  return body.result;
-}
-
-export async function listCloudflareRelays(
-  accountId: string,
-  apiToken: string,
-  signal?: AbortSignal,
-): Promise<CloudflareRelay[]> {
-  return cfFetch<CloudflareRelay[]>(
-    `/accounts/${accountId}/moq/relays`,
-    { method: 'GET', signal },
-    apiToken,
-  );
-}
-
-interface CloudflareTokenCreateResponse {
-  issuers?: Array<{
-    cloudflare_tokens?: Array<{
-      jti: string;
-      created: string;
-      expires: string;
-      operations: AuthOperation[];
-      label?: string;
-      secret: string;
-    }>;
-  }>;
-}
-
-export async function createCloudflareToken(
-  accountId: string,
-  relayId: string,
-  operations: AuthOperation[],
-  apiToken: string,
-  signal?: AbortSignal,
-  label?: string,
-): Promise<CloudflareCachedToken> {
-  const result = await cfFetch<CloudflareTokenCreateResponse>(
-    `/accounts/${accountId}/moq/relays/${relayId}/tokens`,
-    {
-      method: 'POST',
-      signal,
-      body: JSON.stringify({ operations, label }),
-    },
-    apiToken,
-  );
-  const entry = result.issuers?.[0]?.cloudflare_tokens?.[0];
-  if (!entry) throw new Error('Cloudflare token response missing secret');
-  return {
-    operations: entry.operations,
-    jwt: entry.secret,
-    jti: entry.jti,
-    expiresAt: Date.parse(entry.expires),
-  };
-}
-
-/** True if `cached` covers every operation in `needed`. */
-function tokenCovers(cached: CloudflareCachedToken, needed: AuthOperation[]): boolean {
-  return needed.every((op) => cached.operations.includes(op));
-}
-
-export function relayUrlFromRelay(relay: CloudflareRelay): string | null {
-  const upstream = relay.config?.upstreams?.upstreams?.[0]?.url;
-  return upstream ?? null;
+  /** @deprecated pre-minted token cache from the old panel; read as a fallback. */
+  tokens?: CloudflareCachedToken[];
 }
 
 const SKEW_MS = 30_000;
 
 /**
  * Decode the payload of a Cloudflare-issued JWT without verifying its
- * signature. We only need `jti`, `sub`, `exp`, and `operations` to populate
- * a `CloudflareCachedToken` and pre-fill the panel's Relay ID field;
+ * signature. We only need `jti`, `sub`, `exp`, and `operations` to show the
+ * token in the panel and check it covers the requested operations;
  * signature verification is the relay's job.
  */
 export function parseCloudflareJwt(jwt: string): {
@@ -244,174 +95,42 @@ export function parseCloudflareJwt(jwt: string): {
   };
 }
 
-// ============================================================================
-// Moat token service client (CAT authorization)
-// ============================================================================
-
-export interface MoatGuestLoginResponse {
-  user: { id: string; display_name: string };
-  session_token: string;
+/** True when the selected auth provider is Cloudflare with CAT required. */
+export function isCloudflareCatEnabled(
+  auth: { providerId: string | null; providerState: ProviderState } | undefined,
+): boolean {
+  return auth?.providerId === cloudflareAdapter.id && !!(auth.providerState as CloudflareState).catEnabled;
 }
-
-export interface MoatTokenResponse {
-  token: string;
-  expires_at: number;
-  scopes: Array<{ actions: number[]; namespace: string }>;
-  dpop: boolean;
-}
-
-export async function moatGuestLogin(
-  moatUrl: string,
-  displayName: string,
-  signal?: AbortSignal,
-): Promise<MoatGuestLoginResponse> {
-  const res = await fetch(`${moatUrl}/v1/auth/guest`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ display_name: displayName }),
-    signal,
-  });
-  if (!res.ok) {
-    throw new Error(`Moat guest login failed: HTTP ${res.status}`);
-  }
-  return res.json();
-}
-
-export async function moatMintCat(
-  moatUrl: string,
-  sessionToken: string,
-  roomId: string,
-  role: 'publisher' | 'subscriber' | 'pubsub',
-  signal?: AbortSignal,
-): Promise<MoatTokenResponse> {
-  const res = await fetch(`${moatUrl}/v1/token`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${sessionToken}`,
-    },
-    body: JSON.stringify({ room_id: roomId, role }),
-    signal,
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Moat token mint failed: HTTP ${res.status} ${body}`);
-  }
-  return res.json();
-}
-
-// ============================================================================
-// Token minting
-// ============================================================================
-
-/**
- * Optionally mint a CAT from moat when catEnabled.
- * Returns the catToken field for MintedAuthToken, or undefined.
- */
-async function mintMoatCatIfEnabled(
-  state: CloudflareState,
-  operations: AuthOperation[],
-  signal?: AbortSignal,
-): Promise<{ raw: string; type: number } | undefined> {
-  if (!state.catEnabled) return undefined;
-  const { moatUrl, moatSessionToken, moatRoomId } = state;
-  if (!moatUrl || !moatSessionToken || !moatRoomId) {
-    throw new Error(
-      'CAT enabled but moat is not configured — open Settings ▸ Auth and login to moat',
-    );
-  }
-
-  // Check cached CAT
-  if (state.moatCatToken && state.moatCatExpiresAt && state.moatCatExpiresAt - SKEW_MS > Date.now()) {
-    return { raw: state.moatCatToken, type: 1 };
-  }
-
-  // Determine role from operations
-  const hasPub = operations.includes('publish');
-  const hasSub = operations.includes('subscribe');
-  const role = hasPub && hasSub ? 'pubsub' : hasPub ? 'publisher' : 'subscriber';
-
-  const catResponse = await moatMintCat(moatUrl, moatSessionToken, moatRoomId, role, signal);
-
-  // Cache in runtime (can't reach store from here)
-  moatCatCache.token = catResponse.token;
-  moatCatCache.expiresAt = catResponse.expires_at * 1000;
-
-  return { raw: catResponse.token, type: 1 };
-}
-
-/** Runtime cache for moat CAT (parallels runtimeCache for relay JWTs) */
-export const moatCatCache: { token?: string; expiresAt?: number } = {};
 
 async function mintCloudflareToken(ctx: MintContext): Promise<MintedAuthToken> {
   const state = ctx.state as CloudflareState;
-  const { apiToken, accountId, relayId, tokens = [] } = state;
-
-  // Mint CAT from moat if enabled (independent of relay JWT)
-  const catToken = await mintMoatCatIfEnabled(state, ctx.operations, ctx.signal);
-
-  // Cache first: in both 'api' and 'preminted' modes, a non-expired cached
-  // token covering the requested operations is returned without touching the
-  // Cloudflare REST API. This is what lets 'preminted' mode work with no
-  // apiToken/accountId at all.
+  const candidates = [
+    ...(state.relayJwt ? [state.relayJwt] : []),
+    ...(state.tokens ?? []).map((t) => t.jwt),
+  ];
   const now = Date.now();
-  const cached = tokens.find(
-    (t) => tokenCovers(t, ctx.operations) && t.expiresAt - SKEW_MS > now,
-  );
-  if (cached) {
-    return {
-      token: cached.jwt,
-      operations: cached.operations,
-      expiresAt: cached.expiresAt,
-      handle: cached.jti,
-      catToken,
-    };
+  for (const jwt of candidates) {
+    let info: ReturnType<typeof parseCloudflareJwt>;
+    try {
+      info = parseCloudflareJwt(jwt);
+    } catch {
+      continue;
+    }
+    if (info.expiresAt - SKEW_MS <= now) continue;
+    if (!ctx.operations.every((op) => info.operations.includes(op))) continue;
+    return { token: jwt, operations: info.operations, expiresAt: info.expiresAt, handle: info.jti };
   }
-
-  if (!apiToken || !accountId || !relayId) {
-    throw new Error(
-      `Cloudflare adapter has no cached token for ${ctx.operations.join('+')} ` +
-      'and no API credentials to mint one — open Settings ▸ Auth',
-    );
-  }
-
-  const fresh = await createCloudflareToken(
-    accountId,
-    relayId,
-    ctx.operations,
-    apiToken,
-    ctx.signal,
-    `moq-web ${ctx.operations.join('+')} ${new Date().toISOString().slice(0, 19)}`,
+  throw new Error(
+    `No unexpired Cloudflare relay token covering ${ctx.operations.join('+')} — ` +
+    'paste one in Settings ▸ Auth',
   );
-
-  // The connector-side updateState hook is not available inside mintToken —
-  // we can't reach the store from here without a circular dep. Cache in the
-  // in-memory adapter singleton and let the settings panel refresh explicitly.
-  runtimeCache.push(fresh);
-
-  return {
-    token: fresh.jwt,
-    operations: fresh.operations,
-    expiresAt: fresh.expiresAt,
-    handle: fresh.jti,
-    catToken,
-  };
 }
-
-/**
- * In-process cache of minted tokens for the current tab. Populated by both
- * the settings panel (which explicitly mints on button-click and writes to
- * store) and by `mintCloudflareToken` (which mints on demand at connect
- * time without a store reference). The settings panel reads this on mount
- * to reconcile any on-demand mints back into persisted state.
- */
-export const runtimeCache: CloudflareCachedToken[] = [];
 
 export const cloudflareAdapter: AuthAdapter = {
   id: 'cloudflare-moq-rs',
   displayName: 'Cloudflare moq-rs',
   description:
-    'Provisions scoped JWTs against the Cloudflare MoQ API and passes them to the relay as the first URL path segment.',
+    'Sends a Cloudflare relay connection token as the first URL path segment; optionally requires a CAT in SETUP.',
   mintToken: mintCloudflareToken,
   applyToUrl(url, token) {
     const u = new URL(url);

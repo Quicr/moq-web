@@ -555,17 +555,20 @@ export function dotTokenToCoseSign1Bytes(token: string): Uint8Array {
   });
 }
 
+/** CAT token type per draft-ietf-moq-c4m-01 §7.1.1 (Cloudflare draft-18 pilot). */
+export const C4M01_TOKEN_TYPE = 1;
+
 /**
  * Encode an auth token string into the wire bytes expected for the given
  * MOQT token type.
  *
- * - C4M (§CAT): dot-separated JWT-shape → COSE_Sign1 CBOR; otherwise
- *   base64url-decoded raw bytes.
+ * - C4M (§CAT) or c4m-01 type 1: dot-separated JWT-shape → COSE_Sign1 CBOR;
+ *   otherwise base64url-decoded raw bytes.
  * - 0x0002 / 0xda7a: base64url-decoded raw bytes.
  * - Anything else: raw UTF-8 of the string.
  */
 export function encodeTokenBytes(token: string, tokenType: number): Uint8Array {
-  if (tokenType === C4M_TOKEN_TYPE) {
+  if (tokenType === C4M_TOKEN_TYPE || tokenType === C4M01_TOKEN_TYPE) {
     if (token.includes('.')) {
       return dotTokenToCoseSign1Bytes(token);
     }

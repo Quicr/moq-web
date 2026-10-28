@@ -119,6 +119,8 @@ export interface OpenStudioOptions {
   selfId: string;
   displayName?: string;
   publishMedia: boolean;
+  /** CAT for SETUP AUTHORIZATION_TOKEN when the relay requires C4M. */
+  authToken?: { raw: string; type: number };
   onEvent: (peerId: string, evt: TimelineEvent) => void;
   onPeerJoined: (peerId: string) => void;
   onPeerLeft: (peerId: string) => void;
@@ -158,6 +160,7 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
   const connected = await connectMoqtSession({
     transport: opts.transport,
     signal: opts.signal,
+    authToken: opts.authToken,
     auth: {
       operations: opts.publishMedia ? ['publish', 'subscribe'] : ['subscribe'],
     },
