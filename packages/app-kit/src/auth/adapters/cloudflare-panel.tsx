@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 import { useState } from 'react';
+import { Toggle } from '../../shell/Toggle.js';
 import type { SettingsPanelProps } from '../types.js';
 import { parseCloudflareJwt, type CloudflareState } from './cloudflare.js';
 
@@ -105,14 +106,11 @@ export function CloudflareAuthPanel({ state, updateState, resetState }: Settings
             Relay has CAT authorization enabled — sign-in and rooms are required to connect
           </div>
         </div>
-        <label className="ak-toggle">
-          <input
-            type="checkbox"
-            checked={!!s.catEnabled}
-            onChange={(e) => updateState({ catEnabled: e.target.checked })}
-          />
-          <span />
-        </label>
+        <Toggle
+          checked={!!s.catEnabled}
+          onChange={(next) => updateState({ catEnabled: next })}
+          ariaLabel="Require C4M (CAT)"
+        />
       </div>
     </div>
   );
