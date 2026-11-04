@@ -137,6 +137,12 @@ export interface OpenStudioOptions {
 interface PeerState {
   namespace: string[];
   tracksSubId?: number;
+  /** Pull mode: per-track SUBSCRIBEs for video/audio (MediaSession). */
+  mediaSubIds?: number[];
+  /** Pull mode: per-track SUBSCRIBEs for timeline/mediatimeline (raw session). */
+  dataSubIds?: number[];
+  /** Pull mode: this peer's catalog subscriber. */
+  catalog?: MSFSession;
 }
 
 /**
@@ -212,6 +218,26 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     return pid;
   };
 
+  const mediaTimelineHandler = (peerId: string) => (data: Uint8Array) => {
+    try {
+      const entry = JSON.parse(decoder.decode(data)) as MediaTimelineEntry;
+      const point = decodeMediaTimelineEntry(entry);
+      opts.onPeerMediaTimeline?.(peerId, point);
+    } catch (err) {
+      opts.onError(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
+  const eventTimelineHandler = (peerId: string) => (data: Uint8Array) => {
+    try {
+      const parsed = JSON.parse(decoder.decode(data)) as unknown;
+      const timelineEvt = parseTimelineEvent(parsed);
+      if (timelineEvt) opts.onEvent(peerId, timelineEvt);
+    } catch (err) {
+      opts.onError(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
   session.on('incoming-publish', (evt: IncomingPublishEvent) => {
     if (evt.namespace.join('/') === selfNamespaceStr) return;
     const peerId = peerIdFromNs(evt.namespace);
@@ -233,33 +259,73 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     }
 
     if (lower === MEDIA_TIMELINE_TRACK) {
-      session.setSubscriptionCallback(evt.subscriptionId, (data) => {
-        try {
-          const entry = JSON.parse(decoder.decode(data)) as MediaTimelineEntry;
-          const point = decodeMediaTimelineEntry(entry);
-          opts.onPeerMediaTimeline?.(peerId, point);
-        } catch (err) {
-          opts.onError(err instanceof Error ? err : new Error(String(err)));
-        }
-      });
+      session.setSubscriptionCallback(evt.subscriptionId, mediaTimelineHandler(peerId));
       return;
     }
 
     if (lower === EVENT_TRACK || lower.includes('timeline')) {
-      session.setSubscriptionCallback(evt.subscriptionId, (data) => {
-        try {
-          const parsed = JSON.parse(decoder.decode(data)) as unknown;
-          const timelineEvt = parseTimelineEvent(parsed);
-          if (timelineEvt) opts.onEvent(peerId, timelineEvt);
-        } catch (err) {
-          opts.onError(err instanceof Error ? err : new Error(String(err)));
-        }
-      });
+      session.setSubscriptionCallback(evt.subscriptionId, eventTimelineHandler(peerId));
       return;
     }
     // video/audio: MediaSession.handleIncomingPublish attaches the pipeline
     // callback for us; nothing to do here.
   });
+
+  // Cloudflare's draft-18 relay accepts SUBSCRIBE_TRACKS but never sends the
+  // PUBLISHes for the peer's tracks, so there we SUBSCRIBE to each track by
+  // name once the peer's namespace is announced (peers publish every track
+  // before announcing, so they exist by then).
+  const isCloudflare = opts.transport.auth?.providerId === cloudflareAdapter.id;
+  const pullPeerTracks = isCloudflare;
+
+  const subscribePeerTracks = async (peerId: string, ns: string[]): Promise<void> => {
+    const onErr = (what: string) => (err: unknown) =>
+      opts.onError(new Error(`Subscribe ${what} from ${peerId}: ${err instanceof Error ? err.message : String(err)}`));
+    // Records a subscription on the peer, or releases it if the peer already left.
+    const keep = (kind: 'mediaSubIds' | 'dataSubIds', subId: number) => {
+      const state = peers.get(peerId);
+      if (state) (state[kind] ??= []).push(subId);
+      else if (kind === 'mediaSubIds') void mediaSession.unsubscribe(subId).catch(() => {});
+      else void session.unsubscribe(subId).catch(() => {});
+    };
+
+    const state = peers.get(peerId);
+    if (!state) return;
+    const catalog = new MSFSession(session, ns);
+    state.catalog = catalog;
+    void catalog
+      .subscribeCatalog((cat) => opts.onPeerCatalog(peerId, cat), onErr('catalog'))
+      .catch(onErr('catalog'));
+
+    const media: Array<[string, 'video' | 'audio']> = [[VIDEO_TRACK, 'video'], [AUDIO_TRACK, 'audio']];
+    for (const [track, kind] of media) {
+      void mediaSession.subscribe(ns, track, MEDIA_CONFIG, kind)
+        .then((subId) => { subIdToPeer.set(subId, peerId); keep('mediaSubIds', subId); })
+        .catch(onErr(track));
+    }
+
+    const data: Array<[string, (data: Uint8Array) => void]> = [
+      [EVENT_TRACK, eventTimelineHandler(peerId)],
+      [MEDIA_TIMELINE_TRACK, mediaTimelineHandler(peerId)],
+    ];
+    for (const [track, onObject] of data) {
+      void session.subscribe(ns, track, { filterType: 'latest' }, onObject)
+        .then((subId) => keep('dataSubIds', subId))
+        .catch(onErr(track));
+    }
+  };
+
+  const releasePeer = async (state: PeerState): Promise<void> => {
+    const tasks: Array<Promise<unknown>> = [];
+    if (state.tracksSubId !== undefined) tasks.push(mediaSession.unsubscribeNamespace(state.tracksSubId));
+    for (const id of state.mediaSubIds ?? []) {
+      subIdToPeer.delete(id);
+      tasks.push(mediaSession.unsubscribe(id));
+    }
+    for (const id of state.dataSubIds ?? []) tasks.push(session.unsubscribe(id));
+    if (state.catalog) tasks.push(state.catalog.unsubscribeCatalog());
+    await Promise.allSettled(tasks);
+  };
 
   session.on('namespace-announced', (evt) => {
     const ns = evt.namespace;
@@ -269,6 +335,10 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     if (peers.has(peerId)) return;
     peers.set(peerId, { namespace: ns });
     opts.onPeerJoined(peerId);
+    if (pullPeerTracks) {
+      void subscribePeerTracks(peerId, ns);
+      return;
+    }
     // SUBSCRIBE_TRACKS(peerNs) — asks the relay to send us a PUBLISH for every
     // track this peer has under their namespace. Goes through MediaSession so
     // the peer's video/audio PUBLISHes (matched to this, the longer prefix)
@@ -288,9 +358,7 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     const state = peers.get(peerId);
     if (!state) return;
     peers.delete(peerId);
-    if (state.tracksSubId !== undefined) {
-      void mediaSession.unsubscribeNamespace(state.tracksSubId);
-    }
+    void releasePeer(state);
     opts.onPeerLeft(peerId);
   });
 
@@ -323,7 +391,7 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       // Cloudflare's draft-18 relay rejects a PUBLISH carrying
       // SUBGROUP_DELIVERY_TIMEOUT / DYNAMIC_GROUPS with REQUEST_ERROR 3
       // ("track extensions not supported"); send publisher priority only.
-      const publishConfig: MediaConfig = opts.transport.auth?.providerId === cloudflareAdapter.id
+      const publishConfig: MediaConfig = isCloudflare
         ? { ...MEDIA_CONFIG, deliveryTimeout: 0, dynamicGroups: false }
         : MEDIA_CONFIG;
       videoTrackAlias = await mediaSession.publish(selfNamespace, VIDEO_TRACK, localStream, {
@@ -519,11 +587,7 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
       };
     },
     close: async () => {
-      for (const state of peers.values()) {
-        if (state.tracksSubId !== undefined) {
-          try { await mediaSession.unsubscribeNamespace(state.tracksSubId); } catch { /* noop */ }
-        }
-      }
+      for (const state of peers.values()) await releasePeer(state);
       peers.clear();
       subIdToPeer.clear();
       try { await msfSession.stopCatalogPublishing(); } catch { /* noop */ }
