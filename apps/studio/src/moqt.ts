@@ -270,8 +270,10 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     peers.set(peerId, { namespace: ns });
     opts.onPeerJoined(peerId);
     // SUBSCRIBE_TRACKS(peerNs) — asks the relay to send us a PUBLISH for every
-    // track this peer has under their namespace.
-    void session.subscribeTracks(ns)
+    // track this peer has under their namespace. Goes through MediaSession so
+    // the peer's video/audio PUBLISHes (matched to this, the longer prefix)
+    // get a decode pipeline.
+    void mediaSession.subscribeTracks(ns, MEDIA_CONFIG)
       .then((subId) => {
         const state = peers.get(peerId);
         if (state) state.tracksSubId = subId;
@@ -287,7 +289,7 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     if (!state) return;
     peers.delete(peerId);
     if (state.tracksSubId !== undefined) {
-      void session.unsubscribeNamespace(state.tracksSubId);
+      void mediaSession.unsubscribeNamespace(state.tracksSubId);
     }
     opts.onPeerLeft(peerId);
   });
@@ -519,7 +521,7 @@ export async function openStudioBroadcast(opts: OpenStudioOptions): Promise<Stud
     close: async () => {
       for (const state of peers.values()) {
         if (state.tracksSubId !== undefined) {
-          try { await session.unsubscribeNamespace(state.tracksSubId); } catch { /* noop */ }
+          try { await mediaSession.unsubscribeNamespace(state.tracksSubId); } catch { /* noop */ }
         }
       }
       peers.clear();

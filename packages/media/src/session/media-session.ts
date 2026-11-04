@@ -1172,6 +1172,46 @@ export class MediaSession {
   }
 
   /**
+   * Draft-18 SUBSCRIBE_TRACKS for a namespace prefix, with a media config for
+   * auto-creating decode pipelines.
+   *
+   * The session matches each incoming PUBLISH to the longest matching
+   * namespace subscription, so PUBLISHes for tracks under `namespacePrefix`
+   * arrive tagged with this subscription rather than a broader
+   * `subscribeNamespace` one. Registering the config here lets their
+   * video/audio pipelines be built.
+   *
+   * @param namespacePrefix - Track namespace prefix to subscribe to
+   * @param config - Optional media config for auto-creating decode pipelines
+   * @returns Namespace subscription ID (release with `unsubscribeNamespace`)
+   */
+  async subscribeTracks(namespacePrefix: string[], config?: MediaConfig): Promise<number> {
+    const prefixKey = namespacePrefix.join('/');
+    if (config) {
+      this.pendingNamespaceConfigs.set(prefixKey, config);
+    }
+
+    let subscriptionId: number;
+    try {
+      subscriptionId = await this.session.subscribeTracks(namespacePrefix);
+    } catch (err) {
+      if (config) this.pendingNamespaceConfigs.delete(prefixKey);
+      throw err;
+    }
+
+    if (config) {
+      this.pendingNamespaceConfigs.delete(prefixKey);
+      this.namespaceConfigs.set(subscriptionId, { subscriptionId, config });
+      log.info('Stored tracks-subscription config for auto-pipeline creation', {
+        subscriptionId,
+        namespacePrefix: prefixKey,
+      });
+    }
+
+    return subscriptionId;
+  }
+
+  /**
    * Unsubscribe from a namespace
    *
    * @param subscriptionId - Namespace subscription ID
