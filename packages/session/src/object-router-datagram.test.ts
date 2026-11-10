@@ -28,7 +28,7 @@ function makeSub(): InternalSubscription {
   };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter datagrams (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('ObjectRouter datagrams (%s)', (draft) => {
   it('delivers a ZERO_OBJECT_ID datagram (Type Flags 0x04) as object 0', () => {
     const subs = new SubscriptionManager();
     subs.add(makeSub());

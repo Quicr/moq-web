@@ -61,7 +61,7 @@ function registerFetch(session: MOQTSession) {
   return { stream, cancelFetchStream, sendRequestUpdate };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('cancelFetch (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('cancelFetch (%s)', (draft) => {
   it('aborts the request stream instead of closing it', async () => {
     const session = makeSession(draft);
     const { stream } = registerFetch(session);
@@ -94,7 +94,7 @@ describe('cancelFetch REQUEST_UPDATE', () => {
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('unsubscribe (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('unsubscribe (%s)', (draft) => {
   it('aborts the request stream without a REQUEST_UPDATE (d22 §3.1, d18 §5.1: STOP_SENDING)', async () => {
     const session = makeSession(draft);
     const stream = fakeRequestStream();

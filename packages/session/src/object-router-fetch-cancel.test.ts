@@ -76,7 +76,7 @@ function endlessFetch(onCancel: (reason?: unknown) => void): ReadableStream<Uint
   });
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH cancel (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('ObjectRouter FETCH cancel (%s)', (draft) => {
   it('stops delivering and cancels the reader once the fetch is cancelled', async () => {
     const router = new ObjectRouter(new SubscriptionManager(), undefined, draft);
     const onCancel = vi.fn();

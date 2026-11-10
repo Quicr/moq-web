@@ -38,7 +38,7 @@ async function announceOk(session: MOQTSession, namespace: string[]) {
   await session.announceNamespace(namespace);
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE_NAMESPACE (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('incoming SUBSCRIBE_NAMESPACE (%s)', (draft: Draft) => {
   it('answers with suffixes and no NAMESPACE_DONE', async () => {
     const { internals } = makeSession(draft);
     announce(internals, ['conf', 'room1']);
@@ -109,7 +109,7 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE_NAMESPACE (
     ['an extension of it', ['conf', 'room1'], ['conf']],
     ['the same prefix', ['conf'], ['conf']],
     ['the empty prefix', ['conf'], []],
-  ])('refuses %s with PREFIX_OVERLAP', async (_name, established, overlapping) => {
+  ])('refuses %s with PREFIX_OVERLAP before draft-23, which allows it', async (_name, established, overlapping) => {
     const { internals } = makeSession(draft);
     const first = openIncoming(internals, subscribeNamespace(FIRST_PEER_ID, established));
     await first.opened;
@@ -117,6 +117,12 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE_NAMESPACE (
     const second = openIncoming(internals, subscribeNamespace(SECOND_PEER_ID, overlapping));
     await second.opened;
 
+    if (draft === 'draft-23') {
+      // #2018: overlapping SUBSCRIBE_NAMESPACEs are both served
+      expect(second.written()).toEqual([expect.objectContaining({ type: MessageTypeDraft18.REQUEST_OK })]);
+      expect(second.closed()).toBe(false);
+      return;
+    }
     expect(second.written()).toEqual([
       expect.objectContaining({ type: MessageTypeDraft18.REQUEST_ERROR, errorCode: RequestErrorCodeDraft18.PREFIX_OVERLAP }),
     ]);
@@ -140,7 +146,7 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE_NAMESPACE (
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('announced namespaces that differ only by a slash (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('announced namespaces that differ only by a slash (%s)', (draft: Draft) => {
   it('are announced and withdrawn separately', async () => {
     const { session } = makeSession(draft);
 

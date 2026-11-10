@@ -16,6 +16,7 @@ import {
   SessionErrorCodeDraft18,
   TrackPropertyDraft18,
   type RequestOkMessageDraft18,
+  terminationCodeFor,
 } from '@moq-web/core';
 
 import { announce, makeSession, openIncoming, tick, type Draft } from './__tests__/incoming-peer.js';
@@ -29,7 +30,7 @@ function trackStatus(namespace = NAMESPACE) {
   return { type: MessageTypeDraft18.TRACK_STATUS, requestId: PEER_REQUEST_ID, trackNamespace: namespace, trackName: TRACK };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('incoming TRACK_STATUS (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('incoming TRACK_STATUS (%s)', (draft: Draft) => {
   it('answers for a track under an announced namespace nobody subscribed to', async () => {
     const { internals } = makeSession(draft);
     announce(internals, NAMESPACE);
@@ -96,7 +97,7 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming TRACK_STATUS (%s)', (
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('REQUEST_OK Track Properties (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('REQUEST_OK Track Properties (%s)', (draft: Draft) => {
   it('are reported with the result of our TRACK_STATUS', async () => {
     const { session } = makeSession(draft);
     (session as unknown as { sendRequestAndWaitResponse: unknown }).sendRequestAndWaitResponse = async () => ({
@@ -126,7 +127,7 @@ describe.each(['draft-18', 'draft-22'] as const)('REQUEST_OK Track Properties (%
       await tick();
 
       expect(accepted).toBe(false);
-      expect(closed).toEqual([expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION })]);
+      expect(closed).toEqual([expect.objectContaining({ code: terminationCodeFor('invalid-field', draft) })]);
     },
   );
 });

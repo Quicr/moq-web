@@ -38,7 +38,7 @@ function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
   });
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter session draft (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('ObjectRouter session draft (%s)', (draft) => {
   it('decodes a subgroup stream with large IDs', async () => {
     const subs = new SubscriptionManager();
     subs.add(makeSub());

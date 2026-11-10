@@ -10,7 +10,7 @@ import { MOQTransport, type ControlMessageDraft18 } from '@moq-web/core';
 
 import { MOQTSession } from '../session.js';
 
-export type Draft = 'draft-18' | 'draft-22';
+export type Draft = 'draft-18' | 'draft-22' | 'draft-23';
 
 type Stream = { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> };
 

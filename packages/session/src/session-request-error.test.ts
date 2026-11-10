@@ -13,6 +13,7 @@ import {
   MessageTypeDraft18,
   RequestErrorCodeDraft18,
   SessionErrorCodeDraft18,
+  terminationCodeFor,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
@@ -54,7 +55,7 @@ async function rejection(promise: Promise<unknown>): Promise<RequestRejectedErro
   return err as RequestRejectedError;
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('REQUEST_ERROR Retry Interval (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('REQUEST_ERROR Retry Interval (%s)', (draft) => {
   it('is the wait plus one', async () => {
     const { session } = makeSession(draft, { retryInterval: 1001n });
 
@@ -80,7 +81,7 @@ describe.each(['draft-18', 'draft-22'] as const)('REQUEST_ERROR Retry Interval (
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('REQUEST_ERROR Redirect (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('REQUEST_ERROR Redirect (%s)', (draft) => {
   it('is surfaced on a refused SUBSCRIBE', async () => {
     const { session, close } = makeSession(draft, { errorCode: RequestErrorCodeDraft18.REDIRECT, redirect: REDIRECT });
 
@@ -96,7 +97,7 @@ describe.each(['draft-18', 'draft-22'] as const)('REQUEST_ERROR Redirect (%s)', 
 
     await session.announceNamespace(['room']).catch(() => {});
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('invalid-field', draft) }));
   });
 
   it('with an empty Track Name is fine for a namespace request', async () => {

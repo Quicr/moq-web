@@ -154,7 +154,7 @@ describe('B3 SEC: per-session resource limits', () => {
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('resource limits (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('resource limits (%s)', (draft) => {
   it('throw without closing the session', () => {
     const { session } = makeSession(draft);
     const close = vi.spyOn(session, 'close');

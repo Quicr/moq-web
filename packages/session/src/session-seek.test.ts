@@ -64,7 +64,7 @@ async function subscribedSession(draft: Draft) {
   return { session, internals, sendControl, written, send, subscriptionId };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('seekSubscription (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('seekSubscription (%s)', (draft) => {
   it('sends a REQUEST_UPDATE with the start Location on the request stream', async () => {
     const { session, internals, sendControl, written, send, subscriptionId } = await subscribedSession(draft);
     const requestsBefore = written.length;
@@ -86,7 +86,7 @@ describe.each(['draft-18', 'draft-22'] as const)('seekSubscription (%s)', (draft
     expect(update.type).toBe(MessageTypeDraft18.REQUEST_UPDATE);
     expect(update.forwardState).toBe(true);
 
-    if (draft === 'draft-22') {
+    if (draft !== 'draft-18') {
       expect(update.locationFilter?.type).toBe(LocationFilterTypeDraft22.ABSOLUTE_START);
       expect(update.locationFilter?.startLocation).toEqual({ group: BigInt(SEEK_GROUP), object: BigInt(SEEK_OBJECT) });
       return;

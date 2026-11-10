@@ -9,8 +9,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   AuthTokenAliasType,
-  Draft18MessageCodec,
-  Draft22MessageCodec,
+  createProtocolCodec,
+  versionEnumFor,
+  type Version,
   MessageTypeDraft18,
   RequestParameterDraft18,
   decodeDraft18AuthToken,
@@ -34,7 +35,7 @@ async function sentPublish(draft: Draft, authToken?: { tokenBytes: Uint8Array; t
 
   await session.publish(['ns'], 't', { authToken });
 
-  return (draft === 'draft-18' ? Draft18MessageCodec : Draft22MessageCodec).decode(sent[0])[0];
+  return createProtocolCodec(versionEnumFor(draft) as Version).decodeControlMessage(sent[0])[0];
 }
 
 describe('PUBLISH authorization', () => {
@@ -51,7 +52,7 @@ describe('PUBLISH authorization', () => {
     expect(decodeDraft18AuthToken(publish.authTokens![0])).toEqual(expected);
   });
 
-  it.each(['draft-18', 'draft-22'] as const)('%s sends none without PublishOptions.authToken', async (draft) => {
+  it.each(['draft-18', 'draft-22', 'draft-23'] as const)('%s sends none without PublishOptions.authToken', async (draft) => {
     const publish = await sentPublish(draft) as { parameters?: Map<number, Uint8Array>; authTokens?: Uint8Array[] };
 
     expect(publish.parameters?.has(RequestParameterDraft18.AUTHORIZATION_TOKEN)).toBeFalsy();

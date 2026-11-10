@@ -103,7 +103,7 @@ async function delivered(session: MOQTSession, alias: bigint, tried: Array<[bigi
 
 const AROUND_LARGEST: Array<[bigint, bigint]> = [[5n, 2n], [5n, 3n], [6n, 0n], [7n, 0n]];
 
-describe.each(['draft-18', 'draft-22'] as const)('publisher honours the subscription filter (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('publisher honours the subscription filter (%s)', (draft) => {
   it('starts a Next Group filter at the group after the Largest Object', async () => {
     const { session, internals } = await harness(draft);
     const { alias } = await subscribed(internals, draft, filterFields(draft, 'next-group'));

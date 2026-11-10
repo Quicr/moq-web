@@ -13,6 +13,7 @@ import {
   MessageTypeDraft18,
   SessionErrorCodeDraft18,
   type ControlMessageDraft18,
+  terminationCodeFor,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
@@ -64,7 +65,7 @@ function concat(...chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('control stream after SETUP (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('control stream after SETUP (%s)', (draft) => {
   it('delivers a GOAWAY that follows SETUP in a later chunk', () => {
     const { session, internals, serverSetup, goAway, goaways, close } = makeSession(draft);
 
@@ -102,7 +103,7 @@ describe.each(['draft-18', 'draft-22'] as const)('control stream after SETUP (%s
     internals.handleSetupMessage(serverSetup);
     internals.handleSetupMessage(concat(SETUP_TYPE_VARINT, serverSetup));
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('unexpected-message', draft) }));
   });
 
   it('closes with PROTOCOL_VIOLATION on a request message', () => {
@@ -114,7 +115,7 @@ describe.each(['draft-18', 'draft-22'] as const)('control stream after SETUP (%s
       requestId: 1n,
     }));
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('unexpected-message', draft) }));
   });
 
   it('closes with PROTOCOL_VIOLATION on an unknown message type', () => {
@@ -123,7 +124,7 @@ describe.each(['draft-18', 'draft-22'] as const)('control stream after SETUP (%s
     internals.handleSetupMessage(serverSetup);
     internals.handleSetupMessage(Uint8Array.of(UNKNOWN_MESSAGE_TYPE, 0, 0));
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('unexpected-message', draft) }));
   });
 
   it('closes with PROTOCOL_VIOLATION on a GOAWAY body that disagrees with its Length', () => {
@@ -133,16 +134,16 @@ describe.each(['draft-18', 'draft-22'] as const)('control stream after SETUP (%s
     internals.handleSetupMessage(Uint8Array.of(MessageTypeDraft18.GOAWAY, 0, 1, 0));
 
     expect(goaways).toHaveLength(0);
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('malformed-message', draft) }));
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('received GOAWAY (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('received GOAWAY (%s)', (draft) => {
   const incoming = (session: unknown) => session as unknown as {
     handleIncomingGoAwayDraft18: (m: unknown, streamRequestId?: bigint) => void;
   };
   const goAway = { type: MessageTypeDraft18.GOAWAY, newSessionUri: GOAWAY_URI, timeout: GOAWAY_TIMEOUT_MS };
-  const protocolViolation = expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION });
+  const protocolViolation = expect.objectContaining({ code: terminationCodeFor('unexpected-message', draft) });
 
   it('closes the session on a second GOAWAY on the control stream', () => {
     const { session, close, goaways } = makeSession(draft);
@@ -186,7 +187,7 @@ describe.each(['draft-18', 'draft-22'] as const)('received GOAWAY (%s)', (draft)
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('peer control stream end (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('peer control stream end (%s)', (draft) => {
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   it('closes the session with PROTOCOL_VIOLATION (d22 §6.3)', async () => {
@@ -198,7 +199,7 @@ describe.each(['draft-18', 'draft-22'] as const)('peer control stream end (%s)',
     (transport as unknown as { emit: (e: string, d: unknown) => void }).emit('setup-stream-ended', { reset: false });
     await settle();
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('closed-control-stream', draft) }));
   });
 
   it('is ignored once the session is over', async () => {
@@ -213,7 +214,7 @@ describe.each(['draft-18', 'draft-22'] as const)('peer control stream end (%s)',
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('server SETUP (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('server SETUP (%s)', (draft) => {
   it.each([
     ['PATH', { path: '/x' }, SessionErrorCodeDraft18.INVALID_PATH],
     ['AUTHORITY', { authority: 'relay.example' }, SessionErrorCodeDraft18.INVALID_AUTHORITY],
@@ -229,7 +230,7 @@ describe.each(['draft-18', 'draft-22'] as const)('server SETUP (%s)', (draft) =>
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('malformed request stream message (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('malformed request stream message (%s)', (draft) => {
   const MALFORMED_SUBSCRIBE_OK = Uint8Array.of(MessageTypeDraft18.SUBSCRIBE_OK, 0, 1, 0);
 
   function streamOf(bytes: Uint8Array) {
@@ -250,7 +251,7 @@ describe.each(['draft-18', 'draft-22'] as const)('malformed request stream messa
 
     await process(streamOf(Uint8Array.of(MessageTypeDraft18.SUBSCRIBE, 0, 1, 0)));
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('malformed-message', draft) }));
   });
 
   it('closes the session when our request gets a body shorter than its fields', async () => {
@@ -264,6 +265,6 @@ describe.each(['draft-18', 'draft-22'] as const)('malformed request stream messa
 
     await send(Uint8Array.of(0), 0n, 'subscribe').catch(() => {});
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('malformed-message', draft) }));
   });
 });

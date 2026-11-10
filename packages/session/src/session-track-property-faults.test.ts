@@ -22,6 +22,7 @@ import {
   SessionErrorCodeDraft18,
   TrackPropertyDraft18,
   encodeKeyValuePairs,
+  terminationCodeFor,
 } from '@moq-web/core';
 
 import { makeSession, openIncoming, tick, type Draft } from './__tests__/incoming-peer.js';
@@ -45,7 +46,7 @@ function immutable(properties: Map<number, Uint8Array>): Map<number, Uint8Array>
 
 const closedWith = (code: SessionErrorCodeDraft18) => expect.objectContaining({ code });
 
-describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a PUBLISH (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track Properties of a PUBLISH (%s)', (draft: Draft) => {
   function publish(trackProperties: Map<number, Uint8Array>) {
     return {
       type: MessageTypeDraft18.PUBLISH,
@@ -95,7 +96,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a PUBLISH 
 
     await openIncoming(internals, publish(badGroupOrder)).opened;
 
-    expect(onClose).toHaveBeenCalledWith(closedWith(SessionErrorCodeDraft18.PROTOCOL_VIOLATION));
+    expect(onClose).toHaveBeenCalledWith(closedWith(terminationCodeFor(draft === 'draft-23' ? 'malformed-key-value' : 'protocol-violation', draft)));
   });
 
   it('is accepted with understood properties, including those inside Immutable Properties', async () => {
@@ -113,7 +114,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a PUBLISH 
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a SUBSCRIBE_OK (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track Properties of a SUBSCRIBE_OK (%s)', (draft: Draft) => {
   function subscribing(trackProperties: Map<number, Uint8Array>) {
     const onClose = vi.fn();
     const { session, internals } = makeSession(draft, onClose);
@@ -146,7 +147,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a SUBSCRIB
 
     await session.subscribe(NAMESPACE, TRACK).catch(() => {});
 
-    expect(onClose).toHaveBeenCalledWith(closedWith(SessionErrorCodeDraft18.PROTOCOL_VIOLATION));
+    expect(onClose).toHaveBeenCalledWith(closedWith(terminationCodeFor(draft === 'draft-23' ? 'malformed-key-value' : 'protocol-violation', draft)));
   });
 
   it('reads the dynamic groups flag from Immutable Properties', async () => {
@@ -160,7 +161,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a SUBSCRIB
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a FETCH_OK (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track Properties of a FETCH_OK (%s)', (draft: Draft) => {
   function fetching(trackProperties: Map<number, Uint8Array>) {
     const { session } = makeSession(draft);
     const hooks = session as unknown as { sendRequestAndWaitResponse: unknown; abortRequestStream: unknown };
@@ -189,7 +190,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Track Properties of a FETCH_OK
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('an Object with a Mandatory Track Property (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('an Object with a Mandatory Track Property (%s)', (draft: Draft) => {
   const ALIAS = 7n;
   const REQUEST_ID = 4n;
 

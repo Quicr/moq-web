@@ -27,7 +27,7 @@ const NOT_SERVED = [['.'], ['.', 'x'], ['.session'], ['.session', 'clock']];
 function requests(draft: Draft, namespace: string[]): Array<[string, object]> {
   const base = { requestId: REQUEST_ID };
   const track = { trackNamespace: namespace, trackName: 't' };
-  const fetchRange = draft === 'draft-22'
+  const fetchRange = draft !== 'draft-18'
     ? { locationFilter: { type: LocationFilterTypeDraft22.ABSOLUTE_START, startLocation: { group: 0n, object: 0n } } }
     : {
       fetchType: FetchTypeDraft18.STANDALONE,
@@ -55,7 +55,7 @@ function requests(draft: Draft, namespace: string[]): Array<[string, object]> {
   ];
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('inbound requests under reserved namespaces (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('inbound requests under reserved namespaces (%s)', (draft: Draft) => {
   describe.each(NOT_SERVED)('namespace %j', (...namespace) => {
     it.each(requests(draft, namespace))('%s is rejected with DOES_NOT_EXIST', async (_name, message) => {
       const { internals } = makeSession(draft);

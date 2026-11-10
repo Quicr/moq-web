@@ -56,7 +56,7 @@ function makeHarness(draft: DraftVersion) {
   return { session, internals, abort, close };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('pausing mid-subgroup (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('pausing mid-subgroup (%s)', (draft) => {
   it('resets the open subgroup stream instead of finishing it', async () => {
     const h = makeHarness(draft);
     await h.session.sendObject(TRACK_ALIAS, PAYLOAD, { groupId: GROUP, objectId: 0, type: 'data' });

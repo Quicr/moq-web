@@ -85,7 +85,7 @@ function peerSubscribe(draft: Draft, forwardState: boolean) {
   };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('publisher side (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('publisher side (%s)', (draft) => {
   it('starts a SUBSCRIBE with FORWARD=0 paused and sends it no Objects', async () => {
     const { session, internals } = makeSession(draft);
     await openPeerStream(internals, peerSubscribe(draft, false)).opened;

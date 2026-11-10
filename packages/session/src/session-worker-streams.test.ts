@@ -71,7 +71,7 @@ function fetchStreamBytes(): Uint8Array {
   ]);
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('worker data streams (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('worker data streams (%s)', (draft) => {
   it('surfaces a peer reset of a fetch stream as its end', async () => {
     const { session, deliver, tick } = makeSession(draft);
     const events: FetchStreamCompleteEvent[] = [];

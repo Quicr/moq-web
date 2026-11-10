@@ -7,7 +7,9 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { MOQTransport, SessionErrorCodeDraft18, type DraftVersion } from '@moq-web/core';
+import { MOQTransport, SessionErrorCodeDraft18, type DraftVersion,
+  terminationCodeFor,
+} from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
 
@@ -23,7 +25,7 @@ function makeSession(draft: DraftVersion) {
   return { session, close };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('data-plane violation (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('data-plane violation (%s)', (draft) => {
   it('closes the session on an unknown stream type', async () => {
     const { session, close } = makeSession(draft);
     const router = (session as unknown as { objectRouter: { handleIncomingStream(s: ReadableStream<Uint8Array>): Promise<void> } }).objectRouter;
@@ -37,7 +39,7 @@ describe.each(['draft-18', 'draft-22'] as const)('data-plane violation (%s)', (d
     await router.handleIncomingStream(stream);
 
     expect(close).toHaveBeenCalledWith(
-      expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }),
+      expect.objectContaining({ code: terminationCodeFor('invalid-stream-header', draft) }),
     );
   });
 });

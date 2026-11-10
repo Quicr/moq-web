@@ -30,7 +30,7 @@ function subscribeTracks(draft: Draft, requestId: bigint, prefix: string[], forw
   };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE_TRACKS (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('incoming SUBSCRIBE_TRACKS (%s)', (draft) => {
   it('is reported to the application with its prefix and Forward State', async () => {
     const { session, internals } = makeSession(draft);
     const requests: unknown[] = [];
@@ -68,7 +68,7 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE_TRACKS (%s)
     ['an extension of it', ['room', 'a'], ['room']],
     ['the same prefix', ['room'], ['room']],
     ['the empty prefix', ['room'], []],
-  ])('refuses %s with PREFIX_OVERLAP', async (_name, established, overlapping) => {
+  ])('refuses %s with PREFIX_OVERLAP before draft-23, which allows it', async (_name, established, overlapping) => {
     const { session, internals } = makeSession(draft);
     const requests: unknown[] = [];
     session.on('incoming-subscribe-tracks', (event) => requests.push(event));
@@ -76,6 +76,13 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE_TRACKS (%s)
 
     const second = openIncoming(internals, subscribeTracks(draft, SECOND_PEER_ID, overlapping));
     await second.opened;
+
+    if (draft === 'draft-23') {
+      // #2018: both are served; a Track matching both is PUBLISHed for each
+      expect(second.written()).toEqual([expect.objectContaining({ type: MessageTypeDraft18.REQUEST_OK })]);
+      expect(requests).toHaveLength(2);
+      return;
+    }
 
     expect(second.written()).toEqual([
       expect.objectContaining({ type: MessageTypeDraft18.REQUEST_ERROR, errorCode: RequestErrorCodeDraft18.PREFIX_OVERLAP }),

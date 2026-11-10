@@ -220,6 +220,13 @@ export interface PublishOptions {
    * (`new-group-request` event). Subscribers may only send it for such tracks.
    */
   dynamicGroups?: boolean;
+  /**
+   * Draft-23 §9.19.21: the Request ID of the peer's SUBSCRIBE_TRACKS this
+   * PUBLISH answers (from `incoming-subscribe-tracks`). A Track that matches
+   * several SUBSCRIBE_TRACKS is published once for each. Ignored before
+   * draft-23.
+   */
+  subscribeTracksId?: bigint;
 }
 
 /**
@@ -855,7 +862,10 @@ export interface FetchCompleteEvent {
    * absent when it covers the whole group (draft-18 End Location object 0)
    */
   largestObjectId?: bigint;
-  /** Whether this is the end of the track */
+  /**
+   * Whether this is the end of the track. Always false in draft-23, whose
+   * FETCH response has no End Of Track: see `FetchStreamCompleteEvent.endOfTrack`.
+   */
   endOfTrack: boolean;
 }
 
@@ -872,6 +882,12 @@ export interface FetchStreamCompleteEvent {
    * Absent when the stream carried no objects.
    */
   lastGroupId?: number;
+  /**
+   * Draft-23 §11.4.2.2: the stream ended with End of Track, so the last
+   * Object received is the last in the Track. Draft-23 carries this here, not
+   * in the FETCH response (FETCH_OK's End Of Track field is gone, #2009).
+   */
+  endOfTrack?: boolean;
 }
 
 /**

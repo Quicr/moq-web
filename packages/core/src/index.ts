@@ -420,6 +420,12 @@ export {
   normalizeStreamResetErrorCodeDraft23,
 } from './encoding/grease.js';
 export {
+  FetchIdResolver,
+  isFetchIndicatorAllowed,
+  type FetchIdRules,
+  type FetchObjectIds,
+} from './encoding/fetch-ids.js';
+export {
   terminationCodeFor,
   violationOf,
   type Violation,

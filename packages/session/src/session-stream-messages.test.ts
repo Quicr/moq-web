@@ -5,7 +5,8 @@
  * Which messages may appear on a request stream (draft-22 §6.3, §9.5, §9.10;
  * draft-18 §3.3, §10.9): a stream begins with a request, and later messages
  * must suit the request's kind and who sent it. Anything else closes the
- * session with PROTOCOL_VIOLATION and changes no state.
+ * session (UNEXPECTED_MESSAGE in draft-23, PROTOCOL_VIOLATION before) and
+ * changes no state.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -15,6 +16,9 @@ import {
   MessageTypeDraft22,
   SessionErrorCodeDraft18,
   SubscriptionFilterDraft18,
+  terminationCodeFor,
+  type DraftVersion,
+  type Violation,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
@@ -37,7 +41,9 @@ interface Internals {
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-const violation = expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION });
+/** The close a stray message causes: UNEXPECTED_MESSAGE in draft-23, PROTOCOL_VIOLATION before */
+const violation = (draft: DraftVersion, kind: Violation = 'unexpected-message') =>
+  expect.objectContaining({ code: terminationCodeFor(kind, draft) });
 
 function makeSession(draft: Draft) {
   const transport = new MOQTransport({ draft });
@@ -100,7 +106,7 @@ function peerSubscribe(draft: Draft) {
   };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('first message of a peer stream (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('first message of a peer stream (%s)', (draft) => {
   const notRequests: Array<[string, unknown]> = [
     ['GOAWAY', { type: MessageTypeDraft18.GOAWAY, newSessionUri: 'https://x.example/moq', timeout: 0n }],
     ['REQUEST_UPDATE', update],
@@ -121,17 +127,19 @@ describe.each(['draft-18', 'draft-22'] as const)('first message of a peer stream
 
     await openPeerStream(internals, first).opened;
 
-    expect(close).toHaveBeenCalledWith(violation);
+    expect(close).toHaveBeenCalledWith(violation(draft));
     expect(goaways).toHaveLength(0);
     expect(session.state).toBe('ready');
   });
 
   it('closes the session on PUBLISH_STATE_NOTIFY', async () => {
-    const { internals, close } = makeSession('draft-22');
+    // PUBLISH_STATE_NOTIFY is a draft-22 message
+    const sessionDraft = draft === 'draft-18' ? 'draft-22' : draft;
+    const { internals, close } = makeSession(sessionDraft);
 
     await openPeerStream(internals, { type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY, forwardState: false }).opened;
 
-    expect(close).toHaveBeenCalledWith(violation);
+    expect(close).toHaveBeenCalledWith(violation(sessionDraft));
   });
 
   it('does not resume paused publications on a stray REQUEST_UPDATE', async () => {
@@ -143,12 +151,12 @@ describe.each(['draft-18', 'draft-22'] as const)('first message of a peer stream
 
     await openPeerStream(internals, update).opened;
 
-    expect(close).toHaveBeenCalledWith(violation);
+    expect(close).toHaveBeenCalledWith(violation(draft));
     expect(internals.publicationManager.getByRequestId(8n)?.forward).toBe(PAUSED);
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('later messages on a request stream (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('later messages on a request stream (%s)', (draft) => {
   it('close the session on a REQUEST_UPDATE for a SUBSCRIBE of ours', async () => {
     const { session, internals, close } = makeSession(draft);
     const { send } = await openOurStream(session, internals, subscribeOk, () => session.subscribe(['ns'], 't'));
@@ -156,7 +164,7 @@ describe.each(['draft-18', 'draft-22'] as const)('later messages on a request st
     send({ ...update, requestId: PEER_UPDATE_ID });
     await tick();
 
-    expect(close).toHaveBeenCalledWith(violation);
+    expect(close).toHaveBeenCalledWith(violation(draft));
   });
 
   it('close the session on a REQUEST_UPDATE for a PUBLISH_NAMESPACE of ours', async () => {
@@ -166,7 +174,7 @@ describe.each(['draft-18', 'draft-22'] as const)('later messages on a request st
     send(update);
     await tick();
 
-    expect(close).toHaveBeenCalledWith(violation);
+    expect(close).toHaveBeenCalledWith(violation(draft));
   });
 
   it('close the session on a PUBLISH_DONE for a SUBSCRIBE_NAMESPACE of ours', async () => {
@@ -182,11 +190,11 @@ describe.each(['draft-18', 'draft-22'] as const)('later messages on a request st
     });
     await tick();
 
-    expect(close).toHaveBeenCalledWith(violation);
+    expect(close).toHaveBeenCalledWith(violation(draft));
   });
 
   it('close the session on PUBLISH_STATE_NOTIFY from a subscriber', async () => {
-    if (draft !== 'draft-22') {
+    if (draft === 'draft-18') {
       return;
     }
     const { internals, close } = makeSession(draft);
@@ -196,7 +204,8 @@ describe.each(['draft-18', 'draft-22'] as const)('later messages on a request st
     peer.send({ type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY, forwardState: false });
     await tick();
 
-    expect(close).toHaveBeenCalledWith(violation);
+    // Draft-23 §9.10: a publisher that receives PUBLISH_STATE_NOTIFY closes with ROLE_VIOLATION
+    expect(close).toHaveBeenCalledWith(violation(draft, 'role-violation'));
   });
 
   it('accept a REQUEST_UPDATE for a SUBSCRIBE the peer sent', async () => {
@@ -212,7 +221,7 @@ describe.each(['draft-18', 'draft-22'] as const)('later messages on a request st
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('duplicate responses (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('duplicate responses (%s)', (draft) => {
   it('close the session on a second SUBSCRIBE_OK', async () => {
     const { session, internals, close } = makeSession(draft);
     const { send } = await openOurStream(session, internals, subscribeOk, () => session.subscribe(['ns'], 't'));
@@ -220,7 +229,7 @@ describe.each(['draft-18', 'draft-22'] as const)('duplicate responses (%s)', (dr
     send(subscribeOk);
     await tick();
 
-    expect(close).toHaveBeenCalledWith(violation);
+    expect(close).toHaveBeenCalledWith(violation(draft));
   });
 
   it('close the session on a second REQUEST_OK when no REQUEST_UPDATE is pending', async () => {
@@ -230,6 +239,6 @@ describe.each(['draft-18', 'draft-22'] as const)('duplicate responses (%s)', (dr
     send(requestOk);
     await tick();
 
-    expect(close).toHaveBeenCalledWith(violation);
+    expect(close).toHaveBeenCalledWith(violation(draft));
   });
 });

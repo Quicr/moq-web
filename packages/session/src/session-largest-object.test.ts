@@ -10,8 +10,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   MessageTypeDraft18,
-  Draft18MessageCodec,
-  Draft22MessageCodec,
   SubscriptionFilterDraft18,
   type PublishMessageDraft18,
   type RequestOkMessageDraft18,
@@ -56,7 +54,7 @@ function aliasOf(internals: SessionInternals, requestId: bigint): bigint {
   return internals.publicationManager.getByRequestId(requestId)!.trackAlias as bigint;
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('publisher LARGEST_OBJECT (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('publisher LARGEST_OBJECT (%s)', (draft) => {
   it('is omitted from SUBSCRIBE_OK while nothing was published', async () => {
     const { internals } = ready(draft);
 
@@ -102,7 +100,7 @@ describe.each(['draft-18', 'draft-22'] as const)('publisher LARGEST_OBJECT (%s)'
       sent.push(bytes);
       return { type: MessageTypeDraft18.REQUEST_OK, requestId: 0n };
     };
-    const decode = draft === 'draft-18' ? Draft18MessageCodec.decode : Draft22MessageCodec.decode;
+    const decode = (bytes: Uint8Array) => internals.codec.decodeControlMessage(bytes);
     const published = async (): Promise<PublishMessageDraft18> => {
       const alias = await session.publish(NAMESPACE, TRACK);
       const [message] = decode(sent[sent.length - 1]);
@@ -120,7 +118,7 @@ describe.each(['draft-18', 'draft-22'] as const)('publisher LARGEST_OBJECT (%s)'
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('subscriber LARGEST_OBJECT (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('subscriber LARGEST_OBJECT (%s)', (draft) => {
   async function subscribedWith(largestLocation?: { group: bigint; object: bigint }) {
     const { session } = makeSession(draft);
     (session as unknown as { sendRequestAndWaitResponse: unknown }).sendRequestAndWaitResponse = async () => ({

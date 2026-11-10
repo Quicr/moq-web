@@ -76,7 +76,7 @@ async function acceptPeerSubscribe(draft: Draft, internals: Internals, requestId
   return (internals.codec.decodeControlMessage(written[0])[0] as SubscribeOkMessageDraft18).trackAlias!;
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('our Track Aliases (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('our Track Aliases (%s)', (draft) => {
   it('do not collide between SUBSCRIBE_OK and PUBLISH, however many Request IDs were used', async () => {
     const { session, internals } = makeSession(draft);
     internals.announcedNamespaces.set('ns', { namespace: ['ns'], options: {}, subscribers: new Map() });

@@ -310,7 +310,7 @@ export class Draft18MessageCodec {
         case MessageTypeDraft18.PUBLISH_BLOCKED:
           return Draft18MessageCodec.decodePublishBlocked(reader);
         default:
-          throw new Draft18CodecError(`Unknown message type: ${messageType}`, messageType);
+          throw new Draft18CodecError(`Unknown message type: ${messageType}`, messageType, CODEC_MALFORMED, 'unexpected-message');
       }
     }, framing);
   }

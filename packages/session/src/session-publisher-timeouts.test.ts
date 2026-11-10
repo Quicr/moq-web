@@ -112,7 +112,7 @@ function makeHarness(
   return { session, internals, streams, writes, events, send };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('publisher delivery timeouts (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('publisher delivery timeouts (%s)', (draft) => {
   beforeEach(() => {
     vi.useFakeTimers();
   });

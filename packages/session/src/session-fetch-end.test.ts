@@ -44,7 +44,7 @@ function makeSession(draft: Draft, endLocation: { group: bigint; object: bigint 
   return { session, close, completed };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('FETCH_OK End Location (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('FETCH_OK End Location (%s)', (draft) => {
   it('closes the session when it is before the Start Location', async () => {
     const { session, close, completed } = makeSession(draft, { group: BigInt(START_GROUP - 1), object: 9n });
 

@@ -15,6 +15,7 @@ import {
   SessionErrorCodeDraft18,
   SubscriptionFilterDraft18,
   type ControlMessageDraft18,
+  terminationCodeFor,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
@@ -50,7 +51,7 @@ function makeSession(draft: Draft) {
   return { session, internals, sendControl, close };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('publisher side (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('publisher side (%s)', (draft) => {
   it('writes the message on the SUBSCRIBE_TRACKS response stream', async () => {
     const { session, internals, sendControl } = makeSession(draft);
     const written: Uint8Array[] = [];
@@ -98,7 +99,7 @@ describe.each(['draft-18', 'draft-22'] as const)('publisher side (%s)', (draft) 
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('subscriber side (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('subscriber side (%s)', (draft) => {
   async function tracksStream() {
     const harness = makeSession(draft);
     const { session, internals } = harness;
@@ -148,6 +149,6 @@ describe.each(['draft-18', 'draft-22'] as const)('subscriber side (%s)', (draft)
     controller.enqueue(internals.codec.encodeControlMessage(notice));
     await tick();
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('unexpected-message', draft) }));
   });
 });

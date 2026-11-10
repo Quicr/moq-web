@@ -58,7 +58,7 @@ function fetchHeader(): Uint8Array {
   ]);
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('fetch-stream-complete (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('fetch-stream-complete (%s)', (draft) => {
   it('fires once at the FIN of a multi-group fetch, not at each group change', async () => {
     const { internals, events } = makeSession(draft);
     const stream = new ReadableStream<Uint8Array>({

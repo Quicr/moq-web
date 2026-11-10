@@ -20,6 +20,7 @@ import {
   SessionErrorCodeDraft18,
   SubscriptionFilterDraft18,
   type ControlMessageDraft18,
+  terminationCodeFor,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
@@ -191,7 +192,7 @@ const publishDone = {
   streamCount: 0n,
 };
 
-describe.each(['draft-18', 'draft-22'] as const)('REQUEST_UPDATE Request ID (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('REQUEST_UPDATE Request ID (%s)', (draft) => {
   it('consumes a new Request ID instead of reusing the original', async () => {
     const { session, internals, peer } = await openSubscribeStream(draft);
     internals.nextRequestId = Number(FIRST_UPDATE_ID);
@@ -214,7 +215,7 @@ describe.each(['draft-18', 'draft-22'] as const)('REQUEST_UPDATE Request ID (%s)
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('request stream reader (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('request stream reader (%s)', (draft) => {
   it('delivers PUBLISH_DONE after the first response, keyed by the stream', async () => {
     const { session, peer } = await openSubscribeStream(draft);
     const done: unknown[] = [];
@@ -330,7 +331,7 @@ describe('request stream reader (draft-22)', () => {
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE stream (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('incoming SUBSCRIBE stream (%s)', (draft) => {
   async function acceptSubscribe() {
     const { session, internals } = makeSession(draft);
     const peer = installIncomingStream(session);
@@ -424,7 +425,7 @@ describe.each(['draft-18', 'draft-22'] as const)('incoming SUBSCRIBE stream (%s)
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('STOP_SENDING from the peer (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('STOP_SENDING from the peer (%s)', (draft) => {
   const publication = {
     trackAlias: 1n, namespace: ['ns'], trackName: 't', requestId: REQUEST_ID, cleanupHandlers: [], forward: 1,
   };
@@ -482,7 +483,7 @@ describe.each(['draft-18', 'draft-22'] as const)('STOP_SENDING from the peer (%s
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('our PUBLISH stream (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('our PUBLISH stream (%s)', (draft) => {
   it('stays open when the subscriber FINs, since PUBLISH_DONE is still owed', async () => {
     const { internals, peer } = await openSubscribeStream(draft);
     internals.publicationManager.add({
@@ -496,7 +497,7 @@ describe.each(['draft-18', 'draft-22'] as const)('our PUBLISH stream (%s)', (dra
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('unknown message type (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('unknown message type (%s)', (draft) => {
   const unknown = new Uint8Array([UNKNOWN_MESSAGE_TYPE, 0, 0]);
 
   it('closes the session when it arrives on a request stream', async () => {
@@ -514,7 +515,7 @@ describe.each(['draft-18', 'draft-22'] as const)('unknown message type (%s)', (d
     peer.sendRaw(unknown);
     await tick();
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('unexpected-message', draft) }));
   });
 
   it('closes the session when it opens a peer stream', async () => {
@@ -525,11 +526,11 @@ describe.each(['draft-18', 'draft-22'] as const)('unknown message type (%s)', (d
 
     await peer.open();
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('unexpected-message', draft) }));
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('client GOAWAY (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('client GOAWAY (%s)', (draft) => {
   it('refuses a New Session URI (draft-22 §9.2)', async () => {
     const { session, internals } = makeSession(draft);
     internals.doSendControl = vi.fn().mockResolvedValue(undefined);
@@ -548,7 +549,7 @@ describe.each(['draft-18', 'draft-22'] as const)('client GOAWAY (%s)', (draft) =
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('request ID cap (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('request ID cap (%s)', (draft) => {
   it('does not apply: MAX_REQUEST_ID was removed in draft-17', () => {
     const { internals } = makeSession(draft);
     internals.nextRequestId = PAST_LOCAL_CAP;

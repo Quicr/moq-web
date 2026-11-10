@@ -94,7 +94,7 @@ function subgroupHeader(): Uint8Array {
   });
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('data-plane violations (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('data-plane violations (%s)', (draft) => {
   it('closes on an unknown stream type, not reading 0x45 as FETCH', async () => {
     const { router, violations, fetched } = makeRouter(draft);
 

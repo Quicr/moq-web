@@ -26,7 +26,7 @@ async function open(internals: SessionInternals, message: object, marker: string
   await tick();
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('non-UTF-8 names in incoming requests (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('non-UTF-8 names in incoming requests (%s)', (draft: Draft) => {
   it.each([
     ['Track Name', { trackNamespace: ['ns'], trackName: 'zz' }],
     ['Track Namespace Field', { trackNamespace: ['zz'], trackName: 't' }],

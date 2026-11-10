@@ -54,7 +54,7 @@ function makeHarness(draft: DraftVersion) {
   return { session, internals, abort, createStream, requestStream };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('subscription cancelled by the subscriber (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('subscription cancelled by the subscriber (%s)', (draft) => {
   it('resets the open subgroup stream and reports the cancellation', async () => {
     const h = makeHarness(draft);
     const cancelled: SubscriptionCancelledEvent[] = [];

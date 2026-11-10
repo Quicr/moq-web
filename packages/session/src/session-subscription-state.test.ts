@@ -96,7 +96,7 @@ const subscribeOk = (alias = ALIAS, requestId = OWN_REQUEST_ID) => ({
 });
 
 const peerPublish = (draft: Draft, trackName: string, alias: bigint, requestId = PEER_REQUEST_ID) => ({
-  type: draft === 'draft-22' ? MessageTypeDraft22.PUBLISH : MessageTypeDraft18.PUBLISH,
+  type: draft !== 'draft-18' ? MessageTypeDraft22.PUBLISH : MessageTypeDraft18.PUBLISH,
   requestId,
   trackAlias: alias,
   trackNamespace: ['ns'],
@@ -105,7 +105,7 @@ const peerPublish = (draft: Draft, trackName: string, alias: bigint, requestId =
   ...(draft === 'draft-18' ? { largestLocation: { group: 0n, object: 0n } } : {}),
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('subscriber state (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('subscriber state (%s)', (draft) => {
   it('has no Track Alias until the publisher sends one', async () => {
     const { session, internals } = makeSession(draft);
     const stream = ourStream(session, internals);
@@ -177,7 +177,7 @@ describe.each(['draft-18', 'draft-22'] as const)('subscriber state (%s)', (draft
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('Track Aliases (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track Aliases (%s)', (draft) => {
   it('close the session when SUBSCRIBE_OK reuses the alias of another track', async () => {
     const { session, internals, close } = makeSession(draft);
     const first = ourStream(session, internals);

@@ -29,7 +29,12 @@ interface Subscription {
   prefix: string[];
   /** Namespaces (as full tuples) sent in a NAMESPACE and not yet ended by a NAMESPACE_DONE */
   announced: Set<string>;
+  /** SUBSCRIBE_TRACKS: Tracks (namespace and name) already PUBLISHed for it */
+  published: Set<string>;
 }
+
+/** Whether a PUBLISH for a SUBSCRIBE_TRACKS may be sent (draft-23 §9.19.21, §9.5.2) */
+export type TrackClaim = 'ok' | 'unknown-request' | 'outside-prefix' | 'already-published';
 
 export class IncomingNamespaceSubscriptions {
   private readonly subscriptions = new Map<bigint, Subscription>();
@@ -54,7 +59,7 @@ export class IncomingNamespaceSubscriptions {
   }
 
   add(requestId: bigint, prefix: string[]): void {
-    this.subscriptions.set(requestId, { prefix, announced: new Set() });
+    this.subscriptions.set(requestId, { prefix, announced: new Set(), published: new Set() });
   }
 
   /**
@@ -74,6 +79,28 @@ export class IncomingNamespaceSubscriptions {
         subscription.announced.delete(key);
       }
     }
+  }
+
+  /**
+   * Claim a Track for a PUBLISH answering SUBSCRIBE_TRACKS `requestId`. Each
+   * Track is published once per request, even across prefix updates
+   * (draft-23 §9.5.2, #2019).
+   */
+  claimTrack(requestId: bigint, namespace: string[], trackName: string): TrackClaim {
+    const subscription = this.subscriptions.get(requestId);
+    if (!subscription) {
+      return 'unknown-request';
+    }
+    if (!namespacePrefixMatches(subscription.prefix, namespace)) {
+      return 'outside-prefix';
+    }
+    const key = JSON.stringify([...namespace, trackName]);
+    if (subscription.published.has(key)) {
+      return 'already-published';
+    }
+    subscription.published.add(key);
+
+    return 'ok';
   }
 
   remove(requestId: bigint): void {

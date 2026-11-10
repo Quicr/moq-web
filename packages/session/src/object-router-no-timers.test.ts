@@ -21,7 +21,7 @@ const GAP_MS = 80;
 const NEXT_OBJECT = new Uint8Array([0x00, 0x01, 0xbb]);
 const FIRST_OBJECT = new Uint8Array([0x00, 0x01, 0xaa]);
 
-describe.each(['draft-18', 'draft-22'] as const)('subscriber delivery timeouts (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('subscriber delivery timeouts (%s)', (draft) => {
   it('keeps reading a subgroup whose objects arrive far apart', async () => {
     const subs = new SubscriptionManager();
     const sub: InternalSubscription = {

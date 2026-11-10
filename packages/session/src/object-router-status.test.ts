@@ -69,7 +69,7 @@ function subgroupHeader(): Uint8Array {
   });
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('Object Status on the data plane (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Object Status on the data plane (%s)', (draft) => {
   it('does not deliver a STATUS datagram carrying End of Track', () => {
     const { router, delivered, endedGroups } = harness(draft);
 

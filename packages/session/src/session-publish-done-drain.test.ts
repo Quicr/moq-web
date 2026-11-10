@@ -51,7 +51,7 @@ function openSubgroupStream(alias: bigint, onCancel: (reason?: unknown) => void)
   });
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter subgroup streams (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('ObjectRouter subgroup streams (%s)', (draft) => {
   it('cancels the streams of one track alias and no other', async () => {
     const router = new ObjectRouter(new SubscriptionManager(), undefined, draft);
     const cancelled = vi.fn();
@@ -67,7 +67,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter subgroup streams 
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('PUBLISH_DONE received (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('PUBLISH_DONE received (%s)', (draft) => {
   async function subscribed(options: { objectDeliveryTimeout?: number }, streamCount: bigint) {
     const transport = new MOQTransport({ draft: draft as Draft });
     (transport as unknown as { close: typeof transport.close }).close = vi.fn().mockResolvedValue(undefined);

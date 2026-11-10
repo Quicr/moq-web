@@ -108,7 +108,7 @@ describe('GOAWAY Request ID (draft-18 §10.4)', () => {
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('requests after our GOAWAY (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('requests after our GOAWAY (%s)', (draft) => {
   it('are refused with GOING_AWAY and a FIN', async () => {
     const { session, internals } = makeSession(draft);
     internals.announcedNamespaces.set('ns', { namespace: ['ns'], options: {}, subscribers: new Map() });

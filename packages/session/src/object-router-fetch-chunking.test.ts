@@ -66,7 +66,7 @@ function chunked(bytes: Uint8Array, split: number): ReadableStream<Uint8Array> {
   });
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH header (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('ObjectRouter FETCH header (%s)', (draft) => {
   it('reads a multi-byte Request ID as an MOQT vi64', async () => {
     // 2211 needs two bytes; as a QUIC varint the 0b10 prefix means four
     const requestId = 2211n;
@@ -94,7 +94,7 @@ describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH header (%s)
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('ObjectRouter FETCH chunking (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('ObjectRouter FETCH chunking (%s)', (draft) => {
   it('delivers identical objects wherever the stream is split', async () => {
     const bytes = fetchBytes();
     const expected: Delivered = Array.from({ length: OBJECT_COUNT }, (_, objectId) => ({

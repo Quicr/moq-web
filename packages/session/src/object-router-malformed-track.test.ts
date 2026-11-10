@@ -93,7 +93,7 @@ function datagram(properties: Map<number, Uint8Array>): Uint8Array {
   });
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('Mandatory Track Property on an Object (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Mandatory Track Property on an Object (%s)', (draft) => {
   it('cancels the subscription of a subgroup stream and delivers nothing', async () => {
     const { router, malformed, violations, delivered } = makeRouter(draft);
 

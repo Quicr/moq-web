@@ -70,7 +70,7 @@ function openPeerStream(internals: Internals, first: unknown) {
   return { opened, send: (m: unknown) => controller.enqueue(internals.codec.encodeControlMessage(m)) };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('peer Request IDs (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('peer Request IDs (%s)', (draft) => {
   it('close the session when a request has the wrong parity', async () => {
     const { internals, close } = makeSession(draft);
 

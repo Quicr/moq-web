@@ -20,6 +20,7 @@ import {
   StreamTypeDraft18,
   FetchSubgroupMode,
   FetchObjectEndOfRange,
+  FetchObjectMarker,
   SubgroupIdModeDraft18,
   type SubgroupHeaderDraft18,
   type ObjectHeaderDraft18,
@@ -480,6 +481,12 @@ export class Draft18StreamCodec {
   static encodeFetchObject(obj: FetchObjectDraft18): Uint8Array {
     const writer = new Draft18BufferWriter();
 
+    // Draft-23 End of Group / End of Track: the indicator alone (§11.4.2.2)
+    if (obj.marker !== undefined) {
+      writer.writeVarInt(obj.marker);
+      return writer.toUint8Array();
+    }
+
     // End-of-Range marker: only Group ID Delta and Object ID Delta follow.
     if (obj.endOfRange !== undefined) {
       writer.writeVarInt(obj.endOfRange);
@@ -551,8 +558,18 @@ export class Draft18StreamCodec {
 
     const flags = reader.readVarIntNumber();
 
-    // End of Range indicators (§11.4.4.2)
-    if (flags === FetchObjectEndOfRange.NON_EXISTENT || flags === FetchObjectEndOfRange.UNKNOWN || flags === FetchObjectEndOfRange.TIMED_OUT) {
+    // Draft-23 End of Group / End of Track (§11.4.2.2): no fields follow
+    if (flags === FetchObjectMarker.END_OF_GROUP || flags === FetchObjectMarker.END_OF_TRACK) {
+      return [{ subgroupMode: FetchSubgroupMode.ZERO, marker: flags }, reader.offset - offset];
+    }
+
+    // End of Range indicators (§11.4.4.2; Gone is draft-23 §11.4.2)
+    if (
+      flags === FetchObjectEndOfRange.NON_EXISTENT
+      || flags === FetchObjectEndOfRange.UNKNOWN
+      || flags === FetchObjectEndOfRange.TIMED_OUT
+      || flags === FetchObjectEndOfRange.GONE
+    ) {
       const groupIdDelta = reader.readVarInt();
       const objectIdDelta = reader.readVarInt();
       return [
@@ -566,8 +583,12 @@ export class Draft18StreamCodec {
       ];
     }
 
-    if (flags >= 128 && flags !== FetchObjectEndOfRange.NON_EXISTENT && flags !== FetchObjectEndOfRange.UNKNOWN && flags !== FetchObjectEndOfRange.TIMED_OUT) {
-      throw new Draft18StreamCodecError('Fetch Serialization Flags >= 128 with unknown value is a PROTOCOL_VIOLATION');
+    if (flags >= 128) {
+      throw new Draft18StreamCodecError(
+        `Fetch Serialization Flags 0x${flags.toString(16)} is not a defined indicator (PROTOCOL_VIOLATION)`,
+        undefined,
+        'malformed-object',
+      );
     }
 
     const subgroupMode = (flags & FetchObjectFlags.SUBGROUP_MODE_MASK) as FetchSubgroupMode;

@@ -75,7 +75,7 @@ function makeHarness(draft: DraftVersion, deliveryMode: 'stream' | 'datagram' = 
   return { session, internals, created, closed, writes, datagrams };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('subgroup streams (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('subgroup streams (%s)', (draft) => {
   it('keeps the objects of one group on one stream', async () => {
     const h = makeHarness(draft);
 

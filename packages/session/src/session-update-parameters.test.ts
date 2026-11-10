@@ -15,6 +15,7 @@ import {
   RequestParameterDraft22,
   SessionErrorCodeDraft18,
   SubscriptionFilterDraft18,
+  terminationCodeFor,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
@@ -63,7 +64,7 @@ describe('disallowedUpdateParameter', () => {
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('REQUEST_UPDATE on a request stream (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('REQUEST_UPDATE on a request stream (%s)', (draft) => {
   async function peerRequest(first: object, update: object) {
     const transport = new MOQTransport({ draft: draft as Draft });
     (transport as unknown as { close: typeof transport.close }).close = vi.fn().mockResolvedValue(undefined);
@@ -105,13 +106,13 @@ describe.each(['draft-18', 'draft-22'] as const)('REQUEST_UPDATE on a request st
       priorityUpdate,
     );
 
-    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('invalid-parameter', draft) }));
   });
 
   it('accepts the same change for a SUBSCRIBE', async () => {
     const close = await peerRequest(
       {
-        type: draft === 'draft-22' ? MessageTypeDraft22.SUBSCRIBE : MessageTypeDraft18.SUBSCRIBE,
+        type: draft !== 'draft-18' ? MessageTypeDraft22.SUBSCRIBE : MessageTypeDraft18.SUBSCRIBE,
         requestId: PEER_REQUEST_ID,
         trackNamespace: ['ns'],
         trackName: 't',

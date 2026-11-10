@@ -14,6 +14,7 @@ import {
   SessionErrorCodeDraft18,
   TrackStatusCode,
   type ControlMessageDraft18,
+  terminationCodeFor,
 } from '@moq-web/core';
 
 import { MOQTSession } from './session.js';
@@ -81,7 +82,7 @@ function installPeerStream(session: MOQTSession) {
 
 const requestOk = { type: MessageTypeDraft18.REQUEST_OK, requestId: REQUEST_ID };
 
-describe.each(['draft-18', 'draft-22'] as const)('cancelling namespace requests (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('cancelling namespace requests (%s)', (draft) => {
   it('ends the SUBSCRIBE_NAMESPACE stream instead of sending UNSUBSCRIBE_NAMESPACE', async () => {
     const { session, sendControl } = makeSession(draft);
     const peer = installPeerStream(session);
@@ -126,8 +127,8 @@ describe.each(['draft-18', 'draft-22'] as const)('cancelling namespace requests 
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('namespace response stream (%s)', (draft) => {
-  const violation = expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION });
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('namespace response stream (%s)', (draft) => {
+  const violation = expect.objectContaining({ code: terminationCodeFor('unexpected-message', draft) });
 
   async function subscribed() {
     const harness = makeSession(draft);

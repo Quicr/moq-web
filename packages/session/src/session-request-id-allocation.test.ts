@@ -40,7 +40,7 @@ function makeSession(draft: Draft) {
   return { session, internals };
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('Request IDs (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Request IDs (%s)', (draft) => {
   it('are not spent on an incoming PUBLISH', async () => {
     const { session, internals } = makeSession(draft);
     (session as unknown as { _state: string })._state = 'ready';
@@ -53,7 +53,7 @@ describe.each(['draft-18', 'draft-22'] as const)('Request IDs (%s)', (draft) => 
       readable: new ReadableStream<Uint8Array>({
         start: (c) => {
           c.enqueue(internals.codec.encodeControlMessage({
-            type: draft === 'draft-22' ? MessageTypeDraft22.PUBLISH : MessageTypeDraft18.PUBLISH,
+            type: draft !== 'draft-18' ? MessageTypeDraft22.PUBLISH : MessageTypeDraft18.PUBLISH,
             requestId: PEER_REQUEST_ID,
             trackAlias: 9n,
             trackNamespace: ['ns', 'cam'],

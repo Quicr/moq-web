@@ -35,7 +35,7 @@ interface Internals {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe.each(['draft-18', 'draft-22'] as const)('%s incoming Authorization Tokens (§8.9)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('%s incoming Authorization Tokens (§8.9)', (draft) => {
   async function receiveSubscribe(token: Uint8Array): Promise<ReturnType<typeof vi.fn>> {
     const transport = new MOQTransport({ draft });
     (transport as unknown as { close: typeof transport.close }).close = vi.fn().mockResolvedValue(undefined);
@@ -52,7 +52,7 @@ describe.each(['draft-18', 'draft-22'] as const)('%s incoming Authorization Toke
       trackNamespace: ['ns'],
       trackName: 't',
       forwardState: true,
-      ...(draft === 'draft-22'
+      ...(draft !== 'draft-18'
         ? { authTokens: [token] }
         : { parameters: new Map([[0x03, token]]) }),
     } as unknown as ControlMessageDraft18;
@@ -137,7 +137,7 @@ function sessionFor(draft: 'draft-18' | 'draft-22') {
 }
 
 function withToken(draft: 'draft-18' | 'draft-22', message: object, token: Uint8Array): ControlMessageDraft18 {
-  const carried = draft === 'draft-22' ? { authTokens: [token] } : { parameters: new Map([[0x03, token]]) };
+  const carried = draft !== 'draft-18' ? { authTokens: [token] } : { parameters: new Map([[0x03, token]]) };
 
   return { ...message, ...carried } as unknown as ControlMessageDraft18;
 }
@@ -151,7 +151,7 @@ const requestsCarryingTokens: Array<[string, object]> = [
   ['SUBSCRIBE_TRACKS', { type: MessageTypeDraft18.SUBSCRIBE_TRACKS, requestId: REQUEST_ID, trackNamespacePrefix: ['ns'], forwardState: true }],
 ];
 
-describe.each(['draft-18', 'draft-22'] as const)('%s Authorization Token Aliases in requests (§8.9)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('%s Authorization Token Aliases in requests (§8.9)', (draft) => {
   describe.each(requestsCarryingTokens)('%s', (_name, request) => {
     it.each(closeCodeFor)('%s', async (_alias, aliasType, code) => {
       const { internals, close } = sessionFor(draft);
@@ -200,7 +200,7 @@ describe.each(['draft-18', 'draft-22'] as const)('%s Authorization Token Aliases
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('%s Authorization Token in the SETUP options (§9.1.4)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('%s Authorization Token in the SETUP options (§9.1.4)', (draft) => {
   /** The server's SETUP, carrying `token`, arrives on its setup stream. */
   async function receiveSetup(token: Uint8Array) {
     const { internals, close } = sessionFor(draft);

@@ -54,7 +54,7 @@ const overlap = expect.objectContaining({
   errorCode: RequestErrorCodeDraft18.PREFIX_OVERLAP,
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('prefix update of SUBSCRIBE_NAMESPACE (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('prefix update of SUBSCRIBE_NAMESPACE (%s)', (draft: Draft) => {
   it('sends NAMESPACE for what the new prefix adds, relative to it, after the REQUEST_OK', async () => {
     const { internals } = makeSession(draft);
     announce(internals, ['conf', 'a']);
@@ -103,7 +103,7 @@ describe.each(['draft-18', 'draft-22'] as const)('prefix update of SUBSCRIBE_NAM
     expect(messages).toEqual([expect.objectContaining({ type: MessageTypeDraft18.NAMESPACE_DONE, finalNamespace: ['y'] })]);
   });
 
-  it('refuses a prefix that overlaps another request, and ends the request', async () => {
+  it('refuses a prefix that overlaps another request, and ends the request (allowed in draft-23)', async () => {
     const { internals } = makeSession(draft);
     await openIncoming(internals, subscribeNamespace(FIRST_ID, ['a'])).opened;
     const second = openIncoming(internals, subscribeNamespace(SECOND_ID, ['b']));
@@ -111,6 +111,12 @@ describe.each(['draft-18', 'draft-22'] as const)('prefix update of SUBSCRIBE_NAM
 
     second.send(prefixUpdate(UPDATE_ID, ['a', 'c']));
     await tick();
+
+    if (draft === 'draft-23') {
+      expect(second.written()[1]).toMatchObject({ type: MessageTypeDraft18.REQUEST_OK });
+      expect(second.closed()).toBe(false);
+      return;
+    }
 
     expect(second.written()[1]).toEqual(overlap);
     expect(second.closed()).toBe(true);
@@ -136,7 +142,7 @@ describe.each(['draft-18', 'draft-22'] as const)('prefix update of SUBSCRIBE_NAM
   });
 });
 
-describe.each(['draft-18', 'draft-22'] as const)('prefix update of SUBSCRIBE_TRACKS (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('prefix update of SUBSCRIBE_TRACKS (%s)', (draft: Draft) => {
   it('refuses an overlapping prefix with PREFIX_OVERLAP, in its own overlap space', async () => {
     const { internals } = makeSession(draft);
     await openIncoming(internals, subscribeNamespace(FIRST_ID, ['a'])).opened;
@@ -150,6 +156,10 @@ describe.each(['draft-18', 'draft-22'] as const)('prefix update of SUBSCRIBE_TRA
 
     tracks.send(prefixUpdate(NEXT_UPDATE_ID, ['b', 'x']));
     await tick();
+    if (draft === 'draft-23') {
+      expect(tracks.written()[2]).toMatchObject({ type: MessageTypeDraft18.REQUEST_OK });
+      return;
+    }
     expect(tracks.written()[2]).toEqual(overlap);
     expect(tracks.closed()).toBe(true);
   });

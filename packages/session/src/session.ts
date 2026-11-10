@@ -132,6 +132,7 @@ import {
   terminationCodeFor,
   violationOf,
   DEFAULT_MAX_CONTROL_MESSAGE_SIZE,
+  type Violation,
 } from '@moq-web/core';
 import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
@@ -310,12 +311,13 @@ interface OutgoingRequest {
 }
 
 /** The response that answers each kind of request, besides REQUEST_ERROR (draft-22 §3.1, §3.2, §9.3). */
-function successResponseType(kind: OutgoingRequestKind): MessageTypeDraft18 {
+function successResponseType(kind: OutgoingRequestKind, draft: DraftVersion): MessageTypeDraft18 {
   switch (kind) {
     case 'subscribe':
       return MessageTypeDraft18.SUBSCRIBE_OK;
     case 'fetch':
-      return MessageTypeDraft18.FETCH_OK;
+      // Draft-23 §9.3: FETCH_OK is a REQUEST_OK (#2009)
+      return isDraftAtLeast(draft, 23) ? MessageTypeDraft18.REQUEST_OK : MessageTypeDraft18.FETCH_OK;
     default:
       return MessageTypeDraft18.REQUEST_OK;
   }
@@ -934,8 +936,8 @@ export class MOQTSession {
 
     // Data-plane violations (unknown stream types, malformed headers and
     // objects) MUST close the session (d22 §6.4.1, §11).
-    this.objectRouter.setViolationCallback((reason) => {
-      void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    this.objectRouter.setViolationCallback((reason, violation) => {
+      void this.close({ code: terminationCodeFor(violation, this._draft), reason }).catch(() => {});
     });
 
     // A Track with a malformed Object is cancelled; the session stays (d22 §12.1)
@@ -990,13 +992,13 @@ export class MOQTSession {
 
     // A reset or cancelled fill stream leaves its subscription alone (draft-22 §3.4.1).
     // Any other FETCH stream ending, by FIN or reset, completes the fetch (§3.2.4).
-    this.objectRouter.setFetchStreamCloseCallback((requestId, lastGroupId) => {
+    this.objectRouter.setFetchStreamCloseCallback((requestId, lastGroupId, endOfTrack) => {
       if (this.fillStreams.delete(requestId)) {
         return;
       }
 
-      log.info('FETCH stream ended', { requestId, lastGroupId });
-      this.emit('fetch-stream-complete', { requestId, lastGroupId });
+      log.info('FETCH stream ended', { requestId, lastGroupId, endOfTrack });
+      this.emit('fetch-stream-complete', { requestId, lastGroupId, endOfTrack });
     });
 
     // Set up forward state change listener to emit events for MediaSession
@@ -1615,12 +1617,12 @@ export class MOQTSession {
     if (!this.acceptOkProperties(response, request.kind)) {
       return false;
     }
-    if (response.type === successResponseType(request.kind)) {
+    if (response.type === successResponseType(request.kind, this._draft)) {
       return true;
     }
 
     const reason = `Message type ${response.type} cannot answer a ${request.kind} request`;
-    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    void this.close({ code: terminationCodeFor('unexpected-message', this._draft), reason }).catch(() => {});
 
     return false;
   }
@@ -1716,19 +1718,20 @@ export class MOQTSession {
   }
 
   /**
-   * Track Properties are only populated in a TRACK_STATUS_OK; in any other
-   * REQUEST_OK they close the session (draft-22 §9.3, draft-18 §10.5).
-   * Returns whether the message was fine.
+   * Track Properties are only populated in a TRACK_STATUS_OK (and, from
+   * draft-23, the REQUEST_OK answering a FETCH); in any other REQUEST_OK they
+   * close the session (draft-23 §9.3 with INVALID_FIELD, draft-22 §9.3,
+   * draft-18 §10.5). Returns whether the message was fine.
    */
   private acceptOkProperties(response: ControlMessageDraft18, kind: OutgoingRequestKind | 'update'): boolean {
     const hasProperties = response.type === MessageTypeDraft18.REQUEST_OK
       && (response as RequestOkMessageDraft18).trackProperties !== undefined;
-    if (!hasProperties || kind === 'track-status') {
+    if (!hasProperties || kind === 'track-status' || (kind === 'fetch' && this.isDraft23)) {
       return true;
     }
 
     const reason = `REQUEST_OK for a ${kind} request has Track Properties`;
-    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    void this.close({ code: terminationCodeFor('invalid-field', this._draft), reason }).catch(() => {});
 
     return false;
   }
@@ -1743,8 +1746,9 @@ export class MOQTSession {
       return true;
     }
 
+    // Draft-23 §9.4.2.1: INVALID_FIELD
     const reason = `Redirect for a ${kind} request names Track ${error.redirect.trackName}`;
-    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    void this.close({ code: terminationCodeFor('invalid-field', this._draft), reason }).catch(() => {});
 
     return false;
   }
@@ -1880,7 +1884,18 @@ export class MOQTSession {
     const allowed = request
       ? INBOUND_ON_OUR_REQUEST.get(request.kind)
       : INBOUND_ON_PEER_REQUEST.get(this.incomingRequestKinds.get(requestId) ?? 'unknown');
+    // Draft-23 §9.2 (#1966): only the receiver of a request sends GOAWAY on its stream
+    if (!request && message.type === GOAWAY && this.isDraft23) {
+      this.closeForViolation('protocol-violation', `GOAWAY from the sender of request ${requestId.toString()}`);
+      return;
+    }
     if (!allowed?.has(message.type)) {
+      // Draft-23 §9.10: a publisher that receives PUBLISH_STATE_NOTIFY closes with ROLE_VIOLATION
+      const weArePublisher = request ? request.kind === 'publish' : this.incomingRequestKinds.get(requestId) === 'subscribe';
+      if ((message.type as number) === MessageTypeDraft22.PUBLISH_STATE_NOTIFY && weArePublisher) {
+        this.closeForViolation('role-violation', `PUBLISH_STATE_NOTIFY sent to the publisher of request ${requestId.toString()}`);
+        return;
+      }
       this.closeForUnexpectedMessage(message, `request ${requestId.toString()}`);
       return;
     }
@@ -1908,7 +1923,7 @@ export class MOQTSession {
         if (disallowed !== undefined) {
           const reason = `Parameter 0x${disallowed.toString(16)} cannot update a ${target} request`;
           log.error(reason);
-          void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+          this.closeForViolation('invalid-parameter', reason);
           break;
         }
 
@@ -1991,6 +2006,22 @@ export class MOQTSession {
     return bytes && decodeTrackNamespace(new Draft18BufferReader(bytes, 0));
   }
 
+  /**
+   * Draft-23 §9.19.21: a PUBLISH answering a SUBSCRIBE_TRACKS names it, for
+   * a Track under its prefix that was not yet published for it (§9.5.2).
+   */
+  private claimSubscribeTracks(requestId: bigint | undefined, namespace: string[], trackName: string): bigint | undefined {
+    if (requestId === undefined) {
+      return undefined;
+    }
+    const claim = this.incomingTrackSubs.claimTrack(requestId, namespace, trackName);
+    if (claim !== 'ok') {
+      throw new Error(`Cannot PUBLISH ${namespace.join('/')}/${trackName} for SUBSCRIBE_TRACKS ${requestId}: ${claim}`);
+    }
+
+    return requestId;
+  }
+
   /** The overlap space of the namespace request `requestId`: its own type's (draft-22 §9.5.2) */
   private subscriptionsOfKind(requestId: bigint): IncomingNamespaceSubscriptions | undefined {
     switch (this.incomingRequestKinds.get(requestId)) {
@@ -2003,8 +2034,9 @@ export class MOQTSession {
     }
   }
 
+  /** Draft-23 allows overlapping namespace subscriptions (#2018): PREFIX_OVERLAP is gone */
   private prefixOverlaps(requestId: bigint, prefix: string[]): boolean {
-    return this.subscriptionsOfKind(requestId)?.overlaps(prefix, requestId) === true;
+    return !this.isDraft23 && this.subscriptionsOfKind(requestId)?.overlaps(prefix, requestId) === true;
   }
 
   /**
@@ -2197,7 +2229,8 @@ export class MOQTSession {
     if (fault === TrackPropertyFault.INVALID) {
       const reason = `Invalid Track Properties in ${where}`;
       log.error(reason);
-      void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+      // Draft-23 §10: a Property value that does not match its Type is MALFORMED_KEY_VALUE
+      this.closeForViolation('malformed-key-value', reason, SessionErrorCodeDraft18.PROTOCOL_VIOLATION);
     }
 
     return fault;
@@ -2207,7 +2240,17 @@ export class MOQTSession {
   private closeForUnexpectedMessage(message: ControlMessageDraft18, where: string): void {
     const reason = `Message type ${message.type} is not allowed on ${where}`;
     log.error(reason);
-    void this.close({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason }).catch(() => {});
+    this.closeForViolation('unexpected-message', reason);
+  }
+
+  /**
+   * Close the session for a protocol violation with its draft's code (see
+   * violation.ts). `beforeDraft23` overrides that code where an earlier draft
+   * closed differently than the kind implies.
+   */
+  private closeForViolation(violation: Violation, reason: string, beforeDraft23?: number): void {
+    const code = !this.isDraft23 && beforeDraft23 !== undefined ? beforeDraft23 : terminationCodeFor(violation, this._draft);
+    void this.close({ code, reason }).catch(() => {});
   }
 
   /**
@@ -4070,6 +4113,7 @@ export class MOQTSession {
     const largestLocation = this.publicationManager.largestOf(namespace, trackName);
     // §8.9: draft-22 carries Authorization Tokens in `authTokens`, which may repeat
     const authBytes = options?.authToken ? encodeDraft18AuthBytes(options.authToken) : undefined;
+    const subscribeTracksId = this.isDraft23 ? this.claimSubscribeTracks(options?.subscribeTracksId, namespace, trackName) : undefined;
     const publishMessage: PublishMessageDraft18 | PublishMessageDraft22 = this.isDraft22
       ? {
         type: MessageTypeDraft22.PUBLISH,
@@ -4079,6 +4123,7 @@ export class MOQTSession {
         trackName,
         forwardState: true,
         largestLocation,
+        subscribeTracksId,
         authTokens: authBytes ? [authBytes] : undefined,
         trackProperties,
       }
@@ -4353,7 +4398,9 @@ export class MOQTSession {
 
     const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'fetch');
 
-    if (response.type === MessageTypeDraft18.FETCH_OK) {
+    if (this.isDraft23 && response.type === MessageTypeDraft18.REQUEST_OK) {
+      await this.acceptFetchOkDraft23(requestId, response as RequestOkMessageDraft18, range);
+    } else if (response.type === MessageTypeDraft18.FETCH_OK) {
       const fetchOk = response as _FetchOkMessageDraft18;
       const fault = this.checkTrackProperties(fetchOk.trackProperties, 'FETCH_OK');
       if (fault === TrackPropertyFault.INVALID) {
@@ -4430,6 +4477,70 @@ export class MOQTSession {
         responseType: response.type,
       });
     }
+  }
+
+  /**
+   * Draft-23 §3.2, §9.3: a FETCH is answered with REQUEST_OK. The response
+   * ends at LARGEST_OBJECT when that is inside the requested range (the
+   * publisher then MUST include it), else at the requested end. End of Track
+   * is no longer in the response: the data stream's End of Track indicator
+   * carries it (`fetch-stream-complete`).
+   */
+  private async acceptFetchOkDraft23(requestId: bigint, ok: RequestOkMessageDraft18, range: FetchRange): Promise<void> {
+    const fault = this.checkTrackProperties(ok.trackProperties, 'FETCH_OK');
+    if (fault === TrackPropertyFault.INVALID) {
+      return;
+    }
+    if (fault === TrackPropertyFault.UNSUPPORTED) {
+      // §3.7: the track is not processed, so the fetch is cancelled
+      this.activeFetches.delete(requestId);
+      this.objectRouter.clearFetchGroupOrder(requestId);
+      await this.abortRequestStream(requestId);
+      this.emit('fetch-error', {
+        requestId,
+        errorCode: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
+        reason: 'Mandatory Track Property not understood',
+      } as FetchErrorEvent);
+      return;
+    }
+
+    const largest = ok.largestLocation;
+    const startGroup = BigInt(range.startGroup);
+    if (largest && (largest.group < startGroup || (largest.group === startGroup && largest.object < BigInt(range.startObject)))) {
+      // LARGEST_OBJECT is only sent when it lies inside the range
+      const reason = `FETCH response LARGEST_OBJECT ${largest.group}/${largest.object} is before the Start Location`;
+      void this.close({ code: terminationCodeFor('invalid-field', this._draft), reason }).catch(() => {});
+      return;
+    }
+
+    // `endObject == 0` asks for the whole End Group, which names no Object
+    const end = largest ?? {
+      group: BigInt(range.endGroup),
+      object: range.endObject === 0 ? undefined : BigInt(range.endObject),
+    };
+    const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
+    log.info('Received REQUEST_OK for FETCH', {
+      requestId: requestId.toString(),
+      endGroup: end.group.toString(),
+      endObject: end.object?.toString(),
+      largestInRange: largest !== undefined,
+      expiresMs,
+    });
+
+    const info = this.activeFetches.get(requestId);
+    if (info) {
+      info.completed = true;
+      info.largestGroupId = end.group;
+      info.largestObjectId = end.object;
+      info.endOfTrack = false;
+    }
+    this.emit('request-ok', { requestId, requestKind: 'fetch', expiresMs } as RequestOkEvent);
+    this.emit('fetch-complete', {
+      requestId,
+      largestGroupId: end.group,
+      largestObjectId: end.object,
+      endOfTrack: false,
+    } as FetchCompleteEvent);
   }
 
   /**
@@ -7277,10 +7388,8 @@ export class MOQTSession {
         return;
       }
 
-      void this.close({
-        code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
-        reason: 'The peer closed its control stream',
-      }).catch(() => {});
+      // Draft-23 §6.3: CLOSED_CONTROL_STREAM
+      this.closeForViolation('closed-control-stream', 'The peer closed its control stream');
     }, 0);
   }
 
@@ -7331,10 +7440,8 @@ export class MOQTSession {
       return;
     }
 
-    void this.close({
-      code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
-      reason: `Message type ${message.type} is not allowed on the control stream`,
-    }).catch(() => {});
+    // Draft-23 §9: UNEXPECTED_MESSAGE
+    this.closeForViolation('unexpected-message', `Message type ${message.type} is not allowed on the control stream`);
   }
 
   /**
@@ -7882,7 +7989,8 @@ export class MOQTSession {
    * The error for a FETCH we cannot serve. The ones the spec mandates come
    * first: DOES_NOT_EXIST for a track we do not publish, INVALID_RANGE when no
    * Object was published or the Start Location is past the Largest Object
-   * (d22 §3.2, d18 §10.12.3). A Joining FETCH (d18 §10.12.2) needs one of our
+   * (d22 §3.2, d18 §10.12.3), or, in draft-23, when the range is relative.
+   * A Joining FETCH (d18 §10.12.2) needs one of our
    * subscriptions that has Forward State 1. NOT_SUPPORTED is left for a range
    * that is valid but that we have no objects to serve.
    */
@@ -7898,6 +8006,12 @@ export class MOQTSession {
     const exists = this.matchesAnnouncedNamespace(namespace) !== undefined || this.publicationManager.getByTrackName(namespace, trackName) !== undefined;
     if (!exists) {
       return { code: RequestErrorCodeDraft18.DOES_NOT_EXIST, reason: 'Track not published by this session' };
+    }
+
+    // Draft-23 §3.2 (#1960): a FETCH range relative to Largest Object is INVALID_RANGE
+    const filterType = (message as FetchMessageDraft22).locationFilter?.type;
+    if (this.isDraft23 && (filterType === LocationFilterTypeDraft22.RELATIVE_START || filterType === LocationFilterTypeDraft22.NEXT_OBJECT)) {
+      return { code: RequestErrorCodeDraft18.INVALID_RANGE, reason: 'A FETCH Location filter cannot be relative' };
     }
 
     const largest = this.publicationManager.largestOf(namespace, trackName);
@@ -7984,8 +8098,9 @@ export class MOQTSession {
       prefix: prefix.join('/'),
     });
 
-    // Draft-22 §4.2: a prefix that shares a common prefix with an established subscription is refused
-    if (this.incomingNamespaces.overlaps(prefix)) {
+    // Draft-22 §4.2: a prefix that shares a common prefix with an established
+    // subscription is refused. Draft-23 allows the overlap (#2018).
+    if (!this.isDraft23 && this.incomingNamespaces.overlaps(prefix)) {
       await this.sendRequestErrorOnStream(
         writable,
         message.requestId,
@@ -8079,8 +8194,9 @@ export class MOQTSession {
       return;
     }
 
-    // Draft-22 §3.6: a prefix that shares a common prefix with an established SUBSCRIBE_TRACKS is refused
-    if (this.incomingTrackSubs.overlaps(prefix)) {
+    // Draft-22 §3.6: a prefix that shares a common prefix with an established
+    // SUBSCRIBE_TRACKS is refused. Draft-23 allows the overlap (#2018).
+    if (!this.isDraft23 && this.incomingTrackSubs.overlaps(prefix)) {
       await this.sendRequestErrorOnStream(
         writable,
         message.requestId,
@@ -8368,9 +8484,13 @@ export class MOQTSession {
       return true;
     }
 
-    const code = isRepeat ? SessionErrorCodeDraft18.PROTOCOL_VIOLATION : SessionErrorCodeDraft18.INVALID_REQUEST_ID;
-    const reason = isRepeat ? 'More than one GOAWAY' : `GOAWAY Request ID ${message.requestId} has the wrong parity`;
-    void this.close({ code, reason }).catch(() => {});
+    if (isRepeat) {
+      // Draft-23 §12.2: a message received more times than allowed is UNEXPECTED_MESSAGE
+      this.closeForViolation('unexpected-message', 'More than one GOAWAY');
+    } else {
+      const reason = `GOAWAY Request ID ${message.requestId} has the wrong parity`;
+      void this.close({ code: SessionErrorCodeDraft18.INVALID_REQUEST_ID, reason }).catch(() => {});
+    }
 
     return false;
   }

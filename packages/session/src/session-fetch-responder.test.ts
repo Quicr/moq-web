@@ -43,7 +43,7 @@ function fetch(draft: Draft, start: Start, namespace = NAMESPACE) {
     subscriberPriority: 128,
     groupOrder: GroupOrder.ASCENDING,
   };
-  if (draft === 'draft-22') {
+  if (draft !== 'draft-18') {
     return { ...common, locationFilter: { type: LocationFilterTypeDraft22.ABSOLUTE_START, startLocation: start } };
   }
 
@@ -79,7 +79,7 @@ async function refusal(internals: SessionInternals, message: unknown): Promise<R
   return reply as RequestErrorMessageDraft18;
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('FETCH as a publisher (%s)', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('FETCH as a publisher (%s)', (draft) => {
   const start = { group: 1n, object: 0n };
 
   it('says DOES_NOT_EXIST for a track it does not publish', async () => {

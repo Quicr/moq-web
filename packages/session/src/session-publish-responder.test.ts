@@ -45,7 +45,7 @@ const uninterested = [
   expect.objectContaining({ type: MessageTypeDraft18.REQUEST_ERROR, errorCode: RequestErrorCodeDraft18.UNINTERESTED }),
 ];
 
-describe.each(['draft-18', 'draft-22'] as const)('incoming PUBLISH (%s)', (draft: Draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('incoming PUBLISH (%s)', (draft: Draft) => {
   it('is accepted under the prefix of a namespace subscription', async () => {
     const { internals } = makeSession(draft);
     subscribeTo(internals, ['foo']);

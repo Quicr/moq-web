@@ -84,7 +84,7 @@ function decodeDone(session: MOQTSession, bytes: Uint8Array): PublishDoneMessage
   return decoded as PublishDoneMessageDraft18;
 }
 
-describe.each(['draft-18', 'draft-22'] as const)('%s §9.9 PUBLISH_DONE send path', (draft) => {
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('%s §9.9 PUBLISH_DONE send path', (draft) => {
   it('writes on the PUBLISH request stream, then closes it', async () => {
     const h = makeHarness(draft);
 

@@ -218,7 +218,7 @@ export class Draft22MessageCodec {
 
     switch (typeValue) {
       case RESERVED_MESSAGE_TYPE:
-        throw new Draft18CodecError(`Reserved message type 0x${typeValue.toString(16)} (PROTOCOL_VIOLATION)`);
+        throw new Draft18CodecError(`Reserved message type 0x${typeValue.toString(16)} (PROTOCOL_VIOLATION)`, undefined, CODEC_MALFORMED, 'unexpected-message');
       case MessageTypeDraft22.PUBLISH_SKIPPED:
         return decodeFramed(buffer, offset, (reader) =>
           Draft22MessageCodec.decodePublishSkipped(reader, dialect), framing,

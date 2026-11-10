@@ -1911,6 +1911,8 @@ export interface FetchObjectDraft18 {
   payloadLength?: bigint;
   datagramMode?: boolean;
   endOfRange?: FetchObjectEndOfRange;
+  /** Draft-23 §11.4.2.2: End of Group / End of Track, which carry no fields */
+  marker?: FetchObjectMarker;
 }
 
 /**
