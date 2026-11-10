@@ -12,6 +12,7 @@
  */
 
 import { Logger } from '../utils/logger.js';
+import type { Violation } from './violation.js';
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
 import { MAX_SAFE_KEY, readKvpKey, readKvpLength, skipKvpValue } from './codec-helpers.js';
@@ -87,11 +88,14 @@ export class Draft18StreamCodecError extends Error {
    * and to terminate the session with PROTOCOL_VIOLATION.
    */
   code?: string;
+  /** What rule the peer broke (see violation.ts) */
+  violation?: Violation;
 
-  constructor(message: string, code?: string) {
+  constructor(message: string, code?: string, violation?: Violation) {
     super(message);
     this.name = 'Draft18StreamCodecError';
     this.code = code;
+    this.violation = violation;
   }
 }
 

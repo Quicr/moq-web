@@ -9,6 +9,7 @@
  */
 
 import { Logger } from '../utils/logger.js';
+import type { Violation } from './violation.js';
 import { MOQTVarInt, MOQT_VARINT_MAX } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
 import {
@@ -17,7 +18,6 @@ import {
 } from './grease.js';
 import {
   assertBound,
-  assertControlLength,
   encodeTrackNamespace,
   decodeTrackNamespace,
   encodeString,
@@ -37,7 +37,11 @@ import {
   skipKvpValue,
   encodeFramed,
   decodeFramed,
+  encodeUntypedFrame,
+  decodeUntypedFrame,
   peekMessageType,
+  FRAMING_LENGTH16,
+  type ControlFraming,
   MAX_PARAMETER_COUNT,
   MAX_GOAWAY_URI_LENGTH,
   MAX_STRING_LENGTH,
@@ -109,12 +113,15 @@ export class Draft18CodecError extends Error {
    * and to terminate the session with PROTOCOL_VIOLATION.
    */
   code?: string;
+  /** What rule the peer broke, when this is a protocol violation (see violation.ts) */
+  violation?: Violation;
 
-  constructor(message: string, messageType?: MessageTypeDraft18, code?: string) {
+  constructor(message: string, messageType?: MessageTypeDraft18, code?: string, violation?: Violation) {
     super(message);
     this.name = 'Draft18CodecError';
     this.messageType = messageType;
     this.code = code;
+    this.violation = violation;
   }
 }
 
@@ -180,7 +187,7 @@ export class Draft18MessageCodec {
   /**
    * Encode a draft-18 control message to bytes
    */
-  static encode(message: ControlMessageDraft18): Uint8Array {
+  static encode(message: ControlMessageDraft18, framing: ControlFraming = FRAMING_LENGTH16): Uint8Array {
     log.debug('Encoding draft-18 message', { type: MessageTypeDraft18[message.type] });
 
     return encodeFramed(message.type, (payloadWriter) => {
@@ -242,7 +249,7 @@ export class Draft18MessageCodec {
         default:
           throw new Draft18CodecError(`Unknown message type: ${(message as ControlMessageDraft18).type}`);
       }
-    });
+    }, framing);
   }
 
   /**
@@ -252,6 +259,7 @@ export class Draft18MessageCodec {
     buffer: Uint8Array,
     offset = 0,
     normalizers: ErrorCodeNormalizers = DRAFT18_NORMALIZERS,
+    framing: ControlFraming = FRAMING_LENGTH16,
   ): [ControlMessageDraft18, number] {
     // Peek at message type for logging before delegating to decodeFramed
     const typeValue = peekMessageType(buffer, offset);
@@ -304,53 +312,28 @@ export class Draft18MessageCodec {
         default:
           throw new Draft18CodecError(`Unknown message type: ${messageType}`, messageType);
       }
-    });
+    }, framing);
   }
 
   /**
    * Decode a SETUP message from the setup stream.
    * On the setup stream, the message type is implicit (stream type = 0x2F00),
-   * so the wire format is just: Length (16-bit BE) | Setup Options
+   * so the wire format is just: Length | Setup Options
    */
-  static decodeSetupStream(buffer: Uint8Array, offset = 0): [ServerSetupMessageDraft18, number] {
-    if (buffer.length < offset + 2) {
-      throw new Draft18CodecError('Incomplete setup message: missing length field', undefined, CODEC_INCOMPLETE);
-    }
-    const payloadLength = (buffer[offset] << 8) | buffer[offset + 1];
-    if (buffer.length < offset + 2 + payloadLength) {
-      throw new Draft18CodecError('Incomplete setup message: not enough payload bytes', undefined, CODEC_INCOMPLETE);
-    }
-    const reader = new Draft18BufferReader(buffer.subarray(offset + 2, offset + 2 + payloadLength));
-    let message: ServerSetupMessageDraft18;
-    try {
-      message = Draft18MessageCodec.decodeSetup(reader, payloadLength);
-    } catch (err) {
-      if (err instanceof Draft18CodecError) {
-        throw err;
-      }
-      throw new Draft18CodecError(
-        `SETUP body shorter than its options: ${(err as Error).message} (PROTOCOL_VIOLATION)`,
-        undefined,
-        CODEC_MALFORMED,
-      );
-    }
-    return [message, 2 + payloadLength];
+  static decodeSetupStream(
+    buffer: Uint8Array,
+    offset = 0,
+    framing: ControlFraming = FRAMING_LENGTH16,
+  ): [ServerSetupMessageDraft18, number] {
+    return decodeUntypedFrame(buffer, offset, (reader) => Draft18MessageCodec.decodeSetup(reader, reader.remaining), framing);
   }
 
   /**
    * Encode a SETUP message for the setup stream.
-   * No message type prefix — just Length (16-bit BE) | Setup Options
+   * No message type prefix — just Length | Setup Options
    */
-  static encodeSetupStream(message: ClientSetupMessageDraft18): Uint8Array {
-    const payloadWriter = new Draft18BufferWriter();
-    Draft18MessageCodec.encodeSetup(payloadWriter, message);
-    const payload = payloadWriter.toUint8Array();
-    assertControlLength(payload.length);
-    const result = new Uint8Array(2 + payload.length);
-    result[0] = (payload.length >> 8) & 0xFF;
-    result[1] = payload.length & 0xFF;
-    result.set(payload, 2);
-    return result;
+  static encodeSetupStream(message: ClientSetupMessageDraft18, framing: ControlFraming = FRAMING_LENGTH16): Uint8Array {
+    return encodeUntypedFrame((writer) => Draft18MessageCodec.encodeSetup(writer, message), framing);
   }
 
   // ============================================================================

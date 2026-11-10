@@ -8,6 +8,8 @@
  * The transport worker runs WebTransport connection in a dedicated worker thread.
  */
 
+import type { DraftVersion } from '@moq-web/core';
+
 /**
  * Transport state
  */
@@ -30,7 +32,7 @@ export interface TransportWorkerConfig {
    * config is structured-cloneable across the postMessage boundary.
    * Defaults to 'draft-16' in the worker when omitted.
    */
-  draft?: 'draft-16' | 'draft-17' | 'draft-18' | 'draft-22';
+  draft?: DraftVersion;
   /** Server certificate hashes for self-signed certs */
   serverCertificateHashes?: ArrayBuffer[];
   /** Connection timeout in ms (default: 300000 = 5 minutes) */

@@ -7,7 +7,7 @@
  * Build-time version selection for MOQT draft support.
  * Version is determined at build time via MOQT_VERSION environment variable.
  *
- * Supported: draft-16, draft-17, draft-18 (default), draft-22.
+ * Supported: draft-16, draft-17, draft-18 (default), draft-22, draft-23.
  *
  * @example
  * ```bash
@@ -28,7 +28,21 @@ declare const __MOQT_VERSION__: string | undefined;
  * Callers pass one of these strings to MOQTransport / MOQTSession to
  * choose which MOQT draft the codec+wire path will use for the session.
  */
-export type DraftVersion = 'draft-16' | 'draft-17' | 'draft-18' | 'draft-22';
+export type DraftVersion = 'draft-16' | 'draft-17' | 'draft-18' | 'draft-22' | 'draft-23';
+
+/** The draft number of a selector, e.g. 22 for 'draft-22'. */
+export function draftNumber(draft: DraftVersion): number {
+  return Number(draft.slice(6));
+}
+
+/**
+ * Whether `draft` is `minimum` or later. Each draft is a delta on the one
+ * before it, so behaviour introduced in draft N is gated on
+ * `isDraftAtLeast(d, N)` and later drafts inherit it without new branches.
+ */
+export function isDraftAtLeast(draft: DraftVersion, minimum: number): boolean {
+  return draftNumber(draft) >= minimum;
+}
 
 /**
  * Default draft used when a caller does not specify one.
@@ -47,6 +61,7 @@ export const VERSION_NUMBER = {
   DRAFT_17: 0xff000011,
   DRAFT_18: 0xff000012,
   DRAFT_22: 0xff000016,
+  DRAFT_23: 0xff000017,
 } as const;
 
 /**
@@ -57,6 +72,7 @@ export const ALPN_PROTOCOL = {
   DRAFT_17: 'moqt-17',
   DRAFT_18: 'moqt-18',
   DRAFT_22: 'moqt-22',
+  DRAFT_23: 'moqt-23',
 } as const;
 
 /**
@@ -72,6 +88,8 @@ export function versionEnumFor(draft: DraftVersion): number {
  */
 export function versionNumberFor(draft: DraftVersion): number {
   switch (draft) {
+    case 'draft-23':
+      return VERSION_NUMBER.DRAFT_23;
     case 'draft-22':
       return VERSION_NUMBER.DRAFT_22;
     case 'draft-18':
@@ -90,6 +108,8 @@ export function versionNumberFor(draft: DraftVersion): number {
  */
 export function alpnProtocolFor(draft: DraftVersion): string {
   switch (draft) {
+    case 'draft-23':
+      return ALPN_PROTOCOL.DRAFT_23;
     case 'draft-22':
       return ALPN_PROTOCOL.DRAFT_22;
     case 'draft-18':

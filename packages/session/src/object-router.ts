@@ -28,6 +28,7 @@ import {
   NoopMetricsSink,
   StreamResetErrorCodeDraft18,
   normalizeStreamResetErrorCode,
+  isDraftAtLeast,
   type DraftVersion,
   type IProtocolCodec,
   type MetricsSink,
@@ -180,10 +181,10 @@ export class ObjectRouter {
   /** Decodes with the session's draft, not the build-time default */
   private readonly codec: IProtocolCodec;
   private get isDraft18(): boolean {
-    return this._draft === 'draft-18' || this._draft === 'draft-22';
+    return isDraftAtLeast(this._draft, 18);
   }
   private get isDraft22(): boolean {
-    return this._draft === 'draft-22';
+    return isDraftAtLeast(this._draft, 22);
   }
   private get isDraft16(): boolean {
     return this._draft === 'draft-16' || this._draft === 'draft-17';
@@ -247,7 +248,7 @@ export class ObjectRouter {
     // shared `ObjectCodec` entrypoints delegate to `Draft18StreamCodec` under
     // draft-18. Legacy drafts still surface here but this is the only label
     // dimension that carries observability weight downstream.
-    this.codecLabel = (draft === 'draft-18' || draft === 'draft-22') ? 'draft-18' : draft;
+    this.codecLabel = isDraftAtLeast(draft, 18) ? 'draft-18' : draft;
   }
 
   /**

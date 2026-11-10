@@ -15,7 +15,7 @@ import {
   AuthTokenAliasType,
   decodeDraft18AuthToken,
   Draft18CodecError,
-  isIncompleteDecode,
+  controlFrameSize,
   ConnectionStateMachine as _ConnectionStateMachine,
   encodeDraft18AuthToken,
   MessageCodec,
@@ -691,13 +691,26 @@ export class RequestStreamEnded extends Error {
  * response). Follow-up REQUEST_UPDATE messages MUST be sent on the same stream
  * (§10.9), so the writer stays open for the lifetime of the request.
  */
+/** Extra room a growing request-stream buffer reserves beyond what it needs */
+const MAX_READ_AHEAD = 64 * 1024;
+
 export class Draft18RequestStream {
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   private readonly writeFn: (data: Uint8Array, closeAfter?: boolean) => void | Promise<void>;
   private readonly closeFn: () => void | Promise<void>;
   private readonly abortFn: (code: StreamResetErrorCodeDraft18) => void | Promise<void>;
   private readonly codec: IProtocolCodec;
-  private pending: Uint8Array = new Uint8Array(0);
+  /**
+   * Received bytes not yet decoded live in buffer[start, end). Bytes before
+   * `start` belong to messages already returned, which may hold views into
+   * them, so they are never overwritten: appends go after `end`, or into a new
+   * buffer.
+   */
+  private buffer: Uint8Array = new Uint8Array(0);
+  private start = 0;
+  private end = 0;
+  /** Whether `buffer` was allocated here; an adopted chunk is the stream's, so is never written */
+  private ownsBuffer = false;
   private eof = false;
 
   constructor(
@@ -721,19 +734,20 @@ export class Draft18RequestStream {
   /**
    * Read the next complete control message from this stream. Buffers any
    * bytes that arrive after the message so subsequent reads see them.
+   *
+   * The frame size is read from the header first, so each message is decoded
+   * once, a length over the receive limit is refused before its body is
+   * buffered (§9, §15.5), and a large message is copied O(n), not once per
+   * chunk.
    */
   async readMessage(): Promise<ControlMessageDraft18> {
     for (;;) {
-      if (this.pending.length > 0) {
-        try {
-          const [message, bytesRead] = this.codec.decodeControlMessage(this.pending);
-          this.pending = this.pending.subarray(bytesRead);
-          return message as ControlMessageDraft18;
-        } catch (err) {
-          if (!isIncompleteDecode(err)) {
-            throw err;
-          }
-        }
+      const pending = this.buffer.subarray(this.start, this.end);
+      const frameSize = pending.length > 0 ? controlFrameSize(pending, 0, this.codec.controlFraming) : undefined;
+      if (frameSize !== undefined && pending.length >= frameSize) {
+        const [message] = this.codec.decodeControlMessage(pending.subarray(0, frameSize));
+        this.consume(frameSize);
+        return message as ControlMessageDraft18;
       }
 
       if (this.eof) {
@@ -746,16 +760,48 @@ export class Draft18RequestStream {
         continue;
       }
       if (value && value.length > 0) {
-        if (this.pending.length === 0) {
-          this.pending = value;
-        } else {
-          const merged = new Uint8Array(this.pending.length + value.length);
-          merged.set(this.pending, 0);
-          merged.set(value, this.pending.length);
-          this.pending = merged;
-        }
+        this.append(value, frameSize);
       }
     }
+  }
+
+  private consume(bytes: number): void {
+    this.start += bytes;
+    if (this.start === this.end) {
+      // Let go of the buffer: messages may still view it, but we never write it again
+      this.buffer = new Uint8Array(0);
+      this.start = 0;
+      this.end = 0;
+    }
+  }
+
+  /** Append a chunk, reserving room for the whole frame once its size is known */
+  private append(chunk: Uint8Array, frameSize: number | undefined): void {
+    const live = this.end - this.start;
+    if (live === 0) {
+      // Adopt the chunk as-is: the common case of one message per chunk copies nothing
+      this.ownsBuffer = false;
+      this.buffer = chunk;
+      this.start = 0;
+      this.end = chunk.length;
+      return;
+    }
+
+    const needed = live + chunk.length;
+    if (this.ownsBuffer && this.buffer.length - this.end >= chunk.length) {
+      this.buffer.set(chunk, this.end);
+      this.end += chunk.length;
+      return;
+    }
+
+    const capacity = Math.max(needed, frameSize ?? 0, Math.min(live * 2, needed + MAX_READ_AHEAD));
+    const grown = new Uint8Array(capacity);
+    grown.set(this.buffer.subarray(this.start, this.end), 0);
+    grown.set(chunk, live);
+    this.buffer = grown;
+    this.ownsBuffer = true;
+    this.start = 0;
+    this.end = needed;
   }
 
   async close(): Promise<void> {

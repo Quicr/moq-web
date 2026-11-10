@@ -39,7 +39,9 @@ import type {
   FetchObjectResult,
 } from './message-codec.js';
 import { Draft18MessageCodec, Draft18CodecError } from './draft18-message-codec.js';
-import { Draft22MessageCodec } from './draft22-message-codec.js';
+import { Draft22MessageCodec, DIALECT_DRAFT22, type WireDialect } from './draft22-message-codec.js';
+import { Draft23MessageCodec, draft23Dialect, draft23Framing } from './draft23-message-codec.js';
+import { FRAMING_LENGTH16, DEFAULT_MAX_CONTROL_MESSAGE_SIZE, type ControlFraming } from './codec-helpers.js';
 import { Draft18StreamCodecError } from './draft18-stream-codec.js';
 import { decodeName } from './codec-helpers.js';
 import { NoopMetricsSink, type MetricsSink } from '../metrics/index.js';
@@ -129,6 +131,18 @@ export interface IProtocolCodec {
     metrics?: MetricsSink,
   ): [ControlMessage | ControlMessageDraft18 | ControlMessageDraft22, number];
 
+  /**
+   * Control-message framing and size limits (§9). Fixed before draft-23;
+   * draft-23 applies MAX_CONTROL_MESSAGE_SIZE through setControlMessageLimits.
+   */
+  readonly controlFraming: ControlFraming;
+  /**
+   * Draft-23 §9.1.8: set the largest control message this endpoint sends (the
+   * peer's MAX_CONTROL_MESSAGE_SIZE) and accepts (its own). Ignored before
+   * draft-23, where the 16-bit length is the limit.
+   */
+  setControlMessageLimits(limits: { maxSendLength?: number; maxReceiveLength?: number }): void;
+
   // ---- Setup stream (draft-18+) ----
   /** Encode the setup-stream client SETUP frame. Draft-16 codec throws. */
   encodeSetupStream(message: ClientSetupMessageDraft18): Uint8Array;
@@ -211,6 +225,7 @@ export interface IProtocolCodec {
  * call site (e.g. from a negotiated session).
  */
 export function getProtocolCodec(): IProtocolCodec {
+  if (DEFAULT_DRAFT === 'draft-23') return Draft23Codec.instance;
   if (DEFAULT_DRAFT === 'draft-22') return Draft22Codec.instance;
   if (DEFAULT_DRAFT === 'draft-18') return Draft18Codec.instance;
   return Draft16Codec.instance;
@@ -222,6 +237,8 @@ export function getProtocolCodec(): IProtocolCodec {
  */
 export function getProtocolCodecForVersion(version: Version): IProtocolCodec {
   switch (version) {
+    case Version.DRAFT_23:
+      return Draft23Codec.instance;
     case Version.DRAFT_22:
       return Draft22Codec.instance;
     case Version.DRAFT_18:
@@ -231,6 +248,15 @@ export function getProtocolCodecForVersion(version: Version): IProtocolCodec {
     default:
       return Draft16Codec.instance;
   }
+}
+
+/**
+ * A codec for one session. Draft-23 codecs carry the session's
+ * MAX_CONTROL_MESSAGE_SIZE limits, so each session gets its own; earlier
+ * drafts are stateless and share an instance.
+ */
+export function createProtocolCodec(version: Version): IProtocolCodec {
+  return version === Version.DRAFT_23 ? new Draft23Codec() : getProtocolCodecForVersion(version);
 }
 
 // Import the actual codec implementations
@@ -259,8 +285,11 @@ class Draft16Codec implements IProtocolCodec {
     usesUnifiedLocation: false,
     namespaceResponsesCarryRequestId: true,
   };
+  readonly controlFraming: ControlFraming = FRAMING_LENGTH16;
 
   private constructor() {}
+
+  setControlMessageLimits(): void {}
 
   // ---- Control messages ----
   encodeControlMessage(message: ControlMessage): Uint8Array {
@@ -555,12 +584,38 @@ class Draft18Codec implements IProtocolCodec {
     usesUnifiedLocation: true,
     namespaceResponsesCarryRequestId: false,
   };
+  get controlFraming(): ControlFraming {
+    return FRAMING_LENGTH16;
+  }
+  /** Metrics label for this codec's control messages */
+  protected get codecLabel(): string {
+    return 'draft-18';
+  }
 
   protected constructor() {}
 
+  setControlMessageLimits(_limits: { maxSendLength?: number; maxReceiveLength?: number }): void {}
+
+  // Each later draft overrides these four; the wrappers below are shared.
+  protected encodeMessage(message: ControlMessageDraft18 | ControlMessageDraft22): Uint8Array {
+    return Draft18MessageCodec.encode(message as ControlMessageDraft18);
+  }
+
+  protected decodeMessage(buffer: Uint8Array, offset: number): [ControlMessageDraft18 | ControlMessageDraft22, number] {
+    return Draft18MessageCodec.decode(buffer, offset);
+  }
+
+  protected encodeSetup(message: ClientSetupMessageDraft18): Uint8Array {
+    return Draft18MessageCodec.encodeSetupStream(message);
+  }
+
+  protected decodeSetup(buffer: Uint8Array, offset: number): [ServerSetupMessageDraft18, number] {
+    return Draft18MessageCodec.decodeSetupStream(buffer, offset);
+  }
+
   // ---- Control messages ----
   encodeControlMessage(message: ControlMessage | ControlMessageDraft18 | ControlMessageDraft22): Uint8Array {
-    return Draft18MessageCodec.encode(message as ControlMessageDraft18);
+    return this.encodeMessage(message as ControlMessageDraft18 | ControlMessageDraft22);
   }
 
   decodeControlMessage(
@@ -570,15 +625,15 @@ class Draft18Codec implements IProtocolCodec {
   ): [ControlMessage | ControlMessageDraft18 | ControlMessageDraft22, number] {
     const start = nowMs();
     try {
-      const result = Draft18MessageCodec.decode(buffer, offset);
+      const result = this.decodeMessage(buffer, offset);
       metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
-        codec: 'draft-18',
+        codec: this.codecLabel,
         messageType: String(result[0].type),
       });
       return result;
     } catch (err) {
       metrics.counter('moq.codec.decode.errors', 1, {
-        codec: 'draft-18',
+        codec: this.codecLabel,
         reason: classifyDecodeError(err),
       });
       throw err;
@@ -587,11 +642,11 @@ class Draft18Codec implements IProtocolCodec {
 
   // ---- Setup stream ----
   encodeSetupStream(message: ClientSetupMessageDraft18): Uint8Array {
-    return Draft18MessageCodec.encodeSetupStream(message);
+    return this.encodeSetup(message);
   }
 
   decodeSetupStream(buffer: Uint8Array, offset = 0): [ServerSetupMessageDraft18, number] {
-    return Draft18MessageCodec.decodeSetupStream(buffer, offset);
+    return this.decodeSetup(buffer, offset);
   }
 
   encodeSetupStreamHeader(): Uint8Array {
@@ -888,8 +943,21 @@ export class Draft18BufferWriter {
   }
 
   toUint8Array(): Uint8Array {
-    const result = new Uint8Array(this.totalLength);
+    return this.toUint8ArrayWithPrefix();
+  }
+
+  /** The written bytes after `prefixes`, in one allocation */
+  toUint8ArrayWithPrefix(...prefixes: Uint8Array[]): Uint8Array {
+    let prefixLength = 0;
+    for (const prefix of prefixes) {
+      prefixLength += prefix.length;
+    }
+    const result = new Uint8Array(prefixLength + this.totalLength);
     let offset = 0;
+    for (const prefix of prefixes) {
+      result.set(prefix, offset);
+      offset += prefix.length;
+    }
     for (const chunk of this.chunks) {
       result.set(chunk, offset);
       offset += chunk.length;
@@ -969,42 +1037,99 @@ export class Draft18BufferReader {
  * (subgroups, datagrams, fetch streams, primitives) are inherited.
  */
 class Draft22Codec extends Draft18Codec {
-  static override readonly instance = new Draft22Codec();
-  override readonly version = Version.DRAFT_22;
+  static override readonly instance: Draft22Codec = new Draft22Codec();
+  override readonly version: Version = Version.DRAFT_22;
 
-  override encodeControlMessage(message: ControlMessage | ControlMessageDraft18 | ControlMessageDraft22): Uint8Array {
-    return Draft22MessageCodec.encode(message as ControlMessageDraft22);
+  /** The dialect Draft22MessageCodec encodes with */
+  protected get dialect(): WireDialect {
+    return DIALECT_DRAFT22;
+  }
+  protected override get codecLabel(): string {
+    return 'draft-22';
+  }
+  override get controlFraming(): ControlFraming {
+    return this.dialect.framing;
   }
 
-  override decodeControlMessage(
-    buffer: Uint8Array,
-    offset = 0,
-    metrics: MetricsSink = NOOP_METRICS,
-  ): [ControlMessage | ControlMessageDraft18 | ControlMessageDraft22, number] {
-    const start = nowMs();
-    try {
-      const result = Draft22MessageCodec.decode(buffer, offset);
-      metrics.histogram('moq.codec.decode.duration', nowMs() - start, {
-        codec: 'draft-22',
-        messageType: String(result[0].type),
-      });
-      return result;
-    } catch (err) {
-      metrics.counter('moq.codec.decode.errors', 1, {
-        codec: 'draft-22',
-        reason: classifyDecodeError(err),
-      });
-      throw err;
-    }
+  protected override encodeMessage(message: ControlMessageDraft18 | ControlMessageDraft22): Uint8Array {
+    return Draft22MessageCodec.encode(message as ControlMessageDraft22, this.dialect);
   }
 
-  override encodeSetupStream(message: ClientSetupMessageDraft18): Uint8Array {
-    return Draft22MessageCodec.encodeSetupStream(message);
+  protected override decodeMessage(buffer: Uint8Array, offset: number): [ControlMessageDraft22, number] {
+    return Draft22MessageCodec.decode(buffer, offset, this.dialect);
   }
 
-  override decodeSetupStream(buffer: Uint8Array, offset = 0): [ServerSetupMessageDraft18, number] {
-    return Draft22MessageCodec.decodeSetupStream(buffer, offset);
+  protected override encodeSetup(message: ClientSetupMessageDraft18): Uint8Array {
+    return Draft22MessageCodec.encodeSetupStream(message, this.dialect);
+  }
+
+  protected override decodeSetup(buffer: Uint8Array, offset: number): [ServerSetupMessageDraft18, number] {
+    return Draft22MessageCodec.decodeSetupStream(buffer, offset, this.dialect);
   }
 }
 
-export { Draft16Codec, Draft18Codec, Draft22Codec };
+/**
+ * Draft-23 codec.
+ *
+ * Extends Draft22Codec: control messages go through Draft23MessageCodec with
+ * this session's MAX_CONTROL_MESSAGE_SIZE limits (§9.1.8). Data streams are
+ * the draft-18 codec's; the fetch-stream ID rules that changed are applied
+ * where objects are routed.
+ */
+class Draft23Codec extends Draft22Codec {
+  static override readonly instance: Draft23Codec = new Draft23Codec();
+  override readonly version: Version = Version.DRAFT_23;
+  /**
+   * Until the peer's SETUP arrives both limits are the default, SETUP
+   * included. Built on first use: the shared instance is created while this
+   * module loads, before the draft-23 message codec it imports has.
+   */
+  private framing?: { varintLength: boolean; maxSendLength: number; maxReceiveLength: number };
+  private ownDialect?: WireDialect;
+
+  constructor() {
+    super();
+  }
+
+  protected override get dialect(): WireDialect {
+    return this.ownDialect ?? this.initDialect().dialect;
+  }
+
+  private initDialect(): { framing: NonNullable<Draft23Codec['framing']>; dialect: WireDialect } {
+    const framing = (this.framing ??= { ...draft23Framing() });
+    this.ownDialect ??= draft23Dialect(framing);
+
+    return { framing, dialect: this.ownDialect };
+  }
+  protected override get codecLabel(): string {
+    return 'draft-23';
+  }
+
+  override setControlMessageLimits(limits: { maxSendLength?: number; maxReceiveLength?: number }): void {
+    const { framing } = this.initDialect();
+    if (limits.maxSendLength !== undefined) {
+      framing.maxSendLength = Math.max(limits.maxSendLength, DEFAULT_MAX_CONTROL_MESSAGE_SIZE);
+    }
+    if (limits.maxReceiveLength !== undefined) {
+      framing.maxReceiveLength = Math.max(limits.maxReceiveLength, DEFAULT_MAX_CONTROL_MESSAGE_SIZE);
+    }
+  }
+
+  protected override encodeMessage(message: ControlMessageDraft18 | ControlMessageDraft22): Uint8Array {
+    return Draft23MessageCodec.encode(message as ControlMessageDraft22, this.dialect);
+  }
+
+  protected override decodeMessage(buffer: Uint8Array, offset: number): [ControlMessageDraft22, number] {
+    return Draft23MessageCodec.decode(buffer, offset, this.dialect);
+  }
+
+  protected override encodeSetup(message: ClientSetupMessageDraft18): Uint8Array {
+    return Draft23MessageCodec.encodeSetupStream(message, this.dialect);
+  }
+
+  protected override decodeSetup(buffer: Uint8Array, offset: number): [ServerSetupMessageDraft18, number] {
+    return Draft23MessageCodec.decodeSetupStream(buffer, offset, this.dialect);
+  }
+}
+
+export { Draft16Codec, Draft18Codec, Draft22Codec, Draft23Codec };

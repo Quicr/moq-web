@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_DRAFT } from '../version/constants.js';
+import { DEFAULT_DRAFT, isDraftAtLeast } from '../version/constants.js';
 
 // Draft-22 shares draft-18's wire format for everything exercised here.
-const IS_DRAFT_18 = DEFAULT_DRAFT === 'draft-18' || DEFAULT_DRAFT === 'draft-22';
+const IS_DRAFT_18 = isDraftAtLeast(DEFAULT_DRAFT, 18);
 const IS_DRAFT_16 = DEFAULT_DRAFT === 'draft-16' || DEFAULT_DRAFT === 'draft-17';
 import {
   capabilitiesFor,
@@ -61,7 +61,9 @@ describe('Unified Codec', () => {
     });
 
     it('should report correct current version', () => {
-      if (DEFAULT_DRAFT === 'draft-22') {
+      if (DEFAULT_DRAFT === 'draft-23') {
+        expect(currentVersion).toBe(Version.DRAFT_23);
+      } else if (DEFAULT_DRAFT === 'draft-22') {
         expect(currentVersion).toBe(Version.DRAFT_22);
       } else if (IS_DRAFT_18) {
         expect(currentVersion).toBe(Version.DRAFT_18);

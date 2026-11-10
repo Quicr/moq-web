@@ -8,10 +8,10 @@
  * This layer handles the mapping so application code never sees draft-specific types.
  */
 
-import { DEFAULT_DRAFT, type DraftVersion } from '../version/constants.js';
+import { DEFAULT_DRAFT, isDraftAtLeast, type DraftVersion } from '../version/constants.js';
 
-/** Draft-18+ (modern) wire format family: includes drafts 18 through 22. */
-const isModernDraft = (d: DraftVersion): boolean => d === 'draft-18' || d === 'draft-22';
+/** Draft-18+ (modern) wire format family: draft-18 and every later draft. */
+const isModernDraft = (d: DraftVersion): boolean => isDraftAtLeast(d, 18);
 const isDraft18 = isModernDraft; // alias for backward compat within this file
 const isDraft16 = (d: DraftVersion): boolean => d === 'draft-16' || d === 'draft-17';
 import {
@@ -83,6 +83,7 @@ export function capabilitiesFor(draft: DraftVersion = DEFAULT_DRAFT): CodecCapab
  * Protocol version enum value for a given draft.
  */
 export function currentVersionFor(draft: DraftVersion = DEFAULT_DRAFT): Version {
+  if (draft === 'draft-23') return Version.DRAFT_23;
   if (draft === 'draft-22') return Version.DRAFT_22;
   if (draft === 'draft-18') return Version.DRAFT_18;
   return Version.DRAFT_16;

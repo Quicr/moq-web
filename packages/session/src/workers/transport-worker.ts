@@ -16,7 +16,7 @@ import type {
   StreamInfo,
   TransportWorkerMetricEvent,
 } from './transport-worker-types.js';
-import { alpnProtocolFor, DEFAULT_DRAFT, MOQTVarInt, SendOrder, StreamTypeDraft18, type DraftVersion, type StreamResetErrorCodeDraft18 } from '@moq-web/core';
+import { alpnProtocolFor, DEFAULT_DRAFT, isDraftAtLeast, MOQTVarInt, SendOrder, StreamTypeDraft18, type DraftVersion, type StreamResetErrorCodeDraft18 } from '@moq-web/core';
 import { streamResetReason } from '../stream-reset-reason.js';
 
 // Worker state
@@ -32,7 +32,7 @@ let debug = false;
  * `TransportWorkerConfig.draft`; used to select ALPN and setup-stream layout.
  */
 let workerDraft: DraftVersion = DEFAULT_DRAFT;
-const isDraft18 = () => workerDraft === 'draft-18' || workerDraft === 'draft-22';
+const isDraft18 = () => isDraftAtLeast(workerDraft, 18);
 // True when the local side called disconnect() before `transport.closed` resolved;
 // used to distinguish local vs peer-initiated close in the disconnected event.
 let localDisconnectInitiated = false;

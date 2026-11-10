@@ -8,6 +8,10 @@
  * it; one encoder and one decoder for a parameter block use that table.
  * Nothing is framed by guessing from the parameter type's parity.
  *
+ * One engine serves every draft from 22 on: a ParameterDialect supplies the
+ * table and the few encodings that changed (draft-23 replaces FORWARD with
+ * PAUSED and counts, rather than length-prefixes, FILL_PARAMETERS).
+ *
  * Parameter values cross this module in two shapes:
  * - typed: FORWARD, LARGEST_OBJECT, LOCATION_FILTER, FILL_PARAMETERS, the
  *   Range Filters (0x25-0x29), which may repeat (§3.3.2), and Authorization
@@ -18,14 +22,14 @@
  */
 
 import { MOQTVarInt, MOQT_VARINT_MAX } from './moqt-varint.js';
+import type { Violation } from './violation.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
-import { Draft18CodecError } from './draft18-message-codec.js';
+import { Draft18CodecError, CODEC_MALFORMED } from './draft18-message-codec.js';
 import {
   assertBound,
   encodeTrackNamespace,
   decodeTrackNamespace,
   decodeDraft18AuthToken,
-  MAX_CONTROL_MESSAGE_LENGTH,
   MAX_AUTH_TOKEN_LENGTH,
 } from './codec-helpers.js';
 import { decodeRangeFilter, encodeRangeFilter, validateRangeFilters } from './draft22-range-filter.js';
@@ -33,6 +37,7 @@ import {
   GroupOrder,
   LocationFilterTypeDraft22,
   RequestParameterDraft22,
+  RequestParameterDraft23,
   type FillParametersDraft22,
   type Location,
   type LocationFilterDraft22,
@@ -41,8 +46,9 @@ import {
 } from '../messages/types.js';
 
 const P = RequestParameterDraft22;
+const P23 = RequestParameterDraft23;
 
-/** §9.20: a control message is limited to 2^16-1 bytes, which bounds any value */
+/** §9.20: a draft-22 control message is limited to 2^16-1 bytes, which bounds any value */
 const MAX_VALUE_LENGTH = 0xffff;
 
 /** §9.20.7: SUBSCRIBER_PRIORITY is a uint8 */
@@ -73,6 +79,8 @@ export enum ParameterScopeDraft22 {
   SUBSCRIBE_NAMESPACE = 'SUBSCRIBE_NAMESPACE',
   /** §9.20.15: a separate parameter scope inside FILL_PARAMETERS */
   FILL_PARAMETERS = 'FILL_PARAMETERS',
+  /** Draft-23 §9.15: NAMESPACE carries Parameters; none are defined yet */
+  NAMESPACE = 'NAMESPACE',
 }
 
 const S = ParameterScopeDraft22;
@@ -158,6 +166,70 @@ const PARAMETER_SPECS: Record<RequestParameterDraft22, ParameterSpec> = {
   ),
 };
 
+/** Draft-23 §9.19: the scopes draft-23 adds to a draft-22 parameter */
+const DRAFT23_EXTRA_SCOPES: Partial<Record<number, ParameterScopeDraft22[]>> = {
+  [P.OBJECT_DELIVERY_TIMEOUT]: [S.SUBSCRIBE_TRACKS],
+  [P.SUBGROUP_DELIVERY_TIMEOUT]: [S.SUBSCRIBE_TRACKS],
+  [P.SUBSCRIBER_PRIORITY]: [S.SUBSCRIBE_TRACKS],
+  [P.LOCATION_FILTER]: [S.SUBSCRIBE_TRACKS],
+  [P.FILL_PARAMETERS]: [S.SUBSCRIBE_TRACKS, S.PUBLISH],
+};
+
+/**
+ * The parameter table and the encodings that differ between drafts. Every
+ * function in this module takes one; it defaults to draft-22.
+ */
+export interface ParameterDialect {
+  readonly specs: ReadonlyMap<number, ParameterSpec>;
+  readonly names: Readonly<Record<number, string>>;
+  /** The uint8 parameter carrying pause state, and its value when paused */
+  readonly pauseType: number;
+  readonly pausedValue: 0 | 1;
+  /** FILL_PARAMETERS value: length-prefixed (draft-22) or a bare parameter count (draft-23) */
+  readonly fillLengthPrefixed: boolean;
+  /** Largest length-prefixed value; draft-23 values are bounded by the message instead */
+  readonly maxValueLength: number;
+}
+
+const DRAFT22_SPECS = new Map<number, ParameterSpec>(
+  Object.entries(PARAMETER_SPECS).map(([type, found]) => [Number(type), found]),
+);
+
+function draft23Specs(): Map<number, ParameterSpec> {
+  const specs = new Map<number, ParameterSpec>();
+  for (const [type, found] of DRAFT22_SPECS) {
+    if (type === P.FORWARD) {
+      continue;
+    }
+    const extra = DRAFT23_EXTRA_SCOPES[type];
+    specs.set(type, extra ? { ...found, scopes: new Set([...found.scopes, ...extra]) } : found);
+  }
+  // §9.19.18: PAUSED replaces FORWARD, with the same scopes
+  specs.set(P23.PAUSED, { ...PARAMETER_SPECS[P.FORWARD] });
+  // §9.19.21: only in a PUBLISH sent for a SUBSCRIBE_TRACKS
+  specs.set(P23.SUBSCRIBE_TRACKS_ID, spec(ValueKind.VARINT, [S.PUBLISH]));
+
+  return specs;
+}
+
+export const PARAMETERS_DRAFT22: ParameterDialect = {
+  specs: DRAFT22_SPECS,
+  names: RequestParameterDraft22 as unknown as Record<number, string>,
+  pauseType: P.FORWARD,
+  pausedValue: 0,
+  fillLengthPrefixed: true,
+  maxValueLength: MAX_VALUE_LENGTH,
+};
+
+export const PARAMETERS_DRAFT23: ParameterDialect = {
+  specs: draft23Specs(),
+  names: RequestParameterDraft23 as unknown as Record<number, string>,
+  pauseType: P23.PAUSED,
+  pausedValue: 1,
+  fillLengthPrefixed: false,
+  maxValueLength: Number.MAX_SAFE_INTEGER,
+};
+
 /** A parameter block, in the shapes described at the top of this file */
 export interface ParameterSetDraft22 {
   forwardState?: boolean;
@@ -175,22 +247,22 @@ interface Entry {
   write: (writer: Draft18BufferWriter) => void;
 }
 
-function violation(message: string): Draft18CodecError {
-  return new Draft18CodecError(`${message} (PROTOCOL_VIOLATION)`);
+function violation(message: string, kind: Violation = 'invalid-parameter'): Draft18CodecError {
+  return new Draft18CodecError(`${message} (PROTOCOL_VIOLATION)`, undefined, undefined, kind);
 }
 
-function parameterName(type: number): string {
-  return RequestParameterDraft22[type] ?? `0x${type.toString(16)}`;
+function parameterName(type: number, dialect: ParameterDialect = PARAMETERS_DRAFT22): string {
+  return dialect.names[type] ?? `0x${type.toString(16)}`;
 }
 
 /** §9.20 / §9.20.1: parameter must be defined, and allowed in this message */
-function lookupSpec(type: number, scope: ParameterScopeDraft22): ParameterSpec {
-  const found = PARAMETER_SPECS[type as RequestParameterDraft22];
+function lookupSpec(type: number, scope: ParameterScopeDraft22, dialect: ParameterDialect): ParameterSpec {
+  const found = dialect.specs.get(type);
   if (!found) {
     throw violation(`Unknown parameter 0x${type.toString(16)} in ${scope}`);
   }
   if (!found.scopes.has(scope)) {
-    throw violation(`Parameter ${parameterName(type)} not allowed in ${scope}`);
+    throw violation(`Parameter ${parameterName(type, dialect)} not allowed in ${scope}`);
   }
 
   return found;
@@ -201,28 +273,55 @@ function lookupSpec(type: number, scope: ParameterScopeDraft22): ParameterSpec {
 // ============================================================================
 
 /** Decode `Number of Parameters | Parameters` for a message */
-export function decodeParameters(reader: Draft18BufferReader, scope: ParameterScopeDraft22): ParameterSetDraft22 {
-  // §9.20: the count is not limited; the 2^16-1 byte message bounds it (each parameter takes 2+ bytes)
+export function decodeParameters(
+  reader: Draft18BufferReader,
+  scope: ParameterScopeDraft22,
+  dialect: ParameterDialect = PARAMETERS_DRAFT22,
+): ParameterSetDraft22 {
+  // §9.20: the count is not limited, but every parameter takes 2+ bytes, so
+  // the body bounds it; checking before the loop stops a huge count early
   const count = reader.readVarIntNumber();
-  assertBound(count, MAX_CONTROL_MESSAGE_LENGTH, `${scope} numParams`);
+  if (count > reader.remaining) {
+    throw new Draft18CodecError(
+      `${scope} declares ${count} parameters in ${reader.remaining} bytes (PROTOCOL_VIOLATION)`,
+      undefined,
+      CODEC_MALFORMED,
+      'malformed-message',
+    );
+  }
 
-  return readEntries(reader, scope, count);
+  return readEntries(reader, scope, count, dialect);
 }
 
-function readEntries(reader: Draft18BufferReader, scope: ParameterScopeDraft22, count: number): ParameterSetDraft22 {
+/** §9.19: Type Delta past 2^64-1 is DELTA_ENCODING_OVERFLOW; any type beyond the table is unknown */
+function readType(reader: Draft18BufferReader, previousType: number): number {
+  const type = BigInt(previousType) + reader.readVarInt();
+  if (type > MOQT_VARINT_MAX) {
+    throw violation(`Parameter Type ${type} exceeds 2^64-1`, 'delta-overflow');
+  }
+
+  return type > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(type);
+}
+
+function readEntries(
+  reader: Draft18BufferReader,
+  scope: ParameterScopeDraft22,
+  count: number,
+  dialect: ParameterDialect,
+): ParameterSetDraft22 {
   const result: ParameterSetDraft22 = {};
   const parameters = new Map<number, Uint8Array>();
 
   let previousType = 0;
   for (let read = 0; read < count; read++) {
-    const type = previousType + reader.readVarIntNumber();
+    const type = readType(reader, previousType);
 
-    const found = lookupSpec(type, scope);
+    const found = lookupSpec(type, scope, dialect);
 
     // Types ascend, so a repeated type always has a delta of 0. Only Range
     // Filters (§3.3.2) and Authorization Tokens (§8.9) may repeat.
     if (read > 0 && type === previousType && found.kind !== ValueKind.RANGE_FILTER && found.kind !== ValueKind.AUTH_TOKEN) {
-      throw violation(`Duplicate parameter ${parameterName(type)} in ${scope}`);
+      throw violation(`Duplicate parameter ${parameterName(type, dialect)} in ${scope}`);
     }
     previousType = type;
 
@@ -231,21 +330,21 @@ function readEntries(reader: Draft18BufferReader, scope: ParameterScopeDraft22, 
         result.locationFilter = decodeLocationFilter(reader);
         break;
       case ValueKind.FILL_PARAMETERS:
-        result.fill = decodeFill(reader);
+        result.fill = decodeFill(reader, dialect);
         break;
       case ValueKind.RANGE_FILTER: {
-        const filter = decodeRangeFilter(type as RangeFilterTypeDraft22, readRaw(reader, type, found));
+        const filter = decodeRangeFilter(type as RangeFilterTypeDraft22, readRaw(reader, type, found, dialect));
         (result.rangeFilters ??= []).push(filter);
         break;
       }
       case ValueKind.AUTH_TOKEN: {
-        const token = readRaw(reader, type, found);
+        const token = readRaw(reader, type, found, dialect);
         decodeDraft18AuthToken(token);
         (result.authTokens ??= []).push(token);
         break;
       }
       default:
-        storeRaw(result, parameters, type, readRaw(reader, type, found));
+        storeRaw(result, parameters, type, readRaw(reader, type, found, dialect), dialect);
     }
   }
 
@@ -256,15 +355,16 @@ function readEntries(reader: Draft18BufferReader, scope: ParameterScopeDraft22, 
   return result;
 }
 
-/** FORWARD and LARGEST_OBJECT are typed; every other raw value stays raw */
+/** The pause parameter and LARGEST_OBJECT are typed; every other raw value stays raw */
 function storeRaw(
   result: ParameterSetDraft22,
   parameters: Map<number, Uint8Array>,
   type: number,
   value: Uint8Array,
+  dialect: ParameterDialect,
 ): void {
-  if (type === P.FORWARD) {
-    result.forwardState = value[0] === 1;
+  if (type === dialect.pauseType) {
+    result.forwardState = value[0] !== dialect.pausedValue;
     return;
   }
   if (type === P.LARGEST_OBJECT) {
@@ -278,12 +378,12 @@ function storeRaw(
 }
 
 /** Read one raw (non-structured) value; see the top of this file for the shapes */
-function readRaw(reader: Draft18BufferReader, type: number, found: ParameterSpec): Uint8Array {
+function readRaw(reader: Draft18BufferReader, type: number, found: ParameterSpec, dialect: ParameterDialect): Uint8Array {
   switch (found.kind) {
     case ValueKind.UINT8: {
       const value = reader.readByte();
       if (found.allowedValues && !found.allowedValues.includes(value)) {
-        throw violation(`Invalid ${parameterName(type)} ${value}`);
+        throw violation(`Invalid ${parameterName(type, dialect)} ${value}`);
       }
 
       return new Uint8Array([value]);
@@ -307,28 +407,33 @@ function readRaw(reader: Draft18BufferReader, type: number, found: ParameterSpec
     case ValueKind.AUTH_TOKEN:
     case ValueKind.RANGE_FILTER: {
       const length = reader.readVarIntNumber();
-      assertBound(length, found.maxLength ?? MAX_VALUE_LENGTH, `${parameterName(type)} value length`);
+      assertBound(length, found.maxLength ?? dialect.maxValueLength, `${parameterName(type, dialect)} value length`);
 
       return reader.readBytes(length);
     }
     default:
-      throw violation(`Parameter ${parameterName(type)} has no raw encoding`);
+      throw violation(`Parameter ${parameterName(type, dialect)} has no raw encoding`);
   }
 }
 
 /**
- * §9.20.15: length-prefixed, holding parameters "encoded as if they were
- * Parameters for a separate message", i.e. `Number of Parameters | Parameters`
- * (matches moqtail). Nothing may follow the counted parameters.
+ * FILL_PARAMETERS holds parameters "encoded as if they were Parameters for a
+ * separate message", i.e. `Number of Parameters | Parameters`. Draft-22
+ * (§9.20.15) length-prefixes that, and nothing may follow the counted
+ * parameters (matches moqtail); draft-23 (§9.19.15, #2015) does not.
  */
-function decodeFill(reader: Draft18BufferReader): FillParametersDraft22 {
+function decodeFill(reader: Draft18BufferReader, dialect: ParameterDialect): FillParametersDraft22 {
+  if (!dialect.fillLengthPrefixed) {
+    return setToFill(decodeParameters(reader, S.FILL_PARAMETERS, dialect));
+  }
+
   const length = reader.readVarIntNumber();
   assertBound(length, MAX_VALUE_LENGTH, 'FILL_PARAMETERS value length');
 
   const inner = new Draft18BufferReader(reader.readBytes(length));
-  const set = decodeParameters(inner, S.FILL_PARAMETERS);
+  const set = decodeParameters(inner, S.FILL_PARAMETERS, dialect);
   if (inner.hasMore) {
-    throw violation('Bytes left after FILL_PARAMETERS parameters');
+    throw violation('Bytes left after FILL_PARAMETERS parameters', 'malformed-message');
   }
 
   return setToFill(set);
@@ -373,27 +478,29 @@ export function encodeParameters(
   writer: Draft18BufferWriter,
   scope: ParameterScopeDraft22,
   set: ParameterSetDraft22,
+  dialect: ParameterDialect = PARAMETERS_DRAFT22,
 ): void {
-  const entries = collectEntries(scope, set);
+  const entries = collectEntries(scope, set, dialect);
 
   writer.writeVarInt(BigInt(entries.length));
   writeEntries(writer, entries);
 }
 
 /** Ascending-type entries, each validated against the table */
-function collectEntries(scope: ParameterScopeDraft22, set: ParameterSetDraft22): Entry[] {
+function collectEntries(scope: ParameterScopeDraft22, set: ParameterSetDraft22, dialect: ParameterDialect): Entry[] {
   const entries = new Map<number, Entry>();
   const add = (type: number, write: Entry['write']): void => {
-    lookupSpec(type, scope);
+    lookupSpec(type, scope, dialect);
     if (entries.has(type)) {
-      throw violation(`Duplicate parameter ${parameterName(type)} in ${scope}`);
+      throw violation(`Duplicate parameter ${parameterName(type, dialect)} in ${scope}`);
     }
     entries.set(type, { type, write });
   };
 
   const { forwardState, largestLocation, locationFilter, fill } = set;
   if (forwardState !== undefined) {
-    add(P.FORWARD, (w) => w.writeByte(forwardState ? 1 : 0));
+    const { pausedValue } = dialect;
+    add(dialect.pauseType, (w) => w.writeByte(forwardState ? 1 - pausedValue : pausedValue));
   }
   if (largestLocation) {
     add(P.LARGEST_OBJECT, (w) => {
@@ -405,29 +512,29 @@ function collectEntries(scope: ParameterScopeDraft22, set: ParameterSetDraft22):
     add(P.LOCATION_FILTER, (w) => encodeLocationFilter(w, locationFilter));
   }
   if (fill) {
-    add(P.FILL_PARAMETERS, (w) => encodeFill(w, fill));
+    add(P.FILL_PARAMETERS, (w) => encodeFill(w, fill, dialect));
   }
   for (const [type, value] of set.parameters ?? []) {
-    add(type, (w) => writeRaw(w, type, scope, value));
+    add(type, (w) => writeRaw(w, type, scope, value, dialect));
   }
 
   // §3.3.2, §8.9: Range Filters and Authorization Tokens may repeat, so they
   // sit outside the one-per-type map
-  const rangeEntries = collectRangeEntries(scope, set.rangeFilters ?? []);
-  const tokenEntries = collectTokenEntries(scope, set.authTokens ?? []);
+  const rangeEntries = collectRangeEntries(scope, set.rangeFilters ?? [], dialect);
+  const tokenEntries = collectTokenEntries(scope, set.authTokens ?? [], dialect);
 
   // The sort is stable, so repeats of a type keep the caller's order
   return [...entries.values(), ...rangeEntries, ...tokenEntries].sort((a, b) => a.type - b.type);
 }
 
-function collectTokenEntries(scope: ParameterScopeDraft22, tokens: readonly Uint8Array[]): Entry[] {
+function collectTokenEntries(scope: ParameterScopeDraft22, tokens: readonly Uint8Array[], dialect: ParameterDialect): Entry[] {
   return tokens.map((token) => {
-    const found = lookupSpec(P.AUTHORIZATION_TOKEN, scope);
+    const found = lookupSpec(P.AUTHORIZATION_TOKEN, scope, dialect);
 
     return {
       type: P.AUTHORIZATION_TOKEN,
       write: (w) => {
-        assertBound(token.length, found.maxLength ?? MAX_VALUE_LENGTH, 'AUTHORIZATION_TOKEN value length');
+        assertBound(token.length, found.maxLength ?? dialect.maxValueLength, 'AUTHORIZATION_TOKEN value length');
         w.writeVarInt(token.length);
         w.writeBytes(token);
       },
@@ -435,17 +542,21 @@ function collectTokenEntries(scope: ParameterScopeDraft22, tokens: readonly Uint
   });
 }
 
-function collectRangeEntries(scope: ParameterScopeDraft22, filters: readonly RangeFilterDraft22[]): Entry[] {
+function collectRangeEntries(
+  scope: ParameterScopeDraft22,
+  filters: readonly RangeFilterDraft22[],
+  dialect: ParameterDialect,
+): Entry[] {
   validateRangeFilters(filters);
 
   return filters.map((filter) => {
-    lookupSpec(filter.type, scope);
+    lookupSpec(filter.type, scope, dialect);
     const value = encodeRangeFilter(filter);
 
     return {
       type: filter.type,
       write: (w) => {
-        assertBound(value.length, MAX_VALUE_LENGTH, `${parameterName(filter.type)} value length`);
+        assertBound(value.length, dialect.maxValueLength, `${parameterName(filter.type, dialect)} value length`);
         w.writeVarInt(value.length);
         w.writeBytes(value);
       },
@@ -468,8 +579,9 @@ function writeRaw(
   type: number,
   scope: ParameterScopeDraft22,
   value: Uint8Array,
+  dialect: ParameterDialect,
 ): void {
-  const found = lookupSpec(type, scope);
+  const found = lookupSpec(type, scope, dialect);
 
   if (
     found.kind === ValueKind.LOCATION_FILTER ||
@@ -477,11 +589,11 @@ function writeRaw(
     found.kind === ValueKind.RANGE_FILTER ||
     found.kind === ValueKind.AUTH_TOKEN
   ) {
-    throw violation(`${parameterName(type)} must be set through its typed field`);
+    throw violation(`${parameterName(type, dialect)} must be set through its typed field`);
   }
 
   if (found.kind === ValueKind.LENGTH_PREFIXED) {
-    assertBound(value.length, found.maxLength ?? MAX_VALUE_LENGTH, `${parameterName(type)} value length`);
+    assertBound(value.length, found.maxLength ?? dialect.maxValueLength, `${parameterName(type, dialect)} value length`);
     writer.writeVarInt(value.length);
     writer.writeBytes(value);
     return;
@@ -490,23 +602,28 @@ function writeRaw(
   // A well-formed value reads back whole; anything else is a caller bug
   const probe = new Draft18BufferReader(value);
   try {
-    readRaw(probe, type, found);
+    readRaw(probe, type, found, dialect);
   } catch (err) {
     if (err instanceof Draft18CodecError) {
       throw err;
     }
-    throw violation(`Malformed ${parameterName(type)} value`);
+    throw violation(`Malformed ${parameterName(type, dialect)} value`);
   }
   if (probe.hasMore) {
-    throw violation(`Malformed ${parameterName(type)} value`);
+    throw violation(`Malformed ${parameterName(type, dialect)} value`);
   }
 
   writer.writeBytes(value);
 }
 
-function encodeFill(writer: Draft18BufferWriter, fill: FillParametersDraft22): void {
+function encodeFill(writer: Draft18BufferWriter, fill: FillParametersDraft22, dialect: ParameterDialect): void {
+  if (!dialect.fillLengthPrefixed) {
+    encodeParameters(writer, S.FILL_PARAMETERS, fillToSet(fill), dialect);
+    return;
+  }
+
   const inner = new Draft18BufferWriter();
-  encodeParameters(inner, S.FILL_PARAMETERS, fillToSet(fill));
+  encodeParameters(inner, S.FILL_PARAMETERS, fillToSet(fill), dialect);
 
   const payload = inner.toUint8Array();
   writer.writeVarInt(payload.length);
@@ -575,7 +692,7 @@ function encodeLocationFilter(writer: Draft18BufferWriter, filter: LocationFilte
 function readEndGroupDelta(reader: Draft18BufferReader, startGroup: bigint): bigint {
   const delta = reader.readVarInt();
   if (startGroup + delta > MOQT_VARINT_MAX) {
-    throw violation('LOCATION_FILTER end Group exceeds 2^64-1');
+    throw violation('LOCATION_FILTER end Group exceeds 2^64-1', 'delta-overflow');
   }
 
   return delta;

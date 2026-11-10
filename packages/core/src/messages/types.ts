@@ -41,6 +41,8 @@ export enum Version {
   DRAFT_18 = 0xff000012,
   /** Draft version 22 */
   DRAFT_22 = 0xff000016,
+  /** Draft version 23 */
+  DRAFT_23 = 0xff000017,
 }
 
 /**
@@ -1571,6 +1573,8 @@ export interface ClientSetupMessageDraft18 {
   maxFilterRanges?: number;
   /** Draft-22 §9.1.7: max outstanding REQUEST_UPDATEs per stream. 0 = unlimited (default). */
   maxRequestUpdates?: number;
+  /** Draft-23 §9.1.8: largest control message the sender accepts. At least 65535 (the default). */
+  maxControlMessageSize?: number;
 }
 
 /**
@@ -1605,6 +1609,8 @@ export interface ServerSetupMessageDraft18 {
   maxFilterRanges?: number;
   /** Draft-22 §9.1.7: max outstanding REQUEST_UPDATEs per stream. 0 = unlimited (default). */
   maxRequestUpdates?: number;
+  /** Draft-23 §9.1.8: largest control message the sender accepts. At least 65535 (the default). */
+  maxControlMessageSize?: number;
 }
 
 /**
@@ -1673,6 +1679,11 @@ export interface RequestErrorMessageDraft18 {
   retryInterval?: bigint;
   reasonPhrase: string;
   redirect?: RequestErrorRedirectDraft18;
+  /**
+   * Draft-23 §9.4.2.2: Property Types of the Mandatory Track Properties the
+   * sender does not understand (UNSUPPORTED_PROPERTY Error Details)
+   */
+  unsupportedProperties?: bigint[];
 }
 
 /**
@@ -1876,6 +1887,8 @@ export enum FetchObjectEndOfRange {
   UNKNOWN = 0x10c,
   /** Draft-22 §11.4.1.2: End of Timed-Out Range */
   TIMED_OUT = 0x20c,
+  /** Draft-23 §11.4.2: End of Gone Range */
+  GONE = 0x40c,
 }
 
 /**
@@ -2184,6 +2197,163 @@ export enum PublishDoneErrorCodeDraft22 {
 }
 
 // ============================================================================
+// Draft-23 Registries
+// ============================================================================
+//
+// Draft-23 keeps draft-22's message types and parameter encodings except for
+// the values below. Message types are MessageTypeDraft22 with 0x18 (FETCH_OK)
+// reserved: a FETCH is answered with REQUEST_OK (§9.3).
+
+/** Draft-23 Setup Options (§9.1): draft-22's plus MAX_CONTROL_MESSAGE_SIZE */
+export enum SetupOptionDraft23 {
+  PATH = 0x01,
+  AUTHORIZATION_TOKEN = 0x03,
+  MAX_AUTH_TOKEN_CACHE_SIZE = 0x04,
+  AUTHORITY = 0x05,
+  MAX_FILTER_RANGES = 0x06,
+  MOQT_IMPLEMENTATION = 0x07,
+  MAX_REQUEST_UPDATES = 0x08,
+  /**
+   * §9.1.8 assigns 0x09, but an odd type is length-prefixed (§8.3) while the
+   * option is defined as a varint. Until that is settled we use the even
+   * 0x10, which carries a plain varint.
+   */
+  MAX_CONTROL_MESSAGE_SIZE = 0x10,
+}
+
+/**
+ * Draft-23 Message Parameters (§16.7). FORWARD (0x10) is gone; PAUSED (0x11)
+ * carries the inverse. SUBSCRIBE_TRACKS_ID (0x36) is new.
+ */
+export enum RequestParameterDraft23 {
+  OBJECT_DELIVERY_TIMEOUT = 0x02,
+  AUTHORIZATION_TOKEN = 0x03,
+  RENDEZVOUS_TIMEOUT = 0x04,
+  SUBGROUP_DELIVERY_TIMEOUT = 0x06,
+  EXPIRES = 0x08,
+  LARGEST_OBJECT = 0x09,
+  FILL_TIMEOUT = 0x0A,
+  PAUSED = 0x11,
+  SUBSCRIBER_PRIORITY = 0x20,
+  LOCATION_FILTER = 0x21,
+  GROUP_ORDER = 0x22,
+  FILL_PARAMETERS = 0x23,
+  SUBGROUP_FILTER = 0x25,
+  OBJECTID_FILTER = 0x26,
+  PRIORITY_FILTER = 0x27,
+  OBJECT_PROPERTY_FILTER = 0x28,
+  TRACK_PROPERTY_FILTER = 0x29,
+  NEW_GROUP_REQUEST = 0x32,
+  TRACK_NAMESPACE_PREFIX = 0x34,
+  INCLUDE_PROPERTIES = 0x35,
+  SUBSCRIBE_TRACKS_ID = 0x36,
+}
+
+/**
+ * Draft-23 Session Termination Codes (§12.2). KEY_VALUE_FORMATTING_ERROR is
+ * renamed MALFORMED_KEY_VALUE; 0x200-0x4FF replace most PROTOCOL_VIOLATIONs.
+ */
+export enum SessionErrorCodeDraft23 {
+  NO_ERROR = 0x0,
+  INTERNAL_ERROR = 0x1,
+  UNAUTHORIZED = 0x2,
+  PROTOCOL_VIOLATION = 0x3,
+  INVALID_REQUEST_ID = 0x4,
+  DUPLICATE_TRACK_ALIAS = 0x5,
+  MALFORMED_KEY_VALUE = 0x6,
+  INVALID_PATH = 0x8,
+  MALFORMED_PATH = 0x9,
+  GOAWAY_TIMEOUT = 0x10,
+  CONTROL_MESSAGE_TIMEOUT = 0x11,
+  DATA_STREAM_TIMEOUT = 0x12,
+  AUTH_TOKEN_CACHE_OVERFLOW = 0x13,
+  DUPLICATE_AUTH_TOKEN_ALIAS = 0x14,
+  MALFORMED_AUTH_TOKEN = 0x16,
+  UNKNOWN_AUTH_TOKEN_ALIAS = 0x17,
+  EXPIRED_AUTH_TOKEN = 0x18,
+  INVALID_AUTHORITY = 0x19,
+  MALFORMED_AUTHORITY = 0x1a,
+  TOO_MANY_REQUEST_UPDATES = 0x1B,
+  INVALID_STREAM_HEADER = 0x200,
+  MALFORMED_OBJECT = 0x201,
+  INVALID_OBJECT_STATUS = 0x202,
+  TRUNCATED_OBJECT = 0x203,
+  MALFORMED_MESSAGE = 0x300,
+  INVALID_FIELD = 0x301,
+  INVALID_TRACK_NAMESPACE = 0x302,
+  UNEXPECTED_MESSAGE = 0x303,
+  ROLE_VIOLATION = 0x304,
+  INVALID_PARAMETER = 0x305,
+  CLOSED_CONTROL_STREAM = 0x306,
+  DELTA_ENCODING_OVERFLOW = 0x400,
+  FIELD_LENGTH_EXCEEDED = 0x401,
+}
+
+/** Draft-23 REQUEST_ERROR Codes (§12.3): adds UNAVAILABLE, drops PREFIX_OVERLAP */
+export enum RequestErrorCodeDraft23 {
+  INTERNAL_ERROR = 0x0,
+  UNAUTHORIZED = 0x1,
+  TIMEOUT = 0x2,
+  NOT_SUPPORTED = 0x3,
+  MALFORMED_AUTH_TOKEN = 0x4,
+  EXPIRED_AUTH_TOKEN = 0x5,
+  GOING_AWAY = 0x6,
+  EXCESSIVE_LOAD = 0x9,
+  UNAVAILABLE = 0xA,
+  DOES_NOT_EXIST = 0x10,
+  INVALID_RANGE = 0x11,
+  MALFORMED_TRACK = 0x12,
+  UNINTERESTED = 0x20,
+  NAMESPACE_TOO_LARGE = 0x31,
+  UNSUPPORTED_EXTENSION = 0x33,
+  REDIRECT = 0x34,
+  CONFLICTING_FILTERS = 0x35,
+  INVALID_FILTER = 0x36,
+}
+
+/** Draft-23 PUBLISH_DONE Codes (§12.4): adds EXPIRED_AUTH_TOKEN */
+export enum PublishDoneErrorCodeDraft23 {
+  INTERNAL_ERROR = 0x0,
+  UNAUTHORIZED = 0x1,
+  TRACK_ENDED = 0x2,
+  GOING_AWAY = 0x4,
+  TOO_FAR_BEHIND = 0x5,
+  EXPIRED = 0x6,
+  EXPIRED_AUTH_TOKEN = 0x7,
+  UPDATE_FAILED = 0x8,
+  EXCESSIVE_LOAD = 0x9,
+  MALFORMED_TRACK = 0x12,
+}
+
+/** Draft-23 Stream Reset Codes (§12.5): UNKNOWN_OBJECT_STATUS (0x6) is gone */
+export enum StreamResetErrorCodeDraft23 {
+  INTERNAL_ERROR = 0x0,
+  CANCELLED = 0x1,
+  DELIVERY_TIMEOUT = 0x2,
+  SESSION_CLOSED = 0x3,
+  GOING_AWAY = 0x4,
+  TOO_FAR_BEHIND = 0x5,
+  EXPIRED_AUTH_TOKEN = 0x7,
+  EXCESSIVE_LOAD = 0x9,
+  MALFORMED_TRACK = 0x12,
+}
+
+/** Draft-23 REQUEST_ERROR Error Detail Types (§9.4.2, §16.11) */
+export enum ErrorDetailTypeDraft23 {
+  REDIRECT = 0x01,
+  UNSUPPORTED_PROPERTY = 0x02,
+}
+
+/**
+ * Draft-23 Fetch stream indicators without fields (§11.4.2.2): the prior
+ * Object ends its Group, or the Track (which also ends the Group).
+ */
+export enum FetchObjectMarker {
+  END_OF_GROUP = 0x80,
+  END_OF_TRACK = 0x81,
+}
+
+// ============================================================================
 // Draft-22 Message Interfaces
 // ============================================================================
 
@@ -2339,6 +2509,10 @@ export interface PublishMessageDraft22 {
   forwardState: boolean;
   largestLocation?: Location;
   locationFilter?: LocationFilterDraft22;
+  /** Draft-23 §9.19.15: a PUBLISH can open a fill fetch stream */
+  fill?: FillParametersDraft22;
+  /** Draft-23 §9.19.21: Request ID of the SUBSCRIBE_TRACKS this PUBLISH answers */
+  subscribeTracksId?: bigint;
   /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
   authTokens?: Uint8Array[];
   parameters?: Map<number, Uint8Array>;
@@ -2383,6 +2557,10 @@ export interface SubscribeTracksMessageDraft22 {
   requestId: bigint;
   trackNamespacePrefix: TrackNamespace;
   forwardState: boolean;
+  /** Draft-23 §9.17: initial Location filter for the resulting subscriptions */
+  locationFilter?: LocationFilterDraft22;
+  /** Draft-23 §9.19.15: fill for the resulting subscriptions */
+  fill?: FillParametersDraft22;
   rangeFilters?: RangeFilterDraft22[];
   /** AUTHORIZATION_TOKEN values (§8.9), raw Token structures; may repeat */
   authTokens?: Uint8Array[];

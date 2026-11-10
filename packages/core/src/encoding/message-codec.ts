@@ -34,7 +34,7 @@
 
 import { Logger } from '../utils/logger.js';
 import { BufferReader, BufferWriter, PreallocBufferWriter, VarInt, type WritableByteBuffer } from './varint.js';
-import { DEFAULT_DRAFT, type DraftVersion } from '../version/constants.js';
+import { DEFAULT_DRAFT, isDraftAtLeast, type DraftVersion } from '../version/constants.js';
 import { Draft18StreamCodec } from './draft18-stream-codec.js';
 
 // -----------------------------------------------------------------------------
@@ -79,7 +79,7 @@ function isDraft16Active(): boolean {
 
 /** True while a modern draft (18+) codec call is on the stack. */
 function isDraft18Active(): boolean {
-  return _activeDraft === 'draft-18' || _activeDraft === 'draft-22';
+  return isDraftAtLeast(_activeDraft, 18);
 }
 
 

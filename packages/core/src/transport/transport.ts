@@ -36,6 +36,7 @@ import { Logger } from '../utils/logger.js';
 import {
   alpnProtocolFor,
   DEFAULT_DRAFT,
+  isDraftAtLeast,
   type DraftVersion,
 } from '../version/constants.js';
 import { MOQTVarInt } from '../encoding/moqt-varint.js';
@@ -207,7 +208,7 @@ export class MOQTransport {
    * streams, unidirectional setup pair, MOQT varints, etc).
    */
   private get isDraft18(): boolean {
-    return this._draft === 'draft-18' || this._draft === 'draft-22';
+    return isDraftAtLeast(this._draft, 18);
   }
 
   /**

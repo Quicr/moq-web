@@ -62,7 +62,6 @@ import {
   alpnProtocolFor,
   DEFAULT_DRAFT,
   versionEnumFor,
-  getProtocolCodecForVersion,
   type DraftVersion,
   DataStreamType,
   type ClientSetupMessage,
@@ -128,6 +127,11 @@ import {
   type TrackStatusMessageDraft22,
   type PublishSkippedMessageDraft22,
   type PublishStateNotifyMessageDraft22,
+  isDraftAtLeast,
+  createProtocolCodec,
+  terminationCodeFor,
+  violationOf,
+  DEFAULT_MAX_CONTROL_MESSAGE_SIZE,
 } from '@moq-web/core';
 import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
@@ -421,6 +425,14 @@ export interface MOQTSessionConfig {
    * Defaults to 1000.
    */
   maxRequestId?: number;
+  /**
+   * Draft-23 §9.1.8 MAX_CONTROL_MESSAGE_SIZE: the largest control message
+   * this endpoint accepts, advertised in SETUP when above the 65535 default.
+   * Every request stream may buffer up to this much (§15.5), so raise it only
+   * as far as large Parameters (e.g. Authorization Tokens) need. Ignored
+   * before draft-23.
+   */
+  maxControlMessageSize?: number;
 }
 
 /**
@@ -608,6 +620,8 @@ export class MOQTSession {
   private readonly maxRequestId: number;
   /** Protocol codec for version-specific encoding/decoding */
   private readonly codec: IProtocolCodec;
+  /** Draft-23 §9.1.8: our MAX_CONTROL_MESSAGE_SIZE, when raised above the default */
+  private maxControlMessageSize?: number;
   /** Temporary message handler for setup */
   private onMessage?: (message: MOQTMessage) => void;
   /** Active video GOP streams by track alias (for GOP batching) */
@@ -882,11 +896,16 @@ export class MOQTSession {
     }
 
     // Bind codec and request-ID scheme to the resolved draft.
-    this.codec = getProtocolCodecForVersion(versionEnumFor(this._draft) as Version);
+    // Draft-23 codecs hold this session's MAX_CONTROL_MESSAGE_SIZE limits
+    this.codec = createProtocolCodec(versionEnumFor(this._draft) as Version);
+    const ownMaxControlMessageSize =
+      transportOrConfig instanceof MOQTransport ? undefined : transportOrConfig.maxControlMessageSize;
+    if (ownMaxControlMessageSize !== undefined && ownMaxControlMessageSize > DEFAULT_MAX_CONTROL_MESSAGE_SIZE) {
+      this.maxControlMessageSize = ownMaxControlMessageSize;
+      this.codec.setControlMessageLimits({ maxReceiveLength: ownMaxControlMessageSize });
+    }
     // Draft-14: 1-based. Draft-16+: clients use even IDs starting at 0.
-    this.nextRequestId = this._draft === 'draft-16' || this._draft === 'draft-17' || this._draft === 'draft-18' || this._draft === 'draft-22'
-      ? 0
-      : 1;
+    this.nextRequestId = isDraftAtLeast(this._draft, 16) ? 0 : 1;
     const configuredMax =
       transportOrConfig instanceof MOQTransport ? undefined : transportOrConfig.maxRequestId;
     this.maxRequestId = configuredMax !== undefined && configuredMax > 0 ? configuredMax : 1000;
@@ -1661,7 +1680,10 @@ export class MOQTSession {
     if (!(err instanceof Draft18CodecError) || isIncompleteDecode(err) || err.code === INVALID_FILTER_CODE) {
       return false;
     }
-    const code = FATAL_DECODE_CODES.get(err.code) ?? SessionErrorCodeDraft18.PROTOCOL_VIOLATION;
+    // Draft-23 §12.2 closes with the code for the rule broken; earlier drafts
+    // with PROTOCOL_VIOLATION (see violation.ts)
+    const code = FATAL_DECODE_CODES.get(err.code)
+      ?? terminationCodeFor(violationOf(err) ?? 'protocol-violation', this._draft);
     void this.close({ code, reason: err.message }).catch(() => {});
 
     return true;
@@ -2440,12 +2462,17 @@ export class MOQTSession {
 
   /** True when this session is speaking a modern draft (18+): per-request bidi streams, MOQT varints, etc. */
   private get isDraft18(): boolean {
-    return this._draft === 'draft-18' || this._draft === 'draft-22';
+    return isDraftAtLeast(this._draft, 18);
   }
 
-  /** True when this session is specifically speaking draft-22. */
+  /** True when this session is speaking draft-22 or later (draft-23 inherits draft-22 behaviour). */
   private get isDraft22(): boolean {
-    return this._draft === 'draft-22';
+    return isDraftAtLeast(this._draft, 22);
+  }
+
+  /** True when this session is speaking draft-23 or later. */
+  private get isDraft23(): boolean {
+    return isDraftAtLeast(this._draft, 23);
   }
 
   /** True when this session is speaking draft-16 or draft-17. */
@@ -2607,6 +2634,7 @@ export class MOQTSession {
         moqtImplementation: this._implementationString,
         extensions: this._clientExtensions,
         authToken: setupAuthToken,
+        maxControlMessageSize: this.isDraft23 ? this.maxControlMessageSize : undefined,
       };
 
       const setupBytes = this.codec.encodeSetupStream(clientSetup);
@@ -7138,6 +7166,10 @@ export class MOQTSession {
             this.peerMaxRequestUpdates = (serverSetup as any).maxRequestUpdates;
           }
           this.peerMaxFilterRanges = serverSetup.maxFilterRanges ?? 0;
+          // Draft-23 §9.1.8: we may now send up to the peer's limit
+          this.codec.setControlMessageLimits({
+            maxSendLength: serverSetup.maxControlMessageSize ?? DEFAULT_MAX_CONTROL_MESSAGE_SIZE,
+          });
           log.debug('Received SERVER_SETUP', {
             version: serverSetup.selectedVersion,
             role: serverSetup.role,

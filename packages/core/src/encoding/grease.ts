@@ -31,6 +31,10 @@ import {
   RequestErrorCodeDraft22,
   SessionErrorCodeDraft22,
   PublishDoneErrorCodeDraft22,
+  RequestErrorCodeDraft23,
+  SessionErrorCodeDraft23,
+  PublishDoneErrorCodeDraft23,
+  StreamResetErrorCodeDraft23,
 } from '../messages/types.js';
 
 const GREASE_MULTIPLIER = 0x7f;
@@ -125,4 +129,47 @@ export function normalizePublishDoneErrorCodeDraft22(code: number): number {
   return isKnownEnumValue(PublishDoneErrorCodeDraft22 as unknown as Record<string, string | number>, code)
     ? code
     : PublishDoneErrorCodeDraft22.INTERNAL_ERROR;
+}
+
+// =============================================================================
+// Draft-23 Normalizers
+// =============================================================================
+
+// Draft-23 adds UNAVAILABLE and drops PREFIX_OVERLAP from REQUEST_ERROR, adds
+// EXPIRED_AUTH_TOKEN to PUBLISH_DONE, drops UNKNOWN_OBJECT_STATUS from stream
+// resets, and adds the categorised session codes 0x200-0x4FF.
+
+/** §12.2: 0x200-0x4FF are grouped by category; an unknown code there keeps its category */
+const SESSION_CATEGORY_START = 0x200;
+const SESSION_CATEGORY_END = 0x4ff;
+
+export function normalizeRequestErrorCodeDraft23(code: number): number {
+  return isKnownEnumValue(RequestErrorCodeDraft23 as unknown as Record<string, string | number>, code)
+    ? code
+    : RequestErrorCodeDraft23.INTERNAL_ERROR;
+}
+
+/**
+ * Unknown codes become INTERNAL_ERROR, except non-grease codes in a §12.2
+ * category range, which are kept so the receiver can read their category.
+ */
+export function normalizeSessionErrorCodeDraft23(code: number): number {
+  if (isKnownEnumValue(SessionErrorCodeDraft23 as unknown as Record<string, string | number>, code)) {
+    return code;
+  }
+  const inCategory = code >= SESSION_CATEGORY_START && code <= SESSION_CATEGORY_END;
+
+  return inCategory && !isGreaseCode(code) ? code : SessionErrorCodeDraft23.INTERNAL_ERROR;
+}
+
+export function normalizePublishDoneErrorCodeDraft23(code: number): number {
+  return isKnownEnumValue(PublishDoneErrorCodeDraft23 as unknown as Record<string, string | number>, code)
+    ? code
+    : PublishDoneErrorCodeDraft23.INTERNAL_ERROR;
+}
+
+export function normalizeStreamResetErrorCodeDraft23(code: number): number {
+  return isKnownEnumValue(StreamResetErrorCodeDraft23 as unknown as Record<string, string | number>, code)
+    ? code
+    : StreamResetErrorCodeDraft23.INTERNAL_ERROR;
 }

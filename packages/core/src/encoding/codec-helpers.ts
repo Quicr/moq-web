@@ -75,7 +75,7 @@ export const MAX_SAFE_KEY = BigInt(Number.MAX_SAFE_INTEGER);
 export function readKvpKey(reader: Draft18BufferReader, previousKey: bigint): bigint {
   const key = previousKey + reader.readVarInt();
   if (key > MOQT_VARINT_MAX) {
-    throw new Draft18CodecError(`KVP key ${key} exceeds 2^64-1`);
+    throw new Draft18CodecError(`KVP key ${key} exceeds 2^64-1`, undefined, undefined, 'delta-overflow');
   }
 
   return key;
@@ -398,37 +398,136 @@ function readAuthToken(reader: Draft18BufferReader): AuthorizationToken {
 // Message Framing
 // =============================================================================
 
-/** Reject a body that the 16-bit Message Length cannot represent (§9). */
-export function assertControlLength(length: number): void {
-  if (length > MAX_CONTROL_MESSAGE_LENGTH) {
+/**
+ * How a control message's Message Length is framed (§9), and the size limits
+ * on each direction. Drafts 18-22 use a 16-bit length; draft-23 a vi64,
+ * bounded by MAX_CONTROL_MESSAGE_SIZE (§9.1.8).
+ */
+export interface ControlFraming {
+  readonly varintLength: boolean;
+  /** Largest body this endpoint may send: the peer's limit */
+  readonly maxSendLength: number;
+  /** Largest body this endpoint accepts: its own limit */
+  readonly maxReceiveLength: number;
+}
+
+/** Drafts 18-22: Message Length (16) */
+export const FRAMING_LENGTH16: ControlFraming = {
+  varintLength: false,
+  maxSendLength: MAX_CONTROL_MESSAGE_LENGTH,
+  maxReceiveLength: MAX_CONTROL_MESSAGE_LENGTH,
+};
+
+/** Draft-23 §9.1.8: MAX_CONTROL_MESSAGE_SIZE when absent, and its minimum */
+export const DEFAULT_MAX_CONTROL_MESSAGE_SIZE = 65535;
+
+/** Reject a body larger than the framing lets this endpoint send (§9). */
+export function assertControlLength(length: number, framing: ControlFraming = FRAMING_LENGTH16): void {
+  if (length > framing.maxSendLength) {
     throw new Draft18CodecError(
-      `Control message body ${length} exceeds ${MAX_CONTROL_MESSAGE_LENGTH} bytes`,
+      `Control message body ${length} exceeds ${framing.maxSendLength} bytes`,
       undefined,
       'bounds-exceeded',
+      'field-length',
     );
   }
 }
 
 /**
+ * Write `prefix | Message Length | body` in one allocation; the body is never
+ * copied into an intermediate buffer.
+ */
+function writeFrame(prefix: Uint8Array | undefined, body: Draft18BufferWriter, framing: ControlFraming): Uint8Array {
+  const length = body.length;
+  assertControlLength(length, framing);
+
+  const lengthBytes = framing.varintLength
+    ? MOQTVarInt.encode(length)
+    : new Uint8Array([(length >> 8) & 0xff, length & 0xff]);
+
+  return prefix ? body.toUint8ArrayWithPrefix(prefix, lengthBytes) : body.toUint8ArrayWithPrefix(lengthBytes);
+}
+
+/**
+ * Read the Message Length at `offset`. Returns the length and the size of the
+ * field, or undefined if `buffer` ends inside the field. A length above the
+ * receive limit throws before any of the body is buffered (§9, §15.5).
+ */
+export function readFrameLength(
+  buffer: Uint8Array,
+  offset: number,
+  framing: ControlFraming = FRAMING_LENGTH16,
+): [number, number] | undefined {
+  if (!framing.varintLength) {
+    if (buffer.length < offset + 2) {
+      return undefined;
+    }
+
+    return [(buffer[offset] << 8) | buffer[offset + 1], 2];
+  }
+
+  if (buffer.length <= offset || buffer.length < offset + MOQTVarInt.lengthFromFirstByte(buffer[offset])) {
+    return undefined;
+  }
+  const [length, fieldSize] = MOQTVarInt.decode(buffer, offset);
+  if (length > BigInt(framing.maxReceiveLength)) {
+    throw new Draft18CodecError(
+      `Control message length ${length} exceeds ${framing.maxReceiveLength} bytes`,
+      undefined,
+      'bounds-exceeded',
+      'field-length',
+    );
+  }
+
+  return [Number(length), fieldSize];
+}
+
+/**
+ * Total size of the framed control message at `offset` (type, length and
+ * body), or undefined if the header is not all there yet. Lets a stream
+ * reader wait for a whole message before decoding it once.
+ */
+export function controlFrameSize(
+  buffer: Uint8Array,
+  offset: number,
+  framing: ControlFraming = FRAMING_LENGTH16,
+): number | undefined {
+  if (buffer.length <= offset) {
+    return undefined;
+  }
+  const typeSize = MOQTVarInt.lengthFromFirstByte(buffer[offset]);
+  const header = readFrameLength(buffer, offset + typeSize, framing);
+
+  return header ? typeSize + header[1] + header[0] : undefined;
+}
+
+/**
  * Encode a control message with the standard framing:
- *   Message Type (MOQT varint) | Message Length (16-bit BE) | Payload
+ *   Message Type (MOQT varint) | Message Length | Payload
  */
 export function encodeFramed(
   messageType: number,
   encodePayload: (writer: Draft18BufferWriter) => void,
+  framing: ControlFraming = FRAMING_LENGTH16,
 ): Uint8Array {
   const payloadWriter = new Draft18BufferWriter();
   encodePayload(payloadWriter);
-  const payload = payloadWriter.toUint8Array();
-  assertControlLength(payload.length);
 
-  const typeBytes = MOQTVarInt.encode(BigInt(messageType));
-  const result = new Uint8Array(typeBytes.length + 2 + payload.length);
-  result.set(typeBytes, 0);
-  result[typeBytes.length] = (payload.length >> 8) & 0xFF;
-  result[typeBytes.length + 1] = payload.length & 0xFF;
-  result.set(payload, typeBytes.length + 2);
-  return result;
+  return writeFrame(MOQTVarInt.encode(messageType), payloadWriter, framing);
+}
+
+/**
+ * Encode a SETUP for the setup stream, where the type is the stream type:
+ *   Message Length | Setup Options
+ */
+export function encodeUntypedFrame(
+  encodePayload: (writer: Draft18BufferWriter) => void,
+  framing: ControlFraming = FRAMING_LENGTH16,
+): Uint8Array {
+  const payloadWriter = new Draft18BufferWriter();
+  encodePayload(payloadWriter);
+
+  return writeFrame(undefined, payloadWriter, framing);
 }
 
 /**
@@ -448,36 +547,49 @@ export function peekMessageType(buffer: Uint8Array, offset: number): number {
 
 /**
  * Decode a framed control message:
- *   Message Type (MOQT varint) | Message Length (16-bit BE) | Payload
+ *   Message Type (MOQT varint) | Message Length | Payload
  *
  * Returns the decoded message and total bytes consumed (header + payload).
- *
- * A body that is not exactly consumed by its fields breaks §9 ("If the length
- * does not match the length of the Message Body, the receiver MUST close the
- * session with a PROTOCOL_VIOLATION"), so it is `malformed`, never
- * `incomplete`: only the framing can be incomplete.
  */
 export function decodeFramed<T>(
   buffer: Uint8Array,
   offset: number,
   decodePayload: (reader: Draft18BufferReader) => T,
+  framing: ControlFraming = FRAMING_LENGTH16,
 ): [T, number] {
   peekMessageType(buffer, offset);
   const typeBytesRead = MOQTVarInt.lengthFromFirstByte(buffer[offset]);
+  const [message, frameBytes] = decodeUntypedFrame(buffer, offset + typeBytesRead, decodePayload, framing);
 
-  if (buffer.length < offset + typeBytesRead + 2) {
+  return [message, typeBytesRead + frameBytes];
+}
+
+/**
+ * Decode `Message Length | Payload` at `offset`.
+ *
+ * A body that is not exactly consumed by its fields breaks §9 ("If the length
+ * does not match the length of the Message Body, the receiver MUST close the
+ * session"), so it is `malformed`, never `incomplete`: only the framing can be
+ * incomplete.
+ */
+export function decodeUntypedFrame<T>(
+  buffer: Uint8Array,
+  offset: number,
+  decodePayload: (reader: Draft18BufferReader) => T,
+  framing: ControlFraming = FRAMING_LENGTH16,
+): [T, number] {
+  const header = readFrameLength(buffer, offset, framing);
+  if (!header) {
     throw new Draft18CodecError('Incomplete message: missing length field', undefined, CODEC_INCOMPLETE);
   }
-  const payloadLength = (buffer[offset + typeBytesRead] << 8) | buffer[offset + typeBytesRead + 1];
-  const headerSize = typeBytesRead + 2;
+  const [payloadLength, lengthSize] = header;
 
-  if (buffer.length < offset + headerSize + payloadLength) {
+  if (buffer.length < offset + lengthSize + payloadLength) {
     throw new Draft18CodecError('Incomplete message: not enough payload bytes', undefined, CODEC_INCOMPLETE);
   }
 
-  const reader = new Draft18BufferReader(
-    buffer.subarray(offset + headerSize, offset + headerSize + payloadLength),
-  );
+  const bodyStart = offset + lengthSize;
+  const reader = new Draft18BufferReader(buffer.subarray(bodyStart, bodyStart + payloadLength));
 
   let message: T;
   try {
@@ -490,6 +602,7 @@ export function decodeFramed<T>(
       `Message body shorter than its fields: ${(err as Error).message} (PROTOCOL_VIOLATION)`,
       undefined,
       CODEC_MALFORMED,
+      'malformed-message',
     );
   }
   if (reader.hasMore) {
@@ -497,8 +610,9 @@ export function decodeFramed<T>(
       `Message body has ${reader.remaining} trailing bytes (PROTOCOL_VIOLATION)`,
       undefined,
       CODEC_MALFORMED,
+      'malformed-message',
     );
   }
 
-  return [message, headerSize + payloadLength];
+  return [message, lengthSize + payloadLength];
 }

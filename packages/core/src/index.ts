@@ -152,6 +152,8 @@ export {
   versionNumberFor,
   versionEnumFor,
   alpnProtocolFor,
+  draftNumber,
+  isDraftAtLeast,
 } from './version/constants.js';
 export type { DraftVersion } from './version/constants.js';
 
@@ -199,6 +201,14 @@ export {
   SessionErrorCodeDraft22,
   RequestErrorCodeDraft22,
   PublishDoneErrorCodeDraft22,
+  SetupOptionDraft23,
+  RequestParameterDraft23,
+  SessionErrorCodeDraft23,
+  RequestErrorCodeDraft23,
+  PublishDoneErrorCodeDraft23,
+  StreamResetErrorCodeDraft23,
+  ErrorDetailTypeDraft23,
+  FetchObjectMarker,
 } from './messages/types.js';
 
 // Message interfaces (Draft 14/16)
@@ -357,6 +367,7 @@ export type { SwitchingSetAssignment } from './encoding/dts.js';
 export {
   getProtocolCodec,
   getProtocolCodecForVersion,
+  createProtocolCodec,
   Draft18BufferWriter,
   Draft18BufferReader,
 } from './encoding/protocol-codec.js';
@@ -375,11 +386,25 @@ export {
   encodeDraft18AuthToken,
   encodeKeyValuePairs,
   encodeTrackNamespace,
+  controlFrameSize,
+  DEFAULT_MAX_CONTROL_MESSAGE_SIZE,
+  FRAMING_LENGTH16,
 } from './encoding/codec-helpers.js';
+export type { ControlFraming } from './encoding/codec-helpers.js';
 export { countRanges, validateRangeFilters, INVALID_FILTER_CODE } from './encoding/draft22-range-filter.js';
 
 // Draft-22 message codec (delegates to Draft18MessageCodec for shared messages)
-export { Draft22MessageCodec } from './encoding/draft22-message-codec.js';
+export { Draft22MessageCodec, DIALECT_DRAFT22 } from './encoding/draft22-message-codec.js';
+export type { WireDialect } from './encoding/draft22-message-codec.js';
+
+// Draft-23 message codec (delegates to Draft22MessageCodec with the draft-23 dialect)
+export {
+  Draft23MessageCodec,
+  DIALECT_DRAFT23,
+  draft23Dialect,
+  draft23Framing,
+  MAX_UNSUPPORTED_PROPERTIES,
+} from './encoding/draft23-message-codec.js';
 
 // Draft-18 §14 Grease / reserved codepoint helpers
 export {
@@ -389,7 +414,16 @@ export {
   normalizeSessionErrorCode,
   normalizeStreamResetErrorCode,
   normalizeSessionErrorCodeDraft22,
+  normalizeRequestErrorCodeDraft23,
+  normalizeSessionErrorCodeDraft23,
+  normalizePublishDoneErrorCodeDraft23,
+  normalizeStreamResetErrorCodeDraft23,
 } from './encoding/grease.js';
+export {
+  terminationCodeFor,
+  violationOf,
+  type Violation,
+} from './encoding/violation.js';
 
 // Draft-18 §13.3.1 authorization-token replay protection
 export { AuthTokenReplayCache } from './security/auth-token-replay.js';

@@ -18,7 +18,7 @@
 
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
-import { Draft18MessageCodec, Draft18CodecError, type ErrorCodeNormalizers } from './draft18-message-codec.js';
+import { Draft18MessageCodec, Draft18CodecError, CODEC_MALFORMED, type ErrorCodeNormalizers } from './draft18-message-codec.js';
 import {
   normalizeRequestErrorCodeDraft22,
   normalizePublishDoneErrorCodeDraft22,
@@ -35,11 +35,15 @@ import {
   encodeFramed,
   decodeFramed,
   peekMessageType,
+  FRAMING_LENGTH16,
+  type ControlFraming,
 } from './codec-helpers.js';
 import {
   ParameterScopeDraft22,
+  PARAMETERS_DRAFT22,
   encodeParameters,
   decodeParameters,
+  type ParameterDialect,
   type ParameterSetDraft22,
 } from './draft22-parameters.js';
 import {
@@ -47,6 +51,7 @@ import {
   MessageTypeDraft22,
   GroupOrder,
   RequestParameterDraft22,
+  RequestParameterDraft23,
   type ControlMessageDraft18,
   type ControlMessageDraft22,
   type ClientSetupMessageDraft18,
@@ -76,8 +81,43 @@ const DRAFT22_NORMALIZERS: ErrorCodeNormalizers = {
   publishDone: normalizePublishDoneErrorCodeDraft22,
 };
 
+/**
+ * What a draft from 22 on changes about the shared message bodies: framing,
+ * error code registries and the parameter table. Draft-23 passes its own.
+ */
+export interface WireDialect {
+  readonly framing: ControlFraming;
+  readonly normalizers: ErrorCodeNormalizers;
+  readonly parameters: ParameterDialect;
+  /** Draft-23 §2.4.1: a Track Name must hold at least one byte */
+  readonly requireTrackName: boolean;
+}
+
+export const DIALECT_DRAFT22: WireDialect = {
+  framing: FRAMING_LENGTH16,
+  normalizers: DRAFT22_NORMALIZERS,
+  parameters: PARAMETERS_DRAFT22,
+  requireTrackName: false,
+};
+
+/** Read a Track Name; draft-23 (§2.4.1) rejects an empty one */
+function readTrackName(
+  dialect: WireDialect,
+  reader: Draft18BufferReader,
+  messageType?: MessageTypeDraft18,
+  namespace?: string[],
+): string {
+  const name = decodeTrackName(reader, messageType, namespace);
+  if (dialect.requireTrackName && name.length === 0) {
+    throw new Draft18CodecError('Track Name is empty (PROTOCOL_VIOLATION)', messageType, CODEC_MALFORMED, 'protocol-violation');
+  }
+
+  return name;
+}
+
 const S = ParameterScopeDraft22;
 const P = RequestParameterDraft22;
+const P23 = RequestParameterDraft23;
 
 /**
  * Draft-22 Message Codec
@@ -91,73 +131,74 @@ export class Draft22MessageCodec {
    * Encode a draft-22 control message to bytes.
    * Delegates to Draft18MessageCodec for shared message types.
    */
-  static encode(message: ControlMessageDraft22): Uint8Array {
+  static encode(message: ControlMessageDraft22, dialect: WireDialect = DIALECT_DRAFT22): Uint8Array {
+    const { framing } = dialect;
     switch (message.type) {
       case MessageTypeDraft22.PUBLISH_SKIPPED:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodePublishSkipped(w, message as PublishSkippedMessageDraft22),
+          (w) => Draft22MessageCodec.encodePublishSkipped(w, message as PublishSkippedMessageDraft22), framing,
         );
       case MessageTypeDraft22.PUBLISH_STATE_NOTIFY:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodePublishStateNotify(w, message as PublishStateNotifyMessageDraft22),
+          (w) => Draft22MessageCodec.encodePublishStateNotify(w, message as PublishStateNotifyMessageDraft22, dialect), framing,
         );
       case MessageTypeDraft22.FETCH:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeFetch(w, message as FetchMessageDraft22),
+          (w) => Draft22MessageCodec.encodeFetch(w, message as FetchMessageDraft22, dialect), framing,
         );
       case MessageTypeDraft22.SUBSCRIBE:
-        return Draft22MessageCodec.encodeSubscribeDraft22(message as SubscribeMessageDraft22);
+        return Draft22MessageCodec.encodeSubscribeDraft22(message as SubscribeMessageDraft22, dialect);
       case MessageTypeDraft22.PUBLISH:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodePublish(w, message as PublishMessageDraft22),
+          (w) => Draft22MessageCodec.encodePublish(w, message as PublishMessageDraft22, dialect), framing,
         );
       case MessageTypeDraft22.REQUEST_UPDATE:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeRequestUpdate(w, message as RequestUpdateMessageDraft22),
+          (w) => Draft22MessageCodec.encodeRequestUpdate(w, message as RequestUpdateMessageDraft22, dialect), framing,
         );
       case MessageTypeDraft22.TRACK_STATUS:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeTrackStatus(w, message as TrackStatusMessageDraft22),
+          (w) => Draft22MessageCodec.encodeTrackStatus(w, message as TrackStatusMessageDraft22, dialect), framing,
         );
       case MessageTypeDraft22.SUBSCRIBE_TRACKS:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeSubscribeTracks(w, message as SubscribeTracksMessageDraft22),
+          (w) => Draft22MessageCodec.encodeSubscribeTracks(w, message as SubscribeTracksMessageDraft22, dialect), framing,
         );
       case MessageTypeDraft18.PUBLISH_NAMESPACE:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeNamespaceRequest(w, message as PublishNamespaceMessageDraft18, S.PUBLISH_NAMESPACE),
+          (w) => Draft22MessageCodec.encodeNamespaceRequest(w, message as PublishNamespaceMessageDraft18, S.PUBLISH_NAMESPACE, dialect), framing,
         );
       case MessageTypeDraft18.SUBSCRIBE_NAMESPACE:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeNamespaceRequest(w, message as SubscribeNamespaceMessageDraft18, S.SUBSCRIBE_NAMESPACE),
+          (w) => Draft22MessageCodec.encodeNamespaceRequest(w, message as SubscribeNamespaceMessageDraft18, S.SUBSCRIBE_NAMESPACE, dialect), framing,
         );
       case MessageTypeDraft18.SUBSCRIBE_OK:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeSubscribeOk(w, message as unknown as SubscribeOkMessageDraft18),
+          (w) => Draft22MessageCodec.encodeSubscribeOk(w, message as unknown as SubscribeOkMessageDraft18, dialect), framing,
         );
       case MessageTypeDraft18.REQUEST_OK:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeRequestOk(w, message as unknown as RequestOkMessageDraft18),
+          (w) => Draft22MessageCodec.encodeRequestOk(w, message as unknown as RequestOkMessageDraft18, dialect), framing,
         );
       case MessageTypeDraft18.FETCH_OK:
         return encodeFramed(
           message.type,
-          (w) => Draft22MessageCodec.encodeFetchOk(w, message as unknown as FetchOkMessageDraft18),
+          (w) => Draft22MessageCodec.encodeFetchOk(w, message as unknown as FetchOkMessageDraft18, dialect), framing,
         );
       default:
         // All other messages share draft-18 wire format
-        return Draft18MessageCodec.encode(message as unknown as ControlMessageDraft18);
+        return Draft18MessageCodec.encode(message as unknown as ControlMessageDraft18, framing);
     }
   }
 
@@ -166,7 +207,12 @@ export class Draft22MessageCodec {
    * Delegates to Draft18MessageCodec for shared message types.
    * Rejects the reserved message type 0x1E.
    */
-  static decode(buffer: Uint8Array, offset = 0): [ControlMessageDraft22, number] {
+  static decode(
+    buffer: Uint8Array,
+    offset = 0,
+    dialect: WireDialect = DIALECT_DRAFT22,
+  ): [ControlMessageDraft22, number] {
+    const { framing } = dialect;
     // Peek at message type to decide which codec to use
     const typeValue = peekMessageType(buffer, offset);
 
@@ -175,63 +221,63 @@ export class Draft22MessageCodec {
         throw new Draft18CodecError(`Reserved message type 0x${typeValue.toString(16)} (PROTOCOL_VIOLATION)`);
       case MessageTypeDraft22.PUBLISH_SKIPPED:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodePublishSkipped(reader),
+          Draft22MessageCodec.decodePublishSkipped(reader, dialect), framing,
         );
       case MessageTypeDraft22.PUBLISH_STATE_NOTIFY:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodePublishStateNotify(reader),
+          Draft22MessageCodec.decodePublishStateNotify(reader, dialect), framing,
         );
       case MessageTypeDraft22.FETCH:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeFetch(reader),
+          Draft22MessageCodec.decodeFetch(reader, dialect), framing,
         );
       case MessageTypeDraft22.SUBSCRIBE:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeSubscribeDraft22(reader),
+          Draft22MessageCodec.decodeSubscribeDraft22(reader, dialect), framing,
         );
       case MessageTypeDraft22.PUBLISH:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodePublish(reader),
+          Draft22MessageCodec.decodePublish(reader, dialect), framing,
         );
       case MessageTypeDraft22.REQUEST_UPDATE:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeRequestUpdate(reader),
+          Draft22MessageCodec.decodeRequestUpdate(reader, dialect), framing,
         );
       case MessageTypeDraft22.TRACK_STATUS:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeTrackStatus(reader),
+          Draft22MessageCodec.decodeTrackStatus(reader, dialect), framing,
         );
       case MessageTypeDraft22.SUBSCRIBE_TRACKS:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeSubscribeTracks(reader),
+          Draft22MessageCodec.decodeSubscribeTracks(reader, dialect), framing,
         );
       case MessageTypeDraft18.SUBSCRIBE_OK:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeSubscribeOk(reader),
+          Draft22MessageCodec.decodeSubscribeOk(reader, dialect), framing,
         );
       case MessageTypeDraft18.REQUEST_OK:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeRequestOk(reader),
+          Draft22MessageCodec.decodeRequestOk(reader, dialect), framing,
         );
       case MessageTypeDraft18.FETCH_OK:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeFetchOk(reader),
+          Draft22MessageCodec.decodeFetchOk(reader, dialect), framing,
         );
       case MessageTypeDraft22.PUBLISH_NAMESPACE:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodePublishNamespace(reader),
+          Draft22MessageCodec.decodePublishNamespace(reader, dialect), framing,
         );
       case MessageTypeDraft22.SUBSCRIBE_NAMESPACE:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft22MessageCodec.decodeSubscribeNamespace(reader),
+          Draft22MessageCodec.decodeSubscribeNamespace(reader, dialect), framing,
         );
       case MessageTypeDraft18.GOAWAY:
         return decodeFramed(buffer, offset, (reader) =>
-          Draft18MessageCodec.decodeGoAway(reader, false) as unknown as ControlMessageDraft22,
+          Draft18MessageCodec.decodeGoAway(reader, false) as unknown as ControlMessageDraft22, framing,
         );
       default: {
         // Delegate to draft-18 for all shared messages
-        const [msg, bytesRead] = Draft18MessageCodec.decode(buffer, offset, DRAFT22_NORMALIZERS);
+        const [msg, bytesRead] = Draft18MessageCodec.decode(buffer, offset, dialect.normalizers, framing);
         return [msg as unknown as ControlMessageDraft22, bytesRead];
       }
     }
@@ -240,12 +286,16 @@ export class Draft22MessageCodec {
   /**
    * Setup stream encoding/decoding - identical to draft-18
    */
-  static encodeSetupStream(message: ClientSetupMessageDraft18): Uint8Array {
-    return Draft18MessageCodec.encodeSetupStream(message);
+  static encodeSetupStream(message: ClientSetupMessageDraft18, dialect: WireDialect = DIALECT_DRAFT22): Uint8Array {
+    return Draft18MessageCodec.encodeSetupStream(message, dialect.framing);
   }
 
-  static decodeSetupStream(buffer: Uint8Array, offset = 0): [ServerSetupMessageDraft18, number] {
-    return Draft18MessageCodec.decodeSetupStream(buffer, offset);
+  static decodeSetupStream(
+    buffer: Uint8Array,
+    offset = 0,
+    dialect: WireDialect = DIALECT_DRAFT22,
+  ): [ServerSetupMessageDraft18, number] {
+    return Draft18MessageCodec.decodeSetupStream(buffer, offset, dialect.framing);
   }
 
   // encodeFramed / decodeFramed — imported from codec-helpers.ts
@@ -260,9 +310,9 @@ export class Draft22MessageCodec {
     encodeString(writer, message.trackName);
   }
 
-  private static decodePublishSkipped(reader: Draft18BufferReader): PublishSkippedMessageDraft22 {
+  private static decodePublishSkipped(reader: Draft18BufferReader, dialect: WireDialect): PublishSkippedMessageDraft22 {
     const trackNamespaceSuffix = decodeTrackNamespace(reader);
-    const trackName = decodeTrackName(reader);
+    const trackName = readTrackName(dialect, reader);
 
     return {
       type: MessageTypeDraft22.PUBLISH_SKIPPED,
@@ -275,13 +325,13 @@ export class Draft22MessageCodec {
   // PUBLISH_STATE_NOTIFY (0x22) - New in draft-22
   // ============================================================================
 
-  private static encodePublishStateNotify(writer: Draft18BufferWriter, message: PublishStateNotifyMessageDraft22): void {
+  private static encodePublishStateNotify(writer: Draft18BufferWriter, message: PublishStateNotifyMessageDraft22, dialect: WireDialect): void {
     // Number of Parameters (vi64) | Parameters (..)
-    encodeParameters(writer, S.PUBLISH_STATE_NOTIFY, message);
+    encodeParameters(writer, S.PUBLISH_STATE_NOTIFY, message, dialect.parameters);
   }
 
-  private static decodePublishStateNotify(reader: Draft18BufferReader): PublishStateNotifyMessageDraft22 {
-    const { forwardState, largestLocation, locationFilter } = decodeParameters(reader, S.PUBLISH_STATE_NOTIFY);
+  private static decodePublishStateNotify(reader: Draft18BufferReader, dialect: WireDialect): PublishStateNotifyMessageDraft22 {
+    const { forwardState, largestLocation, locationFilter } = decodeParameters(reader, S.PUBLISH_STATE_NOTIFY, dialect.parameters);
 
     return {
       type: MessageTypeDraft22.PUBLISH_STATE_NOTIFY,
@@ -295,11 +345,11 @@ export class Draft22MessageCodec {
   // SUBSCRIBE (0x03) - Draft-22 §9.6
   // ============================================================================
 
-  private static decodeSubscribeDraft22(reader: Draft18BufferReader): SubscribeMessageDraft22 {
+  private static decodeSubscribeDraft22(reader: Draft18BufferReader, dialect: WireDialect): SubscribeMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader);
-    const trackName = decodeTrackName(reader, undefined, trackNamespace);
-    const params = decodeParameters(reader, S.SUBSCRIBE);
+    const trackName = readTrackName(dialect, reader, undefined, trackNamespace);
+    const params = decodeParameters(reader, S.SUBSCRIBE, dialect.parameters);
 
     return {
       type: MessageTypeDraft22.SUBSCRIBE,
@@ -319,7 +369,8 @@ export class Draft22MessageCodec {
   /**
    * Encode SUBSCRIBE with draft-22 parameters.
    */
-  static encodeSubscribeDraft22(message: SubscribeMessageDraft22): Uint8Array {
+  static encodeSubscribeDraft22(message: SubscribeMessageDraft22, dialect: WireDialect = DIALECT_DRAFT22): Uint8Array {
+    const { framing } = dialect;
     return encodeFramed(MessageTypeDraft22.SUBSCRIBE, (w) => {
       w.writeVarInt(message.requestId);
       encodeTrackNamespace(w, message.trackNamespace);
@@ -327,15 +378,15 @@ export class Draft22MessageCodec {
 
       // FORWARD is always sent (forwardState is not optional here); the
       // omitted default (1) would unpause
-      encodeParameters(w, S.SUBSCRIBE, message);
-    });
+      encodeParameters(w, S.SUBSCRIBE, message, dialect.parameters);
+    }, framing);
   }
 
   // ============================================================================
   // FETCH (0x16) - Draft-22 §9.11: range carried in LOCATION_FILTER
   // ============================================================================
 
-  private static encodeFetch(writer: Draft18BufferWriter, message: FetchMessageDraft22): void {
+  private static encodeFetch(writer: Draft18BufferWriter, message: FetchMessageDraft22, dialect: WireDialect): void {
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
     encodeTrackName(writer, message.trackName, message.trackNamespace);
@@ -352,14 +403,14 @@ export class Draft22MessageCodec {
       rangeFilters: message.rangeFilters,
       authTokens: message.authTokens,
       parameters,
-    });
+    }, dialect.parameters);
   }
 
-  private static decodeFetch(reader: Draft18BufferReader): FetchMessageDraft22 {
+  private static decodeFetch(reader: Draft18BufferReader, dialect: WireDialect): FetchMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.FETCH);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.FETCH, trackNamespace);
-    const params = decodeParameters(reader, S.FETCH);
+    const trackName = readTrackName(dialect, reader, MessageTypeDraft18.FETCH, trackNamespace);
+    const params = decodeParameters(reader, S.FETCH, dialect.parameters);
 
     // Parameters FETCH carries as fields; the rest stay in `parameters`
     const rest = params.parameters ?? new Map<number, Uint8Array>();
@@ -393,13 +444,13 @@ export class Draft22MessageCodec {
   // PUBLISH (0x1D) - Draft-22 §9.8
   // ============================================================================
 
-  private static encodePublish(writer: Draft18BufferWriter, message: PublishMessageDraft22): void {
+  private static encodePublish(writer: Draft18BufferWriter, message: PublishMessageDraft22, dialect: WireDialect): void {
     // Request ID | Track Namespace | Track Name | Track Alias | Parameters | Track Properties
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
     encodeTrackName(writer, message.trackName, message.trackNamespace);
     writer.writeVarInt(message.trackAlias);
-    encodeParameters(writer, S.PUBLISH, message);
+    encodeParameters(writer, S.PUBLISH, Draft22MessageCodec.publishParameters(message), dialect.parameters);
 
     // Track Properties (KVPs to end)
     if (message.trackProperties) {
@@ -407,13 +458,15 @@ export class Draft22MessageCodec {
     }
   }
 
-  private static decodePublish(reader: Draft18BufferReader): PublishMessageDraft22 {
+  private static decodePublish(reader: Draft18BufferReader, dialect: WireDialect): PublishMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.PUBLISH, trackNamespace);
+    const trackName = readTrackName(dialect, reader, MessageTypeDraft18.PUBLISH, trackNamespace);
     const trackAlias = reader.readVarInt();
-    const params = decodeParameters(reader, S.PUBLISH);
+    const params = decodeParameters(reader, S.PUBLISH, dialect.parameters);
     const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;
+    const rest = params.parameters;
+    const subscribeTracksId = rest && Draft22MessageCodec.takeParameter(rest, P23.SUBSCRIBE_TRACKS_ID);
 
     return {
       type: MessageTypeDraft22.PUBLISH,
@@ -425,24 +478,37 @@ export class Draft22MessageCodec {
       forwardState: params.forwardState ?? true,
       largestLocation: params.largestLocation,
       locationFilter: params.locationFilter,
+      fill: params.fill,
+      subscribeTracksId: subscribeTracksId ? MOQTVarInt.decode(subscribeTracksId)[0] : undefined,
       authTokens: params.authTokens,
-      parameters: params.parameters,
+      parameters: rest?.size ? rest : undefined,
       trackProperties: trackProperties?.size ? trackProperties : undefined,
     };
+  }
+
+  /** A PUBLISH's parameter block: SUBSCRIBE_TRACKS_ID (draft-23) is a typed field, sent raw */
+  private static publishParameters(message: PublishMessageDraft22): ParameterSetDraft22 {
+    if (message.subscribeTracksId === undefined) {
+      return message;
+    }
+    const parameters = new Map(message.parameters);
+    parameters.set(P23.SUBSCRIBE_TRACKS_ID, MOQTVarInt.encode(message.subscribeTracksId));
+
+    return { ...message, parameters };
   }
 
   // ============================================================================
   // REQUEST_UPDATE (0x02) - Draft-22 §9.5
   // ============================================================================
 
-  private static encodeRequestUpdate(writer: Draft18BufferWriter, message: RequestUpdateMessageDraft22): void {
+  private static encodeRequestUpdate(writer: Draft18BufferWriter, message: RequestUpdateMessageDraft22, dialect: WireDialect): void {
     writer.writeVarInt(message.requestId);
-    encodeParameters(writer, S.REQUEST_UPDATE, message);
+    encodeParameters(writer, S.REQUEST_UPDATE, message, dialect.parameters);
   }
 
-  private static decodeRequestUpdate(reader: Draft18BufferReader): RequestUpdateMessageDraft22 {
+  private static decodeRequestUpdate(reader: Draft18BufferReader, dialect: WireDialect): RequestUpdateMessageDraft22 {
     const requestId = reader.readVarInt();
-    const params = decodeParameters(reader, S.REQUEST_UPDATE);
+    const params = decodeParameters(reader, S.REQUEST_UPDATE, dialect.parameters);
 
     return {
       type: MessageTypeDraft22.REQUEST_UPDATE,
@@ -461,18 +527,18 @@ export class Draft22MessageCodec {
   // TRACK_STATUS (0x0D) - Draft-22 §9.13
   // ============================================================================
 
-  private static encodeTrackStatus(writer: Draft18BufferWriter, message: TrackStatusMessageDraft22): void {
+  private static encodeTrackStatus(writer: Draft18BufferWriter, message: TrackStatusMessageDraft22, dialect: WireDialect): void {
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespace);
     encodeTrackName(writer, message.trackName, message.trackNamespace);
-    encodeParameters(writer, S.TRACK_STATUS, message);
+    encodeParameters(writer, S.TRACK_STATUS, message, dialect.parameters);
   }
 
-  private static decodeTrackStatus(reader: Draft18BufferReader): TrackStatusMessageDraft22 {
+  private static decodeTrackStatus(reader: Draft18BufferReader, dialect: WireDialect): TrackStatusMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespace = decodeTrackNamespace(reader, MessageTypeDraft18.TRACK_STATUS);
-    const trackName = decodeTrackName(reader, MessageTypeDraft18.TRACK_STATUS, trackNamespace);
-    const params = decodeParameters(reader, S.TRACK_STATUS);
+    const trackName = readTrackName(dialect, reader, MessageTypeDraft18.TRACK_STATUS, trackNamespace);
+    const params = decodeParameters(reader, S.TRACK_STATUS, dialect.parameters);
 
     return {
       type: MessageTypeDraft22.TRACK_STATUS,
@@ -488,17 +554,17 @@ export class Draft22MessageCodec {
   // SUBSCRIBE_TRACKS (0x51) - Draft-22 §9.18
   // ============================================================================
 
-  private static encodeSubscribeTracks(writer: Draft18BufferWriter, message: SubscribeTracksMessageDraft22): void {
+  private static encodeSubscribeTracks(writer: Draft18BufferWriter, message: SubscribeTracksMessageDraft22, dialect: WireDialect): void {
     // Request ID | Track Namespace Prefix | Parameters
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespacePrefix);
-    encodeParameters(writer, S.SUBSCRIBE_TRACKS, message);
+    encodeParameters(writer, S.SUBSCRIBE_TRACKS, message, dialect.parameters);
   }
 
-  private static decodeSubscribeTracks(reader: Draft18BufferReader): SubscribeTracksMessageDraft22 {
+  private static decodeSubscribeTracks(reader: Draft18BufferReader, dialect: WireDialect): SubscribeTracksMessageDraft22 {
     const requestId = reader.readVarInt();
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_TRACKS);
-    const params = decodeParameters(reader, S.SUBSCRIBE_TRACKS);
+    const params = decodeParameters(reader, S.SUBSCRIBE_TRACKS, dialect.parameters);
 
     return {
       type: MessageTypeDraft22.SUBSCRIBE_TRACKS,
@@ -506,6 +572,8 @@ export class Draft22MessageCodec {
       trackNamespacePrefix,
       // §9.20.18: FORWARD defaults to 1 when omitted
       forwardState: params.forwardState ?? true,
+      locationFilter: params.locationFilter,
+      fill: params.fill,
       rangeFilters: params.rangeFilters,
       authTokens: params.authTokens,
       parameters: params.parameters,
@@ -533,21 +601,21 @@ export class Draft22MessageCodec {
     return expires ? MOQTVarInt.decode(expires)[0] : undefined;
   }
 
-  private static encodeSubscribeOk(writer: Draft18BufferWriter, message: SubscribeOkMessageDraft18): void {
+  private static encodeSubscribeOk(writer: Draft18BufferWriter, message: SubscribeOkMessageDraft18, dialect: WireDialect): void {
     // Track Alias | Parameters | Track Properties (..)
     writer.writeVarInt(message.trackAlias ?? 0n);
 
     // §9.20.17: LARGEST_OBJECT is omitted until Objects have been published
-    encodeParameters(writer, S.SUBSCRIBE_OK, Draft22MessageCodec.okParameters(message));
+    encodeParameters(writer, S.SUBSCRIBE_OK, Draft22MessageCodec.okParameters(message), dialect.parameters);
 
     if (message.trackProperties) {
       encodeKeyValuePairs(writer, message.trackProperties);
     }
   }
 
-  private static decodeSubscribeOk(reader: Draft18BufferReader): SubscribeOkMessageDraft18 {
+  private static decodeSubscribeOk(reader: Draft18BufferReader, dialect: WireDialect): SubscribeOkMessageDraft18 {
     const trackAlias = reader.readVarInt();
-    const params = decodeParameters(reader, S.SUBSCRIBE_OK);
+    const params = decodeParameters(reader, S.SUBSCRIBE_OK, dialect.parameters);
     const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;
 
     return {
@@ -560,17 +628,17 @@ export class Draft22MessageCodec {
     };
   }
 
-  private static encodeRequestOk(writer: Draft18BufferWriter, message: RequestOkMessageDraft18): void {
+  private static encodeRequestOk(writer: Draft18BufferWriter, message: RequestOkMessageDraft18, dialect: WireDialect): void {
     // Parameters | Track Properties (..)
-    encodeParameters(writer, S.REQUEST_OK, Draft22MessageCodec.okParameters(message));
+    encodeParameters(writer, S.REQUEST_OK, Draft22MessageCodec.okParameters(message), dialect.parameters);
 
     if (message.trackProperties) {
       encodeKeyValuePairs(writer, message.trackProperties);
     }
   }
 
-  private static decodeRequestOk(reader: Draft18BufferReader): RequestOkMessageDraft18 {
-    const params = decodeParameters(reader, S.REQUEST_OK);
+  private static decodeRequestOk(reader: Draft18BufferReader, dialect: WireDialect): RequestOkMessageDraft18 {
+    const params = decodeParameters(reader, S.REQUEST_OK, dialect.parameters);
     const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;
 
     return {
@@ -582,26 +650,26 @@ export class Draft22MessageCodec {
     };
   }
 
-  private static encodeFetchOk(writer: Draft18BufferWriter, message: FetchOkMessageDraft18): void {
+  private static encodeFetchOk(writer: Draft18BufferWriter, message: FetchOkMessageDraft18, dialect: WireDialect): void {
     // End Of Track | End Location | Parameters | Track Properties (..)
     writer.writeByte(message.endOfTrack ? 1 : 0);
     writer.writeVarInt(message.endLocation.group);
     writer.writeVarInt(message.endLocation.object);
-    encodeParameters(writer, S.FETCH_OK, {});
+    encodeParameters(writer, S.FETCH_OK, {}, dialect.parameters);
 
     if (message.trackProperties) {
       encodeKeyValuePairs(writer, message.trackProperties);
     }
   }
 
-  private static decodeFetchOk(reader: Draft18BufferReader): FetchOkMessageDraft18 {
+  private static decodeFetchOk(reader: Draft18BufferReader, dialect: WireDialect): FetchOkMessageDraft18 {
     const endOfTrackByte = reader.readByte();
     if (endOfTrackByte > 1) {
       throw new Draft18CodecError(`Invalid End Of Track ${endOfTrackByte} (PROTOCOL_VIOLATION)`);
     }
     const endOfTrack = endOfTrackByte === 1;
     const endLocation = { group: reader.readVarInt(), object: reader.readVarInt() };
-    decodeParameters(reader, S.FETCH_OK);
+    decodeParameters(reader, S.FETCH_OK, dialect.parameters);
     const trackProperties = reader.hasMore ? decodeKeyValuePairsToEnd(reader) : undefined;
 
     return {
@@ -623,25 +691,26 @@ export class Draft22MessageCodec {
     writer: Draft18BufferWriter,
     message: PublishNamespaceMessageDraft18 | SubscribeNamespaceMessageDraft18,
     scope: typeof S.PUBLISH_NAMESPACE | typeof S.SUBSCRIBE_NAMESPACE,
+    dialect: WireDialect,
   ): void {
     // Request ID | Track Namespace Prefix | Parameters
     writer.writeVarInt(message.requestId);
     encodeTrackNamespace(writer, message.trackNamespacePrefix);
-    encodeParameters(writer, scope, { authTokens: message.authTokens });
+    encodeParameters(writer, scope, { authTokens: message.authTokens }, dialect.parameters);
   }
 
-  private static decodePublishNamespace(reader: Draft18BufferReader): PublishNamespaceMessageDraft18 {
+  private static decodePublishNamespace(reader: Draft18BufferReader, dialect: WireDialect): PublishNamespaceMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.PUBLISH_NAMESPACE);
-    const { authTokens } = decodeParameters(reader, S.PUBLISH_NAMESPACE);
+    const { authTokens } = decodeParameters(reader, S.PUBLISH_NAMESPACE, dialect.parameters);
 
     return { type: MessageTypeDraft18.PUBLISH_NAMESPACE, requestId, trackNamespacePrefix, authTokens };
   }
 
-  private static decodeSubscribeNamespace(reader: Draft18BufferReader): SubscribeNamespaceMessageDraft18 {
+  private static decodeSubscribeNamespace(reader: Draft18BufferReader, dialect: WireDialect): SubscribeNamespaceMessageDraft18 {
     const requestId = reader.readVarInt();
     const trackNamespacePrefix = decodeTrackNamespace(reader, MessageTypeDraft18.SUBSCRIBE_NAMESPACE);
-    const { authTokens } = decodeParameters(reader, S.SUBSCRIBE_NAMESPACE);
+    const { authTokens } = decodeParameters(reader, S.SUBSCRIBE_NAMESPACE, dialect.parameters);
 
     return { type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE, requestId, trackNamespacePrefix, authTokens };
   }
