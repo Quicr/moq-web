@@ -1751,9 +1751,53 @@ export class MOQTSession {
       info.subscribers.delete(requestId);
     }
     this.failSubscription(requestId, reason);
+    this.failFetch(requestId, reason);
     this.incomingRequestKinds.delete(requestId);
     this.goAwayStreams.delete(requestId);
     this.endNamespaceSubscription(requestId);
+  }
+
+  /**
+   * The peer cancelled a FETCH we sent by resetting its request stream
+   * (draft-22 §3.2.4, §6.4.2.3): stop its data stream, forget it and report
+   * it as failed. A FIN is not a cancel; the data stream ends the FETCH.
+   */
+  private failFetch(requestId: bigint, reason: string): void {
+    if (this.outgoingRequests.get(requestId)?.kind !== 'fetch' || !this.activeFetches.delete(requestId)) {
+      return;
+    }
+
+    this.objectRouter.cancelFetchStream(requestId);
+    this.fetchStreamBuffers.delete(requestId);
+    this.objectRouter.clearFetchGroupOrder(requestId);
+    this.emit('fetch-error', {
+      requestId,
+      errorCode: RequestErrorCodeDraft18.INTERNAL_ERROR,
+      reason,
+    } as FetchErrorEvent);
+  }
+
+  /**
+   * The peer ended the stream of a namespace we announced, by FIN or reset,
+   * so the announcement is withdrawn (draft-22 §4.1, draft-18 §6.2). Forget
+   * it, as `cancelAnnounce` does, and report it as ended.
+   */
+  private endAnnouncement(requestId: bigint): void {
+    const info = [...this.announcedNamespaces.values()].find((announced) => announced.requestId === requestId);
+    if (!info) {
+      return;
+    }
+
+    this.announcedNamespaces.delete(namespaceKey(info.namespace));
+    this.publicationManager.forgetUnder(info.namespace);
+    void this.notifyNamespace(info.namespace, NamespaceChange.WITHDRAWN).catch(() => {});
+    this.emit('namespace-error', {
+      kind: 'publish-namespace',
+      namespace: info.namespace,
+      errorCode: RequestErrorCodeDraft18.INTERNAL_ERROR,
+      reasonPhrase: 'Announcement ended by the peer',
+      requestId,
+    });
   }
 
   /**
@@ -1876,16 +1920,22 @@ export class MOQTSession {
   }
 
   /**
-   * A SUBSCRIBE_NAMESPACE response stream ended by FIN or reset: treat each
-   * active namespace as done and forget the subscription (draft-22 §4.2.2,
-   * draft-18 §10.18). A stream that never got a response failed the request.
+   * A SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS response stream ended by FIN or
+   * reset: treat each active namespace as done and forget the subscription
+   * (draft-22 §4.2.2, draft-18 §10.18). A stream that never got a response
+   * failed the request. The stream of a PUBLISH_NAMESPACE withdraws it.
    */
   private endNamespaceSubscription(requestId: bigint): void {
     this.incomingNamespaces.remove(requestId);
     this.incomingTrackSubs.remove(requestId);
     const request = this.outgoingRequests.get(requestId);
+    if (request?.kind === 'publish-namespace') {
+      this.endAnnouncement(requestId);
+      return;
+    }
     const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
-    if (request?.kind !== 'subscribe-namespace' || subscriptionId === undefined) {
+    const isNamespaceSubscription = request?.kind === 'subscribe-namespace' || request?.kind === 'subscribe-tracks';
+    if (!isNamespaceSubscription || subscriptionId === undefined) {
       return;
     }
 
@@ -5452,7 +5502,15 @@ export class MOQTSession {
     if ((this.useWorker && this.transportWorker) || this.transport) {
       log.info('Sent PUBLISH_NAMESPACE', { namespace: namespaceStr, requestId: requestId.toString() });
 
-      const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'publish-namespace');
+      let response: ControlMessageDraft18;
+      try {
+        response = await this.sendRequestAndWaitResponse(encoded, requestId, 'publish-namespace');
+      } catch (err) {
+        // The stream ended before a response: nothing was announced
+        this.announcedNamespaces.delete(namespaceKey(namespace));
+        await this.notifyNamespace(namespace, NamespaceChange.WITHDRAWN);
+        throw err;
+      }
       if (response.type === MessageTypeDraft18.REQUEST_OK) {
         const ok = response as RequestOkMessageDraft18;
         const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
