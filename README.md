@@ -45,6 +45,7 @@ Implements [draft-ietf-moq-transport](https://datatracker.ietf.org/doc/draft-iet
 
 | Draft | Status | Notes |
 |-------|--------|-------|
+| Draft-23 | Supported | vi64 control framing, MAX_CONTROL_MESSAGE_SIZE, d23 fetch-stream rules and error codes |
 | Draft-22 | Supported | |
 | Draft-18 | **Default** | Full support |
 | Draft-17 | Supported | Included with draft-18 codec path |
@@ -62,6 +63,8 @@ default for the bundled apps (built with Vite) and for test runs:
 ```bash
 pnpm run build:draft-22    # apps default to draft-22; packages unchanged
 pnpm run test:draft-22
+pnpm run build:draft-23    # likewise for draft-23
+pnpm run test:draft-23
 ```
 
 ## Architecture
@@ -162,6 +165,7 @@ pnpm run test              # Run all tests (draft-18)
 pnpm run test:draft-18     # Test with draft-18
 pnpm run test:draft-16     # Test with draft-16
 pnpm run test:draft-22     # Test with draft-22
+pnpm run test:draft-23     # Test with draft-23
 ```
 
 ## License

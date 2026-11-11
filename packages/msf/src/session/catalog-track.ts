@@ -7,7 +7,7 @@
  * Provides high-level APIs for subscribing to and publishing MSF catalogs.
  */
 
-import { Logger } from '@moq-web/core';
+import { Logger, isDraftAtLeast } from '@moq-web/core';
 import type { FillOptions, MOQTSession, SubscribeOptions } from '@moq-web/session';
 import { CATALOG_TRACK_NAME } from '../version.js';
 import { parseCatalogFromBytes, serializeCatalogToBytes } from '../catalog/index.js';
@@ -139,7 +139,7 @@ export class CatalogSubscriber {
    * has no fill here, so it starts at the Next Group.
    */
   private get catalogSubscribeOptions(): SubscribeOptions {
-    if (this.session.draft !== 'draft-22') {
+    if (!isDraftAtLeast(this.session.draft, 22)) {
       return { fill: this.catalogFill };
     }
 
@@ -147,11 +147,11 @@ export class CatalogSubscriber {
   }
 
   /**
-   * Draft-22 only. Draft-18 fills with a Joining FETCH, which the Akamai
+   * Draft-22 and later. Draft-18 fills with a Joining FETCH, which the Akamai
    * relay answers by tearing down the session (see `handleSubscribeOk`).
    */
   private get catalogFill(): FillOptions | undefined {
-    return this.session.draft === 'draft-22' ? CURRENT_GROUP_FILL : undefined;
+    return isDraftAtLeast(this.session.draft, 22) ? CURRENT_GROUP_FILL : undefined;
   }
 
   /**

@@ -227,6 +227,7 @@ import type {
   FetchObjectEvent,
   FetchCompleteEvent,
   FetchStreamCompleteEvent,
+  FetchGapEvent,
   FetchErrorEvent,
   VODPublishOptions,
   VODTrackInfo,
@@ -443,6 +444,12 @@ export interface MOQTSessionConfig {
    * before draft-23.
    */
   maxControlMessageSize?: number;
+  /**
+   * Draft-23 §13: add a grease Error Detail to the REQUEST_ERRORs we send, to
+   * check that peers ignore unknown types. Off by default. Ignored before
+   * draft-23.
+   */
+  grease?: boolean;
 }
 
 /**
@@ -914,6 +921,9 @@ export class MOQTSession {
       this.maxControlMessageSize = ownMaxControlMessageSize;
       this.codec.setControlMessageLimits({ maxReceiveLength: ownMaxControlMessageSize });
     }
+    if (!(transportOrConfig instanceof MOQTransport) && transportOrConfig.grease) {
+      this.codec.setGrease?.(true);
+    }
     // Draft-14: 1-based. Draft-16+: clients use even IDs starting at 0.
     this.nextRequestId = isDraftAtLeast(this._draft, 16) ? 0 : 1;
     const configuredMax =
@@ -1007,6 +1017,13 @@ export class MOQTSession {
 
       log.info('FETCH stream ended', { requestId, lastGroupId, endOfTrack });
       this.emit('fetch-stream-complete', { requestId, lastGroupId, endOfTrack });
+    });
+
+    // A fill stream's indicators belong to its subscription, which has no such event
+    this.objectRouter.setFetchGapCallback((requestId, kind, end) => {
+      if (!this.fillStreams.has(requestId)) {
+        this.emit('fetch-gap', { requestId, kind, end } as FetchGapEvent);
+      }
     });
 
     // Set up forward state change listener to emit events for MediaSession
@@ -2897,6 +2914,17 @@ export class MOQTSession {
       }
 
       const ok = response as RequestOkMessageDraft18;
+      // Draft-23 §3.7 (#2016): a TRACK_STATUS answer is checked like the other OKs that carry Track Properties
+      if (this.isDraft23) {
+        const fault = this.checkTrackProperties(ok.trackProperties, 'TRACK_STATUS REQUEST_OK');
+        if (fault === TrackPropertyFault.INVALID) {
+          throw new Error('TRACK_STATUS REQUEST_OK has invalid Track Properties');
+        }
+        if (fault !== undefined) {
+          const { code, reason } = trackRefusal(fault);
+          throw new RequestRejectedError(`TRACK_STATUS failed: ${reason}`, code, reason);
+        }
+      }
       const expiresMs = ok.expires !== undefined ? Number(ok.expires) : undefined;
       this.emit('request-ok', {
         requestId,
@@ -4114,7 +4142,8 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
     trackAlias: bigint,
-    options?: PublishOptions
+    options?: PublishOptions,
+    subscribeTracksId?: bigint,
   ): Promise<void> {
     const trackProperties = buildTrackProperties({
       subgroupDeliveryTimeout: options?.deliveryTimeout,
@@ -4127,7 +4156,6 @@ export class MOQTSession {
     const largestLocation = this.publicationManager.largestOf(namespace, trackName);
     // §8.9: draft-22 carries Authorization Tokens in `authTokens`, which may repeat
     const authBytes = options?.authToken ? encodeDraft18AuthBytes(options.authToken) : undefined;
-    const subscribeTracksId = this.isDraft23 ? this.claimSubscribeTracks(options?.subscribeTracksId, namespace, trackName) : undefined;
     const publishMessage: PublishMessageDraft18 | PublishMessageDraft22 = this.isDraft22
       ? {
         type: MessageTypeDraft22.PUBLISH,
@@ -5129,6 +5157,11 @@ export class MOQTSession {
     // B3 SEC: reject before allocating any request/publication state.
     this.enforceResourceLimit('tracks', this.publicationManager.size, this.maxTracks);
 
+    // Draft-23 §9.19.21: the SUBSCRIBE_TRACKS this answers is checked before any state is made
+    const subscribeTracksId = this.isDraft23
+      ? this.claimSubscribeTracks(options?.subscribeTracksId, namespace, trackName)
+      : undefined;
+
     // Local counter is small; widen to bigint for wire varint and state keys.
     const requestId = BigInt(this.getNextRequestId());
     let trackAlias = this.isDraft18 ? this.nextPublicationAlias++ : requestId;
@@ -5202,7 +5235,15 @@ export class MOQTSession {
     }
 
     if (this.isDraft18) {
-      await this.publishDraft18(requestId, namespace, trackName, trackAlias, options);
+      try {
+        await this.publishDraft18(requestId, namespace, trackName, trackAlias, options, subscribeTracksId);
+      } catch (err) {
+        // A refused PUBLISH did not publish the Track for that SUBSCRIBE_TRACKS
+        if (subscribeTracksId !== undefined) {
+          this.incomingTrackSubs.releaseTrack(subscribeTracksId, namespace, trackName);
+        }
+        throw err;
+      }
     } else {
       // Send PUBLISH message
       const publishMessage: PublishMessage = {
@@ -7195,6 +7236,7 @@ export class MOQTSession {
   on(event: 'fetch-object', handler: (event: FetchObjectEvent) => void): () => void;
   on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
   on(event: 'fetch-stream-complete', handler: (event: FetchStreamCompleteEvent) => void): () => void;
+  on(event: 'fetch-gap', handler: (event: FetchGapEvent) => void): () => void;
   on(event: 'fetch-error', handler: (event: FetchErrorEvent) => void): () => void;
   on(event: 'incoming-fetch', handler: (event: IncomingFetchEvent) => void): () => void;
   // Message logging events

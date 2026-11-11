@@ -53,6 +53,7 @@ export type SessionEventType =
   | 'fetch-object'
   | 'fetch-complete'
   | 'fetch-stream-complete'
+  | 'fetch-gap'
   | 'fetch-error'
   | 'incoming-fetch'
   | 'message-sent'
@@ -874,6 +875,21 @@ export interface FetchCompleteEvent {
  * This fires after all data has been received, unlike fetch-complete which
  * fires on FETCH_OK (before data arrives).
  */
+/**
+ * Objects a FETCH stream says it does not carry (draft-22 §11.4.1, draft-23
+ * §11.4.2). For an End of Range, every Location from after the previous
+ * entry up to and including `end` is absent for `kind`'s reason; `gone`
+ * (draft-23) means it once existed and no longer does. For `end-of-group`
+ * (draft-23), the previous Object was the last in `end.group`.
+ */
+export interface FetchGapEvent {
+  /** 62-bit varint fetch request ID */
+  requestId: bigint;
+  kind: 'non-existent' | 'unknown' | 'timed-out' | 'gone' | 'end-of-group';
+  /** The last Location covered; `object` is absent for `end-of-group` */
+  end: { group: bigint; object?: bigint };
+}
+
 export interface FetchStreamCompleteEvent {
   /** 62-bit varint fetch request ID */
   requestId: bigint;

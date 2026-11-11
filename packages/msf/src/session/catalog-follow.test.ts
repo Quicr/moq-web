@@ -59,9 +59,9 @@ function deltaBytes(): Uint8Array {
   return serializeCatalogToBytes(createDelta().remove('video').build());
 }
 
-describe('catalog subscribe asks for a fill of the current group', () => {
+describe.each(['draft-22', 'draft-23'])('catalog subscribe asks for a fill of the current group (%s)', (draft) => {
   it('starts at the Next Object, so no delta falls between the fill and the subscription (d22 §3.5)', async () => {
-    const { session, moqt } = makeFakeSession();
+    const { session, moqt } = makeFakeSession(draft);
     const msf = new MSFSession(moqt, NAMESPACE);
 
     await msf.subscribeCatalog(() => {});

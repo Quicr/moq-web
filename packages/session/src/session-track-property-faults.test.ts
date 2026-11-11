@@ -320,3 +320,42 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('an Object with a M
     expect(errors).toEqual([expect.objectContaining({ requestId: 9n, errorCode: RequestErrorCodeDraft18.MALFORMED_TRACK })]);
   });
 });
+
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track Properties of a TRACK_STATUS REQUEST_OK (%s)', (draft: Draft) => {
+  function statusWith(trackProperties: Map<number, Uint8Array>) {
+    const onClose = vi.fn();
+    const { session } = makeSession(draft, onClose);
+    (session as unknown as { sendRequestAndWaitResponse: unknown }).sendRequestAndWaitResponse = async () => ({
+      type: MessageTypeDraft18.REQUEST_OK,
+      requestId: 0n,
+      trackProperties,
+    });
+
+    return { result: session.trackStatus(NAMESPACE, TRACK), onClose };
+  }
+
+  it('is not processed with a Mandatory Track Property from draft-23 (#2016)', async () => {
+    const { result } = statusWith(mandatory);
+    if (draft !== 'draft-23') {
+      await expect(result).resolves.toBeDefined();
+      return;
+    }
+    await expect(result).rejects.toMatchObject({ errorCode: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION });
+  });
+
+  it('is refused with MALFORMED_TRACK for a Property outside its scope (draft-23)', async () => {
+    const { result } = statusWith(outOfScope);
+    const code = malformedFrom23(draft);
+    if (code === undefined) {
+      await expect(result).resolves.toBeDefined();
+      return;
+    }
+    await expect(result).rejects.toMatchObject({ errorCode: code });
+  });
+
+  it('is accepted with understood properties', async () => {
+    const { result, onClose } = statusWith(new Map([[TrackPropertyDraft18.DYNAMIC_GROUPS, enc(1)]]));
+    await expect(result).resolves.toMatchObject({ trackProperties: { dynamicGroups: true } });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});

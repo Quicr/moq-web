@@ -111,6 +111,7 @@ export type {
   FetchObjectEvent,
   FetchCompleteEvent,
   FetchStreamCompleteEvent,
+  FetchGapEvent,
   FetchErrorEvent,
   // VOD types
   VODMetadata,

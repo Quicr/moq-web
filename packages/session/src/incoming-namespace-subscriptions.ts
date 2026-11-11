@@ -103,6 +103,11 @@ export class IncomingNamespaceSubscriptions {
     return 'ok';
   }
 
+  /** Undo a claim whose PUBLISH was refused, so the Track can be published for it again */
+  releaseTrack(requestId: bigint, namespace: string[], trackName: string): void {
+    this.subscriptions.get(requestId)?.published.delete(JSON.stringify([...namespace, trackName]));
+  }
+
   remove(requestId: bigint): void {
     this.subscriptions.delete(requestId);
   }

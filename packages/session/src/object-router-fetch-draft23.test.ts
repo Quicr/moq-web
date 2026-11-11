@@ -22,7 +22,7 @@ import {
   type Violation,
 } from '@moq-web/core';
 
-import { ObjectRouter } from './object-router.js';
+import { ObjectRouter, type FetchGapKind } from './object-router.js';
 import { SubscriptionManager } from './subscription-manager.js';
 
 const REQUEST_ID = 7n;
@@ -68,15 +68,20 @@ interface Result {
   seen: Array<[number, number]>;
   violations: Violation[];
   endOfTrack?: boolean;
+  gaps: Array<[FetchGapKind, bigint, bigint | undefined]>;
 }
 
 async function run(
   draft: DraftVersion,
   objects: FetchObjectDraft18[],
-  { order, chunk, truncateBy }: { order?: GroupOrder; chunk?: number; truncateBy?: number } = {},
+  { order, chunk, truncateBy, onGap }: { order?: GroupOrder; chunk?: number; truncateBy?: number; onGap?: () => void } = {},
 ): Promise<Result> {
   const router = new ObjectRouter(new SubscriptionManager(), undefined, draft);
-  const result: Result = { seen: [], violations: [] };
+  const result: Result = { seen: [], violations: [], gaps: [] };
+  router.setFetchGapCallback((_id, kind, end) => {
+    result.gaps.push([kind, end.group, end.object]);
+    onGap?.();
+  });
   router.setFetchObjectCallback((_id, _data, group, object) => result.seen.push([group, object]));
   router.setViolationCallback((_reason, violation) => result.violations.push(violation));
   router.setFetchStreamCloseCallback((_id, _last, endOfTrack) => {
@@ -175,5 +180,40 @@ describe('ObjectRouter FETCH stream (draft-23)', () => {
   it('a stream that ends inside an Object is TRUNCATED_OBJECT in draft-23, only logged before', async () => {
     expect((await run('draft-23', [first(1n, 0n)], { truncateBy: 1 })).violations).toEqual(['truncated-object']);
     expect((await run('draft-22', [first(1n, 0n)], { truncateBy: 1 })).violations).toEqual([]);
+  });
+
+  it('reports every End of Range and End of Group, but not End of Track, as a gap', async () => {
+    const { gaps, violations } = await run('draft-23', [
+      first(1n, 0n),
+      range(FetchObjectEndOfRange.GONE, 0n, 2n), // 1/3
+      marker(FetchObjectMarker.END_OF_GROUP),
+      range(FetchObjectEndOfRange.NON_EXISTENT, 1n, 4n), // 2/4
+      range(FetchObjectEndOfRange.UNKNOWN, 1n, 0n), // 3/0
+      next({ groupIdDelta: 0n, objectIdDelta: 0n }),
+      marker(FetchObjectMarker.END_OF_TRACK),
+    ]);
+    expect(violations).toEqual([]);
+    expect(gaps).toEqual([
+      ['gone', 1n, 3n],
+      ['end-of-group', 1n, undefined],
+      ['non-existent', 2n, 4n],
+      ['unknown', 3n, 0n],
+    ]);
+  });
+
+  it('reports absolute End of Range Locations on draft-22', async () => {
+    const { gaps } = await run('draft-22', [first(1n, 0n), range(FetchObjectEndOfRange.NON_EXISTENT, 5n, 2n)]);
+    expect(gaps).toEqual([['non-existent', 5n, 2n]]);
+  });
+
+  it('a gap handler that throws is not a protocol violation', async () => {
+    const { violations, seen } = await run('draft-23', [first(1n, 0n), marker(FetchObjectMarker.END_OF_GROUP), next({ groupIdDelta: 0n, objectIdDelta: 0n })], {
+      onGap: () => {
+        throw new Error('app bug');
+      },
+    });
+    expect(violations).not.toContain('malformed-object');
+    expect(violations).not.toContain('delta-overflow');
+    expect(seen[0]).toEqual([1, 0]);
   });
 });

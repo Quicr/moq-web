@@ -1684,6 +1684,8 @@ export interface RequestErrorMessageDraft18 {
    * sender does not understand (UNSUPPORTED_PROPERTY Error Details)
    */
   unsupportedProperties?: bigint[];
+  /** Draft-23 §13: append one grease Error Detail, which the peer must ignore. Encode only. */
+  greaseDetail?: boolean;
 }
 
 /**

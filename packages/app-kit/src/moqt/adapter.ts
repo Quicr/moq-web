@@ -25,7 +25,7 @@ import type {
   SubscriberTransportConfig,
 } from '../latency/profiles.js';
 
-export type Draft = 'draft-16' | 'draft-18' | 'draft-22';
+export type Draft = 'draft-16' | 'draft-18' | 'draft-22' | 'draft-23';
 
 export interface MoqtObject {
   groupId: bigint;

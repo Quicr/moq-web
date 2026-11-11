@@ -92,6 +92,11 @@ function codecViolation(message: string, violation: Violation, messageType?: Mes
   return new Draft18CodecError(`${message} (PROTOCOL_VIOLATION)`, messageType, CODEC_MALFORMED, violation);
 }
 
+/** A grease Error Detail Type, 0x7f * N + 0x9D (§13), varied so peers cannot special-case one */
+function greaseDetailType(): number {
+  return 0x7f * Math.floor(Math.random() * 64) + 0x9d;
+}
+
 export class Draft23MessageCodec {
   static encode(message: ControlMessageDraft22, dialect: WireDialect = DIALECT_DRAFT23): Uint8Array {
     const type: number = message.type;
@@ -232,12 +237,19 @@ export class Draft23MessageCodec {
       ? message.unsupportedProperties ?? []
       : [];
     // Types are delta-coded; REDIRECT and UNSUPPORTED_PROPERTY never share a
-    // message (their Error Codes differ), so the first delta is from 0
-    let previousType = 0;
+    // message (their Error Codes differ)
+    let previousType = message.errorCode === RequestErrorCodeDraft23.REDIRECT ? ErrorDetailTypeDraft23.REDIRECT : 0;
     for (const propertyType of properties) {
       writer.writeVarInt(ErrorDetailTypeDraft23.UNSUPPORTED_PROPERTY - previousType);
       previousType = ErrorDetailTypeDraft23.UNSUPPORTED_PROPERTY;
       writer.writeVarInt(propertyType);
+    }
+
+    // §13: a grease type sorts after every defined one. A 0 byte is both an
+    // even type's varint value and an odd type's zero length.
+    if (message.greaseDetail) {
+      writer.writeVarInt(greaseDetailType() - previousType);
+      writer.writeVarInt(0);
     }
   }
 

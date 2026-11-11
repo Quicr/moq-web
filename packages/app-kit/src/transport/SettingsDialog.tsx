@@ -184,13 +184,14 @@ function RelayCard() {
           className="ak-select"
           value={cfg.relay.draft}
           onChange={(e) => {
-            const next = e.target.value as 'draft-16' | 'draft-18' | 'draft-22';
+            const next = e.target.value as 'draft-16' | 'draft-18' | 'draft-22' | 'draft-23';
             setRelay({ draft: next });
           }}
         >
           <option value="draft-16">draft-16</option>
           <option value="draft-18">draft-18</option>
           <option value="draft-22">draft-22</option>
+          <option value="draft-23">draft-23</option>
         </select>
         <div className="ak-caption" style={{ marginTop: 4, fontSize: 10 }}>
           Takes effect on next connect.

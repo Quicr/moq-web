@@ -16,7 +16,7 @@
  */
 
 import { DEFAULT_DRAFT } from '../version/constants.js';
-import { Version } from '../messages/types.js';
+import { MessageTypeDraft18, Version } from '../messages/types.js';
 import type {
   ControlMessage,
   ControlMessageDraft18,
@@ -31,6 +31,7 @@ import type {
   FetchHeader,
   ClientSetupMessageDraft18,
   ServerSetupMessageDraft18,
+  RequestErrorMessageDraft18,
 } from '../messages/types.js';
 import { MessageCodec, ObjectCodec, withDraft } from './message-codec.js';
 import type {
@@ -142,6 +143,12 @@ export interface IProtocolCodec {
    * draft-23, where the 16-bit length is the limit.
    */
   setControlMessageLimits(limits: { maxSendLength?: number; maxReceiveLength?: number }): void;
+  /**
+   * Draft-23 §13: add a grease Error Detail to every REQUEST_ERROR this
+   * codec encodes, so peers that mishandle unknown types show it early.
+   * Absent before draft-23.
+   */
+  setGrease?(enabled: boolean): void;
 
   // ---- Setup stream (draft-18+) ----
   /** Encode the setup-stream client SETUP frame. Draft-16 codec throws. */
@@ -1086,6 +1093,7 @@ class Draft23Codec extends Draft22Codec {
    */
   private framing?: { varintLength: boolean; maxSendLength: number; maxReceiveLength: number };
   private ownDialect?: WireDialect;
+  private grease = false;
 
   constructor() {
     super();
@@ -1115,8 +1123,16 @@ class Draft23Codec extends Draft22Codec {
     }
   }
 
+  setGrease(enabled: boolean): void {
+    this.grease = enabled;
+  }
+
   protected override encodeMessage(message: ControlMessageDraft18 | ControlMessageDraft22): Uint8Array {
-    return Draft23MessageCodec.encode(message as ControlMessageDraft22, this.dialect);
+    const greased = this.grease && message.type === MessageTypeDraft18.REQUEST_ERROR
+      ? { ...(message as RequestErrorMessageDraft18), greaseDetail: true }
+      : message;
+
+    return Draft23MessageCodec.encode(greased as ControlMessageDraft22, this.dialect);
   }
 
   protected override decodeMessage(buffer: Uint8Array, offset: number): [ControlMessageDraft22, number] {

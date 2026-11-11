@@ -150,6 +150,16 @@ export type FetchObjectCallback = (
  */
 export type FetchStreamCloseCallback = (requestId: bigint, lastGroupId?: number, endOfTrack?: boolean) => void;
 
+/** What a FETCH stream indicator says about Objects it does not carry (d22 §11.4.1, d23 §11.4.2) */
+export type FetchGapKind = 'non-existent' | 'unknown' | 'timed-out' | 'gone' | 'end-of-group';
+
+/**
+ * Callback fired for each End of Range or End of Group indicator. For an End
+ * of Range, `end` is the last Location it covers (inclusive); for End of
+ * Group it names the Group that ended, with no Object.
+ */
+export type FetchGapCallback = (requestId: bigint, kind: FetchGapKind, end: { group: bigint; object?: bigint }) => void;
+
 /**
  * Callback fired on a data-plane protocol violation, with the reason. The
  * session closes with PROTOCOL_VIOLATION.
@@ -179,6 +189,7 @@ export type StreamResetCallback = (
 export class ObjectRouter {
   private onFetchObject?: FetchObjectCallback;
   private onFetchStreamClose?: FetchStreamCloseCallback;
+  private onFetchGap?: FetchGapCallback;
   private onStreamReset?: StreamResetCallback;
   private onViolation?: ViolationCallback;
   private onMalformedTrack?: MalformedTrackCallback;
@@ -358,6 +369,11 @@ export class ObjectRouter {
    */
   setFetchStreamCloseCallback(callback: FetchStreamCloseCallback): void {
     this.onFetchStreamClose = callback;
+  }
+
+  /** Set the callback for FETCH stream End of Range and End of Group indicators */
+  setFetchGapCallback(callback: FetchGapCallback): void {
+    this.onFetchGap = callback;
   }
 
   /**
@@ -1543,29 +1559,34 @@ export class ObjectRouter {
    * d22 §11.4.1.2, d23 §11.4.2). Its Location becomes the prior one.
    */
   private applyFetchIndicator(requestId: bigint, ids: FetchIdResolver, decoded: FetchObjectDraft18): void {
+    let kind: FetchGapKind | undefined;
+    let end: { group: bigint; object?: bigint };
     try {
       if (decoded.marker !== undefined) {
-        const group = ids.marker(decoded.marker);
-        log.debug('FETCH end marker', {
-          requestId: requestId.toString(),
-          kind: decoded.marker === FetchObjectMarker.END_OF_TRACK ? 'end-of-track' : 'end-of-group',
-          group: group.toString(),
-        });
-        return;
+        end = { group: ids.marker(decoded.marker) };
+        // End of Track is reported when the stream closes (`endOfTrack`)
+        kind = decoded.marker === FetchObjectMarker.END_OF_GROUP ? 'end-of-group' : undefined;
+      } else {
+        end = ids.endOfRange(decoded.groupIdDelta!, decoded.objectIdDelta!);
+        kind = this.endOfRangeKind(decoded.endOfRange!);
       }
-      const end = ids.endOfRange(decoded.groupIdDelta!, decoded.objectIdDelta!);
-      log.debug('FETCH end-of-range marker', {
-        requestId: requestId.toString(),
-        kind: this.endOfRangeKind(decoded.endOfRange!),
-        group: end.group.toString(),
-        object: end.object.toString(),
-      });
     } catch (err) {
       throw new DataPlaneViolation((err as Error).message, violationOf(err) ?? 'malformed-object');
     }
+
+    log.debug('FETCH indicator', {
+      requestId: requestId.toString(),
+      kind: kind ?? 'end-of-track',
+      group: end.group.toString(),
+      object: end.object?.toString(),
+    });
+    if (kind !== undefined) {
+      // Outside the try: an application handler that throws is not a protocol violation
+      this.onFetchGap?.(requestId, kind, end);
+    }
   }
 
-  private endOfRangeKind(marker: FetchObjectEndOfRange): string {
+  private endOfRangeKind(marker: FetchObjectEndOfRange): FetchGapKind {
     switch (marker) {
       case FetchObjectEndOfRange.NON_EXISTENT:
         return 'non-existent';

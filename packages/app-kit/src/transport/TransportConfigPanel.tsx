@@ -188,11 +188,12 @@ function RelaySection() {
           <select
             className="ak-select"
             value={cfg.relay.draft}
-            onChange={(e) => setRelay({ draft: e.target.value as 'draft-16' | 'draft-18' | 'draft-22' })}
+            onChange={(e) => setRelay({ draft: e.target.value as 'draft-16' | 'draft-18' | 'draft-22' | 'draft-23' })}
           >
             <option value="draft-16">draft-16</option>
             <option value="draft-18">draft-18</option>
             <option value="draft-22">draft-22</option>
+            <option value="draft-23">draft-23</option>
           </select>
         </label>
         <label>

@@ -458,6 +458,32 @@ describe('§9.4 REQUEST_ERROR Error Details (#2010, #2011)', () => {
     expect((decoded as unknown as RequestErrorMessageDraft18).unsupportedProperties).toBeUndefined();
   });
 
+  it('a greased REQUEST_ERROR decodes as without the grease (§13)', () => {
+    const redirect = { connectUri: '', trackNamespace: ['live'], trackName: 'v2' };
+    const cases = [
+      error({ reasonPhrase: 'busy' }),
+      error({ errorCode: RequestErrorCodeDraft23.REDIRECT, redirect }),
+      error({ errorCode: RequestErrorCodeDraft23.UNSUPPORTED_EXTENSION, unsupportedProperties: [0x4000n] }),
+    ];
+    for (const message of cases) {
+      for (let i = 0; i < 32; i++) {
+        const plain = Draft23MessageCodec.encode(message as unknown as ControlMessageDraft22);
+        const greased = Draft23MessageCodec.encode({ ...message, greaseDetail: true } as unknown as ControlMessageDraft22);
+        expect(greased.length).toBeGreaterThan(plain.length);
+        expect(Draft23MessageCodec.decode(greased)[0]).toEqual(Draft23MessageCodec.decode(plain)[0]);
+      }
+    }
+  });
+
+  it('a codec with grease on greases only REQUEST_ERROR', () => {
+    const codec = createProtocolCodec(Version.DRAFT_23);
+    const plain = codec.encodeControlMessage(error({}));
+    codec.setGrease?.(true);
+    expect(codec.encodeControlMessage(error({})).length).toBeGreaterThan(plain.length);
+    const goaway = { type: MessageTypeDraft18.GOAWAY, newSessionUri: '', timeout: 0n };
+    expect(codec.encodeControlMessage(goaway)).toEqual(createProtocolCodec(Version.DRAFT_23).encodeControlMessage(goaway));
+  });
+
   it('ignores a known detail beside an Error Code it is not defined for', () => {
     // INTERNAL_ERROR with UNSUPPORTED_PROPERTY 0x4000
     const property = MOQTVarInt.encode(0x4000);

@@ -118,3 +118,33 @@ describe('draft-23 first-response checks', () => {
     expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft23.INVALID_FIELD }));
   });
 });
+
+describe('fetch-gap event', () => {
+  type Gap = (id: bigint, kind: string, end: { group: bigint; object?: bigint }) => void;
+  const router = (session: MOQTSession) =>
+    (session as unknown as { objectRouter: { onFetchGap: Gap }; fillStreams: Map<bigint, unknown> });
+
+  it('reports the router indicators of a fetch, and a handler that throws is contained', () => {
+    const session = makeSession();
+    const gaps: unknown[] = [];
+    session.on('fetch-gap', () => {
+      throw new Error('app bug');
+    });
+    session.on('fetch-gap', (e) => gaps.push(e));
+
+    router(session).objectRouter.onFetchGap(5n, 'gone', { group: 2n, object: 7n });
+
+    expect(gaps).toEqual([{ requestId: 5n, kind: 'gone', end: { group: 2n, object: 7n } }]);
+  });
+
+  it('is not raised for a fill stream', () => {
+    const session = makeSession();
+    const gaps: unknown[] = [];
+    session.on('fetch-gap', (e) => gaps.push(e));
+    router(session).fillStreams.set(9n, {});
+
+    router(session).objectRouter.onFetchGap(9n, 'end-of-group', { group: 1n });
+
+    expect(gaps).toEqual([]);
+  });
+});

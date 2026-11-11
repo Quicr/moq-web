@@ -41,7 +41,7 @@ export interface RelayConfig {
   /** Ordered list of relay URLs. First = primary, rest = failover. */
   relays: string[];
   /** Preferred draft version. */
-  draft: 'draft-16' | 'draft-18' | 'draft-22';
+  draft: 'draft-16' | 'draft-18' | 'draft-22' | 'draft-23';
   /** Additional QUIC/WebTransport hints. */
   keepAliveMs: number;
   /** Reconnect strategy. */

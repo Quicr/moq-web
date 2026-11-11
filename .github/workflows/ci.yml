@@ -128,3 +128,9 @@ jobs:
 
       - name: Test (draft-16)
         run: pnpm run test:draft-16
+
+      - name: Test (draft-22)
+        run: pnpm run test:draft-22
+
+      - name: Test (draft-23)
+        run: pnpm run test:draft-23

@@ -11,6 +11,7 @@ import type { Draft } from './adapter.js';
 export function getBundledDraft(): Draft {
   const env = (import.meta as unknown as { env?: Record<string, string> }).env;
   const v = env?.VITE_MOQT_VERSION;
+  if (v === 'draft-23') return 'draft-23';
   if (v === 'draft-22') return 'draft-22';
   if (v === 'draft-18') return 'draft-18';
   return 'draft-16';
@@ -21,7 +22,7 @@ export function getBundledDraft(): Draft {
  * path + query when possible.
  *
  * The deploy layout depends on the hosting environment:
- *   - Self-hosted: `/` → d16, `/18/` → d18, `/22/` → d22
+ *   - Self-hosted: `/` → d16, `/18/` → d18, `/22/` → d22, `/23/` → d23
  *   - GitHub Pages: all drafts at the same path, different branches/builds
  *   - Dev server: same origin, different build via MOQT_VERSION env var
  *
@@ -35,12 +36,13 @@ export function switchDraftInBrowser(target: Draft): void {
   if (cur === target) return;
   const { pathname, search, hash } = window.location;
 
-  // Detect prefix-based layout: pathname starts with / or /18/ or /22/
+  // Detect prefix-based layout: pathname starts with / or /18/, /22/ or /23/
   // but NOT a deeper path like /moq-web/branches/... (GitHub Pages)
-  const prefixMatch = pathname.match(/^\/(18|22)?(\/.*)?$/);
+  const prefixMatch = pathname.match(/^\/(18|22|23)?(\/.*)?$/);
   if (prefixMatch && !pathname.includes('/branches/') && !pathname.includes('/moq-web/')) {
-    const stripped = pathname.replace(/^\/(18|22)(\/|$)/, '/');
+    const stripped = pathname.replace(/^\/(18|22|23)(\/|$)/, '/');
     const nextPath =
+      target === 'draft-23' ? '/23' + stripped :
       target === 'draft-22' ? '/22' + stripped :
       target === 'draft-18' ? '/18' + stripped :
       stripped;
