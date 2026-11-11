@@ -35,6 +35,11 @@ const RANGE = { startGroup: 0, startObject: 0, endGroup: 1, endObject: 0 };
 const enc = (n: number): Uint8Array => MOQTVarInt.encode(BigInt(n));
 
 const mandatory = new Map([[MANDATORY, enc(1)]]);
+/** Object-only, so a Malformed Track as a Track Property from draft-23 (§8.4) */
+const outOfScope = new Map([[TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, enc(1)]]);
+/** Grease in the Mandatory range: not a Mandatory Track Property (draft-23 §3.7) */
+const greaseMandatory = new Map([[0x7f * 128 + 0x9d, new Uint8Array([1])]]);
+const malformedFrom23 = (draft: Draft) => (draft === 'draft-23' ? RequestErrorCodeDraft18.MALFORMED_TRACK : undefined);
 const badGroupOrder = new Map([[TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER, enc(3)]]);
 
 function immutable(properties: Map<number, Uint8Array>): Map<number, Uint8Array> {
@@ -99,6 +104,26 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track Properties o
     expect(onClose).toHaveBeenCalledWith(closedWith(terminationCodeFor(draft === 'draft-23' ? 'malformed-key-value' : 'protocol-violation', draft)));
   });
 
+  it('is refused with MALFORMED_TRACK for a Property outside its scope (draft-23), accepted before', async () => {
+    const { internals, onClose } = wanting();
+
+    const peer = openIncoming(internals, publish(outOfScope));
+    await peer.opened;
+
+    const code = malformedFrom23(draft);
+    expect(peer.written()[0]).toMatchObject(code === undefined ? { type: MessageTypeDraft18.REQUEST_OK } : { errorCode: code });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('is accepted with a grease Property Type in the Mandatory range', async () => {
+    const { internals } = wanting();
+
+    const peer = openIncoming(internals, publish(greaseMandatory));
+    await peer.opened;
+
+    expect(peer.written()[0].type).toBe(MessageTypeDraft18.REQUEST_OK);
+  });
+
   it('is accepted with understood properties, including those inside Immutable Properties', async () => {
     const { internals, onClose } = wanting();
     const understood = immutable(new Map([
@@ -140,6 +165,23 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track Properties o
 
     expect(aborted).toHaveBeenCalledTimes(1);
     expect((internals as unknown as { subscriptionManager: { size: number } }).subscriptionManager.size).toBe(0);
+  });
+
+  it('cancels the subscription with MALFORMED_TRACK for a Property in two places (draft-23)', async () => {
+    const twice = new Map([
+      [TrackPropertyDraft18.DYNAMIC_GROUPS, enc(1)],
+      ...immutable(new Map([[TrackPropertyDraft18.DYNAMIC_GROUPS, enc(1)]])),
+    ]);
+    const { session, aborted } = subscribing(twice);
+
+    const result = session.subscribe(NAMESPACE, TRACK);
+    const code = malformedFrom23(draft);
+    if (code === undefined) {
+      await expect(result).resolves.toBeDefined();
+      return;
+    }
+    await expect(result).rejects.toMatchObject({ errorCode: code });
+    expect(aborted).toHaveBeenCalledTimes(1);
   });
 
   it('closes the session for DYNAMIC_GROUPS above 1', async () => {
@@ -187,6 +229,15 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track Properties o
 
     expect(aborted).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([expect.objectContaining({ errorCode: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION })]);
+  });
+
+  it('cancels the fetch with MALFORMED_TRACK for a Property outside its scope (draft-23)', async () => {
+    const { session, errors } = fetching(outOfScope);
+
+    await session.fetch(NAMESPACE, TRACK, RANGE);
+
+    const code = malformedFrom23(draft);
+    expect(errors).toEqual(code === undefined ? [] : [expect.objectContaining({ errorCode: code })]);
   });
 });
 
@@ -237,6 +288,24 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('an Object with a M
     expect(done).toEqual([
       expect.objectContaining({ requestId: REQUEST_ID, statusCode: PublishDoneErrorCodeDraft18.MALFORMED_TRACK }),
     ]);
+  });
+
+  it('a Track-only Property on an Object is a Malformed Track from draft-23', async () => {
+    const { hooks, aborted } = receiving();
+
+    hooks.objectRouter.handleDatagram(datagram(new Map([[TrackPropertyDraft18.DEFAULT_PUBLISHER_PRIORITY, enc(1)]])));
+    await tick();
+
+    expect(aborted).toHaveBeenCalledTimes(draft === 'draft-23' ? 1 : 0);
+  });
+
+  it('a grease Property Type in the Mandatory range on an Object is not malformed', async () => {
+    const { hooks, aborted } = receiving();
+
+    hooks.objectRouter.handleDatagram(datagram(greaseMandatory));
+    await tick();
+
+    expect(aborted).not.toHaveBeenCalled();
   });
 
   it('cancels the fetch of a Track found malformed in its fetch stream', async () => {

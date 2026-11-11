@@ -15,7 +15,7 @@ import { Logger } from '../utils/logger.js';
 import type { Violation } from './violation.js';
 import { MOQTVarInt } from './moqt-varint.js';
 import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
-import { MAX_SAFE_KEY, readKvpKey, readKvpLength, skipKvpValue } from './codec-helpers.js';
+import { MAX_SAFE_KEY, noteRepeatedKey, readKvpKey, readKvpLength, skipKvpValue } from './codec-helpers.js';
 import {
   StreamTypeDraft18,
   FetchSubgroupMode,
@@ -684,6 +684,9 @@ export class Draft18StreamCodec {
       }
 
       const key = Number(bigKey);
+      if (props.has(key)) {
+        noteRepeatedKey(props, key);
+      }
       if (key % 2 === 0) {
         // Even key: value is a single varint
         const value = reader.readVarInt();

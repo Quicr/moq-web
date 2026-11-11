@@ -24,10 +24,14 @@ const TRACK_ALIAS = 7n;
 const REQUEST_ID = 9n;
 const PRIORITY = 128;
 const MANDATORY = 0x4000;
-const OBJECT_PROPERTY = 0x0e;
+/** Unknown to us, so allowed anywhere and any number of times */
+const OBJECT_PROPERTY = 0x50;
+/** DEFAULT_PUBLISHER_PRIORITY only has Track scope (draft-23 §16.8) */
+const TRACK_ONLY = 0x0e;
 const enc = (n: number): Uint8Array => MOQTVarInt.encode(BigInt(n));
 const mandatory = new Map([[MANDATORY, enc(1)]]);
 const ordinary = new Map([[OBJECT_PROPERTY, enc(1)]]);
+const trackOnly = new Map([[TRACK_ONLY, enc(1)]]);
 
 function makeRouter(draft: DraftVersion) {
   const subs = new SubscriptionManager();
@@ -131,6 +135,26 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Mandatory Track Pr
     router.handleDatagram(datagram(ordinary));
     await router.handleIncomingStream(streamOf(fetchStream(ordinary)));
 
+    expect(malformed).toEqual([]);
+    expect(delivered).toEqual([[3, 0], [3, 1]]);
+    expect(fetched).toEqual([[1, 0]]);
+  });
+});
+
+describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('Track-only Property on an Object (%s)', (draft) => {
+  it('is a Malformed Track on every path from draft-23, and delivered before', async () => {
+    const { router, malformed, delivered, fetched } = makeRouter(draft);
+
+    await router.handleIncomingStream(streamOf(subgroupStream(trackOnly)));
+    router.handleDatagram(datagram(trackOnly));
+    await router.handleIncomingStream(streamOf(fetchStream(trackOnly)));
+
+    if (draft === 'draft-23') {
+      expect(malformed).toEqual([{ trackAlias: TRACK_ALIAS }, { trackAlias: TRACK_ALIAS }, { fetchRequestId: REQUEST_ID }]);
+      expect(delivered).toEqual([]);
+      expect(fetched).toEqual([]);
+      return;
+    }
     expect(malformed).toEqual([]);
     expect(delivered).toEqual([[3, 0], [3, 1]]);
     expect(fetched).toEqual([[1, 0]]);

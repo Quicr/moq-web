@@ -260,6 +260,29 @@ export function encodeKeyValuePairs(writer: Draft18BufferWriter, pairs: Map<numb
   }
 }
 
+/**
+ * Keys that appeared more than once in a decoded KVP map: the map keeps the
+ * last instance. Draft-23 §8.4 lets a receiver reject a repeat of a
+ * Property that allows one instance. Recorded beside the map, so a decode
+ * without repeats allocates nothing extra.
+ */
+const repeatedKvpKeys = new WeakMap<Map<number, Uint8Array>, Set<number>>();
+
+/** Note that `key` repeats in `pairs`, before `pairs.set` overwrites it */
+export function noteRepeatedKey(pairs: Map<number, Uint8Array>, key: number): void {
+  const keys = repeatedKvpKeys.get(pairs);
+  if (keys) {
+    keys.add(key);
+  } else {
+    repeatedKvpKeys.set(pairs, new Set([key]));
+  }
+}
+
+/** The keys that appeared more than once when `pairs` was decoded, if any */
+export function repeatedKeys(pairs: Map<number, Uint8Array>): ReadonlySet<number> | undefined {
+  return repeatedKvpKeys.get(pairs);
+}
+
 /** Decode delta-keyed KVPs until the reader is exhausted. */
 export function decodeKeyValuePairsToEnd(reader: Draft18BufferReader): Map<number, Uint8Array> {
   const pairs = new Map<number, Uint8Array>();
@@ -275,6 +298,9 @@ export function decodeKeyValuePairsToEnd(reader: Draft18BufferReader): Map<numbe
     }
 
     const key = Number(bigKey);
+    if (pairs.has(key)) {
+      noteRepeatedKey(pairs, key);
+    }
     if (key % 2 === 0) {
       const value = reader.readVarInt();
       pairs.set(key, MOQTVarInt.encode(value));

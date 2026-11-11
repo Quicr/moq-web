@@ -77,7 +77,7 @@ describe('draft-23 FETCH requester', () => {
   });
 
   it('accepts Track Properties in the REQUEST_OK for a FETCH', async () => {
-    const { complete, close } = await fetchWith({ trackProperties: new Map([[0x3c, MOQTVarInt.encode(1)]]) });
+    const { complete, close } = await fetchWith({ trackProperties: new Map([[0x30, MOQTVarInt.encode(1)]]) });
     expect(close).not.toHaveBeenCalled();
     expect(complete).toHaveLength(1);
   });

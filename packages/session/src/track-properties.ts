@@ -1,7 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
-import { Draft18BufferReader, MOQTVarInt, GroupOrder, TrackPropertyDraft18, decodeKeyValuePairsToEnd } from '@moq-web/core';
+import {
+  Draft18BufferReader,
+  MOQTVarInt,
+  GroupOrder,
+  TrackPropertyDraft18,
+  decodeKeyValuePairsToEnd,
+  repeatedKeys,
+} from '@moq-web/core';
 
 import type { TrackProperties } from './types.js';
 
@@ -18,6 +25,73 @@ export enum TrackPropertyFault {
   UNSUPPORTED,
   /** A value out of range or Key-Value-Pairs that do not parse: PROTOCOL_VIOLATION (draft-22 §10.5, §10.6, §10.7) */
   INVALID,
+  /** Draft-23 §8.4: a Property outside its scope or repeated: a Malformed Track (§12.1 items 8-9) */
+  MALFORMED,
+}
+
+/** Where a Property may appear (draft-23 §16.8 Table 15) */
+const enum Scope {
+  TRACK = 1,
+  OBJECT = 2,
+  BOTH = 3,
+}
+
+/**
+ * The Properties we support, with their scope. Each allows one instance
+ * (draft-23 §8.4): none of their definitions permits more.
+ */
+const PROPERTY_SCOPES: ReadonlyMap<number, Scope> = new Map([
+  [TrackPropertyDraft18.OBJECT_DELIVERY_TIMEOUT, Scope.BOTH],
+  [TrackPropertyDraft18.MAX_CACHE_DURATION, Scope.TRACK],
+  [TrackPropertyDraft18.SUBGROUP_DELIVERY_TIMEOUT, Scope.BOTH],
+  [TrackPropertyDraft18.IMMUTABLE_PROPERTIES, Scope.BOTH],
+  [TrackPropertyDraft18.DEFAULT_PUBLISHER_PRIORITY, Scope.TRACK],
+  [TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER, Scope.TRACK],
+  [TrackPropertyDraft18.DYNAMIC_GROUPS, Scope.TRACK],
+  [TrackPropertyDraft18.PRIOR_GROUP_ID_GAP, Scope.OBJECT],
+  [TrackPropertyDraft18.PRIOR_OBJECT_ID_GAP, Scope.OBJECT],
+]);
+
+/** Malformed Track reasons for Object Properties (draft-22 §3.7; draft-23 §8.4, §10.7) */
+export const MANDATORY_ON_OBJECT = 'Object has a Mandatory Track Property as an Object Property';
+const UNPARSABLE_IMMUTABLE = 'Immutable Properties do not parse';
+
+/** The Key-Value-Pairs inside Immutable Properties, if present. Throws if they do not parse. */
+function immutableOf(raw: Map<number, Uint8Array>): Map<number, Uint8Array> | undefined {
+  const nested = raw.get(TrackPropertyDraft18.IMMUTABLE_PROPERTIES);
+
+  return nested && decodeKeyValuePairsToEnd(new Draft18BufferReader(nested, 0));
+}
+
+/**
+ * Draft-23 §8.4, §10.7: a supported Property outside `scope`, more than one
+ * instance of one (repeated in a list, or in both the mutable list and
+ * Immutable Properties), or Immutable Properties nested in Immutable
+ * Properties. Returns the reason, or undefined.
+ */
+function scopeFault(raw: Map<number, Uint8Array>, inner: Map<number, Uint8Array> | undefined, scope: Scope): string | undefined {
+  if (inner?.has(TrackPropertyDraft18.IMMUTABLE_PROPERTIES)) {
+    return 'Immutable Properties contain Immutable Properties';
+  }
+
+  for (const list of inner ? [raw, inner] : [raw]) {
+    for (const key of list.keys()) {
+      const allowed = PROPERTY_SCOPES.get(key);
+      if (allowed !== undefined && (allowed & scope) === 0) {
+        return `Property 0x${key.toString(16)} is outside its scope`;
+      }
+      if (allowed !== undefined && list === inner && raw.has(key)) {
+        return `Property 0x${key.toString(16)} appears more than once`;
+      }
+    }
+    for (const key of repeatedKeys(list) ?? []) {
+      if (PROPERTY_SCOPES.has(key)) {
+        return `Property 0x${key.toString(16)} appears more than once`;
+      }
+    }
+  }
+
+  return undefined;
 }
 
 /**
@@ -46,7 +120,10 @@ function effectiveProperties(raw: Map<number, Uint8Array>): Map<number, Uint8Arr
  * understand no Mandatory Track Property, so one makes the track unusable to
  * us; a value outside its range closes the session. Undefined means fine.
  */
-export function trackPropertyFault(raw: Map<number, Uint8Array> | undefined): TrackPropertyFault | undefined {
+export function trackPropertyFault(
+  raw: Map<number, Uint8Array> | undefined,
+  draft23 = false,
+): TrackPropertyFault | undefined {
   if (!raw) {
     return undefined;
   }
@@ -56,6 +133,9 @@ export function trackPropertyFault(raw: Map<number, Uint8Array> | undefined): Tr
     properties = effectiveProperties(raw);
   } catch {
     return TrackPropertyFault.INVALID;
+  }
+  if (draft23 && scopeFault(raw, immutableOf(raw), Scope.TRACK) !== undefined) {
+    return TrackPropertyFault.MALFORMED;
   }
 
   const groupOrder = properties.get(TrackPropertyDraft18.DEFAULT_PUBLISHER_GROUP_ORDER);
@@ -71,22 +151,45 @@ export function trackPropertyFault(raw: Map<number, Uint8Array> | undefined): Tr
   return [...properties.keys()].some(isMandatoryProperty) ? TrackPropertyFault.UNSUPPORTED : undefined;
 }
 
-const isMandatoryProperty = (key: number): boolean => key >= MANDATORY_FIRST && key <= MANDATORY_LAST;
+/** Grease values follow 0x7f * N + 0x9D (draft-23 §13) */
+const isGrease = (key: number): boolean => key >= 0x9d && (key - 0x9d) % 0x7f === 0;
+
+/** Grease values in the range are not Mandatory Track Properties (draft-23 §3.7, #2037) */
+const isMandatoryProperty = (key: number): boolean => key >= MANDATORY_FIRST && key <= MANDATORY_LAST && !isGrease(key);
+
+function hasMandatoryKey(properties: Map<number, Uint8Array>): boolean {
+  for (const key of properties.keys()) {
+    if (isMandatoryProperty(key)) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 /**
- * Whether Object Properties include a Mandatory Track Property, which only
- * has Track scope: an Object carrying one is malformed (draft-22 §3.7, §12.1).
+ * What makes Object Properties a Malformed Track: a Mandatory Track Property,
+ * which only has Track scope (draft-22 §3.7, §12.1); and from draft-23 a
+ * Property outside its scope, repeated, or Immutable Properties that do not
+ * parse or nest (§8.4, §10.7). Returns the reason, or undefined. Runs per
+ * Object, so it decodes Immutable Properties once and copies nothing.
  */
-export function hasMandatoryProperty(raw: Map<number, Uint8Array> | undefined): boolean {
+export function objectPropertyFault(raw: Map<number, Uint8Array> | undefined, draft23 = false): string | undefined {
   if (!raw) {
-    return false;
+    return undefined;
   }
 
+  let inner: Map<number, Uint8Array> | undefined;
   try {
-    return [...effectiveProperties(raw).keys()].some(isMandatoryProperty);
+    inner = immutableOf(raw);
   } catch {
-    return false;
+    return draft23 ? UNPARSABLE_IMMUTABLE : undefined;
   }
+  if (hasMandatoryKey(raw) || (inner !== undefined && hasMandatoryKey(inner))) {
+    return MANDATORY_ON_OBJECT;
+  }
+
+  return draft23 ? scopeFault(raw, inner, Scope.OBJECT) : undefined;
 }
 
 /**

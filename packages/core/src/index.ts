@@ -382,6 +382,7 @@ export {
   AuthTokenAliasType,
   decodeDraft18AuthToken,
   decodeKeyValuePairsToEnd,
+  repeatedKeys,
   decodeTrackNamespace,
   encodeDraft18AuthToken,
   encodeKeyValuePairs,

@@ -43,7 +43,7 @@ import type { FetchDecoderState, FetchObjectDraft18, SubgroupHeaderDraft18 } fro
 import { FetchObjectEndOfRange, FetchObjectMarker } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 import { narrowBigIntToNumber } from './session-helpers.js';
-import { hasMandatoryProperty } from './track-properties.js';
+import { objectPropertyFault } from './track-properties.js';
 import { streamResetReason } from './stream-reset-reason.js';
 
 /**
@@ -102,9 +102,6 @@ class MalformedTrack extends Error {
     super(reason);
   }
 }
-
-/** The reason when an Object carries a Mandatory Track Property as an Object Property (d22 §3.7) */
-const MANDATORY_ON_OBJECT = 'Object has a Mandatory Track Property as an Object Property';
 
 /** True when `err` only says more bytes are needed, not that the encoding is malformed. */
 function isTruncation(err: unknown): boolean {
@@ -402,8 +399,9 @@ export class ObjectRouter {
         payloadSize: payload.length,
       });
 
-      if (hasMandatoryProperty(objectProperties)) {
-        this.reportMalformedTrack({ trackAlias: header.trackAlias }, MANDATORY_ON_OBJECT);
+      const propertyFault = objectPropertyFault(objectProperties, this.isDraft23);
+      if (propertyFault !== undefined) {
+        this.reportMalformedTrack({ trackAlias: header.trackAlias }, propertyFault);
         return;
       }
 
@@ -641,8 +639,9 @@ export class ObjectRouter {
           }
 
           const [objectId, payload, status, bytesConsumed] = decoded;
-          if (hasProperties && this.hasMandatoryObjectProperty(buffer.subarray(offset))) {
-            throw new MalformedTrack({ trackAlias: subgroup.trackAlias }, MANDATORY_ON_OBJECT);
+          const propertyFault = hasProperties ? this.objectPropertyFaultAt(buffer.subarray(offset)) : undefined;
+          if (propertyFault !== undefined) {
+            throw new MalformedTrack({ trackAlias: subgroup.trackAlias }, propertyFault);
           }
           offset += bytesConsumed;
           this.metrics.histogram('moq.codec.decode.duration', nowMs() - decodeStart, {
@@ -707,9 +706,9 @@ export class ObjectRouter {
     }
   }
 
-  /** Whether the object at the start of `bytes`, which has Properties, carries a Mandatory Track Property */
-  private hasMandatoryObjectProperty(bytes: Uint8Array): boolean {
-    return hasMandatoryProperty(Draft18StreamCodec.decodeObjectHeader(bytes, 0, true)[0].objectProperties);
+  /** What makes the Properties of the object at the start of `bytes` a Malformed Track, if anything */
+  private objectPropertyFaultAt(bytes: Uint8Array): string | undefined {
+    return objectPropertyFault(Draft18StreamCodec.decodeObjectHeader(bytes, 0, true)[0].objectProperties, this.isDraft23);
   }
 
   private countDecodeError(err: unknown): void {
@@ -1473,8 +1472,9 @@ export class ObjectRouter {
         continue;
       }
 
-      if (hasMandatoryProperty(decoded.objectProperties)) {
-        throw new MalformedTrack({ fetchRequestId: requestId }, MANDATORY_ON_OBJECT);
+      const propertyFault = objectPropertyFault(decoded.objectProperties, this.isDraft23);
+      if (propertyFault !== undefined) {
+        throw new MalformedTrack({ fetchRequestId: requestId }, propertyFault);
       }
 
       const { groupId, objectId, subgroupId, priority } = this.resolveFetchIds(ids, decoded);

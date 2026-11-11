@@ -178,6 +178,7 @@ import {
   WHOLE_TRACK,
   type LocationRange,
 } from './location-filter.js';
+import { PeerRequestIds } from './peer-request-ids.js';
 import { IncomingNamespaceSubscriptions, NamespaceChange } from './incoming-namespace-subscriptions.js';
 import { TransportWorkerClient } from './workers/index.js';
 import {
@@ -324,6 +325,13 @@ function successResponseType(kind: OutgoingRequestKind, draft: DraftVersion): Me
 }
 
 const GOAWAY = MessageTypeDraft18.GOAWAY;
+/** The error for a track refused over its Track Properties (draft-22 §3.7, draft-23 §12.1) */
+function trackRefusal(fault: TrackPropertyFault): { code: number; reason: string } {
+  return fault === TrackPropertyFault.MALFORMED
+    ? { code: RequestErrorCodeDraft18.MALFORMED_TRACK, reason: 'Malformed Track Properties' }
+    : { code: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION, reason: 'Mandatory Track Property not understood' };
+}
+
 const REQUEST_UPDATE = MessageTypeDraft18.REQUEST_UPDATE;
 const REQUEST_OK = MessageTypeDraft18.REQUEST_OK;
 const REQUEST_ERROR = MessageTypeDraft18.REQUEST_ERROR;
@@ -661,8 +669,8 @@ export class MOQTSession {
   private incomingTrackSubs = new IncomingNamespaceSubscriptions();
   /** SUBSCRIBE_NAMESPACE requests the peer made to us, kept current as our announced set changes (draft-22 §4.2) */
   private incomingNamespaces = new IncomingNamespaceSubscriptions();
-  /** Request IDs the peer has used on its request streams */
-  private seenPeerRequestIds = new Set<bigint>();
+  /** Request IDs the peer has used on its request streams: odd, from 1 (bounded, draft-23 #1993) */
+  private seenPeerRequestIds = new PeerRequestIds(1n);
   /** We sent GOAWAY: requests that arrive from now on are refused (draft-18 §10.4) */
   private goAwaySent = false;
   /** close() has begun, so the transport ending beneath it is expected */
@@ -2225,15 +2233,26 @@ export class MOQTSession {
    * track for a Mandatory Track Property we do not understand (§3.7).
    */
   private checkTrackProperties(raw: Map<number, Uint8Array> | undefined, where: string): TrackPropertyFault | undefined {
-    const fault = trackPropertyFault(raw);
+    const fault = trackPropertyFault(raw, this.isDraft23);
     if (fault === TrackPropertyFault.INVALID) {
       const reason = `Invalid Track Properties in ${where}`;
       log.error(reason);
       // Draft-23 §10: a Property value that does not match its Type is MALFORMED_KEY_VALUE
       this.closeForViolation('malformed-key-value', reason, SessionErrorCodeDraft18.PROTOCOL_VIOLATION);
+    } else if (fault === TrackPropertyFault.MALFORMED) {
+      log.warn(`Malformed Track: Track Properties in ${where} break a Property's scope or instance rules (draft-23 §8.4)`);
     }
 
     return fault;
+  }
+
+  /** Cancel a fetch whose Track Properties make its track unusable (draft-22 §3.7, draft-23 §12.1) */
+  private async cancelFetchForProperties(requestId: bigint, fault: TrackPropertyFault): Promise<void> {
+    this.activeFetches.delete(requestId);
+    this.objectRouter.clearFetchGroupOrder(requestId);
+    await this.abortRequestStream(requestId);
+    const { code, reason } = trackRefusal(fault);
+    this.emit('fetch-error', { requestId, errorCode: code, reason } as FetchErrorEvent);
   }
 
   /** The peer sent a message its role or the request's kind does not allow (draft-22 Table 5). */
@@ -2776,8 +2795,7 @@ export class MOQTSession {
    * (draft-22 §6.4.2.1, draft-18 §10.1). Returns whether it was acceptable.
    */
   private acceptPeerRequestId(requestId: bigint): boolean {
-    if (requestId % 2n === 1n && !this.seenPeerRequestIds.has(requestId)) {
-      this.seenPeerRequestIds.add(requestId);
+    if (requestId % 2n === 1n && this.seenPeerRequestIds.add(requestId)) {
       return true;
     }
 
@@ -2815,12 +2833,9 @@ export class MOQTSession {
    * since the server uses odd IDs from 1 (draft-18 §10.4).
    */
   private firstUnprocessedPeerRequestId(): bigint {
-    let highest = -1n;
-    for (const id of this.seenPeerRequestIds) {
-      highest = id > highest ? id : highest;
-    }
+    const highest = this.seenPeerRequestIds.highest;
 
-    return highest < 0n ? 1n : highest + 2n;
+    return highest === undefined ? 1n : highest + 2n;
   }
 
   /**
@@ -3064,11 +3079,13 @@ export class MOQTSession {
 
     // §9.20.19 NEW_GROUP_REQUEST — subscriber asks the publisher to cut a new group.
     // The value is the largest Group ID the subscriber knows plus 1, or 0 when it knows none;
-    // `true` computes it. Only for a track that has DYNAMIC_GROUPS=1.
+    // `true` computes it. Only for a track that has DYNAMIC_GROUPS=1; draft-23 (#2008) also
+    // allows it before the track's properties are known.
     const extraParams = new Map<number, Uint8Array>();
     const newGroup = options?.newGroupRequest;
     if (newGroup !== undefined && newGroup !== false) {
-      if (!filteredSubscription?.dynamicGroups) {
+      const dynamic = filteredSubscription?.dynamicGroups;
+      if (filteredSubscription === undefined || (dynamic !== true && !(this.isDraft23 && dynamic === undefined))) {
         throw new Error(`NEW_GROUP_REQUEST needs a track with DYNAMIC_GROUPS=1 (requestId=${rid.toString()})`);
       }
       const value = typeof newGroup === 'number' ? BigInt(newGroup) : BigInt((filteredSubscription.largestGroup ?? -1) + 1);
@@ -4040,14 +4057,11 @@ export class MOQTSession {
       if (fault === TrackPropertyFault.INVALID) {
         throw new Error('SUBSCRIBE_OK has invalid Track Properties');
       }
-      if (fault === TrackPropertyFault.UNSUPPORTED) {
-        // Draft-22 §3.7: the track is not processed, so the subscription is cancelled
+      if (fault !== undefined) {
+        // Draft-22 §3.7, draft-23 §12.1: the track is not processed, so the subscription is cancelled
         await this.abortRequestStream(requestId);
-        throw new RequestRejectedError(
-          'SUBSCRIBE failed: Mandatory Track Property not understood',
-          RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
-          'Mandatory Track Property not understood',
-        );
+        const { code, reason } = trackRefusal(fault);
+        throw new RequestRejectedError(`SUBSCRIBE failed: ${reason}`, code, reason);
       }
       const sub = this.subscriptionManager.findByRequestId(requestId);
       if (sub && !this.acceptTrackAlias(relayTrackAlias, sub.namespace, sub.trackName, sub.subscriptionId)) {
@@ -4406,16 +4420,8 @@ export class MOQTSession {
       if (fault === TrackPropertyFault.INVALID) {
         return;
       }
-      if (fault === TrackPropertyFault.UNSUPPORTED) {
-        // Draft-22 §3.7: the track is not processed, so the fetch is cancelled
-        this.activeFetches.delete(requestId);
-        this.objectRouter.clearFetchGroupOrder(requestId);
-        await this.abortRequestStream(requestId);
-        this.emit('fetch-error', {
-          requestId,
-          errorCode: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
-          reason: 'Mandatory Track Property not understood',
-        } as FetchErrorEvent);
+      if (fault !== undefined) {
+        await this.cancelFetchForProperties(requestId, fault);
         return;
       }
       log.info('Received FETCH_OK', {
@@ -4491,16 +4497,8 @@ export class MOQTSession {
     if (fault === TrackPropertyFault.INVALID) {
       return;
     }
-    if (fault === TrackPropertyFault.UNSUPPORTED) {
-      // §3.7: the track is not processed, so the fetch is cancelled
-      this.activeFetches.delete(requestId);
-      this.objectRouter.clearFetchGroupOrder(requestId);
-      await this.abortRequestStream(requestId);
-      this.emit('fetch-error', {
-        requestId,
-        errorCode: RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
-        reason: 'Mandatory Track Property not understood',
-      } as FetchErrorEvent);
+    if (fault !== undefined) {
+      await this.cancelFetchForProperties(requestId, fault);
       return;
     }
 
@@ -7858,14 +7856,11 @@ export class MOQTSession {
     if (fault === TrackPropertyFault.INVALID) {
       return;
     }
-    if (fault === TrackPropertyFault.UNSUPPORTED) {
-      // Draft-22 §3.7: the subscriber MUST respond with PUBLISH_ERROR UNSUPPORTED_EXTENSION
-      await this.sendRequestErrorOnStream(
-        writable,
-        message.requestId,
-        RequestErrorCodeDraft18.UNSUPPORTED_EXTENSION,
-        'Mandatory Track Property not understood',
-      );
+    if (fault !== undefined) {
+      // Draft-22 §3.7: the subscriber MUST respond with PUBLISH_ERROR UNSUPPORTED_EXTENSION;
+      // draft-23 §12.1: a Malformed Track is refused with MALFORMED_TRACK
+      const { code, reason } = trackRefusal(fault);
+      await this.sendRequestErrorOnStream(writable, message.requestId, code, reason);
       return;
     }
 
