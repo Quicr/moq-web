@@ -19,6 +19,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -35,11 +36,16 @@ describe.skipIf(!isDraft18)('NAMESPACE_DONE end-of-batch', () => {
     sub = undefined;
   });
 
-  it('SUBSCRIBE_NAMESPACE resolves; namespace-done fires when the relay closes the batch', async () => {
+  it('SUBSCRIBE_NAMESPACE resolves; namespace-done fires when the relay closes the batch', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
 
     const namespace = makeNamespace(profile, 'ns-done');
     const prefix = namespace.slice(0, -1);
+
+    record(task, {
+      expected: 'SUBSCRIBE_NAMESPACE resolves with a request ID; a NAMESPACE_DONE, if the relay sends one, decodes',
+      inputs: { prefix: prefix.join('/') },
+    });
 
     sub = await makeSession(profile);
 
@@ -51,6 +57,7 @@ describe.skipIf(!isDraft18)('NAMESPACE_DONE end-of-batch', () => {
     // The API returns the SUBSCRIBE_NAMESPACE requestId after REQUEST_OK —
     // that alone proves the request/response half of §10.18 works.
     const rid = await sub.session.subscribeNamespace(prefix);
+    record(task, { observed: { requestId: rid } });
     expect(typeof rid).toBe('number');
 
     // Give the relay ~500ms to close the initial batch with NAMESPACE_DONE.
@@ -58,6 +65,7 @@ describe.skipIf(!isDraft18)('NAMESPACE_DONE end-of-batch', () => {
     // future fan-out (see file header). The important assertion is that we
     // don't blow up parsing the terminal frame when one does arrive.
     await new Promise((r) => setTimeout(r, 500));
+    record(task, { observed: { namespaceDoneSeen: sawDone } });
 
     // No hard assertion on `sawDone`: shape validation is enough here.
     // Log it for triage.

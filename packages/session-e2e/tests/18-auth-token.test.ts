@@ -17,6 +17,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -36,7 +37,7 @@ describe.skipIf(!isDraft18)('SUBSCRIBE with per-request AUTHORIZATION_TOKEN (§1
     sub = undefined;
   });
 
-  it('SUBSCRIBE resolves when carrying a per-request auth token parameter', async () => {
+  it('SUBSCRIBE resolves when carrying a per-request auth token parameter', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -57,13 +58,19 @@ describe.skipIf(!isDraft18)('SUBSCRIBE with per-request AUTHORIZATION_TOKEN (§1
     await new Promise((r) => setTimeout(r, 250));
 
     const tokenBytes = new TextEncoder().encode('moq-web-e2e-authtok');
+    record(task, {
+      expected: 'A SUBSCRIBE carrying an AUTHORIZATION_TOKEN parameter decodes at the relay: SUBSCRIBE_OK, or a SUBSCRIBE error if it refuses the token',
+      inputs: { namespace: namespace.join('/'), track: track.name, tokenType: '0x63346d', tokenBytes: tokenBytes.byteLength },
+    });
 
     try {
       const subscriptionId = await sub.session.subscribe(namespace, track.name, {
         authToken: { tokenBytes, tokenType: 0x63346d },
       });
+      record(task, { observed: { outcome: 'SUBSCRIBE_OK', subscriptionId } });
       expect(typeof subscriptionId).toBe('number');
     } catch (err) {
+      record(task, { observed: { outcome: 'rejected', error: err } });
       // Relays may reject unknown/invalid tokens — we still exercised the
       // wire path. Only rethrow if the failure isn't a SUBSCRIBE-level error.
       const msg = (err as Error).message;

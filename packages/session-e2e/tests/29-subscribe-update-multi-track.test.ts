@@ -15,6 +15,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat } from '../lib/chat-generator.js';
@@ -31,7 +32,7 @@ describe('SUBSCRIBE_UPDATE per-request scope [chat-stream]', () => {
     sub = undefined;
   });
 
-  it('pausing one subscription does not stall other publications in the same session', async () => {
+  it('pausing one subscription does not stall other publications in the same session', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -70,6 +71,10 @@ describe('SUBSCRIBE_UPDATE per-request scope [chat-stream]', () => {
     // Prime both tracks so they flow.
     const messages = Array.from(generateChat(track.payload));
     const first = Math.floor(messages.length / 3);
+    record(task, {
+      expected: 'Both tracks deliver; after pausing track A, track B keeps delivering within 5 s',
+      inputs: { trackA: `${nsA.join('/')}/${track.name}`, trackB: `${nsB.join('/')}/${track.name}`, objectsBeforePause: first, objectsAfterPause: messages.length - first },
+    });
     for (const msg of messages.slice(0, first)) {
       await pub.session.sendObject(aliasA, msg.bytes, {
         groupId: msg.groupId,
@@ -82,6 +87,7 @@ describe('SUBSCRIBE_UPDATE per-request scope [chat-stream]', () => {
     }
 
     await new Promise((r) => setTimeout(r, 500));
+    record(task, { observed: { trackABeforePause: receivedA, trackBBeforePause: receivedB } });
     expect(receivedA).toBeGreaterThan(0);
     expect(receivedB).toBeGreaterThan(0);
 
@@ -110,6 +116,7 @@ describe('SUBSCRIBE_UPDATE per-request scope [chat-stream]', () => {
     while (receivedB <= bBeforeSecondBatch && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 100));
     }
+    record(task, { observed: { trackAFinal: receivedA, trackBAtPause: bBeforeSecondBatch, trackBFinal: receivedB } });
     expect(
       receivedB,
       `track B stalled after pausing track A (was ${bBeforeSecondBatch}, still ${receivedB})`,

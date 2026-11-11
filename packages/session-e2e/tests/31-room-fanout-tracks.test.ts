@@ -20,6 +20,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -50,13 +51,17 @@ describe('Room fan-out with full studio sequence (subscribe + publish + announce
     ctxs = [];
   });
 
-  it(`${PEER_COUNT} peers each receive incoming-publish for every other peer's tracks`, async () => {
+  it(`${PEER_COUNT} peers each receive incoming-publish for every other peer's tracks`, async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const room = `room-${crypto.randomUUID().slice(0, 8)}`;
     const roomPrefix = [...profile.namespacePrefix, room];
 
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
+    record(task, {
+      expected: `Each of the ${PEER_COUNT} peers sees every other peer's announcement and an incoming-publish for each of its ${TRACK_NAMES.length} tracks`,
+      inputs: { peers: PEER_COUNT, roomPrefix: roomPrefix.join('/'), tracks: TRACK_NAMES, settleMs: SETTLE_MS },
+    });
 
     // Phase 1: open all sessions and wire handlers.
     for (let i = 0; i < PEER_COUNT; i++) {
@@ -138,6 +143,15 @@ describe('Room fan-out with full studio sequence (subscribe + publish + announce
       }
     }
 
+    record(task, {
+      observed: {
+        perPeer: Object.fromEntries(ctxs.map((c) => [c.id, {
+          announces: c.seenAnnounces.size,
+          peersWithTracks: c.incomingByPeer.size,
+        }])),
+        failures: failures.slice(0, 10),
+      },
+    });
     if (failures.length > 0) {
       const summary = ctxs.map((c) =>
         `  ${c.id}:\n` +

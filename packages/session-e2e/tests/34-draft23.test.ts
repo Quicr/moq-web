@@ -16,6 +16,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FetchCompleteEvent, FetchGapEvent, FetchStreamCompleteEvent } from '@moq-web/session';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat, expectedMessage } from '../lib/chat-generator.js';
@@ -48,13 +49,15 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
     return handle;
   }
 
-  it('sets up over draft-23 framing', async () => {
+  it('sets up over draft-23 framing', async ({ task }) => {
+    record(task, { expected: 'The session negotiates draft-23 and reaches ready' });
     const { session } = await open();
+    record(task, { observed: { draft: session.draft, ready: session.isReady } });
     expect(session.draft).toBe('draft-23');
     expect(session.isReady).toBe(true);
   });
 
-  it('FETCH is answered by REQUEST_OK and its stream decodes with the draft-23 ID rules', async () => {
+  it('FETCH is answered by REQUEST_OK and its stream decodes with the draft-23 ID rules', async ({ task }) => {
     const namespace = makeNamespace(profile, 'd23-fetch');
     const pub = await open();
     const sub = await open();
@@ -85,6 +88,16 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
       sub.session.on('fetch-error', (e) => { failed = `code=${e.errorCode} reason=${e.reason}`; }),
     ];
     const sent = [...generateChat(payload)].filter((m) => m.objectId % 3 !== 1);
+    record(task, {
+      expected: `FETCH of 0/0..2/9 completes with REQUEST_OK and returns exactly the ${sent.length} published objects at their IDs, byte for byte`,
+      inputs: {
+        namespace: namespace.join('/'),
+        track: track.name,
+        range: '0/0..2/9',
+        publishedIds: sent.slice(0, 7).map((m) => `${m.groupId}/${m.objectId}`),
+        note: 'object IDs 1, 4, 7 of each group skipped so Object ID Deltas are non-zero',
+      },
+    });
 
     try {
       await sub.session.fetch(namespace, track.name, { startGroup: 0, startObject: 0, endGroup: 2, endObject: 9 }, {}, (data, groupId, objectId) => {
@@ -95,6 +108,16 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
       offs.forEach((off) => off());
     }
 
+    record(task, {
+      observed: {
+        outcome: failed ? 'fetch-error' : 'REQUEST_OK',
+        error: failed,
+        fetchComplete: complete.length,
+        received: received.length,
+        receivedIds: received.slice(0, 7).map((o) => `${o.groupId}/${o.objectId}`),
+        gaps: gaps.length,
+      },
+    });
     if (failed) {
       console.warn(`FETCH refused by relay: ${failed}`);
       expect(sub.session.isReady).toBe(true);
@@ -110,15 +133,24 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
     expect(sub.session.isReady).toBe(true);
   });
 
-  it('a refused SUBSCRIBE decodes its REQUEST_ERROR and leaves the session usable', async () => {
+  it('a refused SUBSCRIBE decodes its REQUEST_ERROR and leaves the session usable', async ({ task }) => {
     const { session } = await open();
     const missing = makeNamespace(profile, `d23-missing-${Date.now()}`);
+    record(task, {
+      expected: 'A SUBSCRIBE to an unpublished track is refused with a numeric REQUEST_ERROR code (or held open), and the session stays usable',
+      inputs: { namespace: missing.join('/'), track: 'nothing-here' },
+    });
 
     const outcome = await Promise.race([
       session.subscribe(missing, 'nothing-here').then(() => 'accepted', (err: unknown) => err),
       sleep(8_000).then(() => 'timeout'),
     ]);
 
+    record(task, {
+      observed: typeof outcome === 'string'
+        ? { outcome }
+        : { outcome: 'REQUEST_ERROR', errorCode: (outcome as { errorCode?: unknown }).errorCode, error: outcome },
+    });
     if (outcome === 'accepted' || outcome === 'timeout') {
       // Some relays hold a subscription open until a publisher appears
       console.warn(`relay ${outcome === 'accepted' ? 'accepted' : 'did not answer'} a SUBSCRIBE to an unpublished track`);
@@ -128,11 +160,16 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
     expect(session.isReady).toBe(true);
     // Still usable: a new request on the same session succeeds
     await session.announceNamespace(makeNamespace(profile, 'd23-after-error'));
+    record(task, { observed: { readyAfterNextRequest: session.isReady } });
     expect(session.isReady).toBe(true);
   });
 
-  it('the relay ignores the grease Error Detail in our REQUEST_ERRORs', async () => {
+  it('the relay ignores the grease Error Detail in our REQUEST_ERRORs', async ({ task }) => {
     const namespace = makeNamespace(profile, 'd23-grease');
+    record(task, {
+      expected: 'Our REQUEST_ERROR carrying a grease Error Detail does not make the relay close either session',
+      inputs: { namespace: namespace.join('/'), track: 'no-objects', grease: true },
+    });
     const pub = await open({ grease: true });
     const sub = await open();
     await pub.session.announceNamespace(namespace);
@@ -158,6 +195,9 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
 
     console.warn(`grease: relay forwarded the FETCH to us ${refusedByUs} time(s); subscriber saw error ${fetchError}`);
     await sleep(500);
+    record(task, {
+      observed: { forwardedToUs: refusedByUs, subscriberErrorCode: fetchError, publisherReady: pub.session.isReady, subscriberReady: sub.session.isReady },
+    });
     expect(pub.session.isReady).toBe(true);
     expect(sub.session.isReady).toBe(true);
   });

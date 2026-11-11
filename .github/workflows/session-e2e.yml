@@ -2,45 +2,70 @@ name: e2e (live relay)
 
 on:
   schedule:
-    # Daily at 02:00 UTC. Non-blocking — this suite hits a live relay
-    # and can flake for reasons unrelated to any PR. Use workflow_dispatch
-    # to trigger it on demand.
+    # Daily at 02:00 UTC. Non-blocking — this suite hits live relays and can
+    # flake for reasons unrelated to any PR. Results are published to the
+    # interop report (https://quicr.github.io/moq-web/interop/).
     - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       relay_url:
-        description: 'Relay URL for every cell (empty: each cell uses its own relay)'
+        description: 'A relay to test instead of the registered ones (https URL; empty: the relays in .github/e2e-relays.json)'
+        required: false
+        default: ''
+      relay_name:
+        description: 'Name the report shows for that relay'
+        required: false
+        default: ''
+      relays:
+        description: 'Only these registered relay ids, comma separated (empty: all)'
+        required: false
+        default: ''
+      drafts:
+        description: 'Only these drafts, comma separated, e.g. draft-22,draft-23 (empty: each relay its own)'
         required: false
         default: ''
 
+permissions:
+  contents: read
+
 jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pick relays and drafts
+        id: plan
+        # Inputs reach the script through the environment, never the shell
+        env:
+          CUSTOM_URL: ${{ inputs.relay_url }}
+          CUSTOM_NAME: ${{ inputs.relay_name }}
+          RELAYS: ${{ inputs.relays }}
+          DRAFTS: ${{ inputs.drafts }}
+        run: node .github/scripts/e2e-matrix.mjs >> "$GITHUB_OUTPUT"
+
   session-e2e:
     name: session-e2e (${{ matrix.relay }}, ${{ matrix.draft }})
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Cells marked experimental report but do not fail the run
-    continue-on-error: ${{ matrix.experimental == true }}
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { relay: openmoq, draft: draft-22, relay_url: 'https://moqx-main.ci.openmoq.org:4433/moq-relay' }
-          - { relay: openmoq, draft: draft-18, relay_url: 'https://moqx-main.ci.openmoq.org:4433/moq-relay' }
-          - { relay: openmoq, draft: draft-16, relay_url: 'https://moqx-main.ci.openmoq.org:4433/moq-relay' }
-          - { relay: cloudflare, draft: draft-22, relay_url: 'https://moq-ng.cloudflare.mediaoverquic.com' }
-          - { relay: meta, draft: draft-22, relay_url: 'https://fb.mvfst.net:9448/moq-relay' }
-          # Draft-23: as of 2026-11-10 neither relay offers moqt-23 in
-          # WT-Available-Protocols (they select moqt-22), so these fail at
-          # the WebTransport handshake until the relays add it.
-          - { relay: cloudflare, draft: draft-23, relay_url: 'https://moq-ng.cloudflare.mediaoverquic.com', experimental: true }
-          - { relay: meta, draft: draft-23, relay_url: 'https://fb.mvfst.net:9448/moq-relay', experimental: true }
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       MOQT_VERSION: ${{ matrix.draft }}
       # The relays accept unauthenticated setup today; the secret is
       # optional and only forwarded when configured.
       MOQ_AUTH_TOKEN: ${{ secrets.MOQ_AUTH_TOKEN }}
-      # A dispatch input overrides every cell; cron uses each cell's relay.
-      RELAY_URL: ${{ inputs.relay_url || matrix.relay_url }}
+      RELAY_URL: ${{ matrix.relay_url }}
+      E2E_REPORT: ${{ github.workspace }}/e2e-report/report.json
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,6 +93,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
+      - name: Describe the cell for the report
+        env:
+          CELL: ${{ toJSON(matrix) }}
+        run: mkdir -p e2e-report && printf '%s' "$CELL" > e2e-report/cell.json
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -80,6 +110,14 @@ jobs:
       - name: Run session-e2e
         run: RUN_E2E=1 pnpm --filter @moq-web/session-e2e test
 
+      - name: Upload the cell report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-${{ matrix.relay }}-${{ matrix.draft }}
+          path: e2e-report
+          retention-days: 7
+
       - name: Upload screenshots on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -88,6 +126,46 @@ jobs:
           path: packages/session-e2e/tests/__screenshots__
           retention-days: 7
           if-no-files-found: ignore
+
+  report:
+    name: publish interop report
+    needs: [plan, session-e2e]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    # One writer at a time: each publish starts from the branch's latest data
+    concurrency:
+      group: e2e-reports
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download cell reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-report-*
+          path: e2e-artifacts
+
+      - name: Merge into the e2e-reports branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUSTOM_URL: ${{ inputs.relay_url }}
+        run: |
+          mkdir -p e2e-artifacts out
+          if git fetch --depth 1 origin e2e-reports; then
+            git archive FETCH_HEAD | tar -x -C out
+          fi
+          node .github/scripts/e2e-publish-report.mjs e2e-artifacts out
+          # A single commit, force-pushed: the branch holds data, not history
+          cd out
+          git init -q -b e2e-reports
+          git add -A
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "Interop report: run ${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT}"
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" e2e-reports
 
   media-e2e:
     name: media-e2e (${{ matrix.draft }})

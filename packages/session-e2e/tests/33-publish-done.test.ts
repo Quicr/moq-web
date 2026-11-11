@@ -13,6 +13,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -29,12 +30,16 @@ describe.skipIf(!isDraft18Family)('PUBLISH_DONE delivery (§9.9)', () => {
     pub = undefined;
   });
 
-  it('session stays usable after unpublish()', async () => {
+  it('session stays usable after unpublish()', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'publish-done');
+    record(task, {
+      expected: 'After unpublish() sends PUBLISH_DONE, a second PUBLISH on the same session gets a Track Alias',
+      inputs: { namespace: namespace.join('/'), track: track.name, objectsBeforeUnpublish: OBJECT_COUNT, secondTrack: `${track.name}-2` },
+    });
     pub = await makeSession(profile);
 
     const trackAlias = await pub.session.publish(namespace, track.name, {
@@ -57,6 +62,7 @@ describe.skipIf(!isDraft18Family)('PUBLISH_DONE delivery (§9.9)', () => {
       skipForwardWait: true,
     });
 
+    record(task, { observed: { firstAlias: trackAlias, secondAlias, state: pub.session.state } });
     expect(typeof secondAlias).toBe('bigint');
   });
 });

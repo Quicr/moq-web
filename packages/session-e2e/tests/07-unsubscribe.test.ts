@@ -10,6 +10,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat } from '../lib/chat-generator.js';
@@ -30,7 +31,7 @@ describe.each([
     sub = undefined;
   });
 
-  it('objects stop arriving after unsubscribe', async () => {
+  it('objects stop arriving after unsubscribe', async ({ task }) => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -56,6 +57,10 @@ describe.each([
 
     const messages = Array.from(generateChat(track.payload));
     const half = Math.floor(messages.length / 2);
+    record(task, {
+      expected: 'Objects arrive before UNSUBSCRIBE, and none arrive in the 1 s after it',
+      inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, objectsBefore: half, objectsAfter: messages.length - half },
+    });
 
     for (const msg of messages.slice(0, half)) {
       await pub.session.sendObject(trackAlias, msg.bytes, {
@@ -65,6 +70,7 @@ describe.each([
     }
 
     await new Promise((r) => setTimeout(r, 500));
+    record(task, { observed: { beforeUnsubscribe: received } });
     expect(received).toBeGreaterThan(0);
 
     await sub.session.unsubscribe(subscriptionId);
@@ -81,6 +87,7 @@ describe.each([
     }
 
     await new Promise((r) => setTimeout(r, 1_000));
+    record(task, { observed: { settledAfterUnsubscribe: settledCount, afterMoreSent: received } });
     expect(received).toBe(settledCount);
   });
 });

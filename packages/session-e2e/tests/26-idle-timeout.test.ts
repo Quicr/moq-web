@@ -17,6 +17,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -36,7 +37,7 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
     handle = undefined;
   });
 
-  it('keepaliveIntervalMs emits padding datagrams while otherwise idle', async () => {
+  it('keepaliveIntervalMs emits padding datagrams while otherwise idle', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     handle = await makeSession(profile);
 
@@ -44,8 +45,13 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
     // emit padding datagrams. The relay accepts and drops padding per §11.5.
     // If anything is broken (e.g., padding path aborts the session), close()
     // below will throw or the peer will send an error.
+    record(task, {
+      expected: 'With a 100 ms keepalive, the session is still ready after 400 ms of padding datagrams',
+      inputs: { keepaliveIntervalMs: 100, waitMs: 400 },
+    });
     handle.session.configureIdle({ keepaliveIntervalMs: 100 });
     await wait(400);
+    record(task, { observed: { ready: handle.session.isReady, state: handle.session.state } });
 
     // Verify the session is still healthy — issue any trivial API that
     // requires `ready` state. `isReady` is a boolean flag.
@@ -54,7 +60,7 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
 
   // Going idle is an ordinary end, so the close is NO_ERROR: CONTROL_MESSAGE_TIMEOUT
   // is for a peer slow to answer a control message (d22 §12.2, d23 §12.2)
-  it('idleTimeoutMs closes the local session with NO_ERROR when no activity happens', async () => {
+  it('idleTimeoutMs closes the local session with NO_ERROR when no activity happens', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     handle = await makeSession(profile);
 
@@ -64,6 +70,10 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
       });
     });
 
+    record(task, {
+      expected: 'With a 250 ms idle timeout, the session closes locally with NO_ERROR and an idle-timeout reason within 2 s',
+      inputs: { idleTimeoutMs: 250 },
+    });
     handle.session.configureIdle({ idleTimeoutMs: 250 });
 
     // Give the timer enough real time to trip. Ticks run at threshold/4 =
@@ -73,6 +83,7 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
       wait(2_000).then(() => null),
     ]);
 
+    record(task, { observed: evt ? { code: evt.code, remote: evt.remote, reason: evt.reason } : { terminated: 'not within 2 s' } });
     expect(evt).not.toBeNull();
     expect(evt!.remote).toBe(false);
     expect(evt!.code).toBe(SessionErrorCodeDraft18.NO_ERROR);

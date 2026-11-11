@@ -13,6 +13,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -36,12 +37,17 @@ describe.skipIf(!isDraft18).each([
     requester = undefined;
   });
 
-  it('requester gets a REQUEST_OK or REQUEST_ERROR for the queried track', async () => {
+  it('requester gets a REQUEST_OK or REQUEST_ERROR for the queried track', async ({ task }) => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, `status-${label}`);
+
+    record(task, {
+      expected: 'TRACK_STATUS settles with REQUEST_OK (with a Request ID, and a bigint Largest Location if present) or REQUEST_ERROR',
+      inputs: { namespace: namespace.join('/'), track: track.name },
+    });
 
     pub = await makeSession(profile);
     requester = await makeSession(profile);
@@ -67,6 +73,12 @@ describe.skipIf(!isDraft18).each([
     } catch (err) {
       if (/TRACK_STATUS failed/.test((err as Error).message)) settled = 'error';
       else throw err;
+      record(task, { observed: { outcome: 'REQUEST_ERROR', error: err } });
+    }
+    if (settled === 'ok') {
+      record(task, {
+        observed: { outcome: 'REQUEST_OK', requestId: result?.requestId, latestGroup: result?.latestGroup, latestObject: result?.latestObject },
+      });
     }
     expect(settled).toBeDefined();
 

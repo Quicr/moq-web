@@ -21,6 +21,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -40,12 +41,17 @@ describe.skipIf(!isDraft18)('TRACK_STATUS LARGEST_OBJECT round-trip', () => {
     requester = undefined;
   });
 
-  it('returns a TrackStatusResult; latestGroup/latestObject shape is valid when present', async () => {
+  it('returns a TrackStatusResult; latestGroup/latestObject shape is valid when present', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'largest');
+
+    record(task, {
+      expected: 'TRACK_STATUS after 3 objects answers with a Request ID and, if present, a non-negative Largest Location (REQUEST_ERROR tolerated)',
+      inputs: { namespace: namespace.join('/'), track: track.name, objectsSent: ['0/0', '1/0', '2/0'] },
+    });
 
     pub = await makeSession(profile);
     requester = await makeSession(profile);
@@ -75,6 +81,7 @@ describe.skipIf(!isDraft18)('TRACK_STATUS LARGEST_OBJECT round-trip', () => {
     } catch (err) {
       if (!/TRACK_STATUS failed/.test((err as Error).message)) throw err;
       errored = true;
+      record(task, { observed: { outcome: 'REQUEST_ERROR', error: err } });
     }
 
     if (errored) {
@@ -82,6 +89,9 @@ describe.skipIf(!isDraft18)('TRACK_STATUS LARGEST_OBJECT round-trip', () => {
       return;
     }
 
+    record(task, {
+      observed: { outcome: 'REQUEST_OK', requestId: result?.requestId, latestGroup: result?.latestGroup, latestObject: result?.latestObject },
+    });
     expect(result).toBeDefined();
     expect(typeof result!.requestId).toBe('bigint');
 

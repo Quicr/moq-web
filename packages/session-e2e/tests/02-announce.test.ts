@@ -11,6 +11,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -27,11 +28,21 @@ describe.each([
     handle = undefined;
   });
 
-  it('relay acknowledges announced namespace', async () => {
+  it('relay acknowledges announced namespace', async ({ task }) => {
     const profile = resolveProfile(raw);
     const namespace = makeNamespace(profile, `announce-${label}`);
 
+    record(task, {
+      expected: 'The relay answers PUBLISH_NAMESPACE with REQUEST_OK, so announceNamespace() resolves',
+      inputs: { namespace: namespace.join('/') },
+    });
+
     handle = await makeSession(profile);
-    await expect(handle.session.announceNamespace(namespace)).resolves.toBeUndefined();
+    const announced = handle.session.announceNamespace(namespace);
+    announced.then(
+      () => record(task, { observed: { outcome: 'REQUEST_OK' } }),
+      (err: unknown) => record(task, { observed: { outcome: 'rejected', error: err } }),
+    );
+    await expect(announced).resolves.toBeUndefined();
   });
 });

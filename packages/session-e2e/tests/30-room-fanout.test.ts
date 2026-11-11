@@ -13,6 +13,7 @@
 
 import { afterEach, describe, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -30,13 +31,17 @@ describe('Room fan-out (studio-style N-peer topology)', () => {
     peers = [];
   });
 
-  it(`${PEER_COUNT} peers joining the same room each see every other peer's announcement`, async () => {
+  it(`${PEER_COUNT} peers joining the same room each see every other peer's announcement`, async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const room = `room-${crypto.randomUUID().slice(0, 8)}`;
     const roomPrefix = [...profile.namespacePrefix, room];
 
     const peerIds = Array.from({ length: PEER_COUNT }, (_, i) => `peer${i + 1}`);
     const peerNamespaces = peerIds.map((id) => [...roomPrefix, id]);
+    record(task, {
+      expected: `Each of the ${PEER_COUNT} peers sees namespace-announced for the other ${PEER_COUNT - 1}`,
+      inputs: { peers: PEER_COUNT, roomPrefix: roomPrefix.join('/'), settleMs: SETTLE_MS },
+    });
 
     // Track every announcement each peer observes.
     const seen: Set<string>[] = peerIds.map(() => new Set());
@@ -93,6 +98,12 @@ describe('Room fan-out (studio-style N-peer topology)', () => {
       }
     }
 
+    record(task, {
+      observed: {
+        announcementsSeen: Object.fromEntries(peerIds.map((id, i) => [id, [...seen[i]].map((ns) => ns.split('/').at(-1))])),
+        missing: failures.length,
+      },
+    });
     if (failures.length > 0) {
       const summary = peerIds
         .map((_, i) => `  peer${i + 1} saw: [${[...seen[i]].join(', ') || '(nothing)'}]`)

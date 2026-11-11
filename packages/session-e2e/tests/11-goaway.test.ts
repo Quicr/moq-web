@@ -13,6 +13,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -33,12 +34,14 @@ describe.skipIf(!isDraft18).each([
     handle = undefined;
   });
 
-  it('client-initiated goAway moves session to closing state', async () => {
+  it('client-initiated goAway moves session to closing state', async ({ task }) => {
     const profile = resolveProfile(raw);
     handle = await makeSession(profile);
 
+    record(task, { expected: 'Sending GOAWAY moves the session to closing', inputs: { newSessionUri: 'none' } });
     await handle.session.goAway();
 
+    record(task, { observed: { state: handle.session.state } });
     expect(handle.session.state).toBe('closing');
   });
 });

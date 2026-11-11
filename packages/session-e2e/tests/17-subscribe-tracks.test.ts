@@ -14,6 +14,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -33,13 +34,18 @@ describe.skipIf(!isDraft18)('SUBSCRIBE_TRACKS with full parameter set', () => {
     sub = undefined;
   });
 
-  it('subscribeTracks resolves with the full FORWARD + SUBSCRIPTION_FILTER parameter set', async () => {
+  it('subscribeTracks resolves with the full FORWARD + SUBSCRIPTION_FILTER parameter set', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'subtracks');
     const prefix = namespace.slice(0, -1);
+
+    record(task, {
+      expected: 'SUBSCRIBE_TRACKS with FORWARD=1 and SUBSCRIPTION_FILTER=NEXT_GROUP_START is answered with REQUEST_OK (REQUEST_ERROR tolerated)',
+      inputs: { prefix: prefix.join('/'), published: `${namespace.join('/')}/${track.name}` },
+    });
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -62,8 +68,10 @@ describe.skipIf(!isDraft18)('SUBSCRIBE_TRACKS with full parameter set', () => {
       // Some relays reject SUBSCRIBE_TRACKS as unsupported — we still exercised
       // the wire path. Only rethrow if the failure is not a REQUEST_ERROR.
       if (!/SUBSCRIBE_TRACKS failed/.test((err as Error).message)) throw err;
+      record(task, { observed: { outcome: 'REQUEST_ERROR', error: err } });
       return;
     }
+    record(task, { observed: { outcome: 'REQUEST_OK', subscriptionId } });
     expect(typeof subscriptionId).toBe('number');
   });
 });

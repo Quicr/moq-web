@@ -14,6 +14,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -30,32 +31,46 @@ describe.skipIf(!isDraft18)('reserved namespace: leading \'.\' (§3.2.1)', () =>
     handle = undefined;
   });
 
-  it('rejects publish() to a reserved namespace after a live session is up', async () => {
+  it('rejects publish() to a reserved namespace after a live session is up', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
+    record(task, {
+      expected: 'publish() under a namespace starting with "." rejects locally, citing §3.2.1, before anything is sent',
+      inputs: { namespace: '.session', track: track.name },
+    });
     handle = await makeSession(profile);
 
-    await expect(
-      handle.session.publish(['.session'], track.name, {
-        priority: track.priority,
-        deliveryTimeout: track.deliveryTimeout,
-        deliveryMode: track.delivery,
-        skipForwardWait: true,
-      }),
-    ).rejects.toThrow(/§3.2.1/);
+    const published = handle.session.publish(['.session'], track.name, {
+      priority: track.priority,
+      deliveryTimeout: track.deliveryTimeout,
+      deliveryMode: track.delivery,
+      skipForwardWait: true,
+    });
+    published.then(
+      () => record(task, { observed: { outcome: 'resolved' } }),
+      (err: unknown) => record(task, { observed: { outcome: 'rejected', error: err } }),
+    );
+    await expect(published).rejects.toThrow(/§3.2.1/);
   });
 
-  it('rejects subscribe() to a reserved namespace', async () => {
+  it('rejects subscribe() to a reserved namespace', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
+    record(task, {
+      expected: 'subscribe() under a namespace starting with "." rejects locally, citing §3.2.1',
+      inputs: { namespace: '.reserved', track: track.name },
+    });
     handle = await makeSession(profile);
 
-    await expect(
-      handle.session.subscribe(['.reserved'], track.name),
-    ).rejects.toThrow(/§3.2.1/);
+    const subscribed = handle.session.subscribe(['.reserved'], track.name);
+    subscribed.then(
+      () => record(task, { observed: { outcome: 'resolved' } }),
+      (err: unknown) => record(task, { observed: { outcome: 'rejected', error: err } }),
+    );
+    await expect(subscribed).rejects.toThrow(/§3.2.1/);
   });
 });

@@ -14,6 +14,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { SessionErrorCodeDraft18, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -35,19 +36,28 @@ describe.skipIf(!isDraft18).each([
     handle = undefined;
   });
 
-  it('close({code: NO_ERROR}) leaves the session in state "none"', async () => {
+  it('close({code: NO_ERROR}) leaves the session in state "none"', async ({ task }) => {
     const profile = resolveProfile(raw);
     handle = await makeSession(profile);
 
+    record(task, {
+      expected: 'close() with NO_ERROR resolves and the session ends in state none',
+      inputs: { code: SessionErrorCodeDraft18.NO_ERROR, reason: 'test done' },
+    });
     await handle.session.close({ code: SessionErrorCodeDraft18.NO_ERROR, reason: 'test done' });
 
+    record(task, { observed: { state: handle.session.state } });
     expect(handle.session.state).toBe('none');
   });
 
-  it('close({code: PROTOCOL_VIOLATION}) plumbs the numeric code without throwing', async () => {
+  it('close({code: PROTOCOL_VIOLATION}) plumbs the numeric code without throwing', async ({ task }) => {
     const profile = resolveProfile(raw);
     handle = await makeSession(profile);
 
+    record(task, {
+      expected: 'close() with PROTOCOL_VIOLATION resolves and the session ends in state none',
+      inputs: { code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason: 'e2e-injected' },
+    });
     // The relay may respond with a QUIC-level abort; we only assert that the
     // client-side call resolves and the state machine moves off "ready".
     await expect(
@@ -56,6 +66,7 @@ describe.skipIf(!isDraft18).each([
         reason: 'e2e-injected',
       }),
     ).resolves.toBeUndefined();
+    record(task, { observed: { state: handle.session.state } });
     expect(handle.session.state).toBe('none');
   });
 });

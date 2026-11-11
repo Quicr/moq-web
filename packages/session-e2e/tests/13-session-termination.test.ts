@@ -19,6 +19,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { MessageTypeDraft18, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -39,24 +40,30 @@ describe.skipIf(!isDraft18).each([
     handle = undefined;
   });
 
-  it('local session.close() does NOT emit session-terminated', async () => {
+  it('local session.close() does NOT emit session-terminated', async ({ task }) => {
     const profile = resolveProfile(raw);
     handle = await makeSession(profile);
 
     const events: Array<{ code: number; remote: boolean }> = [];
     handle.session.on('session-terminated', (e) => events.push(e));
 
+    record(task, { expected: 'A local close() emits no session-terminated event' });
     await handle.session.close();
     // Allow the transport `closed` promise a tick to settle.
     await new Promise((r) => setTimeout(r, 50));
 
+    record(task, { observed: { sessionTerminatedEvents: events.length } });
     expect(events).toHaveLength(0);
   });
 
-  it('incoming GOAWAY with newSessionUri populates pendingMigrationUri', async () => {
+  it('incoming GOAWAY with newSessionUri populates pendingMigrationUri', async ({ task }) => {
     const profile = resolveProfile(raw);
     handle = await makeSession(profile);
 
+    record(task, {
+      expected: 'A GOAWAY carrying a New Session URI sets pendingMigrationUri and moves the session to closing',
+      inputs: { newSessionUri: 'https://alt-relay.example/moq', timeoutMs: 5000 },
+    });
     // Drive the private handler directly — same path a real GOAWAY takes.
     (handle.session as unknown as {
       handleIncomingGoAwayDraft18(m: {
@@ -71,14 +78,24 @@ describe.skipIf(!isDraft18).each([
       timeout: 5000n,
     });
 
+    record(task, { observed: { pendingMigrationUri: handle.session.pendingMigrationUri, state: handle.session.state } });
     expect(handle.session.pendingMigrationUri).toBe('https://alt-relay.example/moq');
     expect(handle.session.state).toBe('closing');
   });
 
-  it('migrate() rejects with a clear error in main-thread mode', async () => {
+  it('migrate() rejects with a clear error in main-thread mode', async ({ task }) => {
     const profile = resolveProfile(raw);
     handle = await makeSession(profile);
 
-    await expect(handle.session.migrate('https://foo.example/moq')).rejects.toThrow(/worker mode/);
+    record(task, {
+      expected: 'migrate() rejects with an error naming worker mode',
+      inputs: { uri: 'https://foo.example/moq' },
+    });
+    const migrated = handle.session.migrate('https://foo.example/moq');
+    migrated.then(
+      () => record(task, { observed: { outcome: 'resolved' } }),
+      (err: unknown) => record(task, { observed: { outcome: 'rejected', error: err } }),
+    );
+    await expect(migrated).rejects.toThrow(/worker mode/);
   });
 });

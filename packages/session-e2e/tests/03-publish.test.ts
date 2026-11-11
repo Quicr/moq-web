@@ -12,6 +12,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -28,12 +29,16 @@ describe.each([
     handle = undefined;
   });
 
-  it('relay accepts publish and assigns a track alias', async () => {
+  it('relay accepts publish and assigns a track alias', async ({ task }) => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, `publish-${label}`);
+    record(task, {
+      expected: 'The relay answers PUBLISH with REQUEST_OK and a non-negative Track Alias',
+      inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, priority: track.priority },
+    });
     handle = await makeSession(profile);
 
     const trackAlias = await handle.session.publish(namespace, track.name, {
@@ -44,6 +49,8 @@ describe.each([
       // exists. This test has no subscriber, so skip the forward wait.
       skipForwardWait: true,
     });
+
+    record(task, { observed: { trackAlias } });
 
     expect(typeof trackAlias).toBe('bigint');
     expect(trackAlias >= 0n).toBe(true);

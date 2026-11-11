@@ -21,6 +21,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { GroupOrder, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat } from '../lib/chat-generator.js';
@@ -44,12 +45,22 @@ describe.skipIf(!isDraft18)('priority scheduling (§7)', () => {
     sub2 = undefined;
   });
 
-  it('subscribers with different SUBSCRIBER_PRIORITY + GROUP_ORDER both receive objects', async () => {
+  it('subscribers with different SUBSCRIBER_PRIORITY + GROUP_ORDER both receive objects', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'priority');
+    record(task, {
+      expected: 'Both subscribers, with different priorities and group orders, receive at least one of the 4 objects',
+      inputs: {
+        namespace: namespace.join('/'),
+        track: track.name,
+        objects: 4,
+        subscriber1: 'priority 16, DESCENDING',
+        subscriber2: 'priority 240, ASCENDING',
+      },
+    });
 
     pub = await makeSession(profile);
     sub1 = await makeSession(profile);
@@ -98,6 +109,7 @@ describe.skipIf(!isDraft18)('priority scheduling (§7)', () => {
     // Give the relay a moment to forward objects to both subscribers.
     await new Promise((r) => setTimeout(r, 800));
 
+    record(task, { observed: { subscriber1Received: rx1.length, subscriber2Received: rx2.length } });
     expect(rx1.length).toBeGreaterThanOrEqual(1);
     expect(rx2.length).toBeGreaterThanOrEqual(1);
   });

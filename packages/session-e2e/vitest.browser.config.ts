@@ -4,10 +4,14 @@
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 
+import { ReportReporter } from './lib/report-reporter.js';
+
 const RELAY_URL =
   process.env.RELAY_URL ?? 'https://moqx-main.ci.openmoq.org:4433/moq-relay';
 const AUTH_TOKEN = process.env.MOQ_AUTH_TOKEN ?? '';
 const MOQT_VERSION = process.env.MOQT_VERSION ?? 'draft-18';
+// E2E_REPORT=<path> also writes a JSON report for the e2e report page
+const REPORT_PATH = process.env.E2E_REPORT;
 
 export default defineConfig({
   define: {
@@ -17,6 +21,7 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    ...(REPORT_PATH ? { reporters: ['default', new ReportReporter(REPORT_PATH)] } : {}),
     env: {
       VITE_RELAY_URL: RELAY_URL,
       VITE_MOQ_AUTH_TOKEN: AUTH_TOKEN,

@@ -78,6 +78,9 @@ jobs:
             cp -r dist-combined/apps/auth-demo/. dist-combined/
           fi
 
+      - name: Interop report page (reads its data from the e2e-reports branch)
+        run: cp -r site/interop dist-combined/interop
+
       - name: Rebuild workspace libs (draft-18)
         run: |
           pnpm run clean

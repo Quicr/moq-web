@@ -15,6 +15,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat } from '../lib/chat-generator.js';
@@ -47,12 +48,16 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
   ];
 
   for (const { kind, options } of cases) {
-    it(`SUBSCRIBE with filterType='${kind}' resolves`, async () => {
+    it(`SUBSCRIBE with filterType='${kind}' resolves`, async ({ task }) => {
       const profile = resolveProfile(chatStream as Profile);
       const track = profile.tracks[0];
       if (!track) throw new Error('profile has no tracks');
 
       const namespace = makeNamespace(profile, `filter-${kind}`);
+      record(task, {
+        expected: `The relay accepts a SUBSCRIBE with the ${kind} filter (a REQUEST_ERROR is tolerated)`,
+        inputs: { namespace: namespace.join('/'), track: track.name, options },
+      });
 
       pub = await makeSession(profile);
       sub = await makeSession(profile);
@@ -75,8 +80,10 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
         // acceptable for this coverage check, but a transport-level failure is
         // not.
         if (!/SUBSCRIBE|REQUEST_ERROR|forbidden|not.*allowed/i.test((err as Error).message)) throw err;
+        record(task, { observed: { outcome: 'rejected', error: err } });
         return;
       }
+      record(task, { observed: { outcome: 'SUBSCRIBE_OK', subscriptionId } });
       expect(typeof subscriptionId).toBe('number');
     });
   }
@@ -94,7 +101,7 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
   ];
 
   for (const { kind, options, lastGroup } of deliveryCases) {
-    it(`SUBSCRIBE with filterType='${kind}' delivers through group ${lastGroup}`, async () => {
+    it(`SUBSCRIBE with filterType='${kind}' delivers through group ${lastGroup}`, async ({ task }) => {
       const profile = resolveProfile(chatStream as Profile);
       const track = profile.tracks[0];
       if (!track) throw new Error('profile has no tracks');
@@ -115,6 +122,10 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
       // every delivery so objects past the range are caught too.
       const perGroup = track.payload.objectsPerGroup ?? 10;
       const expected = (lastGroup + 1) * perGroup;
+      record(task, {
+        expected: `The ${kind} filter delivers all ${expected} objects of groups 0..${lastGroup} and nothing past group ${lastGroup}`,
+        inputs: { namespace: namespace.join('/'), track: track.name, options, published: track.payload.messages, objectsPerGroup: perGroup },
+      });
       const collector = collectObjects(expected, 20_000);
       let maxGroup = -1;
       await sub.session.subscribe(namespace, track.name, options, (data, groupId, objectId, timestamp) => {
@@ -131,10 +142,12 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
       }
 
       const received = await collector.done;
+      record(task, { observed: { received: received.length } });
       expect(received).toHaveLength(expected);
 
       // Give any out-of-range objects time to (wrongly) arrive.
       await new Promise((r) => setTimeout(r, 500));
+      record(task, { observed: { highestGroup: maxGroup } });
       expect(maxGroup).toBe(lastGroup);
     });
   }

@@ -15,6 +15,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -34,12 +35,16 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
     sub = undefined;
   });
 
-  it('publisher advertises EXPIRES on SUBSCRIBE_OK when AnnounceOptions.expires is set', async () => {
+  it('publisher advertises EXPIRES on SUBSCRIBE_OK when AnnounceOptions.expires is set', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'expires');
+    record(task, {
+      expected: 'A SUBSCRIBE to a track published with EXPIRES resolves with a subscription ID',
+      inputs: { namespace: namespace.join('/'), track: track.name, expiresMs: 30_000 },
+    });
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -55,15 +60,20 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
     await new Promise((r) => setTimeout(r, 250));
 
     const subscriptionId = await sub.session.subscribe(namespace, track.name);
+    record(task, { observed: { subscriptionId } });
     expect(typeof subscriptionId).toBe('number');
   });
 
-  it('subscriber can send REQUEST_UPDATE with NEW_GROUP_REQUEST', async () => {
+  it('subscriber can send REQUEST_UPDATE with NEW_GROUP_REQUEST', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'ngr');
+    record(task, {
+      expected: 'After SUBSCRIBE, a REQUEST_UPDATE with NEW_GROUP_REQUEST is sent without error',
+      inputs: { namespace: namespace.join('/'), track: track.name, dynamicGroups: true, newGroupRequest: true },
+    });
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -80,6 +90,7 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
 
     const subscriptionId = await sub.session.subscribe(namespace, track.name);
     const info = sub.session.getSubscription(subscriptionId);
+    record(task, { observed: { subscriptionId, requestId: info?.requestId } });
     expect(info).toBeDefined();
 
     // Send REQUEST_UPDATE with NEW_GROUP_REQUEST (no Group known yet, so 0). Some relays may not
@@ -88,14 +99,19 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
       newGroupRequest: true,
       awaitAck: false,
     });
+    record(task, { observed: { requestUpdateSent: true } });
   });
 
-  it('subscriber can send SUBSCRIBE_TRACKS for a namespace prefix', async () => {
+  it('subscriber can send SUBSCRIBE_TRACKS for a namespace prefix', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'tnp');
+    record(task, {
+      expected: 'SUBSCRIBE_TRACKS for the namespace resolves, or is refused without a protocol violation',
+      inputs: { prefix: namespace.join('/'), track: track.name },
+    });
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -111,8 +127,10 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
 
     try {
       const subId = await sub.session.subscribeTracks(namespace);
+      record(task, { observed: { outcome: 'REQUEST_OK', subscriptionId: subId } });
       expect(typeof subId).toBe('number');
     } catch (err) {
+      record(task, { observed: { outcome: 'rejected', error: err } });
       // Some relays reject SUBSCRIBE_TRACKS entirely (draft-18 §10.19) or
       // simply reset the request stream. The wire-level encoding is what the
       // codec unit test guarantees; here we only require that the peer accepts

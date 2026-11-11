@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MOQTransport, type SetupExtensionValue, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { MOQTSession } from '@moq-web/session';
 
+import { record } from '../lib/record.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
 
@@ -37,7 +38,7 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
     transport = undefined;
   });
 
-  it('completes SETUP round-trip with a client-advertised unknown extension', async () => {
+  it('completes SETUP round-trip with a client-advertised unknown extension', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
 
     transport = new MOQTransport();
@@ -57,11 +58,16 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
       [0x41, { bytes: new TextEncoder().encode('moq-web-e2e') }],
     ]));
 
+    record(task, {
+      expected: 'The relay ignores the unknown SETUP extensions and setup completes',
+      inputs: { extensions: ['0x40 = varint 0x1234', "0x41 = bytes 'moq-web-e2e'"] },
+    });
     await session.setup();
+    record(task, { observed: { ready: session.isReady } });
     expect(session.isReady).toBe(true);
   });
 
-  it('exposes peerExtensions after SERVER_SETUP (may be undefined if relay has none)', async () => {
+  it('exposes peerExtensions after SERVER_SETUP (may be undefined if relay has none)', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
 
     transport = new MOQTransport();
@@ -79,6 +85,12 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
     // The getter is defined either way. If the relay does advertise any
     // extensions, every value must satisfy the parity invariant.
     const peer = session.peerExtensions;
+    record(task, {
+      expected: 'Every extension the relay advertises has a varint value for an even key and bytes for an odd key',
+      observed: {
+        peerExtensions: peer === undefined ? 'none' : [...peer].map(([key, value]) => `0x${key.toString(16)} ${'varint' in value ? 'varint' : 'bytes'}`),
+      },
+    });
     if (peer !== undefined) {
       for (const [key, value] of peer) {
         const parityIsEven = key % 2 === 0;
@@ -88,7 +100,7 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
     }
   });
 
-  it('rejects setClientExtensions() after setup() has started', async () => {
+  it('rejects setClientExtensions() after setup() has started', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     transport = new MOQTransport();
     await transport.connect(profile.relayUrl);
@@ -102,6 +114,14 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
 
     await session.setup();
 
+    record(task, { expected: 'setClientExtensions() throws once setup() has run' });
+    let thrown: unknown;
+    try {
+      session.setClientExtensions(new Map([[0x40, { varint: 1n }]]));
+    } catch (err) {
+      thrown = err;
+    }
+    record(task, { observed: { error: thrown ?? 'none thrown' } });
     expect(() =>
       session!.setClientExtensions(new Map([[0x40, { varint: 1n }]])),
     ).toThrow(/after setup\(\)/);

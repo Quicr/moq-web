@@ -12,6 +12,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat } from '../lib/chat-generator.js';
@@ -37,7 +38,7 @@ describe.each([
     sub = undefined;
   });
 
-  it('cancel halts further fetch deliveries', async () => {
+  it('cancel halts further fetch deliveries', async ({ task }) => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -47,6 +48,11 @@ describe.each([
     const payload = { ...track.payload, messages: CANCEL_MESSAGES, sizeBytes: CANCEL_SIZE_BYTES };
     const messages = Array.from(generateChat(payload));
     const lastGroup = messages[messages.length - 1]?.groupId ?? 0;
+
+    record(task, {
+      expected: `After cancelFetch, no more objects arrive and fewer than all ${messages.length} are delivered (skipped if the relay refuses FETCH)`,
+      inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, published: messages.length, range: `0/0..${lastGroup}/${perGroup - 1}` },
+    });
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -95,10 +101,12 @@ describe.each([
     errorOff();
 
     if (fetchFailed) {
+      record(task, { observed: { outcome: 'fetch-error', error: fetchFailed } });
       console.warn(`FETCH not supported by relay: ${fetchFailed}`);
       return;
     }
 
+    record(task, { observed: { beforeCancel: received } });
     expect(received).toBeGreaterThan(0);
 
     await sub.session.cancelFetch(requestId);
@@ -110,6 +118,7 @@ describe.each([
     // Wait longer than the largest realistic in-flight window and confirm
     // deliveries have truly stopped.
     await new Promise((r) => setTimeout(r, 1_000));
+    record(task, { observed: { settledAfterCancel: settled, final: received } });
     expect(received).toBe(settled);
     // And, importantly, we did NOT drain the entire range.
     expect(received).toBeLessThan(messages.length);

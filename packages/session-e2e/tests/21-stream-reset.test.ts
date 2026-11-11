@@ -15,6 +15,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { StreamResetErrorCodeDraft18, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat } from '../lib/chat-generator.js';
@@ -36,12 +37,16 @@ describe.skipIf(!isDraft18)('subgroup stream-reset (§11.4.3)', () => {
     sub = undefined;
   });
 
-  it('publisher emits stream-reset with the requested §15.10.4 code', async () => {
+  it('publisher emits stream-reset with the requested §15.10.4 code', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'stream-reset');
+    record(task, {
+      expected: 'Resetting the open subgroup stream emits exactly one publisher stream-reset with TOO_FAR_BEHIND and the given reason',
+      inputs: { namespace: namespace.join('/'), track: track.name, objectsBeforeReset: 3, code: 'TOO_FAR_BEHIND', reason: 'e2e-injected too-far-behind' },
+    });
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -81,6 +86,11 @@ describe.skipIf(!isDraft18)('subgroup stream-reset (§11.4.3)', () => {
       'e2e-injected too-far-behind',
     );
 
+    record(task, {
+      observed: {
+        events: pubEvents.map((e) => ({ side: e.side, code: e.code, reason: e.reason, trackAlias: e.trackAlias })),
+      },
+    });
     expect(pubEvents).toHaveLength(1);
     expect(pubEvents[0].side).toBe('publisher');
     expect(pubEvents[0].code).toBe(StreamResetErrorCodeDraft18.TOO_FAR_BEHIND);

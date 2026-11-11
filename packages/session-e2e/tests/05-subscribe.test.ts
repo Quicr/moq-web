@@ -11,6 +11,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat, expectedMessage } from '../lib/chat-generator.js';
@@ -32,7 +33,7 @@ describe.each([
     sub = undefined;
   });
 
-  it('subscriber receives every published object byte-exactly, in order', async () => {
+  it('subscriber receives every published object byte-exactly, in order', async ({ task }) => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -53,6 +54,10 @@ describe.each([
     });
 
     const total = track.payload.messages;
+    record(task, {
+      expected: `The subscriber receives all ${total} objects, byte for byte${track.delivery === 'stream' ? ', in order' : ''}`,
+      inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, objects: total, trackAlias },
+    });
     const collector = collectObjects(total, 20_000);
 
     await sub.session.subscribe(namespace, track.name, {}, collector.onObject);
@@ -68,6 +73,15 @@ describe.each([
     }
 
     const received = await collector.done;
+    const mismatched = received.filter((o) => !bytesEqual(o.bytes, expectedMessage(track.payload, o.groupId, o.objectId)));
+    record(task, {
+      observed: {
+        received: received.length,
+        first: received[0] ? `${received[0].groupId}/${received[0].objectId}` : 'none',
+        last: received.at(-1) ? `${received.at(-1)!.groupId}/${received.at(-1)!.objectId}` : 'none',
+        mismatched: mismatched.map((o) => `${o.groupId}/${o.objectId}`),
+      },
+    });
 
     expect(received).toHaveLength(total);
     // Only a stream preserves order; datagrams can legitimately reorder.

@@ -27,6 +27,7 @@ import {
 import { MediaSession, type MediaConfig } from '@moq-web/media';
 import type { IncomingPublishEvent } from '@moq-web/session';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -74,10 +75,14 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
     ctxs = [];
   });
 
-  it(`${PEER_COUNT} peers each receive parseable FullCatalog from every other peer`, async () => {
+  it(`${PEER_COUNT} peers each receive parseable FullCatalog from every other peer`, async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const room = `room-${crypto.randomUUID().slice(0, 8)}`;
     const roomPrefix = [...profile.namespacePrefix, room];
+    record(task, {
+      expected: `Each of the ${PEER_COUNT} peers receives a FullCatalog listing video and audio from every other peer`,
+      inputs: { peers: PEER_COUNT, roomPrefix: roomPrefix.join('/'), tracks: ['timeline', 'video', 'audio', CATALOG_TRACK_NAME], settleMs: SETTLE_MS },
+    });
 
     const peerIdFromNs = (ns: string[]): string | undefined => {
       if (ns.length < roomPrefix.length + 1) return undefined;
@@ -210,6 +215,15 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
       }
     }
 
+    record(task, {
+      observed: {
+        perPeer: Object.fromEntries(ctxs.map((c) => [c.id, {
+          catalogsFrom: [...c.peerCatalogs.keys()],
+          discovered: [...c.discoveredPeers],
+        }])),
+        failures: failures.slice(0, 10),
+      },
+    });
     if (failures.length > 0) {
       const summary = ctxs.map((c) =>
         `  ${c.id}: catalogsFrom=[${[...c.peerCatalogs.keys()].join(', ')}] ` +

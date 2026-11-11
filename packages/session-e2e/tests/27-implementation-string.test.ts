@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MOQTransport, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { MOQTSession } from '@moq-web/session';
 
+import { record } from '../lib/record.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
 
@@ -33,7 +34,7 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
     transport = undefined;
   });
 
-  it('completes SETUP without MOQT_IMPLEMENTATION by default', async () => {
+  it('completes SETUP without MOQT_IMPLEMENTATION by default', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     transport = new MOQTransport();
     await transport.connect(profile.relayUrl);
@@ -45,12 +46,14 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
       session.setAuthToken(profile.authToken, tokenType);
     }
 
+    record(task, { expected: 'Setup without MOQT_IMPLEMENTATION completes', inputs: { implementation: 'none' } });
     // No setImplementationString() call — default path.
     await session.setup();
+    record(task, { observed: { ready: session.isReady } });
     expect(session.isReady).toBe(true);
   });
 
-  it('completes SETUP when the caller opts in with an implementation string', async () => {
+  it('completes SETUP when the caller opts in with an implementation string', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     transport = new MOQTransport();
     await transport.connect(profile.relayUrl);
@@ -62,12 +65,17 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
       session.setAuthToken(profile.authToken, tokenType);
     }
 
+    record(task, {
+      expected: 'Setup carrying a MOQT_IMPLEMENTATION string completes; the relay ignores it',
+      inputs: { implementation: 'moq-web e2e-27' },
+    });
     session.setImplementationString('moq-web e2e-27');
     await session.setup();
+    record(task, { observed: { ready: session.isReady } });
     expect(session.isReady).toBe(true);
   });
 
-  it('rejects setImplementationString() once setup() has started', async () => {
+  it('rejects setImplementationString() once setup() has started', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     transport = new MOQTransport();
     await transport.connect(profile.relayUrl);
@@ -80,6 +88,14 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
     }
 
     await session.setup();
+    record(task, { expected: 'setImplementationString() throws once setup() has run', inputs: { implementation: 'too-late' } });
+    let thrown: unknown;
+    try {
+      session.setImplementationString('too-late');
+    } catch (err) {
+      thrown = err;
+    }
+    record(task, { observed: { error: thrown ?? 'none thrown' } });
     expect(() => session!.setImplementationString('too-late')).toThrow(/after setup\(\)/);
   });
 });

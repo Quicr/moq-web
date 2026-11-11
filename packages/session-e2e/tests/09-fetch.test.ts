@@ -15,6 +15,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat, expectedMessage } from '../lib/chat-generator.js';
@@ -43,7 +44,7 @@ describe.each([
     sub = undefined;
   });
 
-  it('fetches a subrange and byte-verifies the payload', async () => {
+  it('fetches a subrange and byte-verifies the payload', async ({ task }) => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -82,6 +83,10 @@ describe.each([
       ? { startGroup: 0, startObject: 0, endGroup: lastGroup, endObject: perGroup - 1 }
       : { startGroup: 1, startObject: 0, endGroup: 1, endObject: perGroup - 1 };
     const expected = isLarge ? payload.messages : perGroup;
+    record(task, {
+      expected: `FETCH of groups ${range.startGroup}..${range.endGroup} returns all ${expected} objects, byte for byte (skipped if the relay refuses FETCH)`,
+      inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, published: payload.messages, objectBytes: payload.sizeBytes, range },
+    });
 
     const received: Array<{ groupId: number; objectId: number; data: Uint8Array }> = [];
     let fetchFailed: string | undefined;
@@ -104,10 +109,21 @@ describe.each([
     }
 
     if (fetchFailed) {
+      record(task, { observed: { outcome: 'fetch-error', error: fetchFailed, received: received.length } });
       console.warn(`FETCH not supported by relay: ${fetchFailed}`);
       return;
     }
 
+    record(task, {
+      observed: {
+        received: received.length,
+        ids: received.slice(0, 12).map((o) => `${o.groupId}/${o.objectId}`),
+        mismatched: received
+          .filter((o) => !bytesEqual(o.data, expectedMessage(payload, o.groupId, o.objectId)))
+          .slice(0, 12)
+          .map((o) => `${o.groupId}/${o.objectId}`),
+      },
+    });
     expect(received).toHaveLength(expected);
     for (const o of received) {
       const want = expectedMessage(payload, o.groupId, o.objectId);

@@ -12,6 +12,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat } from '../lib/chat-generator.js';
@@ -32,7 +33,7 @@ describe.each([
     sub = undefined;
   });
 
-  it('pausing suppresses delivery; resuming restarts it', async () => {
+  it('pausing suppresses delivery; resuming restarts it', async ({ task }) => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
@@ -64,6 +65,10 @@ describe.each([
     // Send first batch, wait for arrivals, then pause.
     const messages = Array.from(generateChat(track.payload));
     const half = Math.floor(messages.length / 2);
+    record(task, {
+      expected: 'Objects arrive before the pause, and more arrive within 5 s of resuming',
+      inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, objectsBeforePause: half, objectsAfterResume: messages.length - half },
+    });
 
     for (const msg of messages.slice(0, half)) {
       await pub.session.sendObject(trackAlias, msg.bytes, {
@@ -75,6 +80,7 @@ describe.each([
     // Give delivery time to catch up before pausing.
     await new Promise((r) => setTimeout(r, 500));
     const beforePause = received;
+    record(task, { observed: { beforePause } });
     expect(beforePause).toBeGreaterThan(0);
 
     await sub.session.pauseSubscription(subscriptionId);
@@ -99,6 +105,7 @@ describe.each([
     while (received === afterPause && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 100));
     }
+    record(task, { observed: { afterPause, afterResume: received } });
     expect(received).toBeGreaterThan(afterPause);
   });
 });

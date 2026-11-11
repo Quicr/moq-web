@@ -13,6 +13,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -32,13 +33,18 @@ describe.each([
     sub = undefined;
   });
 
-  it('subscriber sees namespace-announced when publisher announces under the prefix', async () => {
+  it('subscriber sees namespace-announced when publisher announces under the prefix', async ({ task }) => {
     const profile = resolveProfile(raw);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, `nssub-${label}`);
     const prefix = namespace.slice(0, -1);
+
+    record(task, {
+      expected: 'After SUBSCRIBE_NAMESPACE on the prefix, the subscriber gets namespace-announced for the namespace the publisher announces, within 10 s',
+      inputs: { prefix: prefix.join('/'), namespace: namespace.join('/') },
+    });
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -75,7 +81,11 @@ describe.each([
       deliveryMode: track.delivery,
     });
 
-    const evt = await announced;
+    const evt = await announced.catch((err: unknown) => {
+      record(task, { observed: { announced: 'none within 10 s', subscriberState: sub!.session.state } });
+      throw err;
+    });
+    record(task, { observed: { announced: evt.namespace.join('/') } });
     expect(evt.namespace.join('/')).toBe(namespace.join('/'));
   });
 });

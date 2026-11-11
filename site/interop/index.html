@@ -1,0 +1,970 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moq-web interop report</title>
+<meta name="description" content="Nightly MOQT interop results for moq-web against live relays, per draft, with every test's expectation, inputs, observations and logs.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M8 21l5-10 3 6 3-4 5 8' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f1f3f6;
+  --border: #e2e5ea;
+  --text: #15181d;
+  --muted: #5d6573;
+  --faint: #8a92a0;
+  --accent: #2563eb;
+  --accent-soft: #e8efff;
+  --pass: #15803d;
+  --pass-soft: #e6f6ec;
+  --fail: #c2261d;
+  --fail-soft: #fdeceb;
+  --warn: #a15c00;
+  --warn-soft: #fdf3e2;
+  --skip: #6b7280;
+  --skip-soft: #eef0f3;
+  --code-bg: #f4f5f7;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .06);
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1116;
+    --surface: #161a21;
+    --surface-2: #1c212a;
+    --border: #2a303b;
+    --text: #e7eaf0;
+    --muted: #a0a8b6;
+    --faint: #737c8c;
+    --accent: #6d9eff;
+    --accent-soft: #1c2a48;
+    --pass: #4ade80;
+    --pass-soft: #12301f;
+    --fail: #f87171;
+    --fail-soft: #3a1717;
+    --warn: #fbbf24;
+    --warn-soft: #362a10;
+    --skip: #9ca3af;
+    --skip-soft: #23272f;
+    --code-bg: #10141a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1116;
+  --surface: #161a21;
+  --surface-2: #1c212a;
+  --border: #2a303b;
+  --text: #e7eaf0;
+  --muted: #a0a8b6;
+  --faint: #737c8c;
+  --accent: #6d9eff;
+  --accent-soft: #1c2a48;
+  --pass: #4ade80;
+  --pass-soft: #12301f;
+  --fail: #f87171;
+  --fail-soft: #3a1717;
+  --warn: #fbbf24;
+  --warn-soft: #362a10;
+  --skip: #9ca3af;
+  --skip-soft: #23272f;
+  --code-bg: #10141a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button, input, select { font: inherit; color: inherit; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+
+/* Header */
+header.top {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 5;
+}
+.top-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; margin-right: auto; min-width: 0; }
+.brand svg { flex: none; }
+.brand h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; white-space: nowrap; }
+.brand .sub { color: var(--muted); font-size: 12.5px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); background: var(--surface);
+  padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
+  color: var(--text); white-space: nowrap;
+}
+.btn:hover { background: var(--surface-2); text-decoration: none; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.small { padding: 3px 9px; font-size: 12px; }
+.btn[disabled] { opacity: .55; cursor: not-allowed; }
+
+main.wrap { padding-top: 20px; padding-bottom: 60px; }
+section { margin-bottom: 22px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.card-head { display: flex; align-items: baseline; gap: 10px; padding: 14px 16px 10px; flex-wrap: wrap; }
+.card-head h2 { font-size: 15px; margin: 0; }
+.card-head .meta { color: var(--muted); font-size: 12.5px; }
+.card-head .spacer { margin-left: auto; }
+.card-body { padding: 0 16px 16px; }
+
+/* Banners */
+.banner { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; border: 1px solid var(--border); background: var(--surface); }
+.banner.running { background: var(--accent-soft); border-color: transparent; }
+.banner.error { background: var(--fail-soft); border-color: transparent; }
+.dot-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite; flex: none; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+/* Summary stats */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.stat { padding: 12px 14px; }
+.stat .label { color: var(--muted); font-size: 12px; }
+.stat .value { font-size: 22px; font-weight: 650; letter-spacing: -.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat .hint { color: var(--faint); font-size: 12px; }
+
+/* Matrix */
+.matrix-scroll { overflow-x: auto; }
+table.matrix { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 560px; }
+.matrix th, .matrix td { padding: 8px 10px; text-align: left; border-top: 1px solid var(--border); }
+.matrix thead th { border-top: 0; color: var(--muted); font-weight: 500; font-size: 12px; }
+.matrix .relay-name { font-weight: 600; }
+.matrix .relay-url { color: var(--faint); font-size: 12px; font-family: var(--mono); word-break: break-all; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 3px 10px;
+  font-size: 12.5px; font-weight: 600; border: 1px solid transparent; cursor: pointer; background: none;
+  font-variant-numeric: tabular-nums;
+}
+.chip .exp { font-weight: 500; font-size: 11px; opacity: .8; }
+.chip.passed { background: var(--pass-soft); color: var(--pass); }
+.chip.failed { background: var(--fail-soft); color: var(--fail); }
+.chip.error, .chip.cancelled { background: var(--warn-soft); color: var(--warn); }
+.chip.skipped { background: var(--skip-soft); color: var(--skip); }
+.chip.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip.none { color: var(--faint); cursor: default; font-weight: 400; }
+
+/* Runs */
+.runs { display: flex; flex-direction: column; }
+.run {
+  display: grid; grid-template-columns: 170px 110px 1fr auto; gap: 10px; align-items: center;
+  padding: 8px 10px; border-top: 1px solid var(--border); cursor: pointer; border-radius: 6px;
+}
+.run:first-child { border-top: 0; }
+.run:hover { background: var(--surface-2); }
+.run.selected { background: var(--accent-soft); }
+.run .when { font-variant-numeric: tabular-nums; }
+.tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+.tag.custom { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.dots { display: flex; gap: 4px; flex-wrap: wrap; }
+.dots span { width: 10px; height: 10px; border-radius: 3px; }
+.dots .passed { background: var(--pass); }
+.dots .failed { background: var(--fail); }
+.dots .error, .dots .cancelled { background: var(--warn); }
+.dots .skipped { background: var(--skip); }
+.run .score { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
+
+/* Detail */
+.detail-head { display: flex; gap: 14px; align-items: flex-start; padding: 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.detail-head h2 { font-size: 16px; margin: 0 0 2px; }
+.detail-head .url { font-family: var(--mono); font-size: 12.5px; color: var(--muted); word-break: break-all; }
+.detail-head .right { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.bar { height: 8px; border-radius: 99px; background: var(--skip-soft); overflow: hidden; display: flex; margin-top: 8px; width: 260px; max-width: 100%; }
+.bar .p { background: var(--pass); }
+.bar .f { background: var(--fail); }
+.bar .s { background: var(--skip); opacity: .5; }
+.toolbar { display: flex; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: var(--surface); padding: 5px 11px; font-size: 12.5px; cursor: pointer; border-left: 1px solid var(--border); }
+.seg button:first-child { border-left: 0; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.search { flex: 1; min-width: 160px; max-width: 320px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); }
+.cell-errors { margin: 12px 16px 0; }
+
+.file { border-bottom: 1px solid var(--border); }
+.file:last-child { border-bottom: 0; }
+.file-head { display: flex; gap: 10px; align-items: baseline; padding: 12px 16px 6px; flex-wrap: wrap; }
+.file-head .fname { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+.file-head .ftitle { font-weight: 600; }
+.file-head .fcount { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.file-desc { margin: 0 16px 8px; color: var(--muted); font-size: 13px; white-space: pre-line; }
+.file-desc summary { cursor: pointer; color: var(--faint); font-size: 12px; list-style: none; }
+.file-desc summary::-webkit-details-marker { display: none; }
+.file-desc summary::before { content: "▸ "; }
+.file-desc[open] summary::before { content: "▾ "; }
+
+.test { border-top: 1px solid var(--border); margin: 0 16px; }
+.test:first-of-type { border-top: 0; }
+.test > summary { display: flex; gap: 10px; align-items: center; padding: 8px 2px; cursor: pointer; list-style: none; }
+.test > summary::-webkit-details-marker { display: none; }
+.test > summary:hover .tname { color: var(--accent); }
+.icon { width: 18px; height: 18px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #fff; }
+.icon.passed { background: var(--pass); }
+.icon.failed { background: var(--fail); }
+.icon.skipped { background: var(--skip); }
+.tname { flex: 1; min-width: 0; }
+.tname .group { color: var(--faint); font-size: 12px; }
+.tdur { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tbody { padding: 4px 0 14px 28px; display: grid; gap: 10px; }
+.kv-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin-bottom: 4px; }
+.expected { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+table.kv { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.kv td { padding: 4px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+.kv tr:first-child td { border-top: 0; }
+.kv td:first-child { color: var(--muted); width: 180px; white-space: nowrap; }
+.kv td:last-child { font-family: var(--mono); word-break: break-word; }
+.kv-box { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+pre.code {
+  margin: 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
+  max-height: 360px; overflow: auto;
+}
+pre.code.err { border-color: color-mix(in srgb, var(--fail) 35%, var(--border)); }
+.log-line.warn { color: var(--warn); }
+.log-line.error { color: var(--fail); }
+.none-recorded { color: var(--faint); font-size: 12.5px; }
+.empty { padding: 28px 16px; text-align: center; color: var(--muted); }
+
+/* Relays */
+.relays { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.relay-card { padding: 12px 14px; }
+.relay-card .rn { font-weight: 600; }
+.relay-card .ru { font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; }
+.relay-card .rd { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+.relay-card .notes { margin-top: 6px; color: var(--muted); font-size: 12.5px; }
+
+/* Dialog */
+dialog { border: 1px solid var(--border); border-radius: 12px; padding: 0; background: var(--surface); color: var(--text); width: min(560px, calc(100vw - 32px)); box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+dialog::backdrop { background: rgba(10, 14, 20, .45); }
+.dlg-head { padding: 16px 18px 8px; display: flex; align-items: center; }
+.dlg-head h3 { margin: 0; font-size: 16px; }
+.dlg-head .x { margin-left: auto; border: 0; background: none; font-size: 20px; cursor: pointer; color: var(--muted); }
+.dlg-body { padding: 4px 18px 8px; display: grid; gap: 12px; }
+.dlg-foot { padding: 12px 18px 16px; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid var(--border); margin-top: 6px; }
+.field label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 4px; }
+.field input[type=text], .field input[type=url], .field input[type=password] { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.checks { display: flex; gap: 6px 14px; flex-wrap: wrap; }
+.checks label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--text); }
+.note { font-size: 12.5px; color: var(--muted); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+.note code, .help code { font-family: var(--mono); font-size: 12px; }
+.status-line { font-size: 13px; min-height: 18px; }
+.status-line.ok { color: var(--pass); }
+.status-line.bad { color: var(--fail); }
+
+footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px 0 40px; }
+
+@media (max-width: 760px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .run { grid-template-columns: 1fr auto; }
+  .run .trigger, .run .dots { display: none; }
+  .kv td:first-child { width: 110px; white-space: normal; }
+  .tbody { padding-left: 4px; }
+  .brand .sub { display: none; }
+  .actions .btn { padding: 5px 9px; font-size: 12.5px; }
+  .stat .value { font-size: 19px; }
+  /* The matrix becomes a list: each relay, then a chip per draft */
+  table.matrix { min-width: 0; }
+  .matrix thead { display: none; }
+  .matrix tr { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0; border-top: 1px solid var(--border); }
+  .matrix tbody tr:first-child { border-top: 0; }
+  .matrix td { border: 0; padding: 0; }
+  .matrix td:first-child { width: 100%; }
+  .matrix td.no-cell { display: none; }
+  .chip[data-draft]::before { content: attr(data-draft); font-weight: 500; opacity: .75; margin-right: 2px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-row">
+    <div class="brand">
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><path d="M8 21l5-10 3 6 3-4 5 8" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div>
+        <h1>moq-web interop report</h1>
+        <div class="sub">MOQT session tests against live relays, nightly</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="run-btn" type="button">▶ Run tests</button>
+      <button class="btn" id="relay-btn" type="button">＋ Test your relay</button>
+      <a class="btn" id="gh-link" target="_blank" rel="noopener">Workflow ↗</a>
+      <button class="btn" id="theme-btn" type="button" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banners"></div>
+
+  <section class="stats" id="stats"></section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Relays × drafts</h2>
+      <span class="meta" id="matrix-meta"></span>
+      <span class="spacer"></span>
+      <span class="meta">Click a result to see its tests</span>
+    </div>
+    <div class="card-body matrix-scroll"><table class="matrix" id="matrix"></table></div>
+  </section>
+
+  <section class="card" id="detail"></section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Recent runs</h2>
+      <span class="meta" id="runs-meta"></span>
+    </div>
+    <div class="card-body"><div class="runs" id="runs"></div></div>
+  </section>
+
+  <section>
+    <div class="card-head" style="padding-left:0">
+      <h2>Registered relays</h2>
+      <span class="spacer"></span>
+      <a class="btn small" id="add-relay" target="_blank" rel="noopener">Add your relay (PR) ↗</a>
+    </div>
+    <div class="relays" id="relays"></div>
+  </section>
+</main>
+
+<footer class="wrap">
+  Data from the <code>e2e-reports</code> branch, written after each run of the session-e2e workflow.
+  Experimental cells are reported but do not fail the run.
+</footer>
+
+<dialog id="run-dlg">
+  <form method="dialog" id="run-form">
+    <div class="dlg-head"><h3 id="run-title">Run tests</h3><button class="x" value="cancel" aria-label="Close">×</button></div>
+    <div class="dlg-body">
+      <div class="field" id="relay-fields">
+        <label>Relays</label>
+        <div class="checks" id="relay-checks"></div>
+      </div>
+      <div id="custom-fields" hidden>
+        <div class="field">
+          <label for="custom-url">Relay URL (https, WebTransport)</label>
+          <input type="url" id="custom-url" placeholder="https://relay.example.org:4433/moq-relay" autocomplete="off">
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label for="custom-name">Name shown in the report</label>
+          <input type="text" id="custom-name" placeholder="Example relay" maxlength="60" autocomplete="off">
+        </div>
+      </div>
+      <div class="field">
+        <label>Drafts <span style="color:var(--faint)">(none checked: each relay's own)</span></label>
+        <div class="checks" id="draft-checks"></div>
+      </div>
+      <div class="field">
+        <label for="token">GitHub token, to start the run from this page <span style="color:var(--faint)">(optional)</span></label>
+        <input type="password" id="token" placeholder="github_pat_…" autocomplete="off">
+      </div>
+      <div class="note">
+        A fine-grained token with <b>Actions: Read and write</b> on this repository only. It is kept for this tab
+        (sessionStorage) and sent only to <code>api.github.com</code>. Without one, use <b>Open on GitHub</b>:
+        GitHub's own <i>Run workflow</i> form, where you paste the values shown below.
+      </div>
+      <pre class="code" id="run-values"></pre>
+      <div class="status-line" id="run-status"></div>
+    </div>
+    <div class="dlg-foot">
+      <a class="btn" id="run-open" target="_blank" rel="noopener">Open on GitHub ↗</a>
+      <button class="btn primary" id="run-start" value="default" type="button">Start run</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Configuration: the repository and where its report data lives
+  // ---------------------------------------------------------------------------
+  const params = new URLSearchParams(location.search);
+  const REPO = params.get('repo') || 'Quicr/moq-web';
+  const WORKFLOW = 'session-e2e.yml';
+  const DATA = (params.get('data') || `https://raw.githubusercontent.com/${REPO}/e2e-reports`).replace(/\/$/, '');
+  const REGISTRY = params.get('registry') || `https://raw.githubusercontent.com/${REPO}/main/.github/e2e-relays.json`;
+  const API = 'https://api.github.com';
+  const GH = 'https://github.com';
+  const TOKEN_KEY = 'moq-web-interop-token';
+  const THEME_KEY = 'moq-web-interop-theme';
+
+  const state = {
+    index: null,
+    registry: null,
+    run: null,          // the selected run, in full
+    cellKey: null,      // relay|draft of the selected cell
+    filter: 'failed',
+    query: '',
+    live: [],           // queued or running workflow runs
+    mode: 'registered', // run dialog: registered relays or a custom one
+  };
+
+  // ---------------------------------------------------------------------------
+  // Small helpers. Everything from the report is text: no innerHTML for data.
+  // ---------------------------------------------------------------------------
+  const $ = (id) => document.getElementById(id);
+
+  function el(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (value === undefined || value === null || value === false) continue;
+      if (key === 'class') node.className = value;
+      else if (key === 'text') node.textContent = value;
+      else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value === true ? '' : String(value));
+    }
+    for (const child of children.flat()) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  const store = {
+    get(area, key) { try { return window[area].getItem(key); } catch { return null; } },
+    set(area, key, value) { try { value ? window[area].setItem(key, value) : window[area].removeItem(key); } catch { /* storage unavailable */ } },
+  };
+
+  function safeUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' ? parsed.href : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function when(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function ago(iso) {
+    if (!iso) return '';
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 90) return 'just now';
+    if (s < 5400) return `${Math.round(s / 60)} min ago`;
+    if (s < 129600) return `${Math.round(s / 3600)} h ago`;
+    return `${Math.round(s / 86400)} days ago`;
+  }
+
+  function duration(ms) {
+    if (!ms) return '';
+    return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
+  }
+
+  const draftLabel = (d) => d.replace('draft-', 'd');
+  const cellKey = (c) => `${c.relay}|${c.draft}`;
+  const total = (counts) => counts.passed + counts.failed + counts.skipped;
+  const ran = (counts) => counts.passed + counts.failed;
+
+  function triggerLabel(run) {
+    if (run.custom) return 'your relay';
+    if (run.event === 'schedule') return 'nightly';
+    if (run.event === 'workflow_dispatch') return 'manual';
+    return run.event;
+  }
+
+  async function getJson(url, init) {
+    const res = await fetch(url, { cache: 'no-cache', ...init });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
+    return res.json();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Data
+  // ---------------------------------------------------------------------------
+  async function loadIndex() {
+    try {
+      state.index = await getJson(`${DATA}/index.json`);
+    } catch (err) {
+      state.index = { runs: [] };
+      banner('error', `No report data yet (${err.message}). It appears after the first workflow run that publishes it.`);
+    }
+  }
+
+  async function loadRegistry() {
+    try {
+      state.registry = await getJson(REGISTRY);
+    } catch {
+      state.registry = { drafts: ['draft-16', 'draft-18', 'draft-22', 'draft-23'], relays: [] };
+    }
+  }
+
+  async function selectRun(runId) {
+    try {
+      state.run = await getJson(`${DATA}/runs/${encodeURIComponent(runId)}.json`);
+    } catch (err) {
+      banner('error', `Could not load run ${runId}: ${err.message}`);
+      return;
+    }
+    const cells = state.run.cells;
+    const keep = cells.find((c) => cellKey(c) === state.cellKey);
+    const firstBad = cells.find((c) => c.status !== 'passed');
+    state.cellKey = keep ? state.cellKey : cellKey(firstBad || cells[0] || { relay: '', draft: '' });
+    state.filter = (cells.find((c) => cellKey(c) === state.cellKey)?.counts.failed ?? 0) > 0 ? 'failed' : 'all';
+    writeHash();
+    render();
+  }
+
+  /** Queued and in-progress runs, from the public API (rate limited when anonymous) */
+  async function loadLive() {
+    try {
+      const token = store.get('sessionStorage', TOKEN_KEY);
+      const headers = { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) };
+      const body = await getJson(`${API}/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?per_page=10`, { headers });
+      state.live = body.workflow_runs.filter((r) => r.status !== 'completed');
+    } catch {
+      state.live = [];
+    }
+    renderBanners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // URL hash: #run=<id>&cell=<relay>|<draft>
+  // ---------------------------------------------------------------------------
+  function readHash() {
+    const h = new URLSearchParams(location.hash.slice(1));
+    return { run: h.get('run'), cell: h.get('cell') };
+  }
+
+  function writeHash() {
+    if (!state.run) return;
+    const h = new URLSearchParams({ run: String(state.run.runId), cell: state.cellKey || '' });
+    history.replaceState(null, '', `#${h}`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------------------
+  const messages = [];
+
+  function banner(kind, text) {
+    messages.push({ kind, text });
+    renderBanners();
+  }
+
+  function renderBanners() {
+    const box = $('banners');
+    box.replaceChildren();
+    for (const run of state.live) {
+      box.append(el('div', { class: 'banner running' },
+        el('span', { class: 'dot-pulse' }),
+        el('span', {}, `Run #${run.run_number} is ${run.status.replace('_', ' ')} (${run.event === 'schedule' ? 'nightly' : run.event}, started ${ago(run.run_started_at || run.created_at)}). Results appear here when it finishes.`),
+        el('span', { class: 'spacer', style: 'margin-left:auto' }),
+        el('a', { href: run.html_url, target: '_blank', rel: 'noopener' }, 'Watch ↗')));
+    }
+    for (const m of messages) {
+      box.append(el('div', { class: `banner ${m.kind}` }, m.text));
+    }
+  }
+
+  function renderStats() {
+    const box = $('stats');
+    box.replaceChildren();
+    const run = state.run;
+    if (!run) return;
+    const counts = run.cells.reduce((acc, c) => ({
+      passed: acc.passed + c.counts.passed, failed: acc.failed + c.counts.failed, skipped: acc.skipped + c.counts.skipped,
+    }), { passed: 0, failed: 0, skipped: 0 });
+    const cellsOk = run.cells.filter((c) => c.status === 'passed').length;
+    const rate = ran(counts) ? Math.round((counts.passed / ran(counts)) * 100) : 0;
+    const stat = (label, value, hint, color) => el('div', { class: 'card stat' },
+      el('div', { class: 'label' }, label),
+      el('div', { class: 'value', style: color ? `color:var(${color})` : undefined }, value),
+      el('div', { class: 'hint' }, hint));
+    box.append(
+      stat('Run', `#${run.runNumber ?? run.runId}`, `${triggerLabel(run)} · ${when(run.publishedAt)}`),
+      stat('Pass rate', `${rate}%`, `${counts.passed} of ${ran(counts)} tests that ran`, rate === 100 ? '--pass' : undefined),
+      stat('Failed tests', String(counts.failed), `${counts.skipped} skipped`, counts.failed ? '--fail' : undefined),
+      stat('Clean cells', `${cellsOk}/${run.cells.length}`, 'relay × draft combinations with no failure'),
+    );
+  }
+
+  function chipFor(cell, selectable = true) {
+    const label = cell.status === 'error' ? 'no report'
+      : cell.status === 'cancelled' ? 'cancelled'
+      : `${cell.counts.passed}/${ran(cell.counts)}`;
+    return el('button', {
+      type: 'button',
+      class: `chip ${cell.status}${cellKey(cell) === state.cellKey ? ' selected' : ''}`,
+      'data-draft': draftLabel(cell.draft),
+      title: `${cell.name} ${cell.draft}: ${cell.counts.passed} passed, ${cell.counts.failed} failed, ${cell.counts.skipped} skipped`,
+      onclick: selectable ? () => { state.cellKey = cellKey(cell); state.filter = cell.counts.failed ? 'failed' : 'all'; writeHash(); render(); $('detail').scrollIntoView({ behavior: 'smooth', block: 'start' }); } : undefined,
+    }, cell.status === 'passed' ? '✓' : cell.status === 'failed' ? '✕' : '!', label, cell.experimental ? el('span', { class: 'exp' }, 'exp') : null);
+  }
+
+  function renderMatrix() {
+    const table = $('matrix');
+    table.replaceChildren();
+    const run = state.run;
+    if (!run || run.cells.length === 0) {
+      table.append(el('tr', {}, el('td', { class: 'empty' }, 'No results yet.')));
+      $('matrix-meta').textContent = '';
+      return;
+    }
+    $('matrix-meta').textContent = `run #${run.runNumber ?? run.runId}${run.attempt > 1 ? ` (attempt ${run.attempt})` : ''} · ${when(run.publishedAt)}`;
+    const drafts = [...new Set(run.cells.map((c) => c.draft))].sort().reverse();
+    const relays = [...new Map(run.cells.map((c) => [c.relay, c])).values()];
+    table.append(el('thead', {}, el('tr', {}, el('th', {}, 'Relay'), drafts.map((d) => el('th', {}, d)))));
+    const body = el('tbody');
+    for (const relay of relays) {
+      body.append(el('tr', {},
+        el('td', {}, el('div', { class: 'relay-name' }, relay.name), el('div', { class: 'relay-url' }, relay.relayUrl)),
+        drafts.map((d) => {
+          const cell = run.cells.find((c) => c.relay === relay.relay && c.draft === d);
+          return cell ? el('td', {}, chipFor(cell)) : el('td', { class: 'no-cell' }, el('span', { class: 'chip none' }, '—'));
+        })));
+    }
+    table.append(body);
+  }
+
+  function renderRuns() {
+    const box = $('runs');
+    box.replaceChildren();
+    const runs = state.index?.runs ?? [];
+    $('runs-meta').textContent = runs.length ? `${runs.length} kept · updated ${ago(state.index.updatedAt)}` : '';
+    if (runs.length === 0) {
+      box.append(el('div', { class: 'empty' }, 'No runs published yet.'));
+      return;
+    }
+    for (const run of runs) {
+      const counts = run.cells.reduce((a, c) => ({ p: a.p + c.counts.passed, r: a.r + ran(c.counts) }), { p: 0, r: 0 });
+      box.append(el('div', {
+        class: `run${state.run?.runId === run.runId ? ' selected' : ''}`,
+        role: 'button', tabindex: '0',
+        onclick: () => selectRun(run.runId),
+        onkeydown: (e) => { if (e.key === 'Enter') selectRun(run.runId); },
+      },
+        el('div', { class: 'when' }, when(run.publishedAt)),
+        el('div', { class: 'trigger' }, el('span', { class: `tag${run.custom ? ' custom' : ''}` }, triggerLabel(run))),
+        el('div', { class: 'dots' }, run.cells.map((c) => el('span', { class: c.status, title: `${c.name} ${c.draft}: ${c.status}` }))),
+        el('div', { class: 'score' }, `${counts.p}/${counts.r} passed`)));
+    }
+  }
+
+  function kvTable(fields) {
+    const entries = Object.entries(fields || {});
+    if (entries.length === 0) return null;
+    return el('div', { class: 'kv-box' }, el('table', { class: 'kv' }, el('tbody', {}, entries.map(([k, v]) =>
+      el('tr', {}, el('td', {}, k), el('td', {}, typeof v === 'string' ? v : JSON.stringify(v)))))));
+  }
+
+  function logBlock(lines) {
+    const pre = el('pre', { class: 'code' });
+    for (const line of lines) {
+      const level = /\[(ERROR)\]/.test(line) ? 'error' : /\[(WARN)\]/.test(line) ? 'warn' : '';
+      pre.append(el('div', { class: `log-line ${level}` }, line));
+    }
+    return pre;
+  }
+
+  function testNode(test) {
+    const parts = test.name.split(' > ');
+    const title = parts.pop();
+    const open = state.filter === 'failed' && test.state === 'failed';
+    const body = el('div', { class: 'tbody' });
+    const details = el('details', { class: 'test', open }, el('summary', {},
+      el('span', { class: `icon ${test.state}` }, test.state === 'passed' ? '✓' : test.state === 'failed' ? '✕' : '–'),
+      el('span', { class: 'tname' }, title, parts.length ? el('div', { class: 'group' }, parts.join(' › ')) : null),
+      el('span', { class: 'tdur' }, duration(test.durationMs))), body);
+
+    // Built on first open: a run can hold hundreds of tests with logs
+    const fill = () => {
+      if (body.childElementCount) return;
+      body.append(el('div', {}, el('div', { class: 'kv-title' }, 'Expected'),
+        el('div', { class: 'expected' }, test.expected || title)));
+      const inputs = kvTable(test.inputs);
+      body.append(el('div', {}, el('div', { class: 'kv-title' }, 'Inputs'), inputs || el('div', { class: 'none-recorded' }, 'Not recorded by this test.')));
+      const observed = kvTable(test.observed);
+      body.append(el('div', {}, el('div', { class: 'kv-title' }, test.state === 'failed' ? 'Found' : 'Observed'),
+        observed || el('div', { class: 'none-recorded' }, test.state === 'passed' ? 'Not recorded; every assertion held.' : 'Not recorded by this test.')));
+      if (test.error) {
+        body.append(el('div', {}, el('div', { class: 'kv-title' }, 'Failure'), el('pre', { class: 'code err' }, test.error)));
+      }
+      if (test.logs?.length) {
+        body.append(el('div', {}, el('div', { class: 'kv-title' }, `Log, last ${test.logs.length} lines`), logBlock(test.logs)));
+      }
+    };
+    if (open) fill();
+    details.addEventListener('toggle', fill);
+    return details;
+  }
+
+  function renderDetail() {
+    const box = $('detail');
+    box.replaceChildren();
+    const cell = state.run?.cells.find((c) => cellKey(c) === state.cellKey);
+    if (!cell) {
+      box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+
+    const n = total(cell.counts) || 1;
+    const jobUrl = safeUrl(cell.jobUrl);
+    box.append(el('div', { class: 'detail-head' },
+      el('div', {},
+        el('h2', {}, `${cell.name} · ${cell.draft}`, cell.experimental ? el('span', { class: 'tag', style: 'margin-left:8px' }, 'experimental') : null),
+        el('div', { class: 'url' }, cell.relayUrl),
+        el('div', { class: 'bar' },
+          el('span', { class: 'p', style: `width:${(cell.counts.passed / n) * 100}%` }),
+          el('span', { class: 'f', style: `width:${(cell.counts.failed / n) * 100}%` }),
+          el('span', { class: 's', style: `width:${(cell.counts.skipped / n) * 100}%` })),
+        el('div', { class: 'meta', style: 'color:var(--muted);font-size:12.5px;margin-top:6px' },
+          `${cell.counts.passed} passed · ${cell.counts.failed} failed · ${cell.counts.skipped} skipped`,
+          cell.startedAt && cell.finishedAt ? ` · ${duration(new Date(cell.finishedAt) - new Date(cell.startedAt))}` : '')),
+      el('div', { class: 'right' },
+        jobUrl ? el('a', { class: 'btn', href: jobUrl, target: '_blank', rel: 'noopener' }, 'Full job log ↗') : null,
+        el('button', { class: 'btn', type: 'button', onclick: () => openRunDialog('registered', cell) }, '↻ Run this cell'),
+        el('button', { class: 'btn', type: 'button', onclick: rerunFailed, title: 'Re-run the failed jobs of this run' }, '↻ Re-run failed'))));
+
+    const seg = el('div', { class: 'seg', role: 'tablist' }, ['failed', 'all', 'passed', 'skipped'].map((f) => {
+      const count = f === 'all' ? cell.tests.length : cell.tests.filter((t) => t.state === f).length;
+      return el('button', {
+        type: 'button', class: state.filter === f ? 'on' : '',
+        onclick: () => { state.filter = f; renderDetail(); },
+      }, `${f[0].toUpperCase()}${f.slice(1)} ${count}`);
+    }));
+    const search = el('input', {
+      class: 'search', type: 'search', placeholder: 'Filter tests…', value: state.query,
+      oninput: (e) => { state.query = e.target.value; renderTests(list, cell); },
+    });
+    box.append(el('div', { class: 'toolbar' }, seg, search));
+
+    if (cell.errors?.length) {
+      box.append(el('div', { class: 'cell-errors' }, cell.errors.map((e) => el('pre', { class: 'code err' }, e))));
+    }
+    const list = el('div');
+    box.append(list);
+    renderTests(list, cell);
+  }
+
+  function renderTests(list, cell) {
+    list.replaceChildren();
+    const q = state.query.trim().toLowerCase();
+    const tests = cell.tests.filter((t) => (state.filter === 'all' || t.state === state.filter)
+      && (!q || `${t.file} ${t.name}`.toLowerCase().includes(q)));
+    if (tests.length === 0) {
+      list.append(el('div', { class: 'empty' }, cell.tests.length ? `No ${state.filter === 'all' ? '' : `${state.filter} `}tests${q ? ' match' : ''}.` : 'This cell has no test results.'));
+      return;
+    }
+    const byFile = new Map();
+    for (const t of tests) {
+      if (!byFile.has(t.file)) byFile.set(t.file, []);
+      byFile.get(t.file).push(t);
+    }
+    for (const [file, fileTests] of byFile) {
+      const info = cell.files?.[file] ?? {};
+      const all = cell.tests.filter((t) => t.file === file);
+      const passed = all.filter((t) => t.state === 'passed').length;
+      const section = el('div', { class: 'file' },
+        el('div', { class: 'file-head' },
+          el('span', { class: 'ftitle' }, info.title || file),
+          el('span', { class: 'fname' }, file.replace(/^tests\//, '')),
+          el('span', { class: 'fcount' }, `${passed}/${all.length} passed`)),
+        info.description ? el('details', { class: 'file-desc' }, el('summary', {}, 'What this file tests'), info.description) : null,
+        fileTests.map(testNode));
+      list.append(section);
+    }
+  }
+
+  function renderRelays() {
+    const box = $('relays');
+    box.replaceChildren();
+    for (const relay of state.registry?.relays ?? []) {
+      box.append(el('div', { class: 'card relay-card' },
+        el('div', { class: 'rn' }, relay.name),
+        el('div', { class: 'ru' }, relay.url),
+        el('div', { class: 'rd' },
+          relay.drafts.map((d) => el('span', { class: 'tag' }, d)),
+          (relay.experimentalDrafts ?? []).map((d) => el('span', { class: 'tag', title: 'experimental' }, `${d} (exp)`))),
+        relay.notes ? el('div', { class: 'notes' }, relay.notes) : null));
+    }
+    if (!box.childElementCount) box.append(el('div', { class: 'empty' }, 'Relay list unavailable.'));
+  }
+
+  function render() {
+    renderBanners();
+    renderStats();
+    renderMatrix();
+    renderDetail();
+    renderRuns();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Running the workflow
+  // ---------------------------------------------------------------------------
+  function dialogInputs() {
+    const drafts = [...document.querySelectorAll('#draft-checks input:checked')].map((i) => i.value);
+    if (state.mode === 'custom') {
+      return { relay_url: $('custom-url').value.trim(), relay_name: $('custom-name').value.trim(), drafts: drafts.join(',') };
+    }
+    const relays = [...document.querySelectorAll('#relay-checks input:checked')].map((i) => i.value);
+    const everyRelay = relays.length === (state.registry?.relays.length ?? 0);
+    return { relays: everyRelay ? '' : relays.join(','), drafts: drafts.join(',') };
+  }
+
+  function refreshRunValues() {
+    const inputs = dialogInputs();
+    const lines = Object.entries(inputs).map(([k, v]) => `${k.padEnd(11)} ${v || '(empty)'}`);
+    $('run-values').textContent = `Branch      main\n${lines.join('\n')}`;
+  }
+
+  function openRunDialog(mode, cell) {
+    state.mode = mode;
+    $('run-title').textContent = mode === 'custom' ? 'Test your relay' : 'Run tests';
+    $('relay-fields').hidden = mode === 'custom';
+    $('custom-fields').hidden = mode !== 'custom';
+    $('run-status').textContent = '';
+    $('run-status').className = 'status-line';
+
+    const relays = state.registry?.relays ?? [];
+    $('relay-checks').replaceChildren(...relays.map((r) => el('label', {},
+      el('input', { type: 'checkbox', value: r.id, checked: cell ? r.id === cell.relay : true, onchange: refreshRunValues }), r.name)));
+    const drafts = state.registry?.drafts ?? [];
+    const defaultDrafts = cell ? [cell.draft] : mode === 'custom' ? ['draft-22', 'draft-23'] : [];
+    $('draft-checks').replaceChildren(...drafts.map((d) => el('label', {},
+      el('input', { type: 'checkbox', value: d, checked: defaultDrafts.includes(d), onchange: refreshRunValues }), d)));
+    $('token').value = store.get('sessionStorage', TOKEN_KEY) || '';
+    refreshRunValues();
+    $('run-dlg').showModal();
+  }
+
+  function token() {
+    const value = $('token').value.trim() || store.get('sessionStorage', TOKEN_KEY);
+    return value || null;
+  }
+
+  function setStatus(text, kind) {
+    $('run-status').textContent = text;
+    $('run-status').className = `status-line ${kind || ''}`;
+  }
+
+  async function startRun() {
+    const inputs = dialogInputs();
+    if (state.mode === 'custom' && !safeUrl(inputs.relay_url)) {
+      setStatus('Enter the relay as an https:// URL.', 'bad');
+      return;
+    }
+    if (state.mode === 'registered' && document.querySelectorAll('#relay-checks input:checked').length === 0) {
+      setStatus('Pick at least one relay.', 'bad');
+      return;
+    }
+    const value = token();
+    if (!value) {
+      setStatus('Paste a token to start here, or use Open on GitHub.', 'bad');
+      return;
+    }
+    store.set('sessionStorage', TOKEN_KEY, value);
+    setStatus('Starting…');
+    $('run-start').disabled = true;
+    try {
+      const res = await fetch(`${API}/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${value}`, accept: 'application/vnd.github+json', 'content-type': 'application/json' },
+        body: JSON.stringify({ ref: 'main', inputs: Object.fromEntries(Object.entries(inputs).filter(([, v]) => v)) }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(`${res.status}: ${body.message || res.statusText}`);
+      }
+      setStatus('Started. It shows at the top of the page while it runs (about 5 to 10 minutes).', 'ok');
+      setTimeout(loadLive, 4000);
+      setTimeout(loadLive, 15000);
+    } catch (err) {
+      setStatus(`GitHub refused: ${err.message}`, 'bad');
+    } finally {
+      $('run-start').disabled = false;
+    }
+  }
+
+  async function rerunFailed() {
+    const run = state.run;
+    if (!run) return;
+    const value = store.get('sessionStorage', TOKEN_KEY);
+    if (!value) {
+      // GitHub's run page has the Re-run failed jobs button
+      window.open(`${GH}/${REPO}/actions/runs/${run.runId}`, '_blank', 'noopener');
+      return;
+    }
+    const res = await fetch(`${API}/repos/${REPO}/actions/runs/${run.runId}/rerun-failed-jobs`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${value}`, accept: 'application/vnd.github+json' },
+    }).catch((err) => ({ ok: false, statusText: err.message }));
+    if (res.ok) {
+      banner('running', `Re-running the failed jobs of run #${run.runId}. The report updates when they finish.`);
+      setTimeout(loadLive, 4000);
+    } else {
+      banner('error', `Re-run refused (${res.status ?? ''} ${res.statusText}). Use the run page on GitHub instead.`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Theme
+  // ---------------------------------------------------------------------------
+  function applyTheme(theme) {
+    if (theme) document.documentElement.setAttribute('data-theme', theme);
+    else document.documentElement.removeAttribute('data-theme');
+  }
+
+  function toggleTheme() {
+    const dark = document.documentElement.getAttribute('data-theme')
+      ? document.documentElement.getAttribute('data-theme') === 'dark'
+      : matchMedia('(prefers-color-scheme: dark)').matches;
+    const next = dark ? 'light' : 'dark';
+    applyTheme(next);
+    store.set('localStorage', THEME_KEY, next);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Start
+  // ---------------------------------------------------------------------------
+  async function start() {
+    applyTheme(store.get('localStorage', THEME_KEY));
+    $('theme-btn').addEventListener('click', toggleTheme);
+    $('gh-link').href = `${GH}/${REPO}/actions/workflows/${WORKFLOW}`;
+    $('run-open').href = `${GH}/${REPO}/actions/workflows/${WORKFLOW}`;
+    $('add-relay').href = `${GH}/${REPO}/edit/main/.github/e2e-relays.json`;
+    $('run-btn').addEventListener('click', () => openRunDialog('registered'));
+    $('relay-btn').addEventListener('click', () => openRunDialog('custom'));
+    $('run-start').addEventListener('click', startRun);
+    $('token').addEventListener('change', (e) => store.set('sessionStorage', TOKEN_KEY, e.target.value.trim()));
+    for (const id of ['custom-url', 'custom-name']) $(id).addEventListener('input', refreshRunValues);
+
+    await Promise.all([loadIndex(), loadRegistry()]);
+    renderRelays();
+    const wanted = readHash();
+    const runs = state.index.runs;
+    if (wanted.cell) state.cellKey = wanted.cell;
+    const runId = runs.some((r) => String(r.runId) === wanted.run) ? wanted.run : runs[0]?.runId;
+    if (runId !== undefined) {
+      await selectRun(runId);
+    } else {
+      render();
+    }
+    loadLive();
+  }
+
+  start();
+})();
+</script>
+</body>
+</html>

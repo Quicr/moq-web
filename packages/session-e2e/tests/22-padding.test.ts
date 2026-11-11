@@ -19,6 +19,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import { generateChat } from '../lib/chat-generator.js';
@@ -39,12 +40,16 @@ describe.skipIf(!isDraft18)('padding streams & datagrams (§11.5)', () => {
     sub = undefined;
   });
 
-  it('sendPaddingStream + sendPaddingDatagram do not disrupt normal object delivery', async () => {
+  it('sendPaddingStream + sendPaddingDatagram do not disrupt normal object delivery', async ({ task }) => {
     const profile = resolveProfile(chatStream as Profile);
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
 
     const namespace = makeNamespace(profile, 'padding');
+    record(task, {
+      expected: 'With padding streams and datagrams interleaved, the subscriber still gets both real objects and no all-zero padding',
+      inputs: { namespace: namespace.join('/'), track: track.name, realObjects: 2, paddingStreams: [64, 0], paddingDatagrams: [32, 0] },
+    });
 
     pub = await makeSession(profile);
     sub = await makeSession(profile);
@@ -83,6 +88,9 @@ describe.skipIf(!isDraft18)('padding streams & datagrams (§11.5)', () => {
 
     // We must have received *at least* the two real objects, and nothing
     // extra that looks like padding (padding never surfaces as an object).
+    record(task, {
+      observed: { received: received.length, allZeroObjects: received.filter((buf) => buf.every((b) => b === 0)).length },
+    });
     expect(received.length).toBeGreaterThanOrEqual(2);
     for (const buf of received) {
       // Real chat payloads are non-empty and non-zero. Padding would arrive
