@@ -148,3 +148,19 @@ describe('fetch-gap event', () => {
     expect(gaps).toEqual([]);
   });
 });
+
+describe('wire options beside a transport', () => {
+  it('grease and MAX_CONTROL_MESSAGE_SIZE apply without a worker config', () => {
+    const transport = new MOQTransport({ draft: 'draft-23' });
+    const session = new MOQTSession(transport, { grease: true, maxControlMessageSize: 200_000 });
+    const internals = session as unknown as {
+      codec: { encodeControlMessage: (m: unknown) => Uint8Array; controlFraming: { maxReceiveLength?: number } };
+      maxControlMessageSize?: number;
+    };
+    const error = { type: MessageTypeDraft18.REQUEST_ERROR, requestId: 0n, errorCode: 0, reasonPhrase: '' };
+    const plain = new MOQTSession(new MOQTransport({ draft: 'draft-23' })) as unknown as typeof internals;
+
+    expect(internals.codec.encodeControlMessage(error).length).toBeGreaterThan(plain.codec.encodeControlMessage(error).length);
+    expect(internals.maxControlMessageSize).toBe(200_000);
+  });
+});

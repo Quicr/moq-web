@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 import { MOQTransport } from '@moq-web/core';
-import { MOQTSession } from '@moq-web/session';
+import { MOQTSession, type SessionWireOptions } from '@moq-web/session';
 
 import type { ResolvedProfile } from './profile.js';
 
@@ -17,11 +17,11 @@ export interface SessionHandle {
  * `auth.tokenEnv` and its scope includes 'setup', the token is attached
  * to CLIENT_SETUP via AUTHORIZATION_TOKEN.
  */
-export async function makeSession(profile: ResolvedProfile): Promise<SessionHandle> {
+export async function makeSession(profile: ResolvedProfile, options?: SessionWireOptions): Promise<SessionHandle> {
   const transport = new MOQTransport();
   await transport.connect(profile.relayUrl);
 
-  const session = new MOQTSession(transport);
+  const session = new MOQTSession(transport, options);
 
   if (profile.authToken && profile.auth?.scope !== 'per-request') {
     const tokenType =

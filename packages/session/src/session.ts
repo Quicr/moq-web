@@ -382,6 +382,9 @@ interface PendingRequestUpdate {
 /**
  * Configuration for MOQTSession when using worker mode
  */
+/** Session options that change what goes on the wire; usable with a transport or a config */
+export type SessionWireOptions = Pick<MOQTSessionConfig, 'maxControlMessageSize' | 'grease'>;
+
 export interface MOQTSessionConfig {
   /** Worker instance for transport operations */
   worker: Worker;
@@ -837,9 +840,15 @@ export class MOQTSession {
    *
    * // Worker mode
    * const session = new MOQTSession({ worker: myWorker });
+   *
+   * // Main thread mode with wire options (draft-23)
+   * const session = new MOQTSession(transport, { grease: true });
    * ```
+   *
+   * @param transportOrConfig - A connected transport, or a worker-mode config
+   * @param options - With a transport: the wire options a config would carry
    */
-  constructor(transportOrConfig: MOQTransport | MOQTSessionConfig) {
+  constructor(transportOrConfig: MOQTransport | MOQTSessionConfig, options?: SessionWireOptions) {
     // Assign identifiers, metrics, and observability plumbing first so any
     // downstream initialization can already emit against them.
     const configSessionId =
@@ -915,13 +924,14 @@ export class MOQTSession {
     // Bind codec and request-ID scheme to the resolved draft.
     // Draft-23 codecs hold this session's MAX_CONTROL_MESSAGE_SIZE limits
     this.codec = createProtocolCodec(versionEnumFor(this._draft) as Version);
-    const ownMaxControlMessageSize =
-      transportOrConfig instanceof MOQTransport ? undefined : transportOrConfig.maxControlMessageSize;
+    // Wire options come from the config, or from `options` beside a transport
+    const wire: SessionWireOptions = (transportOrConfig instanceof MOQTransport ? options : transportOrConfig) ?? {};
+    const ownMaxControlMessageSize = wire.maxControlMessageSize;
     if (ownMaxControlMessageSize !== undefined && ownMaxControlMessageSize > DEFAULT_MAX_CONTROL_MESSAGE_SIZE) {
       this.maxControlMessageSize = ownMaxControlMessageSize;
       this.codec.setControlMessageLimits({ maxReceiveLength: ownMaxControlMessageSize });
     }
-    if (!(transportOrConfig instanceof MOQTransport) && transportOrConfig.grease) {
+    if (wire.grease) {
       this.codec.setGrease?.(true);
     }
     // Draft-14: 1-based. Draft-16+: clients use even IDs starting at 0.
