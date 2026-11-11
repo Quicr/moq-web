@@ -9,26 +9,38 @@ on:
   workflow_dispatch:
     inputs:
       relay_url:
-        description: 'Relay URL (defaults to openmoq CI relay)'
+        description: 'Relay URL for every cell (empty: each cell uses its own relay)'
         required: false
-        default: 'https://moqx-main.ci.openmoq.org:4433/moq-relay'
+        default: ''
 
 jobs:
   session-e2e:
-    name: session-e2e (${{ matrix.draft }})
+    name: session-e2e (${{ matrix.relay }}, ${{ matrix.draft }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Cells marked experimental report but do not fail the run
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
-        draft: [draft-22, draft-18, draft-16]
+        include:
+          - { relay: openmoq, draft: draft-22, relay_url: 'https://moqx-main.ci.openmoq.org:4433/moq-relay' }
+          - { relay: openmoq, draft: draft-18, relay_url: 'https://moqx-main.ci.openmoq.org:4433/moq-relay' }
+          - { relay: openmoq, draft: draft-16, relay_url: 'https://moqx-main.ci.openmoq.org:4433/moq-relay' }
+          - { relay: cloudflare, draft: draft-22, relay_url: 'https://moq-ng.cloudflare.mediaoverquic.com' }
+          - { relay: meta, draft: draft-22, relay_url: 'https://fb.mvfst.net:9448/moq-relay' }
+          # Draft-23: as of 2026-11-10 neither relay offers moqt-23 in
+          # WT-Available-Protocols (they select moqt-22), so these fail at
+          # the WebTransport handshake until the relays add it.
+          - { relay: cloudflare, draft: draft-23, relay_url: 'https://moq-ng.cloudflare.mediaoverquic.com', experimental: true }
+          - { relay: meta, draft: draft-23, relay_url: 'https://fb.mvfst.net:9448/moq-relay', experimental: true }
     env:
       MOQT_VERSION: ${{ matrix.draft }}
-      # openmoq accepts unauthenticated setup today; the secret is
+      # The relays accept unauthenticated setup today; the secret is
       # optional and only forwarded when configured.
       MOQ_AUTH_TOKEN: ${{ secrets.MOQ_AUTH_TOKEN }}
-      # Cron passes no inputs, so fall back to the openmoq CI relay.
-      RELAY_URL: ${{ inputs.relay_url || 'https://moqx-main.ci.openmoq.org:4433/moq-relay' }}
+      # A dispatch input overrides every cell; cron uses each cell's relay.
+      RELAY_URL: ${{ inputs.relay_url || matrix.relay_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,7 +84,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: session-e2e-screenshots-${{ matrix.draft }}
+          name: session-e2e-screenshots-${{ matrix.relay }}-${{ matrix.draft }}
           path: packages/session-e2e/tests/__screenshots__
           retention-days: 7
           if-no-files-found: ignore

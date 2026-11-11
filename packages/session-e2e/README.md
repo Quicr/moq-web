@@ -13,6 +13,21 @@ MOQ_AUTH_TOKEN=<token> \
   pnpm --filter @moq-web/session-e2e test
 ```
 
+Relays the nightly matrix runs against (`.github/workflows/session-e2e.yml`):
+
+| Relay | `RELAY_URL` | Drafts |
+|---|---|---|
+| openmoq | `https://moqx-main.ci.openmoq.org:4433/moq-relay` | d22, d18, d16 |
+| Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d23 experimental |
+| Meta (mvfst) | `https://fb.mvfst.net:9448/moq-relay` | d22; d23 experimental |
+
+As of 2026-11-10 neither Cloudflare nor Meta offers `moqt-23` in
+WT-Available-Protocols (offered both, they select `moqt-22`), so draft-23 runs
+fail at the WebTransport handshake until the relays add it. Known relay-side
+failures on draft-22, also seen on `main`: Cloudflare returns only part of a
+large-payload FETCH (09-fetch); Meta does not resume delivery after a
+REQUEST_UPDATE resume (06) and misses catalogs in the 4-peer fan-out (32).
+
 Both env vars are optional overrides for what's in the profile JSON. `MOQ_AUTH_TOKEN`
 is read from the environment and never committed — profiles reference it by name.
 

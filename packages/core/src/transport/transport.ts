@@ -601,7 +601,12 @@ export class MOQTransport {
           this.emit('setup-message', value);
         }
       } catch (err) {
-        log.error('Setup listener error', err as Error);
+        // Closing the session ends this read; only an unexpected failure is an error
+        if (this.localCloseInitiated || this._state !== 'connected') {
+          log.debug('Setup stream closed with the session', { error: (err as Error).message });
+        } else {
+          log.error('Setup listener error', err as Error);
+        }
         this.emitSetupStreamEnded(true);
       }
     };
