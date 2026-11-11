@@ -22,10 +22,6 @@
  * @see https://moq-wg.github.io/moq-transport/draft-ietf-moq-transport.html#section-1.4.1
  */
 
-import { Logger } from '../utils/logger.js';
-
-const log = Logger.create('moqt:core:moqt-varint');
-
 /**
  * Maximum values for each encoding length
  */
@@ -75,307 +71,219 @@ export function toSafeNumber(value: bigint, what: string): number {
  * - Maximum value is 2^64-1 (9 bytes) vs QUIC's 2^62-1 (8 bytes)
  * - Single-byte range is 0-127 (vs 0-63 for QUIC)
  */
-export class MOQTVarInt {
-  /**
-   * Count leading one bits in a byte
-   */
-  private static countLeadingOnes(byte: number): number {
-    let count = 0;
-    for (let i = 7; i >= 0; i--) {
-      if ((byte & (1 << i)) !== 0) {
-        count++;
-      } else {
-        break;
-      }
+/** Bounds as numbers, for the paths that never touch BigInt */
+const MAX_1 = 0x7f;
+const MAX_2 = 0x3fff;
+const MAX_3 = 0x1fffff;
+const MAX_4 = 0xfffffff;
+const MAX_5 = 0x7ffffffff;
+const MAX_6 = 0x3ffffffffff;
+const MAX_7 = 0x1ffffffffffff;
+const TWO_32 = 0x100000000;
+const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
+const MASK_32 = 0xffffffffn;
+
+function underflow(need: number, offset: number, length: number): MOQTVarIntError {
+  return new MOQTVarIntError(
+    `Buffer underflow: need ${need} bytes at offset ${offset}, but only ${length - offset} bytes available`,
+  );
+}
+
+/** A non-negative integer as a number when it is exact as one, else as a bigint. Throws if invalid. */
+function normalize(value: number | bigint): number | bigint {
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value)) {
+      throw new MOQTVarIntError(`MOQT VarInt cannot encode ${value}: not an integer`);
     }
-    return count;
+    if (value < 0) {
+      throw new MOQTVarIntError('MOQT VarInt cannot encode negative values');
+    }
+    if (value > Number.MAX_SAFE_INTEGER) {
+      // Not exact, so a bigint keeps the value the caller holds
+      return normalize(BigInt(value));
+    }
+    return value;
+  }
+  if (value < 0n) {
+    throw new MOQTVarIntError('MOQT VarInt cannot encode negative values');
+  }
+  if (value > MOQT_VARINT_MAX) {
+    throw new MOQTVarIntError(`Value ${value} exceeds maximum MOQT VarInt (${MOQT_VARINT_MAX})`);
   }
 
+  return value <= MAX_SAFE_BIG ? Number(value) : value;
+}
+
+/** The encoded length of a normalized value */
+function lengthOf(v: number | bigint): 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 {
+  if (typeof v === 'number') {
+    if (v <= MAX_1) return 1;
+    if (v <= MAX_2) return 2;
+    if (v <= MAX_3) return 3;
+    if (v <= MAX_4) return 4;
+    if (v <= MAX_5) return 5;
+    if (v <= MAX_6) return 6;
+    if (v <= MAX_7) return 7;
+    return 8;
+  }
+
+  return v <= MOQT_VARINT_MAX_8BYTE ? 8 : 9;
+}
+
+/** Write `length` bytes of `v` (already normalized and sized) at `offset` */
+function write(v: number | bigint, length: number, buffer: Uint8Array, offset: number): void {
+  if (length <= 4) {
+    // 28 bits or fewer: 32-bit integer arithmetic
+    const n = v as number;
+    switch (length) {
+      case 1:
+        buffer[offset] = n;
+        return;
+      case 2:
+        buffer[offset] = 0x80 | (n >>> 8);
+        buffer[offset + 1] = n & 0xff;
+        return;
+      case 3:
+        buffer[offset] = 0xc0 | (n >>> 16);
+        buffer[offset + 1] = (n >>> 8) & 0xff;
+        buffer[offset + 2] = n & 0xff;
+        return;
+      default:
+        buffer[offset] = 0xe0 | (n >>> 24);
+        buffer[offset + 1] = (n >>> 16) & 0xff;
+        buffer[offset + 2] = (n >>> 8) & 0xff;
+        buffer[offset + 3] = n & 0xff;
+        return;
+    }
+  }
+
+  // Split into a high word and a low 32-bit word
+  let hi: number;
+  let lo: number;
+  if (typeof v === 'number') {
+    hi = Math.floor(v / TWO_32);
+    lo = v >>> 0;
+  } else {
+    hi = Number(v >> 32n);
+    lo = Number(v & MASK_32);
+  }
+
+  // First byte: the length prefix, plus the top high-word bits for lengths 5-7.
+  // Then the rest of the high word (3 bytes for length 8, 4 for 9), then the low word.
+  const middle = length === 9 ? 4 : length === 8 ? 3 : length - 5;
+  const prefix = (0xff00 >> (length - 1)) & 0xff;
+  buffer[offset] = length <= 7 ? prefix | (hi >>> (8 * middle)) : prefix;
+  let at = offset + 1;
+  for (let shift = 8 * (middle - 1); shift >= 0; shift -= 8) {
+    buffer[at++] = (hi >>> shift) & 0xff;
+  }
+  buffer[at] = lo >>> 24;
+  buffer[at + 1] = (lo >>> 16) & 0xff;
+  buffer[at + 2] = (lo >>> 8) & 0xff;
+  buffer[at + 3] = lo & 0xff;
+}
+
+/**
+ * MOQT Variable-Length Integer Codec
+ *
+ * @remarks
+ * The encoding uses leading 1-bits in the first byte to indicate the total
+ * length. Values below 2^49 (lengths 1-7) are encoded and decoded with
+ * number arithmetic; only lengths 8 and 9 touch BigInt, once per value.
+ * Nothing is allocated except the result of {@link MOQTVarInt.encode}.
+ *
+ * Key differences from QUIC varints:
+ * - Uses leading 1-bits (not 2-bit prefix) to indicate length
+ * - Supports 3, 5, 6, 7 byte lengths (finer granularity)
+ * - Maximum value is 2^64-1 (9 bytes) vs QUIC's 2^62-1 (8 bytes)
+ * - Single-byte range is 0-127 (vs 0-63 for QUIC)
+ */
+export class MOQTVarInt {
   /**
    * Determine the encoded length of a value
    *
-   * @param value - The value to encode (number or bigint)
-   * @returns Number of bytes needed to encode the value
-   * @throws {MOQTVarIntError} If value is negative or too large
+   * @throws {MOQTVarIntError} If value is negative, not an integer or too large
    */
   static encodedLength(value: number | bigint): 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 {
-    const v = BigInt(value);
-
-    if (v < 0n) {
-      throw new MOQTVarIntError('MOQT VarInt cannot encode negative values');
-    }
-
-    if (v <= MOQT_VARINT_MAX_1BYTE) return 1;
-    if (v <= MOQT_VARINT_MAX_2BYTE) return 2;
-    if (v <= MOQT_VARINT_MAX_3BYTE) return 3;
-    if (v <= MOQT_VARINT_MAX_4BYTE) return 4;
-    if (v <= MOQT_VARINT_MAX_5BYTE) return 5;
-    if (v <= MOQT_VARINT_MAX_6BYTE) return 6;
-    if (v <= MOQT_VARINT_MAX_7BYTE) return 7;
-    if (v <= MOQT_VARINT_MAX_8BYTE) return 8;
-    if (v <= MOQT_VARINT_MAX) return 9;
-
-    throw new MOQTVarIntError(`Value ${value} exceeds maximum MOQT VarInt (${MOQT_VARINT_MAX})`);
+    return lengthOf(normalize(value));
   }
 
   /**
    * Encode a value as a MOQT variable-length integer
    *
-   * @param value - The value to encode (number or bigint)
-   * @returns Uint8Array containing the encoded bytes
-   * @throws {MOQTVarIntError} If value is negative or too large
+   * @throws {MOQTVarIntError} If value is negative, not an integer or too large
    */
   static encode(value: number | bigint): Uint8Array {
-    const v = BigInt(value);
-    const length = MOQTVarInt.encodedLength(v);
+    const v = normalize(value);
+    const length = lengthOf(v);
     const result = new Uint8Array(length);
-
-    log.trace('Encoding MOQT varint', { value: v.toString(), length });
-
-    switch (length) {
-      case 1:
-        // 0xxxxxxx
-        result[0] = Number(v);
-        break;
-
-      case 2: {
-        // 10xxxxxx xxxxxxxx
-        result[0] = 0b10000000 | Number((v >> 8n) & 0x3fn);
-        result[1] = Number(v & 0xffn);
-        break;
-      }
-
-      case 3: {
-        // 110xxxxx xxxxxxxx xxxxxxxx
-        result[0] = 0b11000000 | Number((v >> 16n) & 0x1fn);
-        result[1] = Number((v >> 8n) & 0xffn);
-        result[2] = Number(v & 0xffn);
-        break;
-      }
-
-      case 4: {
-        // 1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        result[0] = 0b11100000 | Number((v >> 24n) & 0x0fn);
-        result[1] = Number((v >> 16n) & 0xffn);
-        result[2] = Number((v >> 8n) & 0xffn);
-        result[3] = Number(v & 0xffn);
-        break;
-      }
-
-      case 5: {
-        // 11110xxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        result[0] = 0b11110000 | Number((v >> 32n) & 0x07n);
-        result[1] = Number((v >> 24n) & 0xffn);
-        result[2] = Number((v >> 16n) & 0xffn);
-        result[3] = Number((v >> 8n) & 0xffn);
-        result[4] = Number(v & 0xffn);
-        break;
-      }
-
-      case 6: {
-        // 111110xx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        result[0] = 0b11111000 | Number((v >> 40n) & 0x03n);
-        result[1] = Number((v >> 32n) & 0xffn);
-        result[2] = Number((v >> 24n) & 0xffn);
-        result[3] = Number((v >> 16n) & 0xffn);
-        result[4] = Number((v >> 8n) & 0xffn);
-        result[5] = Number(v & 0xffn);
-        break;
-      }
-
-      case 7: {
-        // 1111110x (49 bits: 1 bit in the first byte, 48 in the remaining 6)
-        result[0] = 0b11111100 | Number((v >> 48n) & 0x01n);
-        result[1] = Number((v >> 40n) & 0xffn);
-        result[2] = Number((v >> 32n) & 0xffn);
-        result[3] = Number((v >> 24n) & 0xffn);
-        result[4] = Number((v >> 16n) & 0xffn);
-        result[5] = Number((v >> 8n) & 0xffn);
-        result[6] = Number(v & 0xffn);
-        break;
-      }
-
-      case 8: {
-        // 11111110 (56 bits of data in remaining 7 bytes)
-        result[0] = 0b11111110;
-        result[1] = Number((v >> 48n) & 0xffn);
-        result[2] = Number((v >> 40n) & 0xffn);
-        result[3] = Number((v >> 32n) & 0xffn);
-        result[4] = Number((v >> 24n) & 0xffn);
-        result[5] = Number((v >> 16n) & 0xffn);
-        result[6] = Number((v >> 8n) & 0xffn);
-        result[7] = Number(v & 0xffn);
-        break;
-      }
-
-      case 9: {
-        // 11111111 (64 bits of data in remaining 8 bytes)
-        result[0] = 0b11111111;
-        result[1] = Number((v >> 56n) & 0xffn);
-        result[2] = Number((v >> 48n) & 0xffn);
-        result[3] = Number((v >> 40n) & 0xffn);
-        result[4] = Number((v >> 32n) & 0xffn);
-        result[5] = Number((v >> 24n) & 0xffn);
-        result[6] = Number((v >> 16n) & 0xffn);
-        result[7] = Number((v >> 8n) & 0xffn);
-        result[8] = Number(v & 0xffn);
-        break;
-      }
-    }
+    write(v, length, result, 0);
 
     return result;
   }
 
   /**
-   * Encode a value into an existing buffer at a specific offset
+   * Encode a value into an existing buffer, without allocating
    *
-   * @param value - The value to encode
-   * @param buffer - Target buffer
-   * @param offset - Offset in the buffer to write to
    * @returns Number of bytes written
    * @throws {MOQTVarIntError} If value is invalid or buffer is too small
    */
   static encodeTo(value: number | bigint, buffer: Uint8Array, offset: number): number {
-    const encoded = MOQTVarInt.encode(value);
-
-    if (offset + encoded.length > buffer.length) {
+    const v = normalize(value);
+    const length = lengthOf(v);
+    if (offset + length > buffer.length) {
       throw new MOQTVarIntError(
-        `Buffer too small: need ${encoded.length} bytes at offset ${offset}, ` +
+        `Buffer too small: need ${length} bytes at offset ${offset}, ` +
         `but buffer is only ${buffer.length} bytes`
       );
     }
+    write(v, length, buffer, offset);
 
-    buffer.set(encoded, offset);
-    return encoded.length;
+    return length;
   }
 
   /**
    * Decode a MOQT variable-length integer from a buffer
    *
-   * @param buffer - Buffer containing the encoded integer
-   * @param offset - Offset to start reading from (default: 0)
    * @returns Tuple of [decoded value, number of bytes read]
    * @throws {MOQTVarIntError} If the buffer is too short
    */
   static decode(buffer: Uint8Array, offset = 0): [bigint, number] {
-    if (offset >= buffer.length) {
-      throw new MOQTVarIntError(`Buffer underflow: offset ${offset} >= length ${buffer.length}`);
+    const length = MOQTVarInt.checkedLength(buffer, offset);
+    if (length <= 7) {
+      return [BigInt(MOQTVarInt.readSmall(buffer, offset, length)), length];
     }
 
-    const firstByte = buffer[offset];
+    // 8 bytes carry 56 bits after a 0xFE prefix, 9 bytes 64 bits after 0xFF
+    const start = offset + 1;
+    const hi = length === 8
+      ? (buffer[start] << 16) | (buffer[start + 1] << 8) | buffer[start + 2]
+      : ((buffer[start] << 24) | (buffer[start + 1] << 16) | (buffer[start + 2] << 8) | buffer[start + 3]) >>> 0;
+    const lo = MOQTVarInt.readUint32(buffer, start + length - 5);
 
-    const length = MOQTVarInt.lengthFromFirstByte(firstByte);
-
-    if (offset + length > buffer.length) {
-      throw new MOQTVarIntError(
-        `Buffer underflow: need ${length} bytes at offset ${offset}, ` +
-        `but only ${buffer.length - offset} bytes available`
-      );
-    }
-
-    let value: bigint;
-
-    switch (length) {
-      case 1:
-        value = BigInt(firstByte & 0x7f);
-        break;
-
-      case 2:
-        value = (BigInt(firstByte & 0x3f) << 8n) |
-                BigInt(buffer[offset + 1]);
-        break;
-
-      case 3:
-        value = (BigInt(firstByte & 0x1f) << 16n) |
-                (BigInt(buffer[offset + 1]) << 8n) |
-                BigInt(buffer[offset + 2]);
-        break;
-
-      case 4:
-        value = (BigInt(firstByte & 0x0f) << 24n) |
-                (BigInt(buffer[offset + 1]) << 16n) |
-                (BigInt(buffer[offset + 2]) << 8n) |
-                BigInt(buffer[offset + 3]);
-        break;
-
-      case 5:
-        value = (BigInt(firstByte & 0x07) << 32n) |
-                (BigInt(buffer[offset + 1]) << 24n) |
-                (BigInt(buffer[offset + 2]) << 16n) |
-                (BigInt(buffer[offset + 3]) << 8n) |
-                BigInt(buffer[offset + 4]);
-        break;
-
-      case 6:
-        value = (BigInt(firstByte & 0x03) << 40n) |
-                (BigInt(buffer[offset + 1]) << 32n) |
-                (BigInt(buffer[offset + 2]) << 24n) |
-                (BigInt(buffer[offset + 3]) << 16n) |
-                (BigInt(buffer[offset + 4]) << 8n) |
-                BigInt(buffer[offset + 5]);
-        break;
-
-      case 7:
-        // 1111110x followed by 6 bytes (49 bits)
-        value = (BigInt(firstByte & 0x01) << 48n) |
-                (BigInt(buffer[offset + 1]) << 40n) |
-                (BigInt(buffer[offset + 2]) << 32n) |
-                (BigInt(buffer[offset + 3]) << 24n) |
-                (BigInt(buffer[offset + 4]) << 16n) |
-                (BigInt(buffer[offset + 5]) << 8n) |
-                BigInt(buffer[offset + 6]);
-        break;
-
-      case 8:
-        // 11111110 followed by 7 bytes (56 bits)
-        value = (BigInt(buffer[offset + 1]) << 48n) |
-                (BigInt(buffer[offset + 2]) << 40n) |
-                (BigInt(buffer[offset + 3]) << 32n) |
-                (BigInt(buffer[offset + 4]) << 24n) |
-                (BigInt(buffer[offset + 5]) << 16n) |
-                (BigInt(buffer[offset + 6]) << 8n) |
-                BigInt(buffer[offset + 7]);
-        break;
-
-      case 9:
-        // 11111111 followed by 8 bytes (64 bits)
-        value = (BigInt(buffer[offset + 1]) << 56n) |
-                (BigInt(buffer[offset + 2]) << 48n) |
-                (BigInt(buffer[offset + 3]) << 40n) |
-                (BigInt(buffer[offset + 4]) << 32n) |
-                (BigInt(buffer[offset + 5]) << 24n) |
-                (BigInt(buffer[offset + 6]) << 16n) |
-                (BigInt(buffer[offset + 7]) << 8n) |
-                BigInt(buffer[offset + 8]);
-        break;
-
-      default:
-        throw new MOQTVarIntError(`Invalid length: ${length}`);
-    }
-
-    log.trace('Decoded MOQT varint', { value: value.toString(), length });
-
-    return [value, length];
+    return [(BigInt(hi) << 32n) | BigInt(lo), length];
   }
 
   /**
-   * Decode a MOQT variable-length integer and return as a number
+   * Decode a MOQT variable-length integer as a number
    *
-   * @param buffer - Buffer containing the encoded integer
-   * @param offset - Offset to start reading from (default: 0)
    * @returns Tuple of [decoded value as number, bytes read]
    * @throws {MOQTVarIntError} If buffer is invalid or value exceeds Number.MAX_SAFE_INTEGER
    */
   static decodeNumber(buffer: Uint8Array, offset = 0): [number, number] {
-    const [value, bytesRead] = MOQTVarInt.decode(buffer, offset);
+    const length = MOQTVarInt.checkedLength(buffer, offset);
+    if (length <= 7) {
+      return [MOQTVarInt.readSmall(buffer, offset, length), length];
+    }
 
-    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    const [value] = MOQTVarInt.decode(buffer, offset);
+    if (value > MAX_SAFE_BIG) {
       throw new MOQTVarIntError(
         `Value ${value} exceeds Number.MAX_SAFE_INTEGER. Use decode() for large values.`
       );
     }
 
-    return [Number(value), bytesRead];
+    return [Number(value), length];
   }
 
   /**
@@ -385,18 +293,48 @@ export class MOQTVarInt {
    * @returns Number of bytes in the encoded value
    */
   static lengthFromFirstByte(firstByte: number): 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 {
-    const leadingOnes = MOQTVarInt.countLeadingOnes(firstByte);
+    // Leading ones of the byte = leading zeros of its complement in the top 8 bits
+    const ones = Math.clz32(~(firstByte << 24));
 
-    switch (leadingOnes) {
-      case 0: return 1;
-      case 1: return 2;
-      case 2: return 3;
-      case 3: return 4;
-      case 4: return 5;
-      case 5: return 6;
-      case 6: return 7;
-      case 7: return 8;
-      default: return 9;
+    return (ones + 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+  }
+
+  private static checkedLength(buffer: Uint8Array, offset: number): 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 {
+    if (offset >= buffer.length) {
+      throw new MOQTVarIntError(`Buffer underflow: offset ${offset} >= length ${buffer.length}`);
     }
+    const length = MOQTVarInt.lengthFromFirstByte(buffer[offset]);
+    if (offset + length > buffer.length) {
+      throw underflow(length, offset, buffer.length);
+    }
+
+    return length;
+  }
+
+  /** Lengths 1-7: at most 49 bits, exact as a number */
+  private static readSmall(buffer: Uint8Array, offset: number, length: number): number {
+    const first = buffer[offset];
+    switch (length) {
+      case 1:
+        return first;
+      case 2:
+        return ((first & 0x3f) << 8) | buffer[offset + 1];
+      case 3:
+        return ((first & 0x1f) << 16) | (buffer[offset + 1] << 8) | buffer[offset + 2];
+      case 4:
+        return (((first & 0x0f) << 24) | (buffer[offset + 1] << 16) | (buffer[offset + 2] << 8) | buffer[offset + 3]) >>> 0;
+      default: {
+        // 5-7: high bits from the first byte and the bytes before the low word
+        let hi = first & (0xff >> length);
+        for (let i = 1; i <= length - 5; i++) {
+          hi = hi * 256 + buffer[offset + i];
+        }
+        return hi * TWO_32 + MOQTVarInt.readUint32(buffer, offset + length - 4);
+      }
+    }
+  }
+
+  private static readUint32(buffer: Uint8Array, at: number): number {
+    return ((buffer[at] << 24) | (buffer[at + 1] << 16) | (buffer[at + 2] << 8) | buffer[at + 3]) >>> 0;
   }
 }

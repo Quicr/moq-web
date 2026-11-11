@@ -295,7 +295,11 @@ export function decodeParameters(
 
 /** §9.19: Type Delta past 2^64-1 is DELTA_ENCODING_OVERFLOW; any type beyond the table is unknown */
 function readType(reader: Draft18BufferReader, previousType: number): number {
-  const type = BigInt(previousType) + reader.readVarInt();
+  const delta = reader.readVarIntExact();
+  if (typeof delta === 'number' && previousType + delta <= Number.MAX_SAFE_INTEGER) {
+    return previousType + delta;
+  }
+  const type = BigInt(previousType) + BigInt(delta);
   if (type > MOQT_VARINT_MAX) {
     throw violation(`Parameter Type ${type} exceeds 2^64-1`, 'delta-overflow');
   }
@@ -388,15 +392,11 @@ function readRaw(reader: Draft18BufferReader, type: number, found: ParameterSpec
 
       return new Uint8Array([value]);
     }
+    // The value's own bytes, as a view of the message: no decode and re-encode
     case ValueKind.VARINT:
-      return MOQTVarInt.encode(reader.readVarInt());
-    case ValueKind.LOCATION: {
-      const writer = new Draft18BufferWriter();
-      writer.writeVarInt(reader.readVarInt());
-      writer.writeVarInt(reader.readVarInt());
-
-      return writer.toUint8Array();
-    }
+      return reader.readVarIntBytes();
+    case ValueKind.LOCATION:
+      return reader.readVarIntBytes(2);
     case ValueKind.NAMESPACE: {
       const writer = new Draft18BufferWriter();
       encodeTrackNamespace(writer, decodeTrackNamespace(reader));

@@ -320,3 +320,85 @@ describe('MOQTVarInt', () => {
     });
   });
 });
+
+/** The straightforward BigInt encoding the fast paths must match byte for byte */
+function referenceEncode(value: bigint): Uint8Array {
+  const caps = [7n, 14n, 21n, 28n, 35n, 42n, 49n, 56n, 64n];
+  const length = caps.findIndex((bits) => value < 1n << bits) + 1;
+  const bytes = new Uint8Array(length);
+  let v = value;
+  for (let i = length - 1; i >= 1; i--) {
+    bytes[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  const prefix = (0xff00 >> (length - 1)) & 0xff;
+  bytes[0] = length <= 7 ? prefix | Number(v) : prefix;
+  return bytes;
+}
+
+describe('MOQTVarInt matches the reference encoding', () => {
+  const boundaries: bigint[] = [];
+  for (const bits of [7n, 14n, 21n, 28n, 32n, 35n, 42n, 49n, 53n, 56n, 64n]) {
+    const edge = 1n << bits;
+    boundaries.push(edge - 2n, edge - 1n);
+    if (bits < 64n) {
+      boundaries.push(edge, edge + 1n);
+    }
+  }
+  // Deterministic pseudo-random values of every length
+  let seed = 0x2545f491n;
+  const random: bigint[] = [];
+  for (let i = 0; i < 2000; i++) {
+    seed = (seed * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n);
+    random.push(seed >> BigInt(i % 64));
+  }
+
+  it.each([0n, 1n, ...boundaries])('round-trips %s', (value) => {
+    checkValue(value);
+  });
+
+  it('round-trips 2000 random values of every length', () => {
+    for (const value of random) {
+      checkValue(value);
+    }
+  });
+
+  function checkValue(value: bigint): void {
+    const expected = referenceEncode(value);
+    expect(MOQTVarInt.encode(value)).toEqual(expected);
+    if (value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      expect(MOQTVarInt.encode(Number(value))).toEqual(expected);
+      expect(MOQTVarInt.decodeNumber(expected)).toEqual([Number(value), expected.length]);
+    } else {
+      expect(() => MOQTVarInt.decodeNumber(expected)).toThrow(/MAX_SAFE_INTEGER/);
+    }
+    expect(MOQTVarInt.encodedLength(value)).toBe(expected.length);
+    expect(MOQTVarInt.decode(expected)).toEqual([value, expected.length]);
+
+    const buffer = new Uint8Array(expected.length + 3);
+    expect(MOQTVarInt.encodeTo(value, buffer, 2)).toBe(expected.length);
+    expect(buffer.subarray(2, 2 + expected.length)).toEqual(expected);
+    expect(MOQTVarInt.decode(buffer, 2)).toEqual([value, expected.length]);
+  }
+
+  it('reads the length from every first byte', () => {
+    for (let b = 0; b < 256; b++) {
+      let ones = 0;
+      while (ones < 8 && (b & (0x80 >> ones)) !== 0) {
+        ones++;
+      }
+      expect(MOQTVarInt.lengthFromFirstByte(b)).toBe(ones + 1);
+    }
+  });
+
+  it('rejects negative, fractional and oversized values, and short buffers', () => {
+    expect(() => MOQTVarInt.encode(-1)).toThrow(/negative/);
+    expect(() => MOQTVarInt.encode(-1n)).toThrow(/negative/);
+    expect(() => MOQTVarInt.encode(1.5)).toThrow(/not an integer/);
+    expect(() => MOQTVarInt.encode(Number.NaN)).toThrow(/not an integer/);
+    expect(() => MOQTVarInt.encode(1n << 64n)).toThrow(/exceeds maximum/);
+    expect(() => MOQTVarInt.encodeTo(300, new Uint8Array(1), 0)).toThrow(/too small/);
+    expect(() => MOQTVarInt.decode(new Uint8Array([0x80]))).toThrow(/Buffer underflow/);
+    expect(() => MOQTVarInt.decode(new Uint8Array([]))).toThrow(/Buffer underflow/);
+  });
+});

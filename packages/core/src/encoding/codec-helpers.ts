@@ -10,12 +10,14 @@
  */
 
 import { MOQTVarInt, MOQT_VARINT_MAX } from './moqt-varint.js';
-import { Draft18BufferWriter, Draft18BufferReader } from './protocol-codec.js';
+import { Draft18BufferWriter, Draft18BufferReader, utf8Length } from './protocol-codec.js';
 import { Draft18CodecError, CODEC_INCOMPLETE, CODEC_MALFORMED } from './draft18-message-codec.js';
 import type { AuthorizationToken, MessageTypeDraft18, TrackNamespace } from '../messages/types.js';
 
 // Module-level singletons shared across helpers
 const TE = new TextEncoder();
+/** Names up to this long are decoded in JS when ASCII; longer ones go to TextDecoder */
+const ASCII_FAST_MAX = 64;
 const TD = new TextDecoder();
 /** Names must be UTF-8: invalid bytes throw instead of becoming U+FFFD */
 const TD_FATAL = new TextDecoder('utf-8', { fatal: true });
@@ -116,6 +118,17 @@ export function readVarIntSaturating(reader: Draft18BufferReader): number {
  * not UTF-8 are a malformed message (PROTOCOL_VIOLATION), never mangled.
  */
 export function decodeName(bytes: Uint8Array, what: string, messageType?: MessageTypeDraft18): string {
+  // ASCII is always valid UTF-8: build short names without a TextDecoder call
+  if (bytes.length <= ASCII_FAST_MAX) {
+    let ascii = '';
+    let i = 0;
+    for (; i < bytes.length && bytes[i] < 0x80; i++) {
+      ascii += String.fromCharCode(bytes[i]);
+    }
+    if (i === bytes.length) {
+      return ascii;
+    }
+  }
   try {
     return TD_FATAL.decode(bytes);
   } catch {
@@ -125,7 +138,12 @@ export function decodeName(bytes: Uint8Array, what: string, messageType?: Messag
 
 /** Total byte length of a Track Namespace: the sum of its field lengths (§8.7) */
 function namespaceLength(namespace: TrackNamespace): number {
-  return namespace.reduce((total, field) => total + TE.encode(field).length, 0);
+  let total = 0;
+  for (const field of namespace) {
+    total += utf8Length(field);
+  }
+
+  return total;
 }
 
 export function encodeTrackNamespace(writer: Draft18BufferWriter, namespace: TrackNamespace): void {
@@ -134,12 +152,12 @@ export function encodeTrackNamespace(writer: Draft18BufferWriter, namespace: Tra
 
   writer.writeVarInt(namespace.length);
   for (const field of namespace) {
-    const bytes = TE.encode(field);
-    if (bytes.length === 0) {
+    const length = utf8Length(field);
+    if (length === 0) {
       throw new Draft18CodecError('TrackNamespace Field length 0 (PROTOCOL_VIOLATION)');
     }
-    writer.writeVarInt(bytes.length);
-    writer.writeBytes(bytes);
+    writer.writeVarInt(length);
+    writer.writeUtf8(field, length);
   }
 }
 
@@ -165,17 +183,15 @@ export function decodeTrackNamespace(reader: Draft18BufferReader, messageType?: 
 
 /** Encode a Track Name; §8.7 limits the Full Track Name (namespace + name) to 4,096 bytes. */
 export function encodeTrackName(writer: Draft18BufferWriter, name: string, namespace: TrackNamespace): void {
-  const bytes = TE.encode(name);
-  assertBound(namespaceLength(namespace) + bytes.length, MAX_TRACK_NAME_LENGTH, 'Full Track Name length');
+  const length = utf8Length(name);
+  assertBound(namespaceLength(namespace) + length, MAX_TRACK_NAME_LENGTH, 'Full Track Name length');
 
-  writer.writeVarInt(bytes.length);
-  writer.writeBytes(bytes);
+  writer.writeVarInt(length);
+  writer.writeUtf8(name, length);
 }
 
 export function encodeString(writer: Draft18BufferWriter, str: string): void {
-  const bytes = TE.encode(str);
-  writer.writeVarInt(bytes.length);
-  writer.writeBytes(bytes);
+  writer.writeString(str);
 }
 
 export function decodeString(

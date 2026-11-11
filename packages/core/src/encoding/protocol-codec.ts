@@ -917,32 +917,91 @@ class Draft18Codec implements IProtocolCodec {
 /**
  * Buffer writer using MOQT varints for draft-18.
  */
+/**
+ * The UTF-8 length of `str` as TextEncoder encodes it (a lone surrogate
+ * becomes U+FFFD, 3 bytes), without encoding it.
+ */
+export function utf8Length(str: string): number {
+  let bytes = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    if (c < 0x80) {
+      bytes += 1;
+    } else if (c < 0x800) {
+      bytes += 2;
+    } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length && (str.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      bytes += 4;
+      i++;
+    } else {
+      bytes += 3;
+    }
+  }
+
+  return bytes;
+}
+
+/** Byte runs at least this long are kept by reference rather than copied into scratch */
+const BY_REFERENCE = 256;
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const FIRST_SCRATCH = 64;
+
 export class Draft18BufferWriter {
+  /** Finished pieces, in order: filled scratch views and large byte runs */
   private chunks: Uint8Array[] = [];
+  private scratch = new Uint8Array(FIRST_SCRATCH);
+  /** Bytes of `scratch` written since it was last sealed */
+  private used = 0;
+  private start = 0;
   private totalLength = 0;
 
   writeVarInt(value: number | bigint): void {
-    const encoded = MOQTVarInt.encode(value);
-    this.chunks.push(encoded);
-    this.totalLength += encoded.length;
+    this.reserve(9);
+    const length = MOQTVarInt.encodeTo(value, this.scratch, this.used);
+    this.used += length;
+    this.totalLength += length;
   }
 
   writeByte(value: number): void {
-    const arr = new Uint8Array(1);
-    arr[0] = value & 0xff;
-    this.chunks.push(arr);
+    this.reserve(1);
+    this.scratch[this.used++] = value & 0xff;
     this.totalLength += 1;
   }
 
   writeBytes(bytes: Uint8Array): void {
-    this.chunks.push(bytes);
+    if (bytes.length >= BY_REFERENCE) {
+      this.seal();
+      this.chunks.push(bytes);
+    } else {
+      this.reserve(bytes.length);
+      this.scratch.set(bytes, this.used);
+      this.used += bytes.length;
+    }
     this.totalLength += bytes.length;
   }
 
   writeString(str: string): void {
-    const bytes = TE.encode(str);
-    this.writeVarInt(bytes.length);
-    this.writeBytes(bytes);
+    const length = utf8Length(str);
+    this.writeVarInt(length);
+    this.writeUtf8(str, length);
+  }
+
+  /**
+   * Write `str` as UTF-8 straight into scratch: ASCII byte by byte, anything
+   * else through TextEncoder.encodeInto. `length` is its `utf8Length`.
+   */
+  writeUtf8(str: string, length = utf8Length(str)): void {
+    this.reserve(length);
+    if (length === str.length) {
+      const scratch = this.scratch;
+      let at = this.used;
+      for (let i = 0; i < str.length; i++) {
+        scratch[at++] = str.charCodeAt(i);
+      }
+    } else {
+      TE.encodeInto(str, this.scratch.subarray(this.used, this.used + length));
+    }
+    this.used += length;
+    this.totalLength += length;
   }
 
   get length(): number {
@@ -969,7 +1028,27 @@ export class Draft18BufferWriter {
       result.set(chunk, offset);
       offset += chunk.length;
     }
+    result.set(this.scratch.subarray(this.start, this.used), offset);
     return result;
+  }
+
+  /** Close the scratch bytes written so far into a chunk, so a referenced run can follow them */
+  private seal(): void {
+    if (this.used > this.start) {
+      this.chunks.push(this.scratch.subarray(this.start, this.used));
+      this.start = this.used;
+    }
+  }
+
+  /** Room for `n` more bytes in scratch; a full scratch is sealed and a larger one started */
+  private reserve(n: number): void {
+    if (this.used + n <= this.scratch.length) {
+      return;
+    }
+    this.seal();
+    this.scratch = new Uint8Array(Math.max(this.scratch.length * 2, n));
+    this.used = 0;
+    this.start = 0;
   }
 }
 
@@ -1023,6 +1102,36 @@ export class Draft18BufferReader {
     const result = this.buffer.subarray(this._offset, this._offset + length);
     this._offset += length;
     return result;
+  }
+
+  /**
+   * A varint as a number when it is exact as one, else as a bigint: no
+   * BigInt work for the common case.
+   */
+  readVarIntExact(): number | bigint {
+    if (this._offset < this.buffer.length && MOQTVarInt.lengthFromFirstByte(this.buffer[this._offset]) <= 7) {
+      return this.readVarIntNumber();
+    }
+    const value = this.readVarInt();
+
+    return value <= MAX_SAFE_BIGINT ? Number(value) : value;
+  }
+
+  /** The bytes of the next `count` varints, as a view of the buffer (no copy, no re-encoding) */
+  readVarIntBytes(count = 1): Uint8Array {
+    const start = this._offset;
+    for (let i = 0; i < count; i++) {
+      if (this._offset >= this.buffer.length) {
+        throw new Error('Buffer underflow');
+      }
+      const length = MOQTVarInt.lengthFromFirstByte(this.buffer[this._offset]);
+      if (this._offset + length > this.buffer.length) {
+        throw new Error(`Buffer underflow: need ${length} bytes, have ${this.remaining}`);
+      }
+      this._offset += length;
+    }
+
+    return this.buffer.subarray(start, this._offset);
   }
 
   readString(): string {
