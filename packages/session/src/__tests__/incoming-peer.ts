@@ -35,6 +35,8 @@ export interface IncomingPeer {
   written: () => ControlMessageDraft18[];
   send: (...messages: unknown[]) => void;
   fin: () => void;
+  /** End the peer's side with a reset (RESET_STREAM), which cancels the request */
+  reset: () => void;
   closed: () => boolean;
   opened: Promise<void>;
 }
@@ -88,6 +90,7 @@ export function openIncoming(internals: SessionInternals, first: unknown): Incom
     written: () => chunks.map((chunk) => internals.codec.decodeControlMessage(chunk)[0]),
     send: (...messages) => messages.forEach((m) => controller.enqueue(encode(m))),
     fin: () => controller.close(),
+    reset: () => controller.error(new Error('stream reset by peer')),
     closed: () => isClosed,
   };
 }

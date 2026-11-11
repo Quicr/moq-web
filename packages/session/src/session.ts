@@ -1559,6 +1559,8 @@ export class MOQTSession {
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
     this.outgoingRequests.delete(requestId);
+    // Nothing more can arrive for the request once its stream is gone
+    this.incomingRequestKinds.delete(requestId);
     this.goAwayStreams.delete(requestId);
     this.failPendingUpdates(requestId);
     await stream.close();
@@ -1587,6 +1589,8 @@ export class MOQTSession {
     if (!stream) return;
     this.activeRequestStreams.delete(requestId);
     this.outgoingRequests.delete(requestId);
+    // Nothing more can arrive for the request once its stream is gone
+    this.incomingRequestKinds.delete(requestId);
     this.goAwayStreams.delete(requestId);
     this.failPendingUpdates(requestId);
     await stream.abort(StreamResetErrorCodeDraft18.CANCELLED);

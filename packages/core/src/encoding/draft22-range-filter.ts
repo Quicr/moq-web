@@ -43,8 +43,9 @@ function invalid(message: string): Draft18CodecError {
   return new Draft18CodecError(`${message} (INVALID_FILTER)`, undefined, INVALID_FILTER_CODE);
 }
 
+/** A Range Filter value that does not parse: a malformed parameter, as for every other parameter value */
 function violation(message: string): Draft18CodecError {
-  return new Draft18CodecError(`${message} (PROTOCOL_VIOLATION)`);
+  return new Draft18CodecError(`${message} (PROTOCOL_VIOLATION)`, undefined, undefined, 'invalid-parameter');
 }
 
 function hasPropertyType(type: RangeFilterTypeDraft22): boolean {

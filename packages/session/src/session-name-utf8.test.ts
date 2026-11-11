@@ -3,13 +3,13 @@
 
 /**
  * A Track Namespace field or Track Name that is not UTF-8 cannot be carried
- * as the strings this client uses. The request naming it is refused as a
- * malformed message, which closes the session with PROTOCOL_VIOLATION,
- * rather than served under a name altered by decoding.
+ * as the strings this client uses. The request naming it closes the session
+ * (PROTOCOL_VIOLATION before draft-23, INVALID_FIELD from draft-23) rather
+ * than being served under a name altered by decoding.
  */
 
 import { describe, it, expect } from 'vitest';
-import { MessageTypeDraft18, SessionErrorCodeDraft18, SubscriptionFilterDraft18 } from '@moq-web/core';
+import { MessageTypeDraft18, SubscriptionFilterDraft18, terminationCodeFor } from '@moq-web/core';
 
 import { makeSession, tick, type Draft, type SessionInternals } from './__tests__/incoming-peer.js';
 
@@ -43,7 +43,8 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('non-UTF-8 names in
 
     await open(internals, subscribe, 'zz');
 
-    expect(closed).toEqual([expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION })]);
+    // Draft-23 §12.2: the name parsed, but its value is not one we can carry
+    expect(closed).toEqual([expect.objectContaining({ code: terminationCodeFor('invalid-field', draft) })]);
   });
 
   it('close the session when a SUBSCRIBE_NAMESPACE prefix is not UTF-8', async () => {
@@ -52,6 +53,7 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('non-UTF-8 names in
 
     await open(internals, { type: MessageTypeDraft18.SUBSCRIBE_NAMESPACE, requestId: 1n, trackNamespacePrefix: ['zz'] }, 'zz');
 
-    expect(closed).toEqual([expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION })]);
+    // Draft-23 §12.2: the name parsed, but its value is not one we can carry
+    expect(closed).toEqual([expect.objectContaining({ code: terminationCodeFor('invalid-field', draft) })]);
   });
 });

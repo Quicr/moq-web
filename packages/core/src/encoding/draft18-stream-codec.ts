@@ -192,17 +192,19 @@ export class Draft18StreamCodec {
     const streamType = reader.readVarIntNumber();
 
     if (streamType >= 128) {
-      throw new Draft18StreamCodecError('SUBGROUP_HEADER Type Flags >= 128 is a PROTOCOL_VIOLATION');
+      throw new Draft18StreamCodecError('SUBGROUP_HEADER Type Flags >= 128 is a PROTOCOL_VIOLATION', undefined, 'invalid-stream-header');
     }
 
     if (!Draft18StreamCodec.isSubgroupHeader(streamType)) {
-      throw new Draft18StreamCodecError(`Invalid subgroup header stream type: 0x${streamType.toString(16)}`);
+      throw new Draft18StreamCodecError(`Invalid subgroup header stream type: 0x${streamType.toString(16)}`, undefined, 'invalid-stream-header');
     }
 
     const modeBits = (streamType & SubgroupFlags.SUBGROUP_ID_MODE_MASK) >> 1;
     if (modeBits === 0b11) {
       throw new Draft18StreamCodecError(
         `Reserved SUBGROUP_ID_MODE 0b11 in stream type 0x${streamType.toString(16)} (spec §11.4.2 PROTOCOL_VIOLATION)`,
+        undefined,
+        'invalid-stream-header',
       );
     }
     const subgroupIdMode = modeBits as SubgroupIdModeDraft18;
@@ -259,7 +261,7 @@ export class Draft18StreamCodec {
 
     const streamType = reader.readVarIntNumber();
     if (streamType !== StreamTypeDraft18.FETCH_HEADER) {
-      throw new Draft18StreamCodecError(`Expected FETCH_HEADER (0x05), got 0x${streamType.toString(16)}`);
+      throw new Draft18StreamCodecError(`Expected FETCH_HEADER (0x05), got 0x${streamType.toString(16)}`, undefined, 'invalid-stream-header');
     }
 
     const requestId = reader.readVarInt();
@@ -409,10 +411,10 @@ export class Draft18StreamCodec {
 
     const type = reader.readVarIntNumber();
     if (!Draft18StreamCodec.isDatagramType(type)) {
-      throw new Draft18StreamCodecError(`Invalid OBJECT_DATAGRAM type: 0x${type.toString(16)}`);
+      throw new Draft18StreamCodecError(`Invalid OBJECT_DATAGRAM type: 0x${type.toString(16)}`, undefined, 'invalid-stream-header');
     }
     if (type & 0x10) {
-      throw new Draft18StreamCodecError('OBJECT_DATAGRAM Type Flags bit 4 is reserved and must be zero');
+      throw new Draft18StreamCodecError('OBJECT_DATAGRAM Type Flags bit 4 is reserved and must be zero', undefined, 'invalid-stream-header');
     }
 
     const hasProperties = (type & DatagramFlags.PROPERTIES) !== 0;

@@ -83,6 +83,8 @@ export function terminationCodeFor(violation: Violation, draft: DraftVersion): n
 const TAG_VIOLATIONS: Readonly<Record<string, Violation>> = {
   malformed: 'malformed-message',
   'bounds-exceeded': 'field-length',
+  // A Token structure that does not parse (AUTH_TOKEN_FORMAT_ERROR, §8.9)
+  'key-value-formatting-error': 'malformed-key-value',
 };
 
 /**

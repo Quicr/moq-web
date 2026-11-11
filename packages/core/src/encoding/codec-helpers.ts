@@ -132,7 +132,8 @@ export function decodeName(bytes: Uint8Array, what: string, messageType?: Messag
   try {
     return TD_FATAL.decode(bytes);
   } catch {
-    throw new Draft18CodecError(`${what} is not valid UTF-8 (PROTOCOL_VIOLATION)`, messageType);
+    // The field parsed; its value is one we cannot carry (draft-23 §12.2 INVALID_FIELD)
+    throw new Draft18CodecError(`${what} is not valid UTF-8 (PROTOCOL_VIOLATION)`, messageType, CODEC_MALFORMED, 'invalid-field');
   }
 }
 
@@ -163,14 +164,23 @@ export function encodeTrackNamespace(writer: Draft18BufferWriter, namespace: Tra
 
 export function decodeTrackNamespace(reader: Draft18BufferReader, messageType?: MessageTypeDraft18): TrackNamespace {
   const count = reader.readVarIntNumber();
-  assertBound(count, MAX_NAMESPACE_TUPLE_COUNT, 'TrackNamespace tuple count', messageType);
+  // §8.7: more than 32 fields is INVALID_TRACK_NAMESPACE, not a length bound
+  if (count > MAX_NAMESPACE_TUPLE_COUNT) {
+    throw new Draft18CodecError(
+      `TrackNamespace tuple count ${count} exceeds safety bound ${MAX_NAMESPACE_TUPLE_COUNT}`,
+      messageType,
+      // Still a bound for metrics; the kind sets the draft-23 code
+      'bounds-exceeded',
+      'invalid-track-namespace',
+    );
+  }
   const namespace: string[] = [];
   let total = 0;
   for (let i = 0; i < count; i++) {
     const length = reader.readVarIntNumber();
     // §8.7: an empty field, or a Track Namespace over 4,096 bytes, closes the session
     if (length === 0) {
-      throw new Draft18CodecError('TrackNamespace Field length 0 (PROTOCOL_VIOLATION)', messageType);
+      throw new Draft18CodecError('TrackNamespace Field length 0 (PROTOCOL_VIOLATION)', messageType, CODEC_MALFORMED, 'invalid-track-namespace');
     }
     assertBound(length, MAX_STRING_LENGTH, 'TrackNamespace field length', messageType);
     total += length;
