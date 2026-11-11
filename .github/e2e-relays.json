@@ -1,27 +1,46 @@
 {
   "$comment": "Relays the nightly session-e2e matrix runs against, and the interop report lists. To add yours, open a PR adding an entry. experimental: reported, but does not fail the run.",
-  "drafts": ["draft-16", "draft-18", "draft-22", "draft-23"],
+  "drafts": [
+    "draft-16",
+    "draft-18",
+    "draft-22",
+    "draft-23"
+  ],
   "relays": [
     {
       "id": "openmoq",
       "name": "openmoq (moqx)",
       "url": "https://moqx-main.ci.openmoq.org:4433/moq-relay",
-      "drafts": ["draft-22", "draft-18", "draft-16"]
+      "drafts": [],
+      "experimentalDrafts": [
+        "draft-22",
+        "draft-18",
+        "draft-16"
+      ],
+      "notes": "As of 2026-11-11 unreachable from GitHub runners (WebTransport opening handshake fails); experimental until it is back."
     },
     {
       "id": "cloudflare",
       "name": "Cloudflare moq-ng",
       "url": "https://moq-ng.cloudflare.mediaoverquic.com",
-      "drafts": ["draft-22"],
-      "experimentalDrafts": ["draft-23"],
+      "drafts": [
+        "draft-22"
+      ],
+      "experimentalDrafts": [
+        "draft-23"
+      ],
       "notes": "As of 2026-11-10 it does not offer moqt-23."
     },
     {
       "id": "meta",
       "name": "Meta (mvfst)",
       "url": "https://fb.mvfst.net:9448/moq-relay",
-      "drafts": ["draft-22"],
-      "experimentalDrafts": ["draft-23"],
+      "drafts": [
+        "draft-22"
+      ],
+      "experimentalDrafts": [
+        "draft-23"
+      ],
       "notes": "As of 2026-11-10 it does not offer moqt-23."
     },
     {
@@ -29,7 +48,9 @@
       "name": "lminiero",
       "url": "https://lminiero.it:9000",
       "drafts": [],
-      "experimentalDrafts": ["draft-23"],
+      "experimentalDrafts": [
+        "draft-23"
+      ],
       "notes": "As of 2026-11-11: NAMESPACE lacks Number of Parameters (#1858); FETCH Object ID Delta uses the draft-22 rule (#2006); refuses PUBLISH_NAMESPACE after PUBLISH of the same namespace."
     }
   ]

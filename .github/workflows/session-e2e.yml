@@ -169,8 +169,13 @@ jobs:
 
   media-e2e:
     name: media-e2e (${{ matrix.draft }})
+    # Only on the full run: a run aimed at chosen relays or drafts, or at a
+    # custom relay, is about those
+    if: inputs.relay_url == '' && inputs.relays == '' && inputs.drafts == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # openmoq, its relay, is unreachable from the runners as of 2026-11-11
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:

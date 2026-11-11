@@ -26,7 +26,7 @@ yours permanently, open a PR adding an entry there; for a one-off run, use
 
 | Relay | `RELAY_URL` | Drafts |
 |---|---|---|
-| openmoq | `https://moqx-main.ci.openmoq.org:4433/moq-relay` | d22, d18, d16 |
+| openmoq | `https://moqx-main.ci.openmoq.org:4433/moq-relay` | d22, d18, d16 experimental (unreachable from runners as of 2026-11-11) |
 | Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d23 experimental |
 | Meta (mvfst) | `https://fb.mvfst.net:9448/moq-relay` | d22; d23 experimental |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
