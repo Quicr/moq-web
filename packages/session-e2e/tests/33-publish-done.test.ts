@@ -10,6 +10,7 @@
  * `publish()` on the same session proves the session survived.
  */
 
+import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
@@ -17,7 +18,7 @@ import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
 
 const MOQT_VERSION = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MOQT_VERSION ?? 'draft-18';
-const isDraft18Family = MOQT_VERSION === 'draft-18' || MOQT_VERSION === 'draft-22';
+const isDraft18Family = isDraftAtLeast(MOQT_VERSION as DraftVersion, 18);
 const OBJECT_COUNT = 3;
 
 describe.skipIf(!isDraft18Family)('PUBLISH_DONE delivery (§9.9)', () => {

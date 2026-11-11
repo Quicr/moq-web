@@ -16,14 +16,15 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { MOQTransport, type SetupExtensionValue } from '@moq-web/core';
+import { MOQTransport, type SetupExtensionValue, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { MOQTSession } from '@moq-web/session';
 
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
 
 const MOQT_VERSION = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MOQT_VERSION ?? 'draft-18';
-const isDraft18 = MOQT_VERSION === 'draft-18';
+/** Draft-18 and later share these messages; draft-22 and draft-23 inherit them */
+const isDraft18 = isDraftAtLeast(MOQT_VERSION as DraftVersion, 18);
 
 describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
   let transport: MOQTransport | undefined;

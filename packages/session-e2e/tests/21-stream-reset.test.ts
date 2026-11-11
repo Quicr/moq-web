@@ -13,7 +13,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { StreamResetErrorCodeDraft18 } from '@moq-web/core';
+import { StreamResetErrorCodeDraft18, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -22,7 +22,8 @@ import chatStream from '../profiles/chat-stream.json';
 import type { StreamResetEvent } from '@moq-web/session';
 
 const MOQT_VERSION = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MOQT_VERSION ?? 'draft-18';
-const isDraft18 = MOQT_VERSION === 'draft-18';
+/** Draft-18 and later share these messages; draft-22 and draft-23 inherit them */
+const isDraft18 = isDraftAtLeast(MOQT_VERSION as DraftVersion, 18);
 
 describe.skipIf(!isDraft18)('subgroup stream-reset (§11.4.3)', () => {
   let pub: SessionHandle | undefined;

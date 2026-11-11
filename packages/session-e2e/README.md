@@ -27,6 +27,7 @@ fail at the WebTransport handshake until the relays add it. Known relay-side
 failures on draft-22, also seen on `main`: Cloudflare returns only part of a
 large-payload FETCH (09-fetch); Meta does not resume delivery after a
 REQUEST_UPDATE resume (06) and misses catalogs in the 4-peer fan-out (32).
+On Cloudflare, 06 is flaky under full-suite load (passes when run alone).
 
 Both env vars are optional overrides for what's in the profile JSON. `MOQ_AUTH_TOKEN`
 is read from the environment and never committed — profiles reference it by name.
@@ -52,8 +53,9 @@ Current coverage:
 - 10-fetch-cancel — FETCH then FETCH_CANCEL
 - 11-goaway — client-initiated GOAWAY drives 'closing' state (draft-18)
 
-Tests 08 and 11 target draft-18 wire features and skip on other drafts;
-everything else runs on both draft-16 and draft-18. Nightly CI runs the
+Tests for draft-18 wire features (08, 11-23, 25-28, 33) run on draft-18 and
+later, so draft-22 and draft-23 get them too; on draft-16 they skip. 34 runs
+only on draft-23. Everything else runs on every draft. Nightly CI runs the
 matrix; locally, override with `MOQT_VERSION=draft-16 pnpm --filter
 @moq-web/session-e2e test`.
 

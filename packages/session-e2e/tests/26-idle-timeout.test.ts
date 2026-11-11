@@ -20,10 +20,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
-import { SessionErrorCodeDraft18 } from '@moq-web/core';
+import { SessionErrorCodeDraft18, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 
 const MOQT_VERSION = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MOQT_VERSION ?? 'draft-18';
-const isDraft18 = MOQT_VERSION === 'draft-18';
+/** Draft-18 and later share these messages; draft-22 and draft-23 inherit them */
+const isDraft18 = isDraftAtLeast(MOQT_VERSION as DraftVersion, 18);
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -51,7 +52,9 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
     expect(handle.session.isReady).toBe(true);
   });
 
-  it('idleTimeoutMs closes the local session with CONTROL_MESSAGE_TIMEOUT when no activity happens', async () => {
+  // Going idle is an ordinary end, so the close is NO_ERROR: CONTROL_MESSAGE_TIMEOUT
+  // is for a peer slow to answer a control message (d22 §12.2, d23 §12.2)
+  it('idleTimeoutMs closes the local session with NO_ERROR when no activity happens', async () => {
     const profile = resolveProfile(chatStream as Profile);
     handle = await makeSession(profile);
 
@@ -72,7 +75,7 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
 
     expect(evt).not.toBeNull();
     expect(evt!.remote).toBe(false);
-    expect(evt!.code).toBe(SessionErrorCodeDraft18.CONTROL_MESSAGE_TIMEOUT);
+    expect(evt!.code).toBe(SessionErrorCodeDraft18.NO_ERROR);
     expect(evt!.reason).toMatch(/idle timeout/);
   });
 });
