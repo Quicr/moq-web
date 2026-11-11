@@ -1,4 +1,4 @@
-import { MOQTransport } from '@moq-web/core';
+import { MOQTransport, type DraftVersion } from '@moq-web/core';
 import { MOQTSession } from '@moq-web/session';
 import type { NamespaceAnnouncedEvent } from '@moq-web/session';
 import { MediaSession, type MediaConfig } from '@moq-web/media';
@@ -23,6 +23,8 @@ const MEDIA_CONFIG: MediaConfig = {
 
 export interface RoomConnectOptions {
   relayUrl: string;
+  /** MOQT draft to speak; the build default when omitted */
+  draft?: DraftVersion;
   roomPrefix: string[];
   selfId: string;
   displayName: string;
@@ -75,7 +77,7 @@ export class MoqtRoom {
   }
 
   async connect(): Promise<void> {
-    const transport = new MOQTransport();
+    const transport = new MOQTransport({ draft: this.opts.draft });
     await transport.connect(this.opts.relayUrl);
 
     const session = new MOQTSession(transport);

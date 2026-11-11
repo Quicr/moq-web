@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
+const moqtVersion = process.env.MOQT_VERSION || 'draft-16';
+
 export default defineConfig({
   plugins: [basicSsl()],
   base: './',
@@ -9,7 +11,7 @@ export default defineConfig({
     host: true,
   },
   define: {
-    __MOQT_VERSION__: JSON.stringify('draft-16'),
+    __MOQT_VERSION__: JSON.stringify(moqtVersion),
   },
   build: {
     target: 'esnext',

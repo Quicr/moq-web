@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getTransportConfig } from '@moq-web/app-kit';
 
 import type { AuthToken } from '../lib/auth/types';
 import { MoqtRoom } from '../lib/chat/moqt-room';
@@ -90,6 +91,7 @@ export const useMoqtStore = create<MoqtState>((set, get) => {
       const roomPrefix = [...parseNamespace(params.namespacePrefix), params.roomId];
       const room = new MoqtRoom({
         relayUrl: RELAY_URL,
+        draft: getTransportConfig().relay.draft,
         roomPrefix,
         selfId: params.selfId,
         displayName: params.displayName,
