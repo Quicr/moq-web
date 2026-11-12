@@ -116,6 +116,7 @@ header.top {
 
 main.wrap { padding-top: 20px; padding-bottom: 60px; }
 section { margin-bottom: 22px; }
+[hidden] { display: none !important; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 .card-head { display: flex; align-items: baseline; gap: 10px; padding: 14px 16px 10px; flex-wrap: wrap; }
 .card-head h2 { font-size: 15px; margin: 0; }
@@ -155,6 +156,8 @@ table.matrix { border-collapse: separate; border-spacing: 0; width: 100%; min-wi
 .chip.error, .chip.cancelled { background: var(--warn-soft); color: var(--warn); }
 .chip.skipped { background: var(--skip-soft); color: var(--skip); }
 .chip.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.chip:hover { filter: brightness(.95); box-shadow: 0 0 0 1px var(--border); }
+button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .chip.none { color: var(--faint); cursor: default; font-weight: 400; }
 
 /* Runs */
@@ -220,6 +223,8 @@ table.matrix { border-collapse: separate; border-spacing: 0; width: 100%; min-wi
 .tdur { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tbody { padding: 4px 0 14px 28px; display: grid; gap: 10px; }
 .kv-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin-bottom: 4px; }
+.kv-title a { color: var(--accent); text-decoration: none; }
+.kv-title a:hover { text-decoration: underline; }
 .expected { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
 table.kv { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 .kv td { padding: 4px 8px; border-top: 1px solid var(--border); vertical-align: top; }
@@ -515,11 +520,10 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       banner('error', `Could not load run ${runId}: ${err.message}`);
       return;
     }
-    const cells = state.run.cells;
-    const keep = cells.find((c) => cellKey(c) === state.cellKey);
-    const firstBad = cells.find((c) => c.status !== 'passed');
-    state.cellKey = keep ? state.cellKey : cellKey(firstBad || cells[0] || { relay: '', draft: '' });
-    state.filter = (cells.find((c) => cellKey(c) === state.cellKey)?.counts.failed ?? 0) > 0 ? 'failed' : 'all';
+    // Nothing opens until a cell is clicked; a chosen cell stays open across runs that have it
+    const keep = state.run.cells.find((c) => cellKey(c) === state.cellKey);
+    state.cellKey = keep ? state.cellKey : '';
+    state.filter = (keep?.counts.failed ?? 0) > 0 ? 'failed' : 'all';
     writeHash();
     render();
   }
@@ -547,7 +551,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
 
   function writeHash() {
     if (!state.run) return;
-    const h = new URLSearchParams({ run: String(state.run.runId), cell: state.cellKey || '' });
+    const h = new URLSearchParams({ run: String(state.run.runId), ...(state.cellKey ? { cell: state.cellKey } : {}) });
     history.replaceState(null, '', `#${h}`);
   }
 
@@ -607,8 +611,27 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       class: `chip ${cell.status}${cellKey(cell) === state.cellKey ? ' selected' : ''}`,
       'data-draft': draftLabel(cell.draft),
       title: `${cell.name} ${cell.draft}: ${cell.counts.passed} passed, ${cell.counts.failed} failed, ${cell.counts.skipped} skipped`,
-      onclick: selectable ? () => { state.cellKey = cellKey(cell); state.filter = cell.counts.failed ? 'failed' : 'all'; writeHash(); render(); $('detail').scrollIntoView({ behavior: 'smooth', block: 'start' }); } : undefined,
+      'aria-pressed': String(cellKey(cell) === state.cellKey),
+      onclick: selectable ? () => toggleCell(cell) : undefined,
     }, cell.status === 'passed' ? '✓' : cell.status === 'failed' ? '✕' : '!', label, cell.experimental ? el('span', { class: 'exp' }, 'exp') : null);
+  }
+
+  /** Open a cell's results below the matrix, or close them when it is already open */
+  function toggleCell(cell) {
+    const key = cellKey(cell);
+    state.cellKey = state.cellKey === key ? '' : key;
+    state.filter = cell.counts.failed ? 'failed' : 'all';
+    state.query = '';
+    writeHash();
+    render();
+    if (state.cellKey) $('detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function closeCell() {
+    state.cellKey = '';
+    writeHash();
+    render();
+    $('matrix').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   function renderMatrix() {
@@ -620,7 +643,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       $('matrix-meta').textContent = '';
       return;
     }
-    $('matrix-meta').textContent = `run #${run.runNumber ?? run.runId}${run.attempt > 1 ? ` (attempt ${run.attempt})` : ''} · ${when(run.publishedAt)}`;
+    $('matrix-meta').textContent = `run #${run.runNumber ?? run.runId}${run.attempt > 1 ? ` (attempt ${run.attempt})` : ''} · ${when(run.publishedAt)} · ${state.cellKey ? 'click the open cell again to close it' : 'click a cell to see its tests'}`;
     const drafts = [...new Set(run.cells.map((c) => c.draft))].sort().reverse();
     const relays = [...new Map(run.cells.map((c) => [c.relay, c])).values()];
     table.append(el('thead', {}, el('tr', {}, el('th', {}, 'Relay'), drafts.map((d) => el('th', {}, d)))));
@@ -676,7 +699,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     return pre;
   }
 
-  function testNode(test) {
+  function testNode(test, cell) {
     const parts = test.name.split(' > ');
     const title = parts.pop();
     const open = state.filter === 'failed' && test.state === 'failed';
@@ -700,7 +723,13 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
         body.append(el('div', {}, el('div', { class: 'kv-title' }, 'Failure'), el('pre', { class: 'code err' }, test.error)));
       }
       if (test.logs?.length) {
-        body.append(el('div', {}, el('div', { class: 'kv-title' }, `Log, last ${test.logs.length} lines`), logBlock(test.logs)));
+        const fullLog = safeUrl(cell.logUrl) || safeUrl(cell.jobUrl);
+        body.append(el('div', {},
+          el('div', { class: 'kv-title' },
+            fullLog
+              ? el('a', { href: fullLog, target: '_blank', rel: 'noopener', title: 'The whole test step log on GitHub' }, `Log, last ${test.logs.length} lines · full log ↗`)
+              : `Log, last ${test.logs.length} lines`),
+          logBlock(test.logs)));
       }
     };
     if (open) fill();
@@ -734,7 +763,8 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       el('div', { class: 'right' },
         jobUrl ? el('a', { class: 'btn', href: jobUrl, target: '_blank', rel: 'noopener' }, 'Full job log ↗') : null,
         el('button', { class: 'btn', type: 'button', onclick: () => openRunDialog('registered', cell) }, '↻ Run this cell'),
-        el('button', { class: 'btn', type: 'button', onclick: rerunFailed, title: 'Re-run the failed jobs of this run' }, '↻ Re-run failed'))));
+        el('button', { class: 'btn', type: 'button', onclick: rerunFailed, title: 'Re-run the failed jobs of this run' }, '↻ Re-run failed'),
+        el('button', { class: 'btn', type: 'button', onclick: closeCell, title: 'Close these results', 'aria-label': 'Close these results' }, '×'))));
 
     const seg = el('div', { class: 'seg', role: 'tablist' }, ['failed', 'all', 'passed', 'skipped'].map((f) => {
       const count = f === 'all' ? cell.tests.length : cell.tests.filter((t) => t.state === f).length;
@@ -781,7 +811,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
           el('span', { class: 'fname' }, file.replace(/^tests\//, '')),
           el('span', { class: 'fcount' }, `${passed}/${all.length} passed`)),
         info.description ? el('details', { class: 'file-desc' }, el('summary', {}, 'What this file tests'), info.description) : null,
-        fileTests.map(testNode));
+        fileTests.map((t) => testNode(t, cell)));
       list.append(section);
     }
   }

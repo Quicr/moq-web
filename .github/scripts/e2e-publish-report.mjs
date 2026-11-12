@@ -76,6 +76,12 @@ function cellStatus(counts, conclusion, hasReport) {
   return counts.passed > 0 ? 'passed' : 'skipped';
 }
 
+/** The job page opened at a step's log, or null when the job or step is unknown */
+function stepLogUrl(job, stepName) {
+  const step = job?.steps?.find((s) => s.name === stepName);
+  return job?.html_url && step ? `${job.html_url}#step:${step.number}:1` : null;
+}
+
 const jobs = await jobsByName();
 const cells = [];
 for (const entry of readdirSync(artifactsDir, { withFileTypes: true })) {
@@ -99,6 +105,7 @@ for (const entry of readdirSync(artifactsDir, { withFileTypes: true })) {
     status: cellStatus(counts, job?.conclusion, report !== undefined),
     conclusion: job?.conclusion ?? null,
     jobUrl: job?.html_url ?? null,
+    logUrl: stepLogUrl(job, 'Run session-e2e'),
     startedAt: report?.startedAt ?? job?.started_at ?? null,
     finishedAt: report?.finishedAt ?? job?.completed_at ?? null,
     counts,
