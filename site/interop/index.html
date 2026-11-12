@@ -227,6 +227,11 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .tbody { padding: 4px 0 14px 28px; display: grid; gap: 10px; }
 .kv-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin-bottom: 4px; }
 .kv-title a { color: var(--accent); text-decoration: none; }
+.tag.known { margin-left: 8px; background: var(--warn-soft); color: var(--warn); border-color: transparent; vertical-align: 1px; }
+.known-box { background: var(--warn-soft); color: var(--text); border-radius: 8px; padding: 10px 12px; line-height: 1.5; }
+.known-match { margin-top: 6px; color: var(--muted); font-size: 12.5px; }
+.known-list { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.known-tests { color: var(--faint); }
 .kv-title a:hover { text-decoration: underline; }
 .expected { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
 table.kv { border-collapse: collapse; width: 100%; font-size: 12.5px; }
@@ -448,6 +453,17 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     get(area, key) { try { return window[area].getItem(key); } catch { return null; } },
     set(area, key, value) { try { value ? window[area].setItem(key, value) : window[area].removeItem(key); } catch { /* storage unavailable */ } },
   };
+
+  /** The registry's known relay-side issue that explains this failed test, if any */
+  function knownIssue(cell, test) {
+    if (test.state !== 'failed') return null;
+    const relay = state.registry?.relays?.find((r) => r.id === cell.relay);
+    const text = `${test.error || ''}\n${(test.logs || []).join('\n')}`;
+    return (relay?.knownIssues ?? []).find((issue) =>
+      (!issue.drafts || issue.drafts.includes(cell.draft))
+      && (issue.tests ?? []).some((t) => test.file.includes(t))
+      && (!issue.match || text.includes(issue.match))) ?? null;
+  }
 
   function safeUrl(url) {
     try {
@@ -751,13 +767,15 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
   }
 
   function testNode(test, cell) {
+    const known = knownIssue(cell, test);
     const parts = test.name.split(' > ');
     const title = parts.pop();
     const open = state.filter === 'failed' && test.state === 'failed';
     const body = el('div', { class: 'tbody' });
     const details = el('details', { class: 'test', open }, el('summary', {},
       el('span', { class: `icon ${test.state}` }, test.state === 'passed' ? '✓' : test.state === 'failed' ? '✕' : '–'),
-      el('span', { class: 'tname' }, title, parts.length ? el('div', { class: 'group' }, parts.join(' › ')) : null),
+      el('span', { class: 'tname' }, title, known ? el('span', { class: 'tag known', title: known.summary }, 'known relay issue') : null,
+        parts.length ? el('div', { class: 'group' }, parts.join(' › ')) : null),
       el('span', { class: 'tdur' }, duration(test.durationMs))), body);
 
     // Built on first open: a run can hold hundreds of tests with logs
@@ -770,6 +788,11 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       const observed = kvTable(test.observed);
       body.append(el('div', {}, el('div', { class: 'kv-title' }, test.state === 'failed' ? 'Found' : 'Observed'),
         observed || el('div', { class: 'none-recorded' }, test.state === 'passed' ? 'Not recorded; every assertion held.' : 'Not recorded by this test.')));
+      if (known) {
+        body.append(el('div', {}, el('div', { class: 'kv-title' }, 'Known relay issue'),
+          el('div', { class: 'known-box' }, known.summary,
+            known.match ? el('div', { class: 'known-match' }, 'Matched in this test\'s output: ', el('code', {}, known.match)) : null)));
+      }
       if (test.error) {
         body.append(el('div', {}, el('div', { class: 'kv-title' }, 'Failure'), el('pre', { class: 'code err' }, test.error)));
       }
@@ -810,6 +833,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
           el('span', { class: 's', style: `width:${(cell.counts.skipped / n) * 100}%` })),
         el('div', { class: 'meta', style: 'color:var(--muted);font-size:12.5px;margin-top:6px' },
           `${cell.counts.passed} passed · ${cell.counts.failed} failed · ${cell.counts.skipped} skipped`,
+          (() => { const k = cell.tests.filter((t) => knownIssue(cell, t)).length; return k ? ` · ${k} of ${cell.counts.failed} failures are known relay issues` : ''; })(),
           cell.startedAt && cell.finishedAt ? ` · ${duration(new Date(cell.finishedAt) - new Date(cell.startedAt))}` : '')),
       el('div', { class: 'right' },
         jobUrl ? el('a', { class: 'btn', href: jobUrl, target: '_blank', rel: 'noopener' }, 'Full job log ↗') : null,
@@ -877,7 +901,9 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
         el('div', { class: 'rd' },
           relay.drafts.map((d) => el('span', { class: 'tag' }, d)),
           (relay.experimentalDrafts ?? []).map((d) => el('span', { class: 'tag', title: 'experimental' }, `${d} (exp)`))),
-        relay.notes ? el('div', { class: 'notes' }, relay.notes) : null));
+        relay.notes ? el('div', { class: 'notes' }, relay.notes) : null,
+        relay.knownIssues?.length ? el('ul', { class: 'known-list' }, relay.knownIssues.map((k) =>
+          el('li', {}, k.summary, el('span', { class: 'known-tests' }, ` (${(k.drafts ?? []).join(', ')}${k.drafts?.length ? '; ' : ''}tests ${(k.tests ?? []).map((t) => t.split('-')[0]).join(', ')})`)))) : null));
     }
     if (!box.childElementCount) box.append(el('div', { class: 'empty' }, 'Relay list unavailable.'));
   }

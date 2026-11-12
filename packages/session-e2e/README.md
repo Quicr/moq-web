@@ -39,12 +39,17 @@ large-payload FETCH (09-fetch); Meta does not resume delivery after a
 REQUEST_UPDATE resume (06) and misses catalogs in the 4-peer fan-out (32).
 On Cloudflare, 06 is flaky under full-suite load (passes when run alone).
 
-lminiero (no path) offers `moqt-23`; as of 2026-11-11 it passes 64 of 70
+lminiero (no path) offers `moqt-23`; as of 2026-11-12 it passes 68 of 75
 draft-23 tests. The failures are relay-side: its NAMESPACE omits the Number
 of Parameters that draft-23 added (#1858), so the subscriber closes with
-PROTOCOL_VIOLATION (04, 30, 31, 32); and its FETCH Object ID Delta still uses
-the draft-22 rule instead of prior + delta + 2 (#2006), so IDs come out shifted
-(34).
+PROTOCOL_VIOLATION (04, 30); its FETCH Object ID Delta still uses the
+draft-22 rule instead of prior + delta + 2 (#2006), so IDs come out shifted
+(34); and it refuses a PUBLISH_NAMESPACE after a PUBLISH of the same
+namespace (31, 32, 35 case 3).
+
+A relay's `knownIssues` in `.github/e2e-relays.json` name these gaps: the
+report labels a failed test with one when its file matches and its error or
+log contains the issue's `match` text.
 
 Both env vars are optional overrides for what's in the profile JSON. `MOQ_AUTH_TOKEN`
 is read from the environment and never committed — profiles reference it by name.

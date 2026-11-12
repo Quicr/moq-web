@@ -1,5 +1,5 @@
 {
-  "$comment": "Relays the nightly session-e2e matrix runs against, and the interop report lists. To add yours, open a PR adding an entry. experimental: reported, but does not fail the run.",
+  "$comment": "Relays the nightly session-e2e matrix runs against, and the interop report lists. To add yours, open a PR adding an entry. experimental: reported, but does not fail the run. knownIssues: relay-side gaps; the report labels a failed test with one when its file matches a tests entry and its error or log contains match (plain text).",
   "drafts": [
     "draft-16",
     "draft-18",
@@ -52,7 +52,42 @@
       "experimentalDrafts": [
         "draft-23"
       ],
-      "notes": "As of 2026-11-11: NAMESPACE lacks Number of Parameters (#1858); FETCH Object ID Delta uses the draft-22 rule (#2006); refuses PUBLISH_NAMESPACE after PUBLISH of the same namespace."
+      "notes": "As of 2026-11-11: NAMESPACE lacks Number of Parameters (#1858); FETCH Object ID Delta uses the draft-22 rule (#2006); refuses PUBLISH_NAMESPACE after PUBLISH of the same namespace.",
+      "knownIssues": [
+        {
+          "drafts": [
+            "draft-23"
+          ],
+          "tests": [
+            "04-subscribe-namespace",
+            "30-room-fanout"
+          ],
+          "match": "Message body shorter than its fields",
+          "summary": "Its NAMESPACE message lacks the Number of Parameters field draft-23 added (#1858), so moq-web cannot decode it and closes the session with PROTOCOL_VIOLATION."
+        },
+        {
+          "drafts": [
+            "draft-23"
+          ],
+          "tests": [
+            "34-draft23"
+          ],
+          "match": "to deeply equal",
+          "summary": "Its FETCH Object ID Delta still uses the draft-22 rule; draft-23 makes each ID the prior ID + delta + 2 within a group (#2006), so the IDs come out shifted."
+        },
+        {
+          "drafts": [
+            "draft-23"
+          ],
+          "tests": [
+            "31-room-fanout-tracks",
+            "32-room-fanout-catalog",
+            "35-publish-forwarding"
+          ],
+          "match": "Namespace already published",
+          "summary": "It refuses a PUBLISH_NAMESPACE for a namespace the same session already sent a PUBLISH under (\"Namespace already published\")."
+        }
+      ]
     }
   ]
 }
