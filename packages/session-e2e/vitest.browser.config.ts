@@ -26,6 +26,8 @@ export default defineConfig({
       VITE_RELAY_URL: RELAY_URL,
       VITE_MOQ_AUTH_TOKEN: AUTH_TOKEN,
       VITE_MOQT_VERSION: MOQT_VERSION,
+      // 1 = report a relay's known PUBLISH-forwarding gap (35) without failing
+      VITE_MOQ_RELAY_KNOWN_NO_PUBLISH_FWD: process.env.MOQ_RELAY_KNOWN_NO_PUBLISH_FWD ?? '',
     },
     browser: {
       enabled: true,

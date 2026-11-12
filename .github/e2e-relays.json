@@ -27,7 +27,8 @@
         "draft-22"
       ],
       "experimentalDrafts": [
-        "draft-23"
+        "draft-23",
+        "draft-18"
       ],
       "notes": "As of 2026-11-10 it does not offer moqt-23."
     },

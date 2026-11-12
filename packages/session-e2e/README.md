@@ -27,7 +27,7 @@ yours permanently, open a PR adding an entry there; for a one-off run, use
 | Relay | `RELAY_URL` | Drafts |
 |---|---|---|
 | openmoq | `https://moqx-main.ci.openmoq.org:4433/moq-relay` | d22, d18, d16 experimental (unreachable from runners as of 2026-11-11) |
-| Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d23 experimental |
+| Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d18, d23 experimental |
 | Meta (mvfst) | `https://fb.mvfst.net:9448/moq-relay` | d22; d23 experimental |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
 
@@ -71,8 +71,9 @@ Current coverage:
 - 09-fetch — FETCH range retrieval with byte-verify
 - 10-fetch-cancel — FETCH then FETCH_CANCEL
 - 11-goaway — client-initiated GOAWAY drives 'closing' state (draft-18)
+- 35-publish-forwarding — relay forwards PUBLISH to a namespace subscriber: SUBSCRIBE_NAMESPACE (namespaces only) and SUBSCRIBE_TRACKS (PUBLISH for existing and future tracks), subscribe-first and publish-first, with a plain SUBSCRIBE as control. `MOQ_RELAY_KNOWN_NO_PUBLISH_FWD=1` reports a missing forward without failing
 
-Tests for draft-18 wire features (08, 11-23, 25-28, 33) run on draft-18 and
+Tests for draft-18 wire features (08, 11-23, 25-28, 33, 35) run on draft-18 and
 later, so draft-22 and draft-23 get them too; on draft-16 they skip. 34 runs
 only on draft-23. Everything else runs on every draft. Nightly CI runs the
 matrix; locally, override with `MOQT_VERSION=draft-16 pnpm --filter

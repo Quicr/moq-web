@@ -3080,15 +3080,8 @@ export class MOQTSession {
       prefix: namespacePrefix.join('/'),
     });
 
-    const response = await this.sendRequestAndWaitResponse(encoded, requestId, 'subscribe-tracks');
-
-    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
-      const error = response as RequestErrorMessageDraft18;
-      await this.closeRequestStream(requestId);
-      throw this.rejection('SUBSCRIBE_TRACKS', error);
-    }
-
-    // Store the namespace subscription for incoming PUBLISH messages
+    // Registered before sending: the publisher's PUBLISH for an existing track
+    // comes on its own stream and can be read before the REQUEST_OK
     const subscription: NamespaceSubscriptionInfo = {
       subscriptionId,
       requestId,
@@ -3098,6 +3091,25 @@ export class MOQTSession {
     };
     this.namespaceSubscriptions.set(subscriptionId, subscription);
     this.namespaceSubscriptionByRequestId.set(requestId, subscriptionId);
+    const forget = () => {
+      this.namespaceSubscriptions.delete(subscriptionId);
+      this.namespaceSubscriptionByRequestId.delete(requestId);
+    };
+
+    let response: ControlMessageDraft18;
+    try {
+      response = await this.sendRequestAndWaitResponse(encoded, requestId, 'subscribe-tracks');
+    } catch (err) {
+      forget();
+      throw err;
+    }
+
+    if (response.type === MessageTypeDraft18.REQUEST_ERROR) {
+      const error = response as RequestErrorMessageDraft18;
+      forget();
+      await this.closeRequestStream(requestId);
+      throw this.rejection('SUBSCRIBE_TRACKS', error);
+    }
 
     log.info('SUBSCRIBE_TRACKS accepted', { requestId: requestId.toString() });
     return subscriptionId;

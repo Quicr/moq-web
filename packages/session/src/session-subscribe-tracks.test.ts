@@ -80,6 +80,35 @@ describe.skipIf(!IS_DRAFT_18)('draft-18 §10.19 subscribeTracks() send path', ()
     expect((decoded as SubscribeTracksMessageDraft18).forwardState).toBe(false);
   });
 
+  it('matches a PUBLISH that arrives before the REQUEST_OK', async () => {
+    // An existing track's PUBLISH comes on its own stream and can be read first
+    const session = makeSession();
+    let prefixesWhileWaiting: string[][] = [];
+    (session as unknown as {
+      sendRequestAndWaitResponse: (bytes: Uint8Array, id: number) => Promise<ControlMessageDraft18>;
+    }).sendRequestAndWaitResponse = async () => {
+      prefixesWhileWaiting = session.getNamespaceSubscriptions().map((s) => s.namespacePrefix);
+      return { type: MessageTypeDraft18.REQUEST_OK, requestId: 0n } as ControlMessageDraft18;
+    };
+
+    await session.subscribeTracks(['room', 'a']);
+
+    expect(prefixesWhileWaiting).toEqual([['room', 'a']]);
+  });
+
+  it('forgets the prefix when SUBSCRIBE_TRACKS is refused', async () => {
+    const session = makeSession();
+    (session as unknown as { closeRequestStream: () => Promise<void> }).closeRequestStream = async () => undefined;
+    (session as unknown as {
+      sendRequestAndWaitResponse: (bytes: Uint8Array, id: number) => Promise<ControlMessageDraft18>;
+    }).sendRequestAndWaitResponse = async () =>
+      ({ type: MessageTypeDraft18.REQUEST_ERROR, requestId: 0n, errorCode: 0x1, reasonPhrase: 'no' } as unknown as ControlMessageDraft18);
+
+    await expect(session.subscribeTracks(['room', 'a'])).rejects.toThrow(/SUBSCRIBE_TRACKS/);
+
+    expect(session.getNamespaceSubscriptions()).toEqual([]);
+  });
+
   it('does not encode SUBSCRIPTION_FILTER even when ABSOLUTE_RANGE is specified', async () => {
     const session = makeSession();
     const chunks: Uint8Array[] = [];
