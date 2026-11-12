@@ -29,10 +29,13 @@ export interface ReceivedObject {
  * Wait until `count` objects have been received or `timeoutMs` elapses.
  * Returns received-in-arrival-order; sorting by (group,object) is left to
  * the caller since arrival order is itself a signal we may want to assert.
+ * With `partial`, the timeout resolves with what arrived instead of
+ * rejecting: datagrams are not retransmitted, so some can be lost.
  */
 export function collectObjects(
   count: number,
   timeoutMs: number,
+  options?: { partial?: boolean },
 ): {
   onObject: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
   done: Promise<ReceivedObject[]>;
@@ -45,6 +48,10 @@ export function collectObjects(
     rejectFn = reject;
   });
   const timer = setTimeout(() => {
+    if (options?.partial) {
+      resolveFn(received.slice());
+      return;
+    }
     rejectFn(
       new Error(`collectObjects timeout: got ${received.length}/${count} after ${timeoutMs}ms`),
     );
