@@ -144,6 +144,9 @@ table.matrix { border-collapse: separate; border-spacing: 0; width: 100%; min-wi
 .matrix th, .matrix td { padding: 8px 10px; text-align: left; border-top: 1px solid var(--border); }
 .matrix thead th { border-top: 0; color: var(--muted); font-weight: 500; font-size: 12px; }
 .matrix .relay-name { font-weight: 600; }
+.matrix td.clickable { cursor: pointer; }
+.matrix tr.cell-row:hover td { background: var(--surface-2); }
+.matrix td.open { background: var(--accent-soft); }
 .matrix .relay-url { color: var(--faint); font-size: 12px; font-family: var(--mono); word-break: break-all; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 3px 10px;
@@ -648,12 +651,19 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     const relays = [...new Map(run.cells.map((c) => [c.relay, c])).values()];
     table.append(el('thead', {}, el('tr', {}, el('th', {}, 'Relay'), drafts.map((d) => el('th', {}, d)))));
     const body = el('tbody');
+    // The chip is the button; the rest of its table cell, and the relay name, click through to it
+    const viaChip = (cell) => (e) => { if (!e.target.closest('button')) toggleCell(cell); };
     for (const relay of relays) {
-      body.append(el('tr', {},
-        el('td', {}, el('div', { class: 'relay-name' }, relay.name), el('div', { class: 'relay-url' }, relay.relayUrl)),
+      const rowCells = run.cells.filter((c) => c.relay === relay.relay);
+      const lead = rowCells.find((c) => cellKey(c) === state.cellKey) || rowCells.find((c) => c.status !== 'passed') || rowCells[0];
+      body.append(el('tr', { class: 'cell-row' },
+        el('td', { class: 'clickable', onclick: viaChip(lead), title: `Show ${relay.name} results` },
+          el('div', { class: 'relay-name' }, relay.name), el('div', { class: 'relay-url' }, relay.relayUrl)),
         drafts.map((d) => {
-          const cell = run.cells.find((c) => c.relay === relay.relay && c.draft === d);
-          return cell ? el('td', {}, chipFor(cell)) : el('td', { class: 'no-cell' }, el('span', { class: 'chip none' }, '—'));
+          const cell = rowCells.find((c) => c.draft === d);
+          return cell
+            ? el('td', { class: `clickable${cellKey(cell) === state.cellKey ? ' open' : ''}`, onclick: viaChip(cell) }, chipFor(cell))
+            : el('td', { class: 'no-cell' }, el('span', { class: 'chip none' }, '—'));
         })));
     }
     table.append(body);
@@ -663,7 +673,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     const box = $('runs');
     box.replaceChildren();
     const runs = state.index?.runs ?? [];
-    $('runs-meta').textContent = runs.length ? `${runs.length} kept · updated ${ago(state.index.updatedAt)}` : '';
+    $('runs-meta').textContent = runs.length ? `${runs.length} kept, older than 48 h dropped · updated ${ago(state.index.updatedAt)}` : '';
     if (runs.length === 0) {
       box.append(el('div', { class: 'empty' }, 'No runs published yet.'));
       return;

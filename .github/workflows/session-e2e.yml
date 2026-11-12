@@ -116,7 +116,7 @@ jobs:
         with:
           name: e2e-report-${{ matrix.relay }}-${{ matrix.draft }}
           path: e2e-report
-          retention-days: 7
+          retention-days: 2
 
       - name: Upload screenshots on failure
         if: failure()
@@ -124,7 +124,7 @@ jobs:
         with:
           name: session-e2e-screenshots-${{ matrix.relay }}-${{ matrix.draft }}
           path: packages/session-e2e/tests/__screenshots__
-          retention-days: 7
+          retention-days: 2
           if-no-files-found: ignore
 
   report:
@@ -229,5 +229,5 @@ jobs:
         with:
           name: media-e2e-screenshots-${{ matrix.draft }}
           path: packages/media-e2e/tests/__screenshots__
-          retention-days: 7
+          retention-days: 2
           if-no-files-found: ignore

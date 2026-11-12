@@ -13,12 +13,16 @@
  * Each artifact directory holds cell.json (relay, name, draft, relay_url,
  * experimental) and, when the tests ran, report.json (lib/report-reporter.ts).
  * Job links and conclusions come from the Actions API. A re-run attempt
- * replaces the run's earlier attempt.
+ * replaces the run's earlier attempt. Runs older than MAX_AGE_MS are dropped,
+ * except the newest, so the page always has one.
  */
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+/** Runs published longer ago than this are dropped */
+const MAX_AGE_MS = 48 * 60 * 60 * 1000;
+/** And never more than this many */
 const KEEP_RUNS = 30;
 
 const [artifactsDir, outDir] = process.argv.slice(2);
@@ -137,8 +141,10 @@ const summary = {
   ...run,
   cells: cells.map(({ files: _files, tests: _tests, errors, ...rest }) => ({ ...rest, errorCount: errors.length })),
 };
+const cutoff = Date.parse(run.publishedAt) - MAX_AGE_MS;
 const runs = [summary, ...index.runs.filter((r) => r.runId !== runId)]
   .sort((a, b) => b.runId - a.runId)
+  .filter((r, i) => i === 0 || Date.parse(r.publishedAt) >= cutoff)
   .slice(0, KEEP_RUNS);
 writeFileSync(join(outDir, 'index.json'), JSON.stringify({ repo, updatedAt: run.publishedAt, runs }, null, 1));
 
