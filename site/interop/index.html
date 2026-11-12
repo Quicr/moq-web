@@ -531,8 +531,17 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     render();
   }
 
+  /** Seconds between checks while a run is queued or in progress, and while its results are awaited */
+  const LIVE_POLL_MS = 30_000;
+  let liveTimer;
+  /** Runs that finished since the page loaded, until their results are in the index (or 10 min pass) */
+  const awaited = new Map();
+  const AWAIT_MS = 10 * 60_000;
+
   /** Queued and in-progress runs, from the public API (rate limited when anonymous) */
   async function loadLive() {
+    clearTimeout(liveTimer);
+    const before = new Set(state.live.map((r) => r.id));
     try {
       const token = store.get('sessionStorage', TOKEN_KEY);
       const headers = { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) };
@@ -541,7 +550,34 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     } catch {
       state.live = [];
     }
+    const now = new Set(state.live.map((r) => r.id));
+    for (const id of before) {
+      if (!now.has(id)) awaited.set(id, Date.now());
+    }
+    for (const [id, since] of awaited) {
+      if (Date.now() - since > AWAIT_MS) awaited.delete(id);
+    }
+    if (awaited.size) await refreshIndex();
     renderBanners();
+    if (state.live.length || awaited.size) liveTimer = setTimeout(loadLive, LIVE_POLL_MS);
+  }
+
+  /** Reload the index for runs that just finished; show the newest when it arrives and nothing else was picked */
+  async function refreshIndex() {
+    const newestBefore = state.index?.runs[0]?.runId;
+    try {
+      // The query skips the CDN's cached copy
+      state.index = await getJson(`${DATA}/index.json?t=${Date.now()}`);
+    } catch {
+      return;
+    }
+    for (const run of state.index.runs) awaited.delete(run.runId);
+    const newest = state.index.runs[0]?.runId;
+    if (newest !== undefined && newest !== newestBefore && (!state.run || state.run.runId === newestBefore)) {
+      await selectRun(newest);
+    } else {
+      renderRuns();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -577,6 +613,11 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
         el('span', {}, `Run #${run.run_number} is ${run.status.replace('_', ' ')} (${run.event === 'schedule' ? 'nightly' : run.event}, started ${ago(run.run_started_at || run.created_at)}). Results appear here when it finishes.`),
         el('span', { class: 'spacer', style: 'margin-left:auto' }),
         el('a', { href: run.html_url, target: '_blank', rel: 'noopener' }, 'Watch ↗')));
+    }
+    for (const _ of awaited.keys()) {
+      box.append(el('div', { class: 'banner running' },
+        el('span', { class: 'dot-pulse' }),
+        el('span', {}, 'A run just finished; its results appear here in a minute or two.')));
     }
     for (const m of messages) {
       box.append(el('div', { class: `banner ${m.kind}` }, m.text));
