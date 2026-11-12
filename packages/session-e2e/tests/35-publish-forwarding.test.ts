@@ -82,7 +82,9 @@ class Trace {
       (session.on as (e: string, h: (data: unknown) => void) => void)(event, (data) => {
         const text = describeEvent(event, data);
         this.note(who, text);
-        if (UNEXPECTED.has(event) && !this.tearingDown) {
+        // A publisher-side reset is our own: the relay set forward=0 while no one subscribes
+        const ownReset = event === 'stream-reset' && (data as { side?: string } | undefined)?.side === 'publisher';
+        if (UNEXPECTED.has(event) && !ownReset && !this.tearingDown) {
           this.unexpected.push(`${who} ${text}`);
         }
       });
