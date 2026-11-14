@@ -74,21 +74,8 @@
       "experimentalDrafts": [
         "draft-23"
       ],
-      "notes": "As of 2026-11-11: NAMESPACE lacks Number of Parameters (#1858); FETCH Object ID Delta uses the draft-22 rule (#2006); refuses PUBLISH_NAMESPACE after PUBLISH of the same namespace.",
+      "notes": "As of 2026-11-14: FETCH Object ID Delta uses the draft-22 rule (#2006); refuses PUBLISH_NAMESPACE after PUBLISH of the same namespace. NAMESPACE Number of Parameters (#1858) fixed 2026-11-14.",
       "knownIssues": [
-        {
-          "drafts": [
-            "draft-23"
-          ],
-          "tests": [
-            "04-subscribe-namespace",
-            "30-room-fanout",
-            "38-publish-namespace-lifecycle",
-            "45-namespace-discovery-flow"
-          ],
-          "match": "Message body shorter than its fields",
-          "summary": "Its NAMESPACE message lacks the Number of Parameters field draft-23 added (#1858), so moq-web cannot decode it and closes the session with PROTOCOL_VIOLATION."
-        },
         {
           "drafts": [
             "draft-23"

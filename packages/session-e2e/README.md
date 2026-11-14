@@ -41,13 +41,12 @@ large-payload FETCH (09-fetch); Meta does not resume delivery after a
 REQUEST_UPDATE resume (06) and misses catalogs in the 4-peer fan-out (32).
 On Cloudflare, 06 is flaky under full-suite load (passes when run alone).
 
-lminiero (no path) offers `moqt-23`; as of 2026-11-12 it passes 68 of 75
-draft-23 tests. The failures are relay-side: its NAMESPACE omits the Number
-of Parameters that draft-23 added (#1858), so the subscriber closes with
-PROTOCOL_VIOLATION (04, 30); its FETCH Object ID Delta still uses the
-draft-22 rule instead of prior + delta + 2 (#2006), so IDs come out shifted
-(34); and it refuses a PUBLISH_NAMESPACE after a PUBLISH of the same
-namespace (31, 32, 35 case 3).
+lminiero (no path) offers `moqt-23`; as of 2026-11-14 it passes 90 of 101
+draft-23 tests. Its NAMESPACE now carries the Number of Parameters that
+draft-23 added (#1858, fixed 2026-11-14). Still failing: its FETCH Object ID
+Delta uses the draft-22 rule instead of prior + delta + 2 (#2006), so IDs
+come out shifted (34); it refuses a PUBLISH_NAMESPACE after a PUBLISH of the
+same namespace (31, 32, 35 case 3); and 36, 37, 39, 41, 42 and 44.
 
 A relay's `knownIssues` in `.github/e2e-relays.json` name these gaps: the
 report labels a failed test with one when its file matches and its error or
