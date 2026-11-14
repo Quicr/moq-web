@@ -16,15 +16,24 @@
  * Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import type { FillStreamEndedEvent } from '@moq-web/session';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, publishGroups, Received, sleep, Trace, waitUntil, within } from '../lib/flow.js';
+import { failOn, groupShortfall, isDraft22, publishGroups, ranges, Received, sleep, Trace, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
 
 const PER_GROUP = 3;
+
+const groupOf = (key: string) => Number(key.split('/')[0]);
+
+/** How the fill stream ended, for the failure message */
+const fillEnding = (end: FillStreamEndedEvent | undefined) =>
+  end === undefined ? 'the fill stream had not ended'
+    : end.lastGroupId === undefined ? 'the fill stream ended with no Objects'
+      : `the fill stream ended after group ${end.lastGroupId}`;
 
 const groupKeys = (from: number, to: number) =>
   Array.from({ length: (to - from + 1) * PER_GROUP }, (_, i) => `${from + Math.floor(i / PER_GROUP)}/${i % PER_GROUP}`);
@@ -64,7 +73,7 @@ describe.skipIf(!isDraft22)('Fill with SUBSCRIBE', () => {
         'Pub: PUBLISH ns/t (stream, MAX_CACHE_DURATION 60 s)',
         'Holder: SUBSCRIBE ns/t so the relay keeps the track cached',
         `Pub: groups 0..4, ${PER_GROUP} Objects each; waits 500 ms`,
-        'Sub: SUBSCRIBE ns/t, filter Largest Object, FILL_PARAMETERS last 3 groups (draft-22 §3.4)',
+        'Sub: SUBSCRIBE ns/t, filter Largest Object, FILL_PARAMETERS last 3 groups (§3.4)',
         'Relay → Sub: SUBSCRIBE_OK, a fill stream with groups 2..4, and the live subscription',
         `Pub: groups 5..6, ${PER_GROUP} Objects each`,
         'Check: every Object of groups 2..6 arrived, none before group 2, all byte for byte',
@@ -73,6 +82,8 @@ describe.skipIf(!isDraft22)('Fill with SUBSCRIBE', () => {
       inputs: { track: `${namespace.join('/')}/t`, cached: 'groups 0..4', fill: { lastGroups: 3 }, publishedAfter: 'groups 5..6', objectsPerGroup: PER_GROUP },
     });
     const got = new Received();
+    let fillEnd: FillStreamEndedEvent | undefined;
+    sub.session.on('fill-stream-ended', (evt) => { fillEnd = evt; });
     await within(sub.session.subscribe(namespace, 't', { filterType: 'latest', fill: { lastGroups: 3 } }, got.onObject), 5_000, 'SUBSCRIBE');
     await sleep(300);
     await publishGroups(pub.session, alias, { groups: 2, perGroup: PER_GROUP, first: 5 });
@@ -80,15 +91,24 @@ describe.skipIf(!isDraft22)('Fill with SUBSCRIBE', () => {
     await waitUntil(() => wanted.every((k) => got.has(k)), 5_000);
     await sleep(300);
 
-    const missing = wanted.filter((k) => !got.has(k));
-    const tooEarly = got.keys.filter((k) => Number(k.split('/')[0]) < 2);
+    const fromFill = groupShortfall('Fill (groups from the cache)', got, 2, 4, PER_GROUP);
+    const live = groupShortfall('Live (groups published after SUBSCRIBE)', got, 5, 6, PER_GROUP);
+    const tooEarly = got.keys.filter((k) => groupOf(k) < 2);
     trace.tearingDown = true;
     trace.print(`received=${got.keys.join(' ')}`);
-    record(task, { observed: { received: got.keys, missing, tooEarly, corrupt: got.corrupt, unexpected: trace.unexpected, trace: trace.lines } });
+    record(task, {
+      observed: {
+        fill: fromFill ?? 'groups 2–4 complete', fillStream: fillEnding(fillEnd), live: live ?? 'groups 5–6 complete',
+        received: got.keys, tooEarly, corrupt: got.corrupt, unexpected: trace.unexpected, trace: trace.lines,
+      },
+    });
 
-    expect(missing, 'objects of groups 2..6 that never arrived').toEqual([]);
-    expect(tooEarly, 'objects before group 2').toEqual([]);
-    expect(got.corrupt).toEqual([]);
+    failOn([
+      fromFill && `${fromFill} (${fillEnding(fillEnd)})`,
+      live,
+      tooEarly.length > 0 && `Groups before the fill arrived: ${ranges(tooEarly.map(groupOf))}`,
+      got.corrupt.length > 0 && `Objects with the wrong payload: ${got.corrupt.join(', ')}`,
+    ]);
   });
 
   it('REQUEST_UPDATE fill of groups 1..2 delivers exactly those groups', async ({ task }) => {
@@ -108,6 +128,8 @@ describe.skipIf(!isDraft22)('Fill with SUBSCRIBE', () => {
       inputs: { track: `${namespace.join('/')}/t`, cached: 'groups 0..4', fill: { startGroup: 1, endGroup: 2 }, objectsPerGroup: PER_GROUP },
     });
     const got = new Received();
+    let fillEnd: FillStreamEndedEvent | undefined;
+    sub.session.on('fill-stream-ended', (evt) => { fillEnd = evt; });
     const subscriptionId = await within(sub.session.subscribe(namespace, 't', { filterType: 'latest' }, got.onObject), 5_000, 'SUBSCRIBE');
     await sleep(300);
     let filled = 'ok';
@@ -120,14 +142,23 @@ describe.skipIf(!isDraft22)('Fill with SUBSCRIBE', () => {
     await waitUntil(() => wanted.every((k) => got.has(k)), 5_000);
     await sleep(300);
 
-    const missing = wanted.filter((k) => !got.has(k));
+    const fromFill = groupShortfall('Fill after the accepted REQUEST_UPDATE', got, 1, 2, PER_GROUP);
     const extra = got.keys.filter((k) => !wanted.includes(k));
     trace.tearingDown = true;
     trace.print(`filled=${filled} received=${got.keys.join(' ')}`);
-    record(task, { observed: { filled, received: got.keys, missing, extra, corrupt: got.corrupt, unexpected: trace.unexpected, trace: trace.lines } });
+    record(task, {
+      observed: {
+        requestUpdate: filled, fill: fromFill ?? 'groups 1–2 complete', fillStream: fillEnding(fillEnd),
+        received: got.keys, extra, corrupt: got.corrupt, unexpected: trace.unexpected, trace: trace.lines,
+      },
+    });
 
-    expect(filled).toBe('ok');
-    expect(missing, 'objects of groups 1..2 that never arrived').toEqual([]);
-    expect(extra, 'objects outside groups 1..2').toEqual([]);
+    failOn(filled !== 'ok'
+      ? [`The relay refused the REQUEST_UPDATE fill: ${filled}`]
+      : [
+        fromFill && `${fromFill} (${fillEnding(fillEnd)})`,
+        extra.length > 0 && `Groups outside 1–2 arrived: ${ranges(extra.map(groupOf))}`,
+        got.corrupt.length > 0 && `Objects with the wrong payload: ${got.corrupt.join(', ')}`,
+      ]);
   });
 });

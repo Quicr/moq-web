@@ -113,6 +113,7 @@ export type {
   FetchObjectEvent,
   FetchCompleteEvent,
   FetchStreamCompleteEvent,
+  FillStreamEndedEvent,
   FetchGapEvent,
   FetchErrorEvent,
   // VOD types

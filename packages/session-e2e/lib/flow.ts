@@ -58,7 +58,7 @@ const TRACED = [
   'message-sent', 'message-received', 'request-ok', 'namespace-acknowledged', 'namespace-announced',
   'namespace-done', 'namespace-error', 'incoming-publish', 'incoming-subscribe', 'publish-done', 'subscribe-ok',
   'subscribe-error', 'subscription-cancelled', 'stream-reset', 'forward-state-change', 'new-group-request',
-  'fetch-complete', 'fetch-error', 'goaway', 'session-terminated', 'error',
+  'fetch-complete', 'fetch-error', 'fill-stream-ended', 'goaway', 'session-terminated', 'error',
 ] as const;
 /** Events that mean something went wrong on a session */
 const UNEXPECTED = new Set(['namespace-error', 'subscribe-error', 'subscription-cancelled', 'stream-reset', 'fetch-error', 'session-terminated', 'error']);
@@ -69,7 +69,7 @@ function describeEvent(event: string, data: unknown): string {
     return `${event === 'message-sent' ? '→' : '←'} ${String(d.messageType)} ${String(d.summary ?? '')}`;
   }
   const fields = ['requestKind', 'requestId', 'namespace', 'trackName', 'trackAlias', 'forward', 'errorCode', 'reasonPhrase',
-    'reason', 'statusCode', 'finalGroupId', 'largestGroupId', 'code', 'message', 'value']
+    'reason', 'statusCode', 'finalGroupId', 'largestGroupId', 'lastGroupId', 'endOfTrack', 'code', 'message', 'value']
     .filter((k) => d[k] !== undefined)
     .map((k) => `${k}=${Array.isArray(d[k]) ? (d[k] as unknown[]).join('/') : String(d[k])}`);
 
@@ -165,4 +165,46 @@ export class Received {
   groups(): number[] {
     return [...new Set(this.keys.map((k) => Number(k.split('/')[0])))];
   }
+}
+
+/** Numbers as short ranges: [2, 3, 4, 6] → "2–4, 6" */
+export function ranges(numbers: number[]): string {
+  const sorted = [...new Set(numbers)].sort((a, b) => a - b);
+  const parts: string[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const first = sorted[i]!;
+    while (sorted[i + 1] === sorted[i]! + 1) i++;
+    parts.push(first === sorted[i] ? `${first}` : `${first}–${sorted[i]}`);
+  }
+
+  return parts.join(', ');
+}
+
+/**
+ * What arrived of groups `from`..`to` (each `perGroup` Objects), in group
+ * terms, or undefined when all of it did. For a failure message, e.g.
+ * "Fill: expected groups 2–4, got 2; missing 3–4".
+ */
+export function groupShortfall(label: string, got: Received, from: number, to: number, perGroup: number): string | undefined {
+  const complete: number[] = [];
+  const partial: string[] = [];
+  const missing: number[] = [];
+  for (let g = from; g <= to; g++) {
+    const n = Array.from({ length: perGroup }, (_, o) => `${g}/${o}`).filter((k) => got.has(k)).length;
+    if (n === perGroup) complete.push(g);
+    else if (n === 0) missing.push(g);
+    else partial.push(`${g} (${n} of ${perGroup} Objects)`);
+  }
+  if (missing.length === 0 && partial.length === 0) return undefined;
+  const wanted = `${label}: expected groups ${ranges(Array.from({ length: to - from + 1 }, (_, i) => from + i))}`;
+  if (complete.length === 0 && partial.length === 0) return `${wanted}, got nothing`;
+  const gotText = [complete.length ? ranges(complete) : '', ...partial].filter(Boolean).join(', ');
+
+  return `${wanted}, got ${gotText}${missing.length ? `; missing ${ranges(missing)}` : ''}`;
+}
+
+/** Fail with one plain line per problem, when there are any */
+export function failOn(problems: Array<string | undefined | false>): void {
+  const found = problems.filter((p): p is string => typeof p === 'string' && p !== '');
+  if (found.length > 0) throw new Error(found.join('\n'));
 }

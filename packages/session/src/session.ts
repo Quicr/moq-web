@@ -229,6 +229,7 @@ import type {
   FetchObjectEvent,
   FetchCompleteEvent,
   FetchStreamCompleteEvent,
+  FillStreamEndedEvent,
   FetchGapEvent,
   FetchErrorEvent,
   VODPublishOptions,
@@ -1039,7 +1040,11 @@ export class MOQTSession {
     // A reset or cancelled fill stream leaves its subscription alone (draft-22 §3.4.1).
     // Any other FETCH stream ending, by FIN or reset, completes the fetch (§3.2.4).
     this.objectRouter.setFetchStreamCloseCallback((requestId, lastGroupId, endOfTrack) => {
-      if (this.fillStreams.delete(requestId)) {
+      const fillOwner = this.fillStreams.get(requestId);
+      if (fillOwner !== undefined) {
+        this.fillStreams.delete(requestId);
+        log.info('Fill stream ended', { requestId, subscriptionId: fillOwner, lastGroupId, endOfTrack });
+        this.emit('fill-stream-ended', { subscriptionId: fillOwner, requestId, lastGroupId, endOfTrack } as FillStreamEndedEvent);
         return;
       }
 
@@ -7385,6 +7390,7 @@ export class MOQTSession {
   on(event: 'fetch-object', handler: (event: FetchObjectEvent) => void): () => void;
   on(event: 'fetch-complete', handler: (event: FetchCompleteEvent) => void): () => void;
   on(event: 'fetch-stream-complete', handler: (event: FetchStreamCompleteEvent) => void): () => void;
+  on(event: 'fill-stream-ended', handler: (event: FillStreamEndedEvent) => void): () => void;
   on(event: 'fetch-gap', handler: (event: FetchGapEvent) => void): () => void;
   on(event: 'fetch-error', handler: (event: FetchErrorEvent) => void): () => void;
   on(event: 'incoming-fetch', handler: (event: IncomingFetchEvent) => void): () => void;

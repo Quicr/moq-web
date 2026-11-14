@@ -53,6 +53,7 @@ export type SessionEventType =
   | 'fetch-object'
   | 'fetch-complete'
   | 'fetch-stream-complete'
+  | 'fill-stream-ended'
   | 'fetch-gap'
   | 'fetch-error'
   | 'incoming-fetch'
@@ -911,6 +912,18 @@ export interface FetchGapEvent {
   kind: 'non-existent' | 'unknown' | 'timed-out' | 'gone' | 'end-of-group';
   /** The last Location covered; `object` is absent for `end-of-group` */
   end: { group: bigint; object?: bigint };
+}
+
+/** A subscription's fill stream (draft-22 §3.4) ended, by FIN or reset; the subscription goes on */
+export interface FillStreamEndedEvent {
+  /** The subscription the fill was for */
+  subscriptionId: number;
+  /** Request ID of the fill */
+  requestId: bigint;
+  /** Last group ID received on the fill stream; absent when it carried no objects */
+  lastGroupId?: number;
+  /** The fill stream ended with End of Track */
+  endOfTrack?: boolean;
 }
 
 export interface FetchStreamCompleteEvent {
