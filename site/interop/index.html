@@ -309,6 +309,10 @@ dialog::backdrop { background: rgba(10, 14, 20, .45); }
 .checks label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--text); }
 .note { font-size: 12.5px; color: var(--muted); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
 .note code, .help code { font-family: var(--mono); font-size: 12px; }
+.outside-help { margin-top: 8px; }
+.outside-help summary { cursor: pointer; font-weight: 600; color: var(--text); }
+.outside-help p { margin: 8px 0 4px; }
+.outside-help pre.code { margin: 4px 0; white-space: pre-wrap; }
 .status-line { font-size: 13px; min-height: 18px; }
 .status-line.ok { color: var(--pass); }
 .status-line.bad { color: var(--fail); }
@@ -422,10 +426,22 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
         <input type="password" id="token" placeholder="github_pat_…" autocomplete="off">
       </div>
       <div class="note">
-        A fine-grained token with <b>Actions: Read and write</b> on this repository only. It is kept for this tab
-        (sessionStorage) and sent only to <code>api.github.com</code>. Without one, use <b>Open on GitHub</b>:
-        GitHub's own <i>Run workflow</i> form, where you paste the values shown below.
+        Starting a run needs <b>write access to this repository</b>: a token only carries its owner's own access, so
+        it must belong to a collaborator. Use a fine-grained token with <b>Actions: Read and write</b> on this
+        repository only. It is kept for this tab (sessionStorage) and sent only to <code>api.github.com</code>.
+        Collaborators can also use <b>Open on GitHub</b> and paste the values below into <i>Run workflow</i>.
       </div>
+      <details class="note outside-help">
+        <summary>Not a collaborator? Test your relay another way</summary>
+        <p><b>On your machine:</b> clone the repository, then run</p>
+        <pre class="code">pnpm install &amp;&amp; pnpm build
+RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
+  pnpm --filter @moq-web/session-e2e test</pre>
+        <p><b>In your fork:</b> fork the repository, enable Actions in the fork, and run the
+        <i>e2e (live relay)</i> workflow there with your relay URL. Its report is published to your fork and shown on
+        this page with <code>?repo=&lt;you&gt;/moq-web</code> added to the address.</p>
+        <p><b>Or ask:</b> <a id="ask-relay" target="_blank" rel="noopener">open an issue</a> with your relay URL and drafts, and a maintainer will add it.</p>
+      </details>
       <pre class="code" id="run-values"></pre>
       <div class="status-line" id="run-status"></div>
     </div>
@@ -1076,16 +1092,30 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(`${res.status}: ${body.message || res.statusText}`);
+        throw new Error(dispatchRefusal(res.status, body.message || res.statusText));
       }
       setStatus('Started. It shows at the top of the page while it runs (about 5 to 10 minutes).', 'ok');
       setTimeout(loadLive, 4000);
       setTimeout(loadLive, 15000);
     } catch (err) {
-      setStatus(`GitHub refused: ${err.message}`, 'bad');
+      setStatus(err.message, 'bad');
     } finally {
       $('run-start').disabled = false;
     }
+  }
+
+  /** What GitHub's refusal to start a run means, in plain words */
+  function dispatchRefusal(status, message) {
+    const said = `(GitHub: ${status} ${message})`;
+    if (status === 401) return `The token is not valid: it may have expired or been revoked. ${said}`;
+    if (status === 403 || status === 404) {
+      return `This token cannot start runs on ${REPO}. Starting a run needs write access to the repository, and a token `
+        + `only carries its owner's access: its owner must be a collaborator, and a fine-grained token must include ${REPO} `
+        + `with Actions: Read and write. Not a collaborator? See "Test your relay another way" below. ${said}`;
+    }
+    if (status === 422) return `GitHub did not accept the run's inputs or branch. ${said}`;
+
+    return `GitHub refused to start the run. ${said}`;
   }
 
   async function rerunFailed() {
@@ -1105,7 +1135,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       banner('running', `Re-running the failed jobs of run #${run.runId}. The report updates when they finish.`);
       setTimeout(loadLive, 4000);
     } else {
-      banner('error', `Re-run refused (${res.status ?? ''} ${res.statusText}). Use the run page on GitHub instead.`);
+      banner('error', res.status ? dispatchRefusal(res.status, res.statusText) : `Re-run failed (${res.statusText}). Use the run page on GitHub instead.`);
     }
   }
 
@@ -1135,6 +1165,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     $('gh-link').href = `${GH}/${REPO}/actions/workflows/${WORKFLOW}`;
     $('run-open').href = `${GH}/${REPO}/actions/workflows/${WORKFLOW}`;
     $('add-relay').href = `${GH}/${REPO}/edit/main/.github/e2e-relays.json`;
+    $('ask-relay').href = `${GH}/${REPO}/issues/new?title=${encodeURIComponent('Interop: please add my relay')}&body=${encodeURIComponent('Relay URL:\nDrafts:\nName to show:\n')}`;
     $('run-btn').addEventListener('click', () => openRunDialog('registered'));
     $('relay-btn').addEventListener('click', () => openRunDialog('custom'));
     $('run-start').addEventListener('click', startRun);
