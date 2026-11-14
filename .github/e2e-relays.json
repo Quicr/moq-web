@@ -67,14 +67,14 @@
       "notes": "Added 2026-11-14. As of then it does not offer moqt-23 (WebTransport handshake fails)."
     },
     {
-      "id": "m10x",
-      "name": "m10x (us-west-2)",
-      "url": "https://relay.us-west-2.m10x.org:33440",
+      "id": "laps",
+      "name": "laps (quicr) relay",
+      "url": "https://relay.us-west-2.m10x.org:33440/relay",
       "drafts": [],
       "experimentalDrafts": [
         "draft-18"
       ],
-      "notes": "Added 2026-11-14 for draft-18. As of then the WebTransport handshake fails from a dev laptop (any path, any draft)."
+      "notes": "libquicr relay: WebTransport path /relay (libquicr accepts only that exact path) and ALPN moqt-18."
     },
     {
       "id": "lminiero",
