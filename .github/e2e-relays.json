@@ -74,18 +74,8 @@
       "experimentalDrafts": [
         "draft-23"
       ],
-      "notes": "As of 2026-11-14: FETCH Object ID Delta uses the draft-22 rule (#2006); refuses PUBLISH_NAMESPACE after PUBLISH of the same namespace. NAMESPACE Number of Parameters (#1858) fixed 2026-11-14.",
+      "notes": "As of 2026-11-14: refuses PUBLISH_NAMESPACE after PUBLISH of the same namespace. Fixed 2026-11-14: NAMESPACE Number of Parameters (#1858), FETCH Object ID Delta (#2006).",
       "knownIssues": [
-        {
-          "drafts": [
-            "draft-23"
-          ],
-          "tests": [
-            "34-draft23"
-          ],
-          "match": "to deeply equal",
-          "summary": "Its FETCH Object ID Delta still uses the draft-22 rule; draft-23 makes each ID the prior ID + delta + 2 within a group (#2006), so the IDs come out shifted."
-        },
         {
           "drafts": [
             "draft-23"
