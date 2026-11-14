@@ -13,9 +13,9 @@
 
 import { RequestErrorCodeDraft18 } from '@moq-web/core';
 import { RequestRejectedError } from '@moq-web/session';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, publishGroups, requestErrorName, sleep, within } from '../lib/flow.js';
+import { failOn, isDraft22, publishGroups, requestErrorName, sleep, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -28,6 +28,19 @@ function outcomeOf(err: unknown): { code?: number; text: string } {
   if (err instanceof RequestRejectedError) return { code: err.errorCode, text: `${requestErrorName(err.errorCode)} "${err.reasonPhrase}"` };
   return { text: (err as Error).message };
 }
+
+/**
+ * A failure line when the request was not refused with one of `wanted`, e.g.
+ * "FETCH that is for a track with no Objects yet: expected REQUEST_ERROR
+ * INVALID_RANGE (0x11), got DOES_NOT_EXIST (0x10) "Track not found""
+ */
+function wrongAnswer(request: string, outcome: { code?: number; text: string }, wanted: number[]): string | undefined {
+  if (outcome.code !== undefined && wanted.includes(outcome.code)) return undefined;
+  return `${request}: expected REQUEST_ERROR ${wanted.map(requestErrorName).join(' or ')}, got ${outcome.text}`;
+}
+
+/** A failure line when the session did not stay ready after the refusal */
+const notReady = (state: string) => state !== 'ready' && `The session did not stay ready after the refusal (state ${state})`;
 
 describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
   let handles: SessionHandle[] = [];
@@ -62,9 +75,10 @@ describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
     }
     record(task, { observed: { outcome: outcome.text, state: sub.session.state } });
 
-    expect(outcome.code, outcome.text).toBeDefined();
-    expect([RequestErrorCodeDraft18.DOES_NOT_EXIST, RequestErrorCodeDraft18.TIMEOUT]).toContain(outcome.code);
-    expect(sub.session.state).toBe('ready');
+    failOn([
+      wrongAnswer('SUBSCRIBE for an unknown track', outcome, [RequestErrorCodeDraft18.DOES_NOT_EXIST, RequestErrorCodeDraft18.TIMEOUT]),
+      notReady(sub.session.state),
+    ]);
   });
 
   it('FETCH for an unknown track is refused with DOES_NOT_EXIST', async ({ task }) => {
@@ -97,8 +111,7 @@ describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
     }
     record(task, { observed: { outcome: outcome.text, state: sub.session.state } });
 
-    expect(outcome.code, outcome.text).toBe(RequestErrorCodeDraft18.DOES_NOT_EXIST);
-    expect(sub.session.state).toBe('ready');
+    failOn([wrongAnswer('FETCH for an unknown track', outcome, [RequestErrorCodeDraft18.DOES_NOT_EXIST]), notReady(sub.session.state)]);
   });
 
   it('TRACK_STATUS for an unknown track is refused with DOES_NOT_EXIST', async ({ task }) => {
@@ -127,8 +140,7 @@ describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
     }
     record(task, { observed: { outcome: outcome.text, state: sub.session.state } });
 
-    expect(outcome.code, outcome.text).toBe(RequestErrorCodeDraft18.DOES_NOT_EXIST);
-    expect(sub.session.state).toBe('ready');
+    failOn([wrongAnswer('TRACK_STATUS for an unknown track', outcome, [RequestErrorCodeDraft18.DOES_NOT_EXIST]), notReady(sub.session.state)]);
   });
 
   it.for([
@@ -172,7 +184,6 @@ describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
     }
     record(task, { observed: { outcome: outcome.text, state: sub.session.state } });
 
-    expect(outcome.code, outcome.text).toBe(RequestErrorCodeDraft18.INVALID_RANGE);
-    expect(sub.session.state).toBe('ready');
+    failOn([wrongAnswer(`FETCH that ${c.label}`, outcome, [RequestErrorCodeDraft18.INVALID_RANGE]), notReady(sub.session.state)]);
   });
 });

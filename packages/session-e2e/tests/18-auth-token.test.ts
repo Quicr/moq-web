@@ -75,7 +75,7 @@ describe.skipIf(!isDraft18)('SUBSCRIBE with per-request AUTHORIZATION_TOKEN (§1
         authToken: { tokenBytes, tokenType: 0x63346d },
       });
       record(task, { observed: { outcome: 'SUBSCRIBE_OK', subscriptionId } });
-      expect(typeof subscriptionId).toBe('number');
+      expect(typeof subscriptionId, 'SUBSCRIBE with an AUTHORIZATION_TOKEN resolved without a subscription ID').toBe('number');
     } catch (err) {
       record(task, { observed: { outcome: 'rejected', error: err } });
       // Relays may reject unknown/invalid tokens — we still exercised the

@@ -11,13 +11,23 @@
  * Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, sleep, Trace, waitUntil, within } from '../lib/flow.js';
+import { failOn, isDraft22, sleep, Trace, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
+
+/** The REQUEST_UPDATE outcome, as a reader of the report needs it */
+function updateProblem(outcome: string): string {
+  if (/request stream closed/i.test(outcome)) {
+    return 'REQUEST_UPDATE with TRACK_NAMESPACE_PREFIX: the relay closed the request stream instead of answering';
+  }
+  if (/no answer within/i.test(outcome)) return 'REQUEST_UPDATE with TRACK_NAMESPACE_PREFIX: no REQUEST_UPDATE_OK within 5 s';
+
+  return `REQUEST_UPDATE with TRACK_NAMESPACE_PREFIX was refused: ${outcome}`;
+}
 
 describe.skipIf(!isDraft22)('SUBSCRIBE_NAMESPACE prefix update', () => {
   let handles: SessionHandle[] = [];
@@ -74,9 +84,12 @@ describe.skipIf(!isDraft22)('SUBSCRIBE_NAMESPACE prefix update', () => {
     trace.print(`updated=${updated} seen=${seen.join(',')}`);
     record(task, { observed: { updated, seen, unexpected: trace.unexpected, trace: trace.lines } });
 
-    expect(updated).toBe('ok');
-    expect(seen, 'announced under the new prefix').toContain(wanted);
-    expect(seen, 'announced under the old prefix').not.toContain([...oldPrefix, 'late'].join('/'));
-    expect(trace.unexpected).toEqual([]);
+    const stale = [...oldPrefix, 'late'].join('/');
+    failOn([
+      updated !== 'ok' && updateProblem(updated),
+      !seen.includes(wanted) && `NAMESPACE for ${wanted} (under the new prefix) never arrived`,
+      seen.includes(stale) && `NAMESPACE for ${stale} arrived, though it is only under the old prefix`,
+      trace.unexpected.length > 0 && `Unexpected errors: ${trace.unexpected.join('; ')}`,
+    ]);
   });
 });

@@ -93,6 +93,6 @@ describe.each([
       throw err;
     });
     record(task, { observed: { announced: evt.namespace.join('/') } });
-    expect(evt.namespace.join('/')).toBe(namespace.join('/'));
+    expect(evt.namespace.join('/'), 'namespace in the NAMESPACE the subscriber received').toBe(namespace.join('/'));
   });
 });

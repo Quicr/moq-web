@@ -97,8 +97,8 @@ describe('SUBSCRIBE_UPDATE per-request scope [chat-stream]', () => {
 
     await new Promise((r) => setTimeout(r, 500));
     record(task, { observed: { trackABeforePause: receivedA, trackBBeforePause: receivedB } });
-    expect(receivedA).toBeGreaterThan(0);
-    expect(receivedB).toBeGreaterThan(0);
+    expect(receivedA, 'objects of track A received before the pause').toBeGreaterThan(0);
+    expect(receivedB, 'objects of track B received before the pause').toBeGreaterThan(0);
 
     // Pause only subscription A.
     await sub.session.pauseSubscription(subA);

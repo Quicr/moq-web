@@ -12,8 +12,9 @@
  */
 
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
@@ -57,7 +58,16 @@ describe.skipIf(!isDraft18)('reserved namespace: leading \'.\' (§3.2.1)', () =>
       () => record(task, { observed: { outcome: 'resolved' } }),
       (err: unknown) => record(task, { observed: { outcome: 'rejected', error: err } }),
     );
-    await expect(published).rejects.toThrow(/§3.2.1/);
+    let outcome: string | undefined;
+    try {
+      await published;
+    } catch (err) {
+      outcome = (err as Error).message;
+    }
+    failOn([
+      outcome === undefined && 'publish() under a "." namespace succeeded; it must be refused locally (§3.2.1)',
+      outcome !== undefined && !/§3.2.1/.test(outcome) && `publish() under a "." namespace failed, but not for the reserved namespace (§3.2.1): ${outcome}`,
+    ]);
   });
 
   it('rejects subscribe() to a reserved namespace', async ({ task }) => {
@@ -81,6 +91,15 @@ describe.skipIf(!isDraft18)('reserved namespace: leading \'.\' (§3.2.1)', () =>
       () => record(task, { observed: { outcome: 'resolved' } }),
       (err: unknown) => record(task, { observed: { outcome: 'rejected', error: err } }),
     );
-    await expect(subscribed).rejects.toThrow(/§3.2.1/);
+    let outcome: string | undefined;
+    try {
+      await subscribed;
+    } catch (err) {
+      outcome = (err as Error).message;
+    }
+    failOn([
+      outcome === undefined && 'subscribe() under a "." namespace succeeded; it must be refused locally (§3.2.1)',
+      outcome !== undefined && !/§3.2.1/.test(outcome) && `subscribe() under a "." namespace failed, but not for the reserved namespace (§3.2.1): ${outcome}`,
+    ]);
   });
 });

@@ -16,6 +16,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FetchCompleteEvent, FetchGapEvent, FetchStreamCompleteEvent } from '@moq-web/session';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -26,6 +27,30 @@ import chatStream from '../profiles/chat-stream.json';
 const MOQT_VERSION = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MOQT_VERSION ?? 'draft-18';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type Located = { groupId: number; objectId: number };
+
+/**
+ * Where the fetched Object IDs differ from the published ones, in one line:
+ * the first group whose IDs differ, e.g. "FETCH Object IDs in group 0:
+ * expected 0, 2, 3, 5; got 0, 4, 8 (12 of 21 Objects in all)", or undefined
+ * when the same Objects arrived in the same order.
+ */
+function fetchIdMismatch(sent: Located[], received: Located[]): string | undefined {
+  const key = (o: Located) => `${o.groupId}/${o.objectId}`;
+  if (sent.map(key).join() === received.map(key).join()) return undefined;
+  const total = received.length === sent.length ? '' : ` (${received.length} of ${sent.length} Objects in all)`;
+  const groups = [...new Set([...sent, ...received].map((o) => o.groupId))].sort((a, b) => a - b);
+  for (const g of groups) {
+    const want = sent.filter((o) => o.groupId === g).map((o) => o.objectId);
+    const got = received.filter((o) => o.groupId === g).map((o) => o.objectId);
+    if (want.join() !== got.join()) {
+      return `FETCH Object IDs in group ${g}: expected ${want.join(', ') || 'none'}; got ${got.join(', ') || 'none'}${total}`;
+    }
+  }
+
+  return `FETCH Objects arrived out of order: ${received.slice(0, 8).map(key).join(', ')}…${total}`;
+}
 
 async function until(done: () => boolean, ms: number): Promise<void> {
   const deadline = Date.now() + ms;
@@ -61,8 +86,8 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
     });
     const { session } = await open();
     record(task, { observed: { draft: session.draft, ready: session.isReady } });
-    expect(session.draft).toBe('draft-23');
-    expect(session.isReady).toBe(true);
+    expect(session.draft, 'negotiated draft').toBe('draft-23');
+    expect(session.isReady, 'session ready after draft-23 setup').toBe(true);
   });
 
   it('FETCH is answered by REQUEST_OK and its stream decodes with the draft-23 ID rules', async ({ task }) => {
@@ -137,17 +162,18 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
     });
     if (failed) {
       console.warn(`FETCH refused by relay: ${failed}`);
-      expect(sub.session.isReady).toBe(true);
+      expect(sub.session.isReady, 'subscriber session still ready after the refused FETCH').toBe(true);
       return;
     }
     console.warn(`fetch-gap events: ${JSON.stringify(gaps, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))}`);
 
-    expect(complete).toHaveLength(1);
-    expect(received.map((o) => [o.groupId, o.objectId])).toEqual(sent.map((m) => [m.groupId, m.objectId]));
-    for (const o of received) {
-      expect(bytesEqual(o.data, expectedMessage(payload, o.groupId, o.objectId)), `(${o.groupId},${o.objectId})`).toBe(true);
-    }
-    expect(sub.session.isReady).toBe(true);
+    const corrupt = received.filter((o) => !bytesEqual(o.data, expectedMessage(payload, o.groupId, o.objectId)));
+    failOn([
+      complete.length !== 1 && (complete.length === 0 ? 'The FETCH never completed (no fetch-complete)' : `The FETCH completed ${complete.length} times; expected once`),
+      fetchIdMismatch(sent, received),
+      corrupt.length > 0 && `Objects with the wrong payload: ${corrupt.map((o) => `${o.groupId}/${o.objectId}`).join(', ')}`,
+      !sub.session.isReady && `The subscriber session closed after the FETCH (state ${sub.session.state})`,
+    ]);
   });
 
   it('a refused SUBSCRIBE decodes its REQUEST_ERROR and leaves the session usable', async ({ task }) => {
@@ -180,13 +206,13 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
       // Some relays hold a subscription open until a publisher appears
       console.warn(`relay ${outcome === 'accepted' ? 'accepted' : 'did not answer'} a SUBSCRIBE to an unpublished track`);
     } else {
-      expect(typeof (outcome as { errorCode?: unknown }).errorCode).toBe('number');
+      expect(typeof (outcome as { errorCode?: unknown }).errorCode, `REQUEST_ERROR for the refused SUBSCRIBE has a numeric error code (${String(outcome)})`).toBe('number');
     }
-    expect(session.isReady).toBe(true);
+    expect(session.isReady, 'session still ready after the refused SUBSCRIBE').toBe(true);
     // Still usable: a new request on the same session succeeds
     await session.announceNamespace(makeNamespace(profile, 'd23-after-error'));
     record(task, { observed: { readyAfterNextRequest: session.isReady } });
-    expect(session.isReady).toBe(true);
+    expect(session.isReady, 'session still ready after the next request (PUBLISH_NAMESPACE)').toBe(true);
   });
 
   it('the relay ignores the grease Error Detail in our REQUEST_ERRORs', async ({ task }) => {
@@ -231,7 +257,7 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
     record(task, {
       observed: { forwardedToUs: refusedByUs, subscriberErrorCode: fetchError, publisherReady: pub.session.isReady, subscriberReady: sub.session.isReady },
     });
-    expect(pub.session.isReady).toBe(true);
-    expect(sub.session.isReady).toBe(true);
+    expect(pub.session.isReady, 'publisher session still ready after our grease REQUEST_ERRORs').toBe(true);
+    expect(sub.session.isReady, 'subscriber session still ready after our grease REQUEST_ERRORs').toBe(true);
   });
 });

@@ -19,9 +19,9 @@
  * Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, payloadOf, publishDoneName, Received, sleep, Trace, waitUntil, within } from '../lib/flow.js';
+import { failOn, isDraft22, payloadOf, publishDoneName, Received, sleep, Trace, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -115,13 +115,15 @@ describe.skipIf(!isDraft22)('Namespace discovery flow', () => {
     trace.print(`steps=${JSON.stringify(steps)}`);
     record(task, { observed: { ...steps, publishDone: done, objects: got.keys.length, subNamespaces: subNs, lateNamespaces: lateNs, unexpected: trace.unexpected, trace: trace.lines } });
 
-    expect(steps.namespaceToSub, '3: NAMESPACE to Sub').toBe(true);
-    expect(steps.objectsToSub, '3: Objects on the SUBSCRIBE').toBe(true);
-    expect(steps.namespaceToLate, '4: NAMESPACE to the late subscriber').toBe(true);
-    expect(steps.publishDoneToSub, '5: PUBLISH_DONE to Sub').toBe(true);
-    expect(steps.namespaceDoneToSub, '6: NAMESPACE_DONE to Sub').toBe(true);
-    expect(steps.namespaceDoneToLate, '6: NAMESPACE_DONE to the late subscriber').toBe(true);
-    expect(steps.siblingSeen, 'the sibling namespace matched the prefix').toBe(false);
-    expect(trace.unexpected).toEqual([]);
+    failOn([
+      !steps.namespaceToSub && `Step 3: Sub never got NAMESPACE for ${full} within 5 s of its PUBLISH_NAMESPACE`,
+      !steps.objectsToSub && `Step 3: Sub's SUBSCRIBE to ${full}/t delivered ${got.keys.length} Objects within 3 s (expected at least 3)`,
+      !steps.namespaceToLate && `Step 4: the late subscriber never got NAMESPACE for ${full}, which was already published`,
+      !steps.publishDoneToSub && 'Step 5: Sub never got PUBLISH_DONE after the publisher ended the track',
+      !steps.namespaceDoneToSub && `Step 6: Sub never got NAMESPACE_DONE for ${full} after it was withdrawn`,
+      !steps.namespaceDoneToLate && `Step 6: the late subscriber never got NAMESPACE_DONE for ${full} after it was withdrawn`,
+      steps.siblingSeen === true && `NAMESPACE for ${sibling.join('/')} arrived, though it does not match the subscribed prefix`,
+      trace.unexpected.length > 0 && `Unexpected errors: ${trace.unexpected.join('; ')}`,
+    ]);
   });
 });

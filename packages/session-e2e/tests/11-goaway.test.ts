@@ -50,6 +50,6 @@ describe.skipIf(!isDraft18).each([
     await handle.session.goAway();
 
     record(task, { observed: { state: handle.session.state } });
-    expect(handle.session.state).toBe('closing');
+    expect(handle.session.state, 'session state after sending GOAWAY').toBe('closing');
   });
 });

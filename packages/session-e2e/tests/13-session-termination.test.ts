@@ -61,7 +61,7 @@ describe.skipIf(!isDraft18).each([
     await new Promise((r) => setTimeout(r, 50));
 
     record(task, { observed: { sessionTerminatedEvents: events.length } });
-    expect(events).toHaveLength(0);
+    expect(events.map((e) => `code ${e.code}${e.remote ? ' (remote)' : ''}`), 'session-terminated events after a local close()').toEqual([]);
   });
 
   it('incoming GOAWAY with newSessionUri populates pendingMigrationUri', async ({ task }) => {
@@ -93,8 +93,8 @@ describe.skipIf(!isDraft18).each([
     });
 
     record(task, { observed: { pendingMigrationUri: handle.session.pendingMigrationUri, state: handle.session.state } });
-    expect(handle.session.pendingMigrationUri).toBe('https://alt-relay.example/moq');
-    expect(handle.session.state).toBe('closing');
+    expect(handle.session.pendingMigrationUri, 'pendingMigrationUri after GOAWAY with a New Session URI').toBe('https://alt-relay.example/moq');
+    expect(handle.session.state, 'session state after GOAWAY').toBe('closing');
   });
 
   it('migrate() rejects with a clear error in main-thread mode', async ({ task }) => {

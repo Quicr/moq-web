@@ -13,9 +13,9 @@
 
 import { GroupOrder } from '@moq-web/core';
 import type { TrackProperties } from '@moq-web/session';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, publishGroups, sleep, within } from '../lib/flow.js';
+import { failOn, isDraft22, publishGroups, sleep, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -47,6 +47,17 @@ const WANTED = {
   defaultPublisherGroupOrder: SENT.groupOrder,
   dynamicGroups: SENT.dynamicGroups,
 };
+
+/** One line per Track Property that differs from what the PUBLISH sent; a string is a failed request */
+function propertyDiffs(where: string, got: ReturnType<typeof shown> | string): string[] {
+  if (typeof got === 'string') return [`${where}: the request failed: ${got}`];
+  const show = (key: string, v: unknown) =>
+    (key === 'defaultPublisherGroupOrder' && typeof v === 'number' ? (GroupOrder[v] ?? String(v)) : String(v)).toLowerCase();
+
+  return (Object.keys(WANTED) as Array<keyof typeof WANTED>)
+    .filter((key) => got[key] !== WANTED[key])
+    .map((key) => `${where} ${key}: sent ${show(key, WANTED[key])}, got ${got[key] === undefined ? 'nothing' : show(key, got[key])}`);
+}
 
 describe.skipIf(!isDraft22)('Track Properties', () => {
   let handles: SessionHandle[] = [];
@@ -93,7 +104,6 @@ describe.skipIf(!isDraft22)('Track Properties', () => {
     }
     record(task, { observed: { inSubscribeOk, inTrackStatus } });
 
-    expect(inSubscribeOk, 'SUBSCRIBE_OK Track Properties').toEqual(WANTED);
-    expect(inTrackStatus, 'TRACK_STATUS Track Properties').toEqual(WANTED);
+    failOn([...propertyDiffs('SUBSCRIBE_OK', inSubscribeOk), ...propertyDiffs('TRACK_STATUS', inTrackStatus)]);
   });
 });

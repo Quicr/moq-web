@@ -80,7 +80,7 @@ describe.each([
 
     await new Promise((r) => setTimeout(r, 500));
     record(task, { observed: { beforeUnsubscribe: received } });
-    expect(received).toBeGreaterThan(0);
+    expect(received, `objects received before UNSUBSCRIBE (sent ${half})`).toBeGreaterThan(0);
 
     await sub.session.unsubscribe(subscriptionId);
 
@@ -97,6 +97,6 @@ describe.each([
 
     await new Promise((r) => setTimeout(r, 1_000));
     record(task, { observed: { settledAfterUnsubscribe: settledCount, afterMoreSent: received } });
-    expect(received).toBe(settledCount);
+    expect(received - settledCount, `objects that arrived in the 1 s after UNSUBSCRIBE (${received} in total, ${settledCount} when it settled)`).toBe(0);
   });
 });

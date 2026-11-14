@@ -12,9 +12,9 @@
  * Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, sleep, within } from '../lib/flow.js';
+import { failOn, isDraft22, sleep, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -68,8 +68,13 @@ describe.skipIf(!isDraft22)('Setup Options', () => {
     const failed = results.flatMap((r, i) => (r.status === 'rejected' ? [`#${i}: ${(r.reason as Error).message}`] : []));
     record(task, { observed: { options, answeredInOrder: answered, failed } });
 
-    expect(options.filter((o) => !o.wellFormed), 'Setup Options with the wrong value kind for their key').toEqual([]);
-    expect(failed, 'REQUEST_UPDATEs not answered').toEqual([]);
-    expect(answered, 'REQUEST_UPDATE_OK order').toEqual(Array.from({ length: updates }, (_, i) => i));
+    const malformed = options.filter((o) => !o.wellFormed);
+    const inOrder = Array.from({ length: updates }, (_, i) => i);
+    failOn([
+      ...malformed.map((o) => `SERVER_SETUP option ${o.key} carries ${o.kind}, but an ${o.kind === 'varint' ? 'odd' : 'even'} key must carry ${o.kind === 'varint' ? 'bytes' : 'a varint'}`),
+      failed.length > 0 && `${failed.length} of ${updates} REQUEST_UPDATEs sent at once were not answered: ${failed.join('; ')}`,
+      failed.length === 0 && answered.join() !== inOrder.join()
+        && `REQUEST_UPDATE_OKs came out of order: answered ${answered.join(', ')}, sent ${inOrder.join(', ')}`,
+    ]);
   });
 });

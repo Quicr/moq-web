@@ -65,7 +65,7 @@ describe.skipIf(!isDraft18)('NAMESPACE_DONE end-of-batch', () => {
     // that alone proves the request/response half of §10.18 works.
     const rid = await sub.session.subscribeNamespace(prefix);
     record(task, { observed: { requestId: rid } });
-    expect(typeof rid).toBe('number');
+    expect(typeof rid, 'SUBSCRIBE_NAMESPACE resolved without a request ID').toBe('number');
 
     // Give the relay ~500ms to close the initial batch with NAMESPACE_DONE.
     // If it doesn't, we still pass — some relays hold the stream open for

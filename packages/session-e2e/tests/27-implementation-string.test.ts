@@ -59,7 +59,7 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
     // No setImplementationString() call — default path.
     await session.setup();
     record(task, { observed: { ready: session.isReady } });
-    expect(session.isReady).toBe(true);
+    expect(session.isReady, 'session ready after setup without MOQT_IMPLEMENTATION').toBe(true);
   });
 
   it('completes SETUP when the caller opts in with an implementation string', async ({ task }) => {
@@ -88,7 +88,7 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
     session.setImplementationString('moq-web e2e-27');
     await session.setup();
     record(task, { observed: { ready: session.isReady } });
-    expect(session.isReady).toBe(true);
+    expect(session.isReady, 'session ready after setup with MOQT_IMPLEMENTATION').toBe(true);
   });
 
   it('rejects setImplementationString() once setup() has started', async ({ task }) => {
@@ -121,6 +121,6 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
       thrown = err;
     }
     record(task, { observed: { error: thrown ?? 'none thrown' } });
-    expect(() => session!.setImplementationString('too-late')).toThrow(/after setup\(\)/);
+    expect(() => session!.setImplementationString('too-late'), 'setImplementationString() after setup() is refused').toThrow(/after setup\(\)/);
   });
 });

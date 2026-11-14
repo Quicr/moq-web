@@ -19,8 +19,9 @@
  */
 
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -100,14 +101,15 @@ describe.skipIf(!isDraft18)('TRACK_STATUS LARGEST_OBJECT round-trip', () => {
     record(task, {
       observed: { outcome: 'REQUEST_OK', requestId: result?.requestId, latestGroup: result?.latestGroup, latestObject: result?.latestObject },
     });
-    expect(result).toBeDefined();
-    expect(typeof result!.requestId).toBe('bigint');
-
-    if (result!.latestGroup !== undefined) {
-      expect(typeof result!.latestGroup).toBe('bigint');
-      expect(typeof result!.latestObject).toBe('bigint');
-      expect(result!.latestGroup >= 0n).toBe(true);
-      expect(result!.latestObject! >= 0n).toBe(true);
-    }
+    const largest = result?.latestGroup;
+    failOn(result === undefined
+      ? ['TRACK_STATUS resolved with no result']
+      : [
+        typeof result.requestId !== 'bigint' && `TRACK_STATUS answer has no Request ID (got ${String(result.requestId)})`,
+        largest !== undefined && (typeof largest !== 'bigint' || typeof result.latestObject !== 'bigint')
+          && `TRACK_STATUS Largest Location did not decode as two integers (group ${String(largest)}, object ${String(result.latestObject)})`,
+        typeof largest === 'bigint' && typeof result.latestObject === 'bigint' && (largest < 0n || result.latestObject < 0n)
+          && `TRACK_STATUS Largest Location ${largest}/${result.latestObject} is negative`,
+      ]);
   });
 });

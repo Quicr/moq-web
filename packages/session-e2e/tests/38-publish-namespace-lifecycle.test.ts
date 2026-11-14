@@ -12,9 +12,9 @@
  * Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, sleep, Trace, waitUntil, within } from '../lib/flow.js';
+import { failOn, isDraft22, sleep, Trace, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -72,7 +72,11 @@ describe.skipIf(!isDraft22)('PUBLISH_NAMESPACE lifecycle', () => {
     trace.print(`events=${events.join(',')}`);
     record(task, { observed: { events, announced, done, again, unexpected: trace.unexpected, trace: trace.lines } });
 
-    expect(events.slice(0, 3)).toEqual(['announced', 'done', 'announced']);
-    expect(trace.unexpected).toEqual([]);
+    const message = (e: string) => (e === 'announced' ? 'NAMESPACE' : 'NAMESPACE_DONE');
+    failOn([
+      events.slice(0, 3).join() !== 'announced,done,announced'
+        && `Sub expected NAMESPACE, NAMESPACE_DONE, NAMESPACE (publish, withdraw, publish again); got ${events.map(message).join(', ') || 'nothing'}`,
+      trace.unexpected.length > 0 && `Unexpected events: ${trace.unexpected.join('; ')}`,
+    ]);
   });
 });

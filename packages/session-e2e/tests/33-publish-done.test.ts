@@ -70,6 +70,6 @@ describe.skipIf(!isDraft18Family)('PUBLISH_DONE delivery (§9.9)', () => {
     });
 
     record(task, { observed: { firstAlias: trackAlias, secondAlias, state: pub.session.state } });
-    expect(typeof secondAlias).toBe('bigint');
+    expect(typeof secondAlias, 'a second PUBLISH after unpublish() gets a Track Alias').toBe('bigint');
   });
 });

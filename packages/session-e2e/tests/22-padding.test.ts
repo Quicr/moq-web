@@ -17,8 +17,9 @@
  */
 
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -70,42 +71,64 @@ describe.skipIf(!isDraft18)('padding streams & datagrams (§11.5)', () => {
       skipForwardWait: true,
     });
 
+    // A relay that cannot handle padding may drop the connection; then a send
+    // never settles. Each step races the drop so the failure names the step.
+    let lastStep = 'the SUBSCRIBE';
+    let dropped: string | undefined;
+    const lost = new Promise<never>((_, reject) => {
+      for (const [who, handle] of [['publisher', pub], ['subscriber', sub]] as const) {
+        handle!.session.on('session-terminated', (evt) => {
+          dropped ??= `the relay dropped the ${who}'s connection after ${lastStep} (${evt.reason || `code ${evt.code}`})`;
+          reject(new Error(dropped));
+        });
+      }
+    });
+    lost.catch(() => undefined);
+    const step = async <T>(label: string, op: Promise<T>): Promise<T> => {
+      const result = await Promise.race([op, lost]);
+      lastStep = label;
+      return result;
+    };
+
     const received: Uint8Array[] = [];
     await sub.session.subscribe(namespace, track.name, undefined, (data) => {
       received.push(new Uint8Array(data));
     });
     await new Promise((r) => setTimeout(r, 250));
 
-    // Interleave padding with real objects.
-    await pub.session.sendPaddingStream(64);
-    await pub.session.sendPaddingDatagram(32);
+    try {
+      // Interleave padding with real objects.
+      await step('the 64-byte padding stream', pub.session.sendPaddingStream(64));
+      await step('the 32-byte padding datagram', pub.session.sendPaddingDatagram(32));
 
-    let sent = 0;
-    for (const msg of generateChat(track.payload)) {
-      await pub.session.sendObject(trackAlias, msg.bytes, {
-        groupId: msg.groupId,
-        objectId: msg.objectId,
-      });
-      if (++sent >= 2) break;
+      let sent = 0;
+      for (const msg of generateChat(track.payload)) {
+        await step(`real object ${sent + 1}`, pub.session.sendObject(trackAlias, msg.bytes, {
+          groupId: msg.groupId,
+          objectId: msg.objectId,
+        }));
+        if (++sent >= 2) break;
+      }
+
+      await step('the empty padding stream', pub.session.sendPaddingStream(0));
+      await step('the empty padding datagram', pub.session.sendPaddingDatagram(0));
+
+      // Give the relay a moment to forward the real objects.
+      await step('the last send', new Promise((r) => setTimeout(r, 500)));
+    } catch (err) {
+      record(task, { observed: { received: received.length, dropped: dropped ?? (err as Error).message } });
+      failOn([dropped ?? `Sending failed after ${lastStep}: ${(err as Error).message}`]);
     }
-
-    await pub.session.sendPaddingStream(0);
-    await pub.session.sendPaddingDatagram(0);
-
-    // Give the relay a moment to forward the real objects.
-    await new Promise((r) => setTimeout(r, 500));
 
     // We must have received *at least* the two real objects, and nothing
     // extra that looks like padding (padding never surfaces as an object).
-    record(task, {
-      observed: { received: received.length, allZeroObjects: received.filter((buf) => buf.every((b) => b === 0)).length },
-    });
-    expect(received.length).toBeGreaterThanOrEqual(2);
-    for (const buf of received) {
-      // Real chat payloads are non-empty and non-zero. Padding would arrive
-      // as all-zero bytes if it ever leaked through.
-      const allZero = buf.every((b) => b === 0);
-      expect(allZero).toBe(false);
-    }
+    // Real chat payloads are non-empty and non-zero; padding would arrive as
+    // all-zero bytes if it ever leaked through.
+    const allZero = received.filter((buf) => buf.every((b) => b === 0)).length;
+    record(task, { observed: { received: received.length, allZeroObjects: allZero } });
+    failOn([
+      received.length < 2 && `The subscriber got ${received.length} of the 2 real objects sent between the padding`,
+      allZero > 0 && `${allZero} all-zero object(s) reached the subscriber: padding leaked through as objects`,
+    ]);
   });
 });

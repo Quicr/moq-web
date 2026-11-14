@@ -95,11 +95,11 @@ describe.skipIf(!isDraft18).each([
     // may not be present depending on relay behavior — we only check the
     // shape.
     if (settled === 'ok') {
-      expect(result).toBeDefined();
-      expect(typeof result!.requestId).toBe('bigint');
+      expect(result, 'TRACK_STATUS result after REQUEST_OK').toBeDefined();
+      expect(typeof result!.requestId, 'TRACK_STATUS request ID type').toBe('bigint');
       if (result!.latestGroup !== undefined) {
-        expect(typeof result!.latestGroup).toBe('bigint');
-        expect(typeof result!.latestObject).toBe('bigint');
+        expect(typeof result!.latestGroup, 'Largest Location group type').toBe('bigint');
+        expect(typeof result!.latestObject, 'Largest Location object type (group present, object missing or malformed)').toBe('bigint');
       }
     }
   });

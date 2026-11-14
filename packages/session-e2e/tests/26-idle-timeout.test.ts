@@ -17,6 +17,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
@@ -61,7 +62,7 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
 
     // Verify the session is still healthy — issue any trivial API that
     // requires `ready` state. `isReady` is a boolean flag.
-    expect(handle.session.isReady).toBe(true);
+    expect(handle.session.isReady, `the session was no longer ready (state ${handle.session.state}) after 400 ms of keepalive padding datagrams`).toBe(true);
   });
 
   // Going idle is an ordinary end, so the close is NO_ERROR: CONTROL_MESSAGE_TIMEOUT
@@ -96,9 +97,12 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
     ]);
 
     record(task, { observed: evt ? { code: evt.code, remote: evt.remote, reason: evt.reason } : { terminated: 'not within 2 s' } });
-    expect(evt).not.toBeNull();
-    expect(evt!.remote).toBe(false);
-    expect(evt!.code).toBe(SessionErrorCodeDraft18.NO_ERROR);
-    expect(evt!.reason).toMatch(/idle timeout/);
+    failOn(evt === null
+      ? ['The 250 ms idle timeout did not close the session within 2 s']
+      : [
+        evt.remote && `The session was closed by the relay (code ${evt.code}, "${evt.reason}") before the local idle timeout`,
+        evt.code !== SessionErrorCodeDraft18.NO_ERROR && `The idle close used code ${evt.code}, expected NO_ERROR (0)`,
+        !/idle timeout/.test(evt.reason) && `The idle close reason was "${evt.reason}", expected one mentioning "idle timeout"`,
+      ]);
   });
 });

@@ -52,7 +52,7 @@ describe.skipIf(!isDraft18).each([
     await handle.session.close({ code: SessionErrorCodeDraft18.NO_ERROR, reason: 'test done' });
 
     record(task, { observed: { state: handle.session.state } });
-    expect(handle.session.state).toBe('none');
+    expect(handle.session.state, 'session state after close()').toBe('none');
   });
 
   it('close({code: PROTOCOL_VIOLATION}) plumbs the numeric code without throwing', async ({ task }) => {
@@ -76,8 +76,9 @@ describe.skipIf(!isDraft18).each([
         code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION,
         reason: 'e2e-injected',
       }),
+      'close() with PROTOCOL_VIOLATION should resolve',
     ).resolves.toBeUndefined();
     record(task, { observed: { state: handle.session.state } });
-    expect(handle.session.state).toBe('none');
+    expect(handle.session.state, 'session state after close()').toBe('none');
   });
 });

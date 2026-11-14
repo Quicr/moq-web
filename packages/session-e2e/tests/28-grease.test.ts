@@ -52,10 +52,10 @@ describe.skipIf(!isDraft18)('§14 grease: receiver tolerance', () => {
       inputs: { greaseOdd: `0x${GREASE_ODD.toString(16)}`, greaseEven: `0x${GREASE_EVEN.toString(16)}`, other: '0x40' },
       observed: { greaseOdd: isGreaseCode(GREASE_ODD), greaseEven: isGreaseCode(GREASE_EVEN), other: isGreaseCode(0x40) },
     });
-    expect(isGreaseCode(GREASE_ODD)).toBe(true);
-    expect(isGreaseCode(GREASE_EVEN)).toBe(true);
+    expect(isGreaseCode(GREASE_ODD), `0x${GREASE_ODD.toString(16)} is a grease codepoint`).toBe(true);
+    expect(isGreaseCode(GREASE_EVEN), `0x${GREASE_EVEN.toString(16)} is a grease codepoint`).toBe(true);
     // Off-progression: must not be treated as grease.
-    expect(isGreaseCode(0x40)).toBe(false);
+    expect(isGreaseCode(0x40), '0x40 is not a grease codepoint').toBe(false);
   });
 
   it('relay completes SETUP when we advertise grease-key Setup Options', async ({ task }) => {
@@ -89,6 +89,6 @@ describe.skipIf(!isDraft18)('§14 grease: receiver tolerance', () => {
     await session.setup();
     record(task, { observed: { ready: session.isReady } });
     // §14: relay MUST NOT close the session on unknown values.
-    expect(session.isReady).toBe(true);
+    expect(session.isReady, 'session ready after setup with grease Setup Options').toBe(true);
   });
 });

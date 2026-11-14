@@ -17,9 +17,9 @@
  * Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, payloadOf, publishDoneName, Received, sleep, Trace, waitUntil, within } from '../lib/flow.js';
+import { failOn, isDraft22, payloadOf, publishDoneName, Received, sleep, Trace, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -88,8 +88,10 @@ describe.skipIf(!isDraft22)('GOAWAY flows', () => {
     trace.print(`objects after GOAWAY=${during} state=${stateAfter}`);
     record(task, { observed: { objectsAfterGoaway: during, stateAfterGoaway: stateAfter, unexpected: trace.unexpected, trace: trace.lines } });
 
-    expect(during, `Objects in the ${DRAIN_MS / 1000} s after GOAWAY`).toBeGreaterThanOrEqual(10);
-    expect(trace.unexpected).toEqual([]);
+    failOn([
+      during < 10 && `Only ${during} Objects arrived in the ${DRAIN_MS / 1000} s after the subscriber's GOAWAY (expected at least 10): delivery did not continue`,
+      trace.unexpected.length > 0 && `Unexpected errors: ${trace.unexpected.join('; ')}`,
+    ]);
   });
 
   it('publisher GOAWAY: the subscriber keeps receiving, then gets PUBLISH_DONE', async ({ task }) => {
@@ -124,9 +126,12 @@ describe.skipIf(!isDraft22)('GOAWAY flows', () => {
     trace.print(`objects after GOAWAY=${during} publishDone=${done} subState=${sub.session.state}`);
     record(task, { observed: { objectsAfterGoaway: during, publishDone: done, subscriberState: sub.session.state, unexpected: trace.unexpected, trace: trace.lines } });
 
-    expect(during, `Objects in the ${DRAIN_MS / 1000} s after GOAWAY`).toBeGreaterThanOrEqual(10);
-    expect(gotDone, 'PUBLISH_DONE after the publisher ended the track').toBe(true);
-    expect(sub.session.state).toBe('ready');
-    expect(trace.unexpected).toEqual([]);
+    const subState = sub.session.state;
+    failOn([
+      during < 10 && `Only ${during} Objects arrived in the ${DRAIN_MS / 1000} s after the publisher's GOAWAY (expected at least 10): delivery did not continue`,
+      !gotDone && 'Sub never got PUBLISH_DONE within 5 s after the publisher ended the track',
+      subState !== 'ready' && `Sub's session was ${subState} afterwards, not ready: the publisher's GOAWAY affected it`,
+      trace.unexpected.length > 0 && `Unexpected errors: ${trace.unexpected.join('; ')}`,
+    ]);
   });
 });

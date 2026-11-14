@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MOQTransport, type SetupExtensionValue, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { MOQTSession } from '@moq-web/session';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
@@ -70,7 +71,7 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
     });
     await session.setup();
     record(task, { observed: { ready: session.isReady } });
-    expect(session.isReady).toBe(true);
+    expect(session.isReady, 'the session did not become ready after SERVER_SETUP with unknown Setup Options 0x40 and 0x41').toBe(true);
   });
 
   it('exposes peerExtensions after SERVER_SETUP (may be undefined if relay has none)', async ({ task }) => {
@@ -103,13 +104,11 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
         peerExtensions: peer === undefined ? 'none' : [...peer].map(([key, value]) => `0x${key.toString(16)} ${'varint' in value ? 'varint' : 'bytes'}`),
       },
     });
-    if (peer !== undefined) {
-      for (const [key, value] of peer) {
-        const parityIsEven = key % 2 === 0;
-        const isVarint = 'varint' in value;
-        expect(isVarint).toBe(parityIsEven);
-      }
-    }
+    failOn([...(peer ?? new Map<number, SetupExtensionValue>())].map(([key, value]) => {
+      const isVarint = 'varint' in value;
+      return isVarint !== (key % 2 === 0)
+        && `Relay Setup Option 0x${key.toString(16)} holds ${isVarint ? 'a varint' : 'bytes'}; an ${key % 2 === 0 ? 'even key must hold a varint' : 'odd key must hold bytes'}`;
+    }));
   });
 
   it('rejects setClientExtensions() after setup() has started', async ({ task }) => {
@@ -141,8 +140,10 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
       thrown = err;
     }
     record(task, { observed: { error: thrown ?? 'none thrown' } });
-    expect(() =>
-      session!.setClientExtensions(new Map([[0x40, { varint: 1n }]])),
-    ).toThrow(/after setup\(\)/);
+    failOn([
+      thrown === undefined && 'setClientExtensions() after setup() did not throw; Setup Options are fixed once CLIENT_SETUP is sent',
+      thrown !== undefined && !/after setup\(\)/.test((thrown as Error).message)
+        && `setClientExtensions() after setup() threw, but not for being after setup(): ${(thrown as Error).message}`,
+    ]);
   });
 });

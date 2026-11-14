@@ -18,9 +18,10 @@
  *   • Padding does not leak into the delivery path.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 import { GroupOrder, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -119,7 +120,9 @@ describe.skipIf(!isDraft18)('priority scheduling (§7)', () => {
     await new Promise((r) => setTimeout(r, 800));
 
     record(task, { observed: { subscriber1Received: rx1.length, subscriber2Received: rx2.length } });
-    expect(rx1.length).toBeGreaterThanOrEqual(1);
-    expect(rx2.length).toBeGreaterThanOrEqual(1);
+    failOn([
+      rx1.length === 0 && `Subscriber 1 (priority 16, DESCENDING) received none of the ${sent} objects within 800 ms`,
+      rx2.length === 0 && `Subscriber 2 (priority 240, ASCENDING) received none of the ${sent} objects within 800 ms`,
+    ]);
   });
 });

@@ -18,8 +18,9 @@
  * gets an 'incoming-publish' for every OTHER peer's tracks.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
+import { explained, failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
@@ -126,7 +127,7 @@ describe('Room fan-out with full studio sequence (subscribe + publish + announce
           deliveryMode: track.delivery,
         });
       }
-      await c.handle.session.announceNamespace(c.ns);
+      await explained(c.handle.session.announceNamespace(c.ns), `PUBLISH_NAMESPACE ${c.ns.join('/')}, sent after PUBLISHing its tracks, was refused`);
       // small gap so the next peer joins after this one's ANNOUNCE is fanned out
       await new Promise((r) => setTimeout(r, SETTLE_MS));
     }
@@ -162,17 +163,26 @@ describe('Room fan-out with full studio sequence (subscribe + publish + announce
         failures: failures.slice(0, 10),
       },
     });
-    if (failures.length > 0) {
-      const summary = ctxs.map((c) =>
-        `  ${c.id}:\n` +
-        `    announces=[${[...c.seenAnnounces].join(', ')}]\n` +
-        `    incoming=${[...c.incomingByPeer].map(([k, v]) => `${k}=>[${[...v].join(',')}]`).join(' | ')}`
-      ).join('\n');
-      throw new Error(
-        `Studio fan-out failures (${failures.length}):\n${failures.join('\n')}\n\nObserved:\n${summary}`,
-      );
-    }
-
-    expect(failures.length).toBe(0);
+    // One line per peer that missed something, e.g.
+    // "peer2: no NAMESPACE from peer5; no PUBLISH for peer3 (all 4 tracks), peer4 (video, audio)"
+    failOn(ctxs.map((c) => {
+      const noNamespace: string[] = [];
+      const noPublish: string[] = [];
+      for (const other of ctxs) {
+        if (other === c) continue;
+        const otherNs = other.ns.join('/');
+        if (!c.seenAnnounces.has(otherNs)) noNamespace.push(other.id);
+        const tracks = c.incomingByPeer.get(otherNs);
+        const missing = TRACK_NAMES.filter((t) => !tracks?.has(t));
+        if (missing.length > 0) {
+          noPublish.push(`${other.id} (${missing.length === TRACK_NAMES.length ? `all ${TRACK_NAMES.length} tracks` : missing.join(', ')})`);
+        }
+      }
+      const parts = [
+        noNamespace.length > 0 && `no NAMESPACE from ${noNamespace.join(', ')}`,
+        noPublish.length > 0 && `no PUBLISH for ${noPublish.join(', ')}`,
+      ].filter(Boolean);
+      return parts.length > 0 && `${c.id}: ${parts.join('; ')}`;
+    }));
   }, 90_000);
 });

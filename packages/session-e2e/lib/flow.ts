@@ -208,3 +208,12 @@ export function failOn(problems: Array<string | undefined | false>): void {
   const found = problems.filter((p): p is string => typeof p === 'string' && p !== '');
   if (found.length > 0) throw new Error(found.join('\n'));
 }
+
+/** `promise`, with `context` put in front of its error message when it fails */
+export async function explained<T>(promise: Promise<T>, context: string): Promise<T> {
+  try {
+    return await promise;
+  } catch (err) {
+    throw new Error(`${context}: ${(err as Error).message}`);
+  }
+}

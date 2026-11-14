@@ -16,7 +16,7 @@
  * with a FullCatalog containing 'video' and 'audio' track entries.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
 import {
   MSFSession,
@@ -27,6 +27,7 @@ import {
 import { MediaSession, type MediaConfig } from '@moq-web/media';
 import type { IncomingPublishEvent } from '@moq-web/session';
 
+import { explained, failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
@@ -198,7 +199,7 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
         .build() as FullCatalog;
       await c.msfSession.publishCatalog(catalog);
 
-      await c.handle.session.announceNamespace(c.ns, { deliveryMode: 'stream' });
+      await explained(c.handle.session.announceNamespace(c.ns, { deliveryMode: 'stream' }), `PUBLISH_NAMESPACE ${c.ns.join('/')}, sent after PUBLISHing its tracks, was refused`);
       await new Promise((r) => setTimeout(r, SETTLE_MS));
     }
 
@@ -236,17 +237,22 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
         failures: failures.slice(0, 10),
       },
     });
-    if (failures.length > 0) {
-      const summary = ctxs.map((c) =>
-        `  ${c.id}: catalogsFrom=[${[...c.peerCatalogs.keys()].join(', ')}] ` +
-        `discovered=[${[...c.discoveredPeers].join(', ')}]`,
-      ).join('\n');
-      throw new Error(
-        `Studio catalog fan-out failures (${failures.length}):\n` +
-        failures.join('\n') + '\n\nObserved:\n' + summary,
-      );
-    }
-
-    expect(failures.length).toBe(0);
+    // One line per peer that missed something, e.g.
+    // "peer1: no catalog from peer2, peer3 (discovered peer2, peer3, peer4; catalog from peer4)"
+    failOn(ctxs.map((c) => {
+      const others = ctxs.filter((other) => other !== c);
+      const none = others.filter((other) => !c.peerCatalogs.has(other.id)).map((other) => other.id);
+      const incomplete = others.flatMap((other) => {
+        const cat = c.peerCatalogs.get(other.id);
+        if (!cat) return [];
+        const names = new Set(cat.tracks.map((t) => t.name));
+        const missing = ['video', 'audio'].filter((n) => !names.has(n));
+        return missing.length > 0 ? [`${other.id}'s catalog lacks ${missing.join(', ')}`] : [];
+      });
+      if (none.length === 0 && incomplete.length === 0) return undefined;
+      const parts = [none.length > 0 && `no catalog from ${none.join(', ')}`, ...incomplete].filter(Boolean);
+      const context = `discovered ${[...c.discoveredPeers].join(', ') || 'no peers'}; catalog from ${[...c.peerCatalogs.keys()].join(', ') || 'nobody'}`;
+      return `${c.id}: ${parts.join('; ')} (${context})`;
+    }));
   }, 90_000);
 });

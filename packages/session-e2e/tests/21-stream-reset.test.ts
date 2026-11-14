@@ -12,9 +12,10 @@
  * on it since relay behaviour is policy-dependent.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 import { StreamResetErrorCodeDraft18, isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -100,10 +101,15 @@ describe.skipIf(!isDraft18)('subgroup stream-reset (§11.4.3)', () => {
         events: pubEvents.map((e) => ({ side: e.side, code: e.code, reason: e.reason, trackAlias: e.trackAlias })),
       },
     });
-    expect(pubEvents).toHaveLength(1);
-    expect(pubEvents[0].side).toBe('publisher');
-    expect(pubEvents[0].code).toBe(StreamResetErrorCodeDraft18.TOO_FAR_BEHIND);
-    expect(pubEvents[0].reason).toBe('e2e-injected too-far-behind');
-    expect(pubEvents[0].trackAlias).toBe(trackAlias);
+    const evt = pubEvents[0];
+    failOn(pubEvents.length !== 1
+      ? [`Resetting the subgroup stream gave ${pubEvents.length} publisher stream-reset events, expected exactly 1`]
+      : [
+        evt!.side !== 'publisher' && `The stream-reset event came from the ${evt!.side} side, expected the publisher`,
+        evt!.code !== StreamResetErrorCodeDraft18.TOO_FAR_BEHIND
+          && `The stream was reset with code ${evt!.code}, expected TOO_FAR_BEHIND (${StreamResetErrorCodeDraft18.TOO_FAR_BEHIND})`,
+        evt!.reason !== 'e2e-injected too-far-behind' && `The stream-reset reason was "${evt!.reason}", expected "e2e-injected too-far-behind"`,
+        evt!.trackAlias !== trackAlias && `The stream-reset was for track alias ${evt!.trackAlias}, expected ${trackAlias}`,
+      ]);
   });
 });

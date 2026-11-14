@@ -11,8 +11,9 @@
  * may be lost and the report lists which.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
+import { failOn, ranges } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -29,6 +30,17 @@ const DATAGRAM_WAIT_MS = 8_000;
 /** Every (group/object) the profile's payload publishes */
 function generateChatKeys(payload: Parameters<typeof generateChat>[0]): string[] {
   return [...generateChat(payload)].map((m) => `${m.groupId}/${m.objectId}`);
+}
+
+/** Missing "g/o" keys by group: "group 1 (objects 3–9), group 2 (objects 0–9)" */
+function byGroup(keys: string[]): string {
+  const groups = new Map<number, number[]>();
+  for (const k of keys) {
+    const [g, o] = k.split('/').map(Number) as [number, number];
+    groups.set(g, [...(groups.get(g) ?? []), o]);
+  }
+
+  return [...groups].sort(([a], [b]) => a - b).map(([g, os]) => `group ${g} (objects ${ranges(os)})`).join(', ');
 }
 
 describe.each([
@@ -111,22 +123,17 @@ describe.each([
       },
     });
 
-    if (datagram) {
-      expect(received.length, `datagrams lost: ${lost.join(', ')}`).toBeGreaterThanOrEqual(atLeast);
-    } else {
-      expect(received).toHaveLength(total);
-    }
+    const duplicates = received.length - arrived.size;
+    failOn([
+      datagram
+        ? received.length < atLeast && `Expected at least ${atLeast} of ${total} datagrams, got ${received.length}; lost ${byGroup(lost)}`
+        : lost.length > 0 && `Expected all ${total} objects, got ${arrived.size}; missing ${byGroup(lost)}`,
+      !datagram && duplicates > 0 && `${duplicates} objects arrived more than once`,
+      mismatched.length > 0 && `Objects whose payload differs from what was sent: ${byGroup(mismatched.map((o) => `${o.groupId}/${o.objectId}`))}`,
+    ]);
     // Only a stream preserves order; datagrams can legitimately reorder.
     if (track.delivery === 'stream') {
       assertMonotonic(received);
-    }
-
-    for (const o of received) {
-      const expected = expectedMessage(track.payload, o.groupId, o.objectId);
-      expect(
-        bytesEqual(o.bytes, expected),
-        `mismatch at (${o.groupId},${o.objectId})`,
-      ).toBe(true);
     }
   });
 });

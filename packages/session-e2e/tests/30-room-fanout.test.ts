@@ -13,6 +13,7 @@
 
 import { afterEach, describe, it } from 'vitest';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, type Profile } from '../lib/profile.js';
@@ -112,13 +113,12 @@ describe('Room fan-out (studio-style N-peer topology)', () => {
         missing: failures.length,
       },
     });
-    if (failures.length > 0) {
-      const summary = peerIds
-        .map((_, i) => `  peer${i + 1} saw: [${[...seen[i]].join(', ') || '(nothing)'}]`)
-        .join('\n');
-      throw new Error(
-        `Fan-out failures (${failures.length}):\n${failures.join('\n')}\n\nObserved:\n${summary}`,
-      );
-    }
+    // One line per peer that missed someone, e.g. "peer2: no NAMESPACE from peer4, peer5 (got peer1, peer3)"
+    failOn(peerIds.map((id, i) => {
+      const others = peerIds.filter((_, j) => j !== i);
+      const got = others.filter((other) => seen[i].has(peerNamespaces[peerIds.indexOf(other)].join('/')));
+      const missed = others.filter((other) => !got.includes(other));
+      return missed.length > 0 && `${id}: no NAMESPACE from ${missed.join(', ')} (got ${got.join(', ') || 'none'})`;
+    }));
   }, 60_000);
 });

@@ -13,8 +13,9 @@
  * and marks the test as skipped so we still surface protocol coverage.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
+import { failOn, ranges } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -28,6 +29,21 @@ import chatDatagram from '../profiles/chat-datagram.json';
 // in a single read on a local relay.
 const LARGE_PAYLOAD_BYTES = 2048;
 const LARGE_MESSAGES = 300;
+
+/** Missing "g/o" keys by group: "group 1 (objects 3–9), group 2 (objects 0–9)" */
+/** Object keys by group: whole groups (all `perGroup` Objects) as ranges, the rest with their Object IDs */
+function byGroup(keys: string[], perGroup = Infinity): string {
+  const groups = new Map<number, number[]>();
+  for (const k of keys) {
+    const [g, o] = k.split('/').map(Number) as [number, number];
+    groups.set(g, [...(groups.get(g) ?? []), o]);
+  }
+  const sorted = [...groups].sort(([a], [b]) => a - b);
+  const whole = sorted.filter(([, os]) => os.length >= perGroup).map(([g]) => g);
+  const parts = sorted.filter(([, os]) => os.length < perGroup).map(([g, os]) => `group ${g} (objects ${ranges(os)})`);
+
+  return [whole.length ? `${whole.length === 1 ? 'group' : 'groups'} ${ranges(whole)}` : '', ...parts].filter(Boolean).join('; ');
+}
 
 describe.each([
   ['chat-stream', 'default', chatStream as Profile, undefined],
@@ -133,13 +149,20 @@ describe.each([
           .map((o) => `${o.groupId}/${o.objectId}`),
       },
     });
-    expect(received).toHaveLength(expected);
-    for (const o of received) {
-      const want = expectedMessage(payload, o.groupId, o.objectId);
-      expect(
-        bytesEqual(o.data, want),
-        `mismatch at (${o.groupId},${o.objectId})`,
-      ).toBe(true);
+    const wanted: string[] = [];
+    for (let g = range.startGroup; g <= range.endGroup; g++) {
+      for (let o = 0; o < perGroup && wanted.length < expected; o++) wanted.push(`${g}/${o}`);
     }
+    const got = new Set(received.map((o) => `${o.groupId}/${o.objectId}`));
+    const missing = wanted.filter((k) => !got.has(k));
+    const outside = [...got].filter((k) => !wanted.includes(k));
+    const mismatched = received.filter((o) => !bytesEqual(o.data, expectedMessage(payload, o.groupId, o.objectId)));
+    const span = `groups ${range.startGroup}–${range.endGroup}`;
+    failOn([
+      missing.length > 0 && `FETCH of ${span}: expected ${expected} objects, got ${got.size}; missing ${byGroup(missing, perGroup)}`,
+      outside.length > 0 && `FETCH of ${span} returned objects outside the range: ${byGroup(outside)}`,
+      received.length > got.size && `FETCH returned ${received.length - got.size} objects more than once`,
+      mismatched.length > 0 && `Objects whose payload differs from what was sent: ${byGroup(mismatched.map((o) => `${o.groupId}/${o.objectId}`))}`,
+    ]);
   });
 });

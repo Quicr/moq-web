@@ -21,8 +21,9 @@
 
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import type { MOQTSession } from '@moq-web/session';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
+import { explained, failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -201,7 +202,8 @@ describe.skipIf(!isDraft18)('Relay forwards PUBLISH to namespace subscribers', (
       trace.note('Pub', `PUBLISH_OK alias=${alias}`);
       if (c.announce) {
         trace.note('Pub', `PUBLISH_NAMESPACE ${namespace.join('/')}`);
-        await within(pub.session.announceNamespace(namespace, { deliveryMode: 'stream' }), OK_TIMEOUT_MS, 'PUBLISH_NAMESPACE');
+        await explained(within(pub.session.announceNamespace(namespace, { deliveryMode: 'stream' }), OK_TIMEOUT_MS, 'PUBLISH_NAMESPACE'),
+          `PUBLISH_NAMESPACE ${namespace.join('/')}, sent after PUBLISHing ${TRACK} in it, was refused`);
         trace.note('Pub', 'PUBLISH_NAMESPACE_OK');
       }
       let group = 0;
@@ -286,14 +288,13 @@ describe.skipIf(!isDraft18)('Relay forwards PUBLISH to namespace subscribers', (
       observed: { summary: line, fwdPublish, objects, objectsInTime, nsMsg, control, controlObjects, verdict, unexpected: trace.unexpected, trace: trace.lines },
     });
 
-    expect(control, 'control SUBSCRIBE: the publisher must be reachable for the result to mean anything').toBe('ok');
-    if (fwdRequired && !KNOWN_NO_PUBLISH_FWD) {
-      expect(fwdPublish, 'relay sent Sub a PUBLISH for the track').toBe(true);
-      expect(objectsInTime, 'objects arrived within 2 s of the PUBLISH').toBe(true);
-    }
-    if (c.announce) {
-      expect(nsMsg, 'Sub got a NAMESPACE for the announced namespace').toBe(true);
-    }
-    expect(trace.unexpected).toEqual([]);
+    const checkForwarding = fwdRequired && !KNOWN_NO_PUBLISH_FWD;
+    failOn([
+      control !== 'ok' && `A direct SUBSCRIBE from a third session failed (${control}), so the publisher was not reachable and the forwarding result means nothing`,
+      checkForwarding && !fwdPublish && 'The relay never sent Sub a PUBLISH for the track',
+      checkForwarding && fwdPublish && !objectsInTime && 'The relay sent Sub a PUBLISH for the track, but no Objects followed within 2 s',
+      c.announce && !nsMsg && 'Sub got no NAMESPACE for the announced namespace',
+      trace.unexpected.length > 0 && `Unexpected events: ${trace.unexpected.join('; ')}`,
+    ]);
   });
 });

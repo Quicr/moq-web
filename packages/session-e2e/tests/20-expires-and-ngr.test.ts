@@ -68,7 +68,7 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
 
     const subscriptionId = await sub.session.subscribe(namespace, track.name);
     record(task, { observed: { subscriptionId } });
-    expect(typeof subscriptionId).toBe('number');
+    expect(typeof subscriptionId, 'SUBSCRIBE to a track published with EXPIRES resolved without a subscription ID').toBe('number');
   });
 
   it('subscriber can send REQUEST_UPDATE with NEW_GROUP_REQUEST', async ({ task }) => {
@@ -106,7 +106,7 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
     const subscriptionId = await sub.session.subscribe(namespace, track.name);
     const info = sub.session.getSubscription(subscriptionId);
     record(task, { observed: { subscriptionId, requestId: info?.requestId } });
-    expect(info).toBeDefined();
+    expect(info, 'the subscription was not found after SUBSCRIBE_OK, so no REQUEST_UPDATE could be sent').toBeDefined();
 
     // Send REQUEST_UPDATE with NEW_GROUP_REQUEST (no Group known yet, so 0). Some relays may not
     // acknowledge it; awaitAck: false keeps the test resilient to that.
@@ -150,7 +150,7 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
     try {
       const subId = await sub.session.subscribeTracks(namespace);
       record(task, { observed: { outcome: 'REQUEST_OK', subscriptionId: subId } });
-      expect(typeof subId).toBe('number');
+      expect(typeof subId, 'SUBSCRIBE_TRACKS was answered with REQUEST_OK but gave no subscription ID').toBe('number');
     } catch (err) {
       record(task, { observed: { outcome: 'rejected', error: err } });
       // Some relays reject SUBSCRIBE_TRACKS entirely (draft-18 §10.19) or

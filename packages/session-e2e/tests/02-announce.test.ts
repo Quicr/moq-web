@@ -9,8 +9,9 @@
  * the ack arrives, so a successful await proves the exchange happened.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
+import { failOn } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -44,11 +45,14 @@ describe.each([
     });
 
     handle = await makeSession(profile);
-    const announced = handle.session.announceNamespace(namespace);
-    announced.then(
-      () => record(task, { observed: { outcome: 'REQUEST_OK' } }),
-      (err: unknown) => record(task, { observed: { outcome: 'rejected', error: err } }),
-    );
-    await expect(announced).resolves.toBeUndefined();
+    let refused: string | undefined;
+    try {
+      await handle.session.announceNamespace(namespace);
+      record(task, { observed: { outcome: 'REQUEST_OK' } });
+    } catch (err) {
+      refused = (err as Error).message;
+      record(task, { observed: { outcome: 'rejected', error: err } });
+    }
+    failOn([refused !== undefined && `PUBLISH_NAMESPACE ${namespace.join('/')}: expected REQUEST_OK, the relay refused it: ${refused}`]);
   });
 });

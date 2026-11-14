@@ -15,6 +15,7 @@
 import { isDraftAtLeast, type DraftVersion } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { failOn, groupShortfall, ranges, Received } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -91,7 +92,7 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
         return;
       }
       record(task, { observed: { outcome: 'SUBSCRIBE_OK', subscriptionId } });
-      expect(typeof subscriptionId).toBe('number');
+      expect(typeof subscriptionId, `SUBSCRIBE with the ${kind} filter resolved without a subscription ID`).toBe('number');
     });
   }
 
@@ -142,9 +143,11 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
         inputs: { namespace: namespace.join('/'), track: track.name, options, published: track.payload.messages, objectsPerGroup: perGroup },
       });
       const collector = collectObjects(expected, 20_000);
+      const got = new Received();
       let maxGroup = -1;
       await sub.session.subscribe(namespace, track.name, options, (data, groupId, objectId, timestamp) => {
         maxGroup = Math.max(maxGroup, groupId);
+        got.onObject(data, groupId, objectId);
         collector.onObject(data, groupId, objectId, timestamp);
       });
       await new Promise((r) => setTimeout(r, 250));
@@ -156,14 +159,27 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
         });
       }
 
-      const received = await collector.done;
+      const filter = kind === 'absolute-range' ? `${kind} filter (end group ${lastGroup})` : `${kind} filter`;
+      let received: unknown[];
+      try {
+        received = await collector.done;
+      } catch {
+        record(task, { observed: { received: got.keys.length, groups: ranges(got.groups()) } });
+        failOn([`${groupShortfall(filter, got, 0, lastGroup, perGroup) ?? `${filter}: only ${got.keys.length} of ${expected} objects`} within 20 s`]);
+        return;
+      }
       record(task, { observed: { received: received.length } });
-      expect(received).toHaveLength(expected);
 
       // Give any out-of-range objects time to (wrongly) arrive.
       await new Promise((r) => setTimeout(r, 500));
-      record(task, { observed: { highestGroup: maxGroup } });
-      expect(maxGroup).toBe(lastGroup);
+      const past = got.keys.filter((k) => Number(k.split('/')[0]) > lastGroup);
+      record(task, { observed: { highestGroup: maxGroup, pastEndGroup: past } });
+      failOn([
+        maxGroup > lastGroup && `${filter}: the relay also delivered group ${ranges(past.map((k) => Number(k.split('/')[0])))}, `
+          + `past group ${lastGroup} (objects ${past.slice(0, 4).join(', ')}${past.length > 4 ? ', …' : ''})`,
+        maxGroup > lastGroup && groupShortfall(`${filter}, within the range`, got, 0, lastGroup, perGroup),
+        maxGroup < lastGroup && `${filter}: the highest group delivered was ${maxGroup}, expected ${lastGroup}`,
+      ]);
     });
   }
 });

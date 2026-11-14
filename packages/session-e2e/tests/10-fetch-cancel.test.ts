@@ -117,7 +117,7 @@ describe.each([
     }
 
     record(task, { observed: { beforeCancel: received } });
-    expect(received).toBeGreaterThan(0);
+    expect(received, 'FETCH objects received within 5 s, before the cancel').toBeGreaterThan(0);
 
     await sub.session.cancelFetch(requestId);
 
@@ -129,8 +129,8 @@ describe.each([
     // deliveries have truly stopped.
     await new Promise((r) => setTimeout(r, 1_000));
     record(task, { observed: { settledAfterCancel: settled, final: received } });
-    expect(received).toBe(settled);
+    expect(received - settled, `FETCH objects that arrived in the 1 s after the cancel had settled (${received} in total, ${settled} when it settled)`).toBe(0);
     // And, importantly, we did NOT drain the entire range.
-    expect(received).toBeLessThan(messages.length);
+    expect(received, `FETCH objects received in all; the cancel should stop it short of the full ${messages.length}`).toBeLessThan(messages.length);
   });
 });

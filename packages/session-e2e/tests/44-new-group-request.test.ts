@@ -11,9 +11,9 @@
  * the subscriber within 3 s. Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, payloadOf, Received, Trace, waitUntil, within } from '../lib/flow.js';
+import { failOn, isDraft22, payloadOf, Received, Trace, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -98,9 +98,13 @@ describe.skipIf(!isDraft22)('NEW_GROUP_REQUEST', () => {
       },
     });
 
-    expect(dynamicGroups, 'DYNAMIC_GROUPS forwarded in SUBSCRIBE_OK').toBe(true);
-    expect(sent).toBe('ok');
-    expect(requestSeenAt, 'NEW_GROUP_REQUEST reached the publisher').toBeDefined();
-    expect(arrived, 'group 1 reached the subscriber').toBe(true);
+    failOn([
+      !dynamicGroups && "SUBSCRIBE_OK did not carry DYNAMIC_GROUPS, though the publisher's PUBLISH declared it",
+      sent !== 'ok' && `REQUEST_UPDATE with NEW_GROUP_REQUEST failed: ${sent}`,
+      requestSeenAt === undefined && 'NEW_GROUP_REQUEST never reached the publisher (the relay did not pass it on)',
+      !arrived && (requestSeenAt === undefined
+        ? 'No new group reached the subscriber within 3 s'
+        : 'The publisher started group 1, but it did not reach the subscriber within 3 s'),
+    ]);
   });
 });

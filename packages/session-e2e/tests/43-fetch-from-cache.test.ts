@@ -20,9 +20,9 @@
  */
 
 import { GroupOrder, RequestErrorCodeDraft18 } from '@moq-web/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, publishGroups, Received, requestErrorName, sleep, Trace, waitUntil } from '../lib/flow.js';
+import { failOn, isDraft22, publishGroups, Received, requestErrorName, sleep, Trace, waitUntil } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -39,6 +39,19 @@ interface Case {
   publisherLeaves?: boolean;
   /** Groups published after the FETCH is sent; they must not arrive on it */
   later?: number;
+}
+
+/** Objects as "group 3, 4/1" (a whole group named once), in group order */
+function objectsText(keys: string[]): string {
+  const byGroup = new Map<number, number[]>();
+  for (const k of keys) {
+    const [g, o] = k.split('/').map(Number) as [number, number];
+    byGroup.set(g, [...(byGroup.get(g) ?? []), o]);
+  }
+
+  return [...byGroup].sort(([a], [b]) => a - b)
+    .map(([g, os]) => (os.length === PER_GROUP ? `group ${g}` : os.sort((a, b) => a - b).map((o) => `${g}/${o}`).join(', ')))
+    .join(', ');
 }
 
 const whole = (from: number, to: number) =>
@@ -128,12 +141,16 @@ describe.skipIf(!isDraft22)('FETCH from the relay cache', () => {
       // The relay dropped the track with its publisher: allowed, and reported
       return;
     }
-    expect(fetchError).toBe('none');
-    expect(missing, 'objects that never arrived').toEqual([]);
-    expect(extra, 'objects outside the range').toEqual([]);
-    expect(got.corrupt).toEqual([]);
-    if (c.descending) {
-      expect(order, 'group arrival order').toEqual([...order].sort((a, b) => b - a));
-    }
+    const r = c.range;
+    const fetchText = `FETCH ${r.startGroup}/${r.startObject}..${r.endGroup}/${r.endObject}`;
+    failOn([
+      fetchError !== 'none' && `${fetchText}: the FETCH failed: ${fetchError}`,
+      missing.length > 0 && (fetchError === 'none' || got.keys.length > 0)
+        && `${fetchText}: expected ${c.wanted.length} Objects (${c.wanted[0]}..${c.wanted.at(-1)}), got ${c.wanted.length - missing.length}; missing ${objectsText(missing)}`,
+      extra.length > 0 && `${fetchText}: Objects outside the range arrived: ${objectsText(extra)}${c.later ? ' (groups 5 and later were published after the FETCH)' : ''}`,
+      got.corrupt.length > 0 && `${fetchText}: Objects with the wrong payload: ${got.corrupt.join(', ')}`,
+      c.descending === true && order.join() !== [...order].sort((a, b) => b - a).join()
+        && `${fetchText} in descending group order: groups arrived as ${order.join(', ')}`,
+    ]);
   });
 });

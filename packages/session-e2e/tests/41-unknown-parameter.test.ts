@@ -21,7 +21,7 @@ import {
 } from '@moq-web/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { isDraft22, isDraft23, Trace, within } from '../lib/flow.js';
+import { failOn, isDraft22, isDraft23, Trace, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -131,6 +131,14 @@ describe.skipIf(!isDraft22)('Unknown Message Parameter', () => {
       observed: { closeCode: outcome.code === undefined ? 'session still open' : `0x${outcome.code.toString(16)}`, reason: outcome.reason, trace: trace.lines },
     });
 
-    expect(outcome.code, outcome.reason).toBe(wanted);
+    const wantedName = isDraft23 ? 'INVALID_PARAMETER (0x305)' : 'PROTOCOL_VIOLATION (0x3)';
+    failOn([
+      outcome.code === undefined
+      && `The session was still open 5 s after the unknown parameter: the relay did not close it (expected ${wantedName})`,
+      outcome.code !== undefined && outcome.code !== wanted && (outcome.code === 0
+        ? `Expected the relay to close the session with ${wantedName} in CLOSE_WEBTRANSPORT_SESSION; `
+          + `the connection was dropped instead ("${outcome.reason}", no MOQT close code)`
+        : `Expected close code ${wantedName}, got 0x${outcome.code.toString(16)} ("${outcome.reason}")`),
+    ]);
   });
 });

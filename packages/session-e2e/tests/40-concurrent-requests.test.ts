@@ -19,13 +19,17 @@
  * Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, payloadOf, Received, sleep, waitUntil, within } from '../lib/flow.js';
+import { failOn, isDraft22, payloadOf, ranges, Received, sleep, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
+
+/** "3 of 50 <what> (first: <reason>)", or false when none failed */
+const failures = (failed: string[], total: number, what: string) =>
+  failed.length > 0 && `${failed.length} of ${total} ${what} (first: ${failed[0]})`;
 
 const TRACKS = 150;
 const FREED = 20;
@@ -72,7 +76,7 @@ describe.skipIf(!isDraft22)('Stream-credit flow control', () => {
           .catch((err: unknown) => publishFailed.push(`t${i}: ${(err as Error).message}`));
       }
     }
-    expect(publishFailed, 'publishing the tracks under test').toEqual([]);
+    failOn([failures(publishFailed, TRACKS + FREED, 'PUBLISHes of the tracks under test failed, so the burst could not run')]);
 
     const results = await Promise.allSettled(Array.from({ length: TRACKS }, (_, i) =>
       within(sub.session.subscribe(nsOf(i), `t${i}`, { filterType: 'latest' }, () => undefined), 20_000, `SUBSCRIBE t${i}`)));
@@ -98,9 +102,11 @@ describe.skipIf(!isDraft22)('Stream-credit flow control', () => {
       },
     });
 
-    expect(hung, 'SUBSCRIBEs neither answered nor refused within 20 s').toBe(0);
-    expect(stateAfterBurst).toBe('ready');
-    expect(againFailed, `SUBSCRIBEs after ${FREED} UNSUBSCRIBEs`).toEqual([]);
+    failOn([
+      hung > 0 && `${hung} of ${TRACKS} SUBSCRIBEs sent at once got neither SUBSCRIBE_OK nor an error within 20 s`,
+      stateAfterBurst !== 'ready' && `After the burst of ${TRACKS} SUBSCRIBEs the session was ${stateAfterBurst}, not ready`,
+      failures(againFailed, FREED, `new SUBSCRIBEs failed after ${FREED} UNSUBSCRIBEs freed their streams`),
+    ]);
   }, 90_000);
 
   it(`${GROUPS} groups, one stream each, all arrive`, async ({ task }) => {
@@ -135,7 +141,9 @@ describe.skipIf(!isDraft22)('Stream-credit flow control', () => {
     const missing = Array.from({ length: GROUPS }, (_, g) => `${g}/0`).filter((k) => !got.has(k));
     record(task, { observed: { received: got.keys.length, sendErrors: sendErrors.slice(0, 5), missing: missing.slice(0, 20), corrupt: got.corrupt } });
 
-    expect(sendErrors, 'publisher-side send failures').toEqual([]);
-    expect(missing, 'groups that never arrived').toEqual([]);
+    failOn([
+      failures(sendErrors, GROUPS, 'groups failed to send at the publisher'),
+      missing.length > 0 && `${missing.length} of ${GROUPS} groups (one stream each) never arrived: groups ${ranges(missing.map((k) => Number(k.split('/')[0])))}`,
+    ]);
   }, 60_000);
 });

@@ -13,9 +13,9 @@
 
 import { MOQTVarInt } from '@moq-web/core';
 import type { ObjectProperties } from '@moq-web/session';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, publishGroups, sleep, waitUntil, within } from '../lib/flow.js';
+import { failOn, isDraft22, publishGroups, sleep, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -82,6 +82,25 @@ describe.skipIf(!isDraft22)('Object Properties', () => {
     });
     record(task, { observed: { received: seen.size, sample: Object.fromEntries([...seen].slice(0, 4)), wrong: wrong.slice(0, 10) } });
 
-    expect(wrong, 'Objects whose properties were missing or changed').toEqual([]);
+    // One line per kind of fault, with how many Objects it hit and the first one
+    const total = sent.keys.length;
+    const received = sent.keys.filter((k) => seen.has(k));
+    const fault = (what: string, keys: string[], detail: (k: string) => string) =>
+      keys.length > 0 && `${what} on ${keys.length} of ${received.length} received Objects (first: ${keys[0]}${detail(keys[0]!)})`;
+    const want = (k: string) => {
+      const [g, o] = k.split('/').map(Number) as [number, number];
+      return { even: String(g * 100 + o), odd: `p${g}/${o}` };
+    };
+    const evenMissing = received.filter((k) => seen.get(k)!.even === undefined);
+    const oddMissing = received.filter((k) => seen.get(k)!.odd === undefined);
+    const evenChanged = received.filter((k) => seen.get(k)!.even !== undefined && seen.get(k)!.even !== want(k).even);
+    const oddChanged = received.filter((k) => seen.get(k)!.odd !== undefined && seen.get(k)!.odd !== want(k).odd);
+    failOn([
+      received.length < total && `${total - received.length} of ${total} Objects never arrived`,
+      fault('Property 0x40 (even, varint) missing', evenMissing, () => ''),
+      fault('Property 0x41 (odd, bytes) missing', oddMissing, () => ''),
+      fault('Property 0x40 changed', evenChanged, (k) => `: sent ${want(k).even}, got ${seen.get(k)!.even}`),
+      fault('Property 0x41 changed', oddChanged, (k) => `: sent "${want(k).odd}", got "${seen.get(k)!.odd}"`),
+    ]);
   });
 });

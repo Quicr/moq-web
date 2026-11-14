@@ -9,9 +9,9 @@
  * published sees 2/2, the last Object sent. Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, publishGroups, sleep, within } from '../lib/flow.js';
+import { failOn, isDraft22, publishGroups, sleep, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -76,8 +76,13 @@ describe.skipIf(!isDraft22)('SUBSCRIBE_OK Largest Location', () => {
     const second = await within(lateOk, 2_000, 'second SUBSCRIBE_OK');
     record(task, { observed: { first, second, lastSent: `${sent.largest.group}/${sent.largest.object}` } });
 
-    expect(first.largest, 'Largest Location before any Object').toBe('none');
-    expect(second.largest, 'Largest Location after groups 0..2').toBe(`${sent.largest.group}/${sent.largest.object}`);
-    expect(second.contentExists).toBe(true);
+    const lastSent = `${sent.largest.group}/${sent.largest.object}`;
+    const nextGroup = `${sent.largest.group + 1}/0`;
+    failOn([
+      first.largest !== 'none' && `First SUBSCRIBE_OK, before any Object was published: expected no Largest Location, got ${first.largest}`,
+      second.largest !== lastSent && `Second SUBSCRIBE_OK, after groups 0..${sent.largest.group}: expected Largest Location ${lastSent} (the last Object sent), got ${second.largest}`
+        + (second.largest === nextGroup ? ' (the start of the next group)' : ''),
+      !second.contentExists && `Second SUBSCRIBE_OK says no content exists, though groups 0..${sent.largest.group} were published`,
+    ]);
   });
 });

@@ -16,9 +16,9 @@
  * Draft-22 and later.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, it } from 'vitest';
 
-import { isDraft22, isDraft23, payloadOf, publishDoneName, sleep, Trace, waitUntil, within } from '../lib/flow.js';
+import { failOn, isDraft22, isDraft23, payloadOf, publishDoneName, sleep, Trace, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -123,11 +123,15 @@ describe.skipIf(!isDraft22)('SUBSCRIBE_TRACKS flow', () => {
       },
     });
 
-    expect(allForwarded, 'a PUBLISH for each of a, b, c').toBe(true);
-    expect(allFlowing, 'Objects on each of a, b, c').toBe(true);
-    expect(gotDone, 'PUBLISH_DONE for a').toBe(true);
-    expect(forwarded.has('d'), 'PUBLISH for d after the cancel').toBe(false);
-    expect(echoed, "the publisher's own tracks sent back to it").toEqual([]);
-    expect(trace.unexpected).toEqual([]);
+    const notForwarded = TRACKS.filter((t) => !forwarded.has(t));
+    const notFlowing = TRACKS.filter((t) => (objectsPerTrack.get(t) ?? 0) < 2);
+    failOn([
+      !allForwarded && `Sub got no PUBLISH for track${notForwarded.length > 1 ? 's' : ''} ${notForwarded.join(', ')} within 5 s of its SUBSCRIBE_TRACKS`,
+      !allFlowing && `Fewer than 2 Objects arrived within 5 s on ${notFlowing.map((t) => `${t} (${objectsPerTrack.get(t) ?? 0})`).join(', ')}`,
+      !gotDone && 'Sub never got PUBLISH_DONE for track a after the publisher ended it',
+      forwarded.has('d') && 'Sub got a PUBLISH for track d, published after it cancelled its SUBSCRIBE_TRACKS',
+      echoed.length > 0 && `The relay sent the publisher its own tracks back (draft-23 §3.6 excludes them): ${echoed.join('; ')}`,
+      trace.unexpected.length > 0 && `Unexpected errors: ${trace.unexpected.join('; ')}`,
+    ]);
   });
 });

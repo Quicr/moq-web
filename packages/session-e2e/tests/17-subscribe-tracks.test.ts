@@ -79,6 +79,6 @@ describe.skipIf(!isDraft18)('SUBSCRIBE_TRACKS with full parameter set', () => {
       return;
     }
     record(task, { observed: { outcome: 'REQUEST_OK', subscriptionId } });
-    expect(typeof subscriptionId).toBe('number');
+    expect(typeof subscriptionId, 'SUBSCRIBE_TRACKS was answered with REQUEST_OK but gave no subscription ID').toBe('number');
   });
 });
