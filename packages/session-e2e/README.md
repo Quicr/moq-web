@@ -33,6 +33,7 @@ yours permanently, open a PR adding an entry there; for a one-off run, use
 | moqtail | `https://relay.moqtail.dev` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | laps (quicr) relay | `https://relay.us-west-2.m10x.org:33440/relay` | d18 experimental (libquicr: path `/relay` only) |
 | quichemoq | `https://quichemoq.dev` | d18 experimental |
+| stitcher-moq (Paramount) | `https://34-72-6-160.sslip.io` | d22, d18 experimental (moq-relay 0.17.15; anonymous publish only under `moq-web-e2e/` and `moq-test/`) |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
 
 As of 2026-11-10 neither Cloudflare nor Meta offers `moqt-23` in

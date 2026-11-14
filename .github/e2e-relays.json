@@ -87,6 +87,17 @@
       "notes": "Added 2026-11-14 for draft-18; accepts WebTransport on any path at port 443."
     },
     {
+      "id": "stitcher-moq",
+      "name": "stitcher-moq (Paramount)",
+      "url": "https://34-72-6-160.sslip.io",
+      "drafts": [],
+      "experimentalDrafts": [
+        "draft-22",
+        "draft-18"
+      ],
+      "notes": "Added 2026-11-14. moq-dev moq-relay 0.17.15 in front of Paramount's MoQ sandbox. Anonymous subscribe everywhere; anonymous publish only under moq-web-e2e/** and moq-test/**. Does not offer moqt-23."
+    },
+    {
       "id": "lminiero",
       "name": "lminiero",
       "url": "https://lminiero.it:9000",
