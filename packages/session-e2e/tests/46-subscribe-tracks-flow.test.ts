@@ -18,7 +18,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { isDraft22, payloadOf, publishDoneName, sleep, Trace, waitUntil, within } from '../lib/flow.js';
+import { isDraft22, isDraft23, payloadOf, publishDoneName, sleep, Trace, waitUntil, within } from '../lib/flow.js';
 import { record } from '../lib/record.js';
 import { makeSession, type SessionHandle } from '../lib/session-factory.js';
 import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
@@ -65,7 +65,9 @@ describe.skipIf(!isDraft22)('SUBSCRIBE_TRACKS flow', () => {
       if (evt.namespace.join('/') === namespace.join('/')) forwarded.set(evt.trackName, evt.subscriptionId);
     });
     const echoed: string[] = [];
-    pub.session.on('incoming-publish', (evt) => echoed.push(`${evt.namespace.join('/')}/${evt.trackName}`));
+    // SUBSCRIBE_TRACKS_ID (draft-23 §9.19.21) says whether the relay sent the echo in answer to Pub's own SUBSCRIBE_TRACKS
+    pub.session.on('incoming-publish', (evt) => echoed.push(`${evt.namespace.join('/')}/${evt.trackName} (SUBSCRIBE_TRACKS_ID ${
+      evt.subscribeTracksId !== undefined ? evt.subscribeTracksId : isDraft23 ? 'absent' : 'n/a before draft-23'})`));
     // Each track sends its own group range, so its Objects are told apart by group
     const groupBase = (i: number) => i * 1000;
     const objectsPerTrack = new Map<string, number>();

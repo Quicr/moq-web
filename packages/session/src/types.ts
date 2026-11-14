@@ -773,6 +773,8 @@ export interface IncomingPublishEvent {
   trackAlias: bigint;
   /** Group order */
   groupOrder: GroupOrder;
+  /** Draft-23 §9.19.21: Request ID of the SUBSCRIBE_TRACKS this PUBLISH answers, when the publisher sent one */
+  subscribeTracksId?: bigint;
 }
 
 // ============================================================================

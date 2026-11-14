@@ -123,3 +123,28 @@ describe('cancelling our SUBSCRIBE_TRACKS (draft-23 §9.18)', () => {
     expect(publisher.closed()).toBe(false);
   });
 });
+
+describe('a PUBLISH answering our SUBSCRIBE_TRACKS (draft-23 §9.19.21)', () => {
+  it('passes its SUBSCRIBE_TRACKS_ID on in incoming-publish', async () => {
+    const { session, internals } = makeSession('draft-23');
+    const hooks = session as unknown as Internals;
+    hooks.sendRequestAndWaitResponse = async () => ({ type: MessageTypeDraft18.REQUEST_OK, requestId: 0n });
+    await session.subscribeTracks(['room'], () => {});
+    const ids: Array<bigint | undefined> = [];
+    session.on('incoming-publish', (evt) => ids.push(evt.subscribeTracksId));
+
+    for (const [requestId, trackName, subscribeTracksId] of [[1n, 'video', 0n], [3n, 'audio', undefined]] as const) {
+      await openIncoming(internals, {
+        type: MessageTypeDraft18.PUBLISH,
+        requestId,
+        trackAlias: requestId,
+        trackNamespace: ['room'],
+        trackName,
+        forwardState: true,
+        subscribeTracksId,
+      }).opened;
+    }
+
+    expect(ids).toEqual([0n, undefined]);
+  });
+});

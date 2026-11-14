@@ -8116,6 +8116,7 @@ export class MOQTSession {
       trackName,
       trackAlias: message.trackAlias,
       groupOrder: GroupOrder.ASCENDING,
+      subscribeTracksId: 'subscribeTracksId' in message ? message.subscribeTracksId : undefined,
     } as IncomingPublishEvent);
 
     log.info('Accepted PUBLISH', { trackAlias: message.trackAlias.toString(), fullTrackName: fullTrackNameStr });
