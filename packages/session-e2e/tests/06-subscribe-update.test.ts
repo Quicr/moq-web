@@ -91,7 +91,7 @@ describe.each([
     await new Promise((r) => setTimeout(r, 500));
     const beforePause = received;
     record(task, { observed: { beforePause } });
-    expect(beforePause).toBeGreaterThan(0);
+    expect(beforePause, 'objects received before the pause').toBeGreaterThan(0);
 
     await sub.session.pauseSubscription(subscriptionId);
     await new Promise((r) => setTimeout(r, 250));
@@ -115,7 +115,8 @@ describe.each([
     while (received === afterPause && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 100));
     }
-    record(task, { observed: { afterPause, afterResume: received } });
-    expect(received).toBeGreaterThan(afterPause);
+    const sinceResume = received - afterPause;
+    record(task, { observed: { afterPause, afterResume: received, sinceResume } });
+    expect(sinceResume, `objects received in the 5 s after resuming (${afterPause} before)`).toBeGreaterThan(0);
   });
 });

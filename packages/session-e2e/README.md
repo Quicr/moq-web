@@ -29,6 +29,7 @@ yours permanently, open a PR adding an entry there; for a one-off run, use
 | openmoq | `https://moqx-main.ci.openmoq.org:4433/moq-relay` | d22, d18, d16 experimental (unreachable from runners as of 2026-11-11) |
 | Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d18, d23 experimental |
 | Meta (mvfst) | `https://fb.mvfst.net:9448/moq-relay` | d22; d23 experimental |
+| aiomoqt (Marz Research) | `https://aiomoqt-relay.marzresearch.net:4443/` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
 
 As of 2026-11-10 neither Cloudflare nor Meta offers `moqt-23` in

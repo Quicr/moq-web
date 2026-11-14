@@ -45,6 +45,17 @@
       "notes": "As of 2026-11-10 it does not offer moqt-23."
     },
     {
+      "id": "aiomoqt",
+      "name": "aiomoqt (Marz Research)",
+      "url": "https://aiomoqt-relay.marzresearch.net:4443/",
+      "drafts": [],
+      "experimentalDrafts": [
+        "draft-23",
+        "draft-22"
+      ],
+      "notes": "Added 2026-11-14. As of then it does not offer moqt-23 (WebTransport handshake fails)."
+    },
+    {
       "id": "lminiero",
       "name": "lminiero",
       "url": "https://lminiero.it:9000",
