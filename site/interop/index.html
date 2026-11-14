@@ -171,12 +171,29 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* Full interop: every test the cell ran passed */
 .medal { display: inline-flex; vertical-align: middle; margin-left: 6px; color: var(--gold); position: relative; overflow: hidden; border-radius: 50%; }
 .medal svg { width: 20px; height: 20px; display: block; }
-.full-interop .medal svg { width: 18px; height: 18px; }
-.medal::after { content: ""; position: absolute; inset: 0; background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,.75) 50%, transparent 65%); transform: translateX(-120%); animation: medal-shine 1.4s ease-out .3s 1 forwards; }
-@keyframes medal-shine { to { transform: translateX(120%); } }
-@media (prefers-reduced-motion: reduce) { .medal::after { display: none; } }
-.full-interop { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; padding: 2px 10px 2px 4px; border-radius: 999px; background: var(--gold-soft); color: var(--gold); font-size: 12px; font-weight: 600; vertical-align: middle; }
-.full-interop .medal { margin-left: 0; }
+/* A glint across the medal every few seconds */
+.medal::after { content: ""; position: absolute; inset: 0; background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,.8) 50%, transparent 65%); transform: translateX(-120%); animation: medal-shine 5s ease-in-out 1s infinite; }
+@keyframes medal-shine { 0%, 75% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }
+.full-interop { position: relative; display: inline-flex; align-items: center; gap: 8px; margin-left: 10px; padding: 2px 12px 2px 3px; border-radius: 999px; background: var(--gold-soft); color: var(--gold); font-size: 12.5px; font-weight: 700; vertical-align: middle; letter-spacing: .01em; }
+.full-interop .medal { margin-left: 0; overflow: visible; }
+.full-interop .medal svg { width: 34px; height: 34px; margin: -6px 0; }
+.full-interop.celebrate .medal { animation: medal-pop .7s cubic-bezier(.2,1.4,.4,1) both; }
+.full-interop.celebrate .fi-text { animation: fi-text .5s ease-out .35s both; }
+@keyframes medal-pop { 0% { transform: scale(0) rotate(-40deg); } 60% { transform: scale(1.3) rotate(10deg); } 100% { transform: scale(1) rotate(0); } }
+@keyframes fi-text { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+/* Confetti from the medal: each piece flies to (--dx, --dy), then falls and fades */
+.confetti { position: absolute; left: 18px; top: 50%; width: 6px; height: 10px; border-radius: 2px; pointer-events: none; z-index: 4;
+  animation: confetti-fly 1.6s cubic-bezier(.12,.75,.3,1) var(--delay, 0s) forwards; opacity: 0; }
+.confetti.dot { width: 7px; height: 7px; border-radius: 50%; }
+@keyframes confetti-fly {
+  0% { opacity: 1; transform: translate(0, 0) rotate(0); }
+  45% { opacity: 1; transform: translate(var(--dx), var(--dy)) rotate(calc(var(--rot) / 2)); }
+  100% { opacity: 0; transform: translate(calc(var(--dx) * 1.2), calc(var(--dy) + 70px)) rotate(var(--rot)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .medal::after, .confetti { display: none; }
+  .full-interop.celebrate .medal, .full-interop.celebrate .fi-text { animation: none; }
+}
 
 /* Runs */
 .runs { display: flex; flex-direction: column; }
@@ -698,13 +715,38 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
   /** Every test the cell ran passed */
   const fullInterop = (cell) => cell.status === 'passed' && cell.counts.failed === 0 && cell.counts.passed > 0;
 
-  /** A small medal for a cell with full interop */
-  function medal(cell) {
+  /** A medal for a cell with full interop: a star in the matrix, MoQ when large */
+  function medal(cell, large = false) {
+    const face = large
+      ? '<text x="12" y="16.6" text-anchor="middle" font-size="5.6" font-weight="800" font-family="system-ui, sans-serif" fill="var(--surface, #fff)">MoQ</text>'
+      : '<path d="M12 10.3l1.3 2.7 2.9.4-2.1 2 .5 2.9-2.6-1.4-2.6 1.4.5-2.9-2.1-2 2.9-.4z" fill="var(--surface, #fff)"/>';
     const svg = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2h3l1 5-2.5 1.5L8 2zm8 0h-3l-1 5 2.5 1.5L16 2z" fill="currentColor" opacity=".55"/>'
-      + '<circle cx="12" cy="14.5" r="7" fill="currentColor"/><path d="M12 10.3l1.3 2.7 2.9.4-2.1 2 .5 2.9-2.6-1.4-2.6 1.4.5-2.9-2.1-2 2.9-.4z" fill="var(--surface, #fff)"/></svg>';
+      + '<circle cx="12" cy="14.5" r="7.2" fill="currentColor"/><circle cx="12" cy="14.5" r="5.9" fill="none" stroke="var(--surface, #fff)" stroke-width=".5" opacity=".6"/>'
+      + face + '</svg>';
     const span = el('span', { class: 'medal', role: 'img', 'aria-label': 'Full interop', title: `Full interop: all ${cell.counts.passed} tests passed on ${cell.draft}` });
     span.innerHTML = svg;
     return span;
+  }
+
+  /** The Full interop pill; the first time a cell is opened, the medal pops and confetti flies */
+  function fullInteropPill(cell) {
+    const pill = el('span', { class: 'full-interop' }, medal(cell, true), el('span', { class: 'fi-text' }, 'Full interop'));
+    const key = `${state.run?.runId}|${cellKey(cell)}`;
+    if (state.celebrated === key || matchMedia('(prefers-reduced-motion: reduce)').matches) return pill;
+    state.celebrated = key;
+    pill.classList.add('celebrate');
+    const colors = ['var(--gold)', 'var(--pass)', 'var(--accent)', '#e879f9', '#fb923c', '#38bdf8'];
+    for (let i = 0; i < 36; i++) {
+      const angle = (Math.PI * 2 * i) / 36 + Math.random() * 0.3;
+      const reach = 50 + Math.random() * 70;
+      pill.append(el('span', {
+        class: `confetti${i % 3 === 0 ? ' dot' : ''}`,
+        style: `background:${colors[i % colors.length]};--dx:${Math.cos(angle) * reach * 1.6}px;--dy:${Math.sin(angle) * reach - 30}px;`
+          + `--rot:${Math.round(Math.random() * 720 - 360)}deg;--delay:${(0.15 + Math.random() * 0.15).toFixed(2)}s`,
+      }));
+    }
+    setTimeout(() => pill.querySelectorAll('.confetti').forEach((c) => c.remove()), 2400);
+    return pill;
   }
 
   /** Open a cell's results below the matrix, or close them when it is already open */
@@ -868,7 +910,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     box.append(el('div', { class: 'detail-head' },
       el('div', {},
         el('h2', {}, `${cell.name} · ${cell.draft}`, cell.experimental ? el('span', { class: 'tag', style: 'margin-left:8px' }, 'experimental') : null,
-          fullInterop(cell) ? el('span', { class: 'full-interop' }, medal(cell), 'Full interop') : null),
+          fullInterop(cell) ? fullInteropPill(cell) : null),
         el('div', { class: 'url' }, cell.relayUrl),
         el('div', { class: 'bar' },
           el('span', { class: 'p', style: `width:${(cell.counts.passed / n) * 100}%` }),
