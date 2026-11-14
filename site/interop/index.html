@@ -19,6 +19,8 @@
   --accent-soft: #e8efff;
   --pass: #15803d;
   --pass-soft: #e6f6ec;
+  --gold: #b7791f;
+  --gold-soft: #fdf4e3;
   --fail: #c2261d;
   --fail-soft: #fdeceb;
   --warn: #a15c00;
@@ -44,6 +46,10 @@
     --accent-soft: #1c2a48;
     --pass: #4ade80;
     --pass-soft: #12301f;
+  --gold: #f6c453;
+  --gold-soft: #3a2e12;
+    --gold: #f6c453;
+    --gold-soft: #3a2e12;
     --fail: #f87171;
     --fail-soft: #3a1717;
     --warn: #fbbf24;
@@ -162,6 +168,15 @@ table.matrix { border-collapse: separate; border-spacing: 0; width: 100%; min-wi
 button.chip:hover { filter: brightness(.95); box-shadow: 0 0 0 1px var(--border); }
 button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .chip.none { color: var(--faint); cursor: default; font-weight: 400; }
+/* Full interop: every test the cell ran passed */
+.medal { display: inline-flex; vertical-align: middle; margin-left: 6px; color: var(--gold); position: relative; overflow: hidden; border-radius: 50%; }
+.medal svg { width: 20px; height: 20px; display: block; }
+.full-interop .medal svg { width: 18px; height: 18px; }
+.medal::after { content: ""; position: absolute; inset: 0; background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,.75) 50%, transparent 65%); transform: translateX(-120%); animation: medal-shine 1.4s ease-out .3s 1 forwards; }
+@keyframes medal-shine { to { transform: translateX(120%); } }
+@media (prefers-reduced-motion: reduce) { .medal::after { display: none; } }
+.full-interop { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; padding: 2px 10px 2px 4px; border-radius: 999px; background: var(--gold-soft); color: var(--gold); font-size: 12px; font-weight: 600; vertical-align: middle; }
+.full-interop .medal { margin-left: 0; }
 
 /* Runs */
 .runs { display: flex; flex-direction: column; }
@@ -680,6 +695,18 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     }, cell.status === 'passed' ? '✓' : cell.status === 'failed' ? '✕' : '!', label, cell.experimental ? el('span', { class: 'exp' }, 'exp') : null);
   }
 
+  /** Every test the cell ran passed */
+  const fullInterop = (cell) => cell.status === 'passed' && cell.counts.failed === 0 && cell.counts.passed > 0;
+
+  /** A small medal for a cell with full interop */
+  function medal(cell) {
+    const svg = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2h3l1 5-2.5 1.5L8 2zm8 0h-3l-1 5 2.5 1.5L16 2z" fill="currentColor" opacity=".55"/>'
+      + '<circle cx="12" cy="14.5" r="7" fill="currentColor"/><path d="M12 10.3l1.3 2.7 2.9.4-2.1 2 .5 2.9-2.6-1.4-2.6 1.4.5-2.9-2.1-2 2.9-.4z" fill="var(--surface, #fff)"/></svg>';
+    const span = el('span', { class: 'medal', role: 'img', 'aria-label': 'Full interop', title: `Full interop: all ${cell.counts.passed} tests passed on ${cell.draft}` });
+    span.innerHTML = svg;
+    return span;
+  }
+
   /** Open a cell's results below the matrix, or close them when it is already open */
   function toggleCell(cell) {
     const key = cellKey(cell);
@@ -723,7 +750,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
         drafts.map((d) => {
           const cell = rowCells.find((c) => c.draft === d);
           return cell
-            ? el('td', { class: `clickable${cellKey(cell) === state.cellKey ? ' open' : ''}`, onclick: viaChip(cell) }, chipFor(cell))
+            ? el('td', { class: `clickable${cellKey(cell) === state.cellKey ? ' open' : ''}`, onclick: viaChip(cell) }, chipFor(cell), fullInterop(cell) ? medal(cell) : null)
             : el('td', { class: 'no-cell' }, el('span', { class: 'chip none' }, '—'));
         })));
     }
@@ -840,7 +867,8 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     const jobUrl = safeUrl(cell.jobUrl);
     box.append(el('div', { class: 'detail-head' },
       el('div', {},
-        el('h2', {}, `${cell.name} · ${cell.draft}`, cell.experimental ? el('span', { class: 'tag', style: 'margin-left:8px' }, 'experimental') : null),
+        el('h2', {}, `${cell.name} · ${cell.draft}`, cell.experimental ? el('span', { class: 'tag', style: 'margin-left:8px' }, 'experimental') : null,
+          fullInterop(cell) ? el('span', { class: 'full-interop' }, medal(cell), 'Full interop') : null),
         el('div', { class: 'url' }, cell.relayUrl),
         el('div', { class: 'bar' },
           el('span', { class: 'p', style: `width:${(cell.counts.passed / n) * 100}%` }),
