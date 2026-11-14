@@ -77,6 +77,16 @@
       "notes": "libquicr relay: WebTransport path /relay (libquicr accepts only that exact path) and ALPN moqt-18."
     },
     {
+      "id": "quichemoq",
+      "name": "quichemoq",
+      "url": "https://quichemoq.dev",
+      "drafts": [],
+      "experimentalDrafts": [
+        "draft-18"
+      ],
+      "notes": "Added 2026-11-14 for draft-18; accepts WebTransport on any path at port 443."
+    },
+    {
       "id": "lminiero",
       "name": "lminiero",
       "url": "https://lminiero.it:9000",

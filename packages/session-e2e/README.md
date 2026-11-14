@@ -32,6 +32,7 @@ yours permanently, open a PR adding an entry there; for a one-off run, use
 | aiomoqt (Marz Research) | `https://aiomoqt-relay.marzresearch.net:4443/` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | moqtail | `https://relay.moqtail.dev` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | laps (quicr) relay | `https://relay.us-west-2.m10x.org:33440/relay` | d18 experimental (libquicr: path `/relay` only) |
+| quichemoq | `https://quichemoq.dev` | d18 experimental |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
 
 As of 2026-11-10 neither Cloudflare nor Meta offers `moqt-23` in
