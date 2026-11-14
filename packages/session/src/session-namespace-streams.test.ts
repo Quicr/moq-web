@@ -204,3 +204,31 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('namespace response
     expect(close).toHaveBeenCalledWith(violation);
   });
 });
+
+describe.each(['draft-22', 'draft-23'] as const)('updating a namespace prefix (%s)', (draft) => {
+  it('sends TRACK_NAMESPACE_PREFIX without FORWARD and reads the next NAMESPACE against the new prefix', async () => {
+    const { session, internals } = makeSession(draft);
+    const peer = installPeerStream(session);
+    const announced: string[] = [];
+    session.on('namespace-announced', (e) => announced.push((e as { namespace: string[] }).namespace.join('/')));
+    peer.send(requestOk);
+    const subscriptionId = await session.subscribeNamespace(['room']);
+    peer.send({ type: MessageTypeDraft18.NAMESPACE, trackNamespace: ['alice'] });
+    await tick();
+
+    const updated = session.updateNamespacePrefix(subscriptionId, ['lobby']);
+    // The update's OK and a NAMESPACE after it arrive together
+    peer.send(requestOk);
+    peer.send({ type: MessageTypeDraft18.NAMESPACE, trackNamespace: ['bob'] });
+    await updated;
+    await tick();
+
+    const [update] = internals.codec.decodeControlMessage(peer.written.at(-1)!);
+    const params = (update as { parameters?: Map<number, Uint8Array> }).parameters;
+    expect(update.type).toBe(MessageTypeDraft18.REQUEST_UPDATE);
+    expect((update as { forwardState?: boolean }).forwardState).toBeUndefined();
+    expect(params?.has(0x34)).toBe(true);
+    expect(announced).toEqual(['room/alice', 'lobby/bob']);
+    expect(session.getNamespaceSubscriptions()[0]!.namespacePrefix).toEqual(['lobby']);
+  });
+});

@@ -100,6 +100,8 @@ export type {
   NamespaceAnnouncedEvent,
   NamespaceDoneEvent,
   SubscribeNamespaceOptions,
+  SubscriptionObjectCallback,
+  ObjectProperties,
   NamespaceSubscriptionInfo,
   IncomingPublishInfo,
   IncomingPublishEvent,

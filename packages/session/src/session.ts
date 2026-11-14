@@ -24,7 +24,9 @@ import {
   AUTH_TOKEN_UNKNOWN_ALIAS_ERROR,
   AuthTokenAliasType,
   Draft18BufferReader,
+  Draft18BufferWriter,
   decodeTrackNamespace,
+  encodeTrackNamespace,
   encodeDraft18AuthToken,
   MessageType,
   MessageTypeDraft18,
@@ -238,6 +240,7 @@ import type {
   SessionTerminatedEvent,
   SessionMigrationEvent,
   TrackStatusResult,
+  SubscriptionObjectCallback,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -377,6 +380,8 @@ const INBOUND_ON_PEER_REQUEST: ReadonlyMap<RequestUpdateVariant, ReadonlySet<num
 interface PendingRequestUpdate {
   resolve: () => void;
   reject: (err: Error) => void;
+  /** Applied as the REQUEST_UPDATE_OK is read, before anything after it on the stream */
+  onOk?: () => void;
 }
 
 /**
@@ -520,6 +525,19 @@ export interface SessionDiagnostics {
  * await session.connect('https://relay.example.com/moq');
  * ```
  */
+/** An Object's Properties for the wire: the caller's, plus the draft-16 MAX_CACHE_DURATION extension when given */
+function objectExtensions(
+  properties: ObjectMetadata['properties'],
+  maxCacheDuration: number | undefined,
+): Map<number, number | Uint8Array> | undefined {
+  const out = new Map<number, number | Uint8Array>(properties ?? []);
+  if (maxCacheDuration !== undefined && maxCacheDuration > 0) {
+    out.set(ObjectExtension.MAX_CACHE_DURATION, maxCacheDuration);
+  }
+
+  return out.size > 0 ? out : undefined;
+}
+
 export class MOQTSession {
   /** Underlying transport (main thread mode) */
   private transport?: MOQTransport;
@@ -2373,7 +2391,9 @@ export class MOQTSession {
     }
 
     if (response.type !== MessageTypeDraft18.REQUEST_ERROR) {
-      pending.shift()!.resolve();
+      const settled = pending.shift()!;
+      settled.onOk?.();
+      settled.resolve();
       if (pending.length === 0) {
         this.pendingRequestUpdates.delete(requestId);
       }
@@ -3033,7 +3053,7 @@ export class MOQTSession {
    */
   async subscribeTracks(
     namespacePrefix: string[],
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
+    onObject?: SubscriptionObjectCallback,
     options?: {
       forwardState?: boolean;
       filter?: SubscriptionFilterDraft18;
@@ -3153,6 +3173,8 @@ export class MOQTSession {
       rangeFilters?: RangeFilterDraft22[];
       /** Move the subscription's start to this Location (draft-22 §9.5.1, draft-18 §10.9.1) */
       seekTo?: { group: bigint; object: bigint };
+      /** New prefix of a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS (TRACK_NAMESPACE_PREFIX, draft-22 §9.20.20) */
+      namespacePrefix?: string[];
     },
   ): Promise<void> {
     if (!this.isDraft18) {
@@ -3195,6 +3217,13 @@ export class MOQTSession {
       const value = typeof newGroup === 'number' ? BigInt(newGroup) : BigInt((filteredSubscription.largestGroup ?? -1) + 1);
       extraParams.set(RequestParameterDraft18.NEW_GROUP_REQUEST, MOQTVarInt.encode(value));
     }
+    // A namespace request's update carries no FORWARD (draft-23 §9.5)
+    const prefixUpdate = options?.namespacePrefix !== undefined;
+    if (prefixUpdate) {
+      const writer = new Draft18BufferWriter();
+      encodeTrackNamespace(writer, options.namespacePrefix!);
+      extraParams.set(RequestParameterDraft18.TRACK_NAMESPACE_PREFIX, writer.toUint8Array());
+    }
 
     // Each REQUEST_UPDATE consumes a Request ID (draft-22 §6.4.2.1, draft-18 §10.1).
     const updateId = BigInt(this.getNextRequestId());
@@ -3203,7 +3232,7 @@ export class MOQTSession {
         type: MessageTypeDraft22.REQUEST_UPDATE,
         requestId: updateId,
         // Draft-22 §9.5: FORWARD is not allowed when updating a FETCH
-        forwardState: this.activeFetches.has(rid) || options?.fill || options?.rangeFilters ? undefined : forwardState,
+        forwardState: this.activeFetches.has(rid) || options?.fill || options?.rangeFilters || prefixUpdate ? undefined : forwardState,
         locationFilter: options?.seekTo && {
           type: LocationFilterTypeDraft22.ABSOLUTE_START,
           startLocation: options.seekTo,
@@ -3215,7 +3244,7 @@ export class MOQTSession {
       : {
         type: MessageTypeDraft18.REQUEST_UPDATE,
         requestId: updateId,
-        forwardState,
+        forwardState: prefixUpdate ? undefined : forwardState,
         ...(options?.seekTo && {
           filter: SubscriptionFilterDraft18.ABSOLUTE_START,
           startLocation: options.seekTo,
@@ -3225,7 +3254,7 @@ export class MOQTSession {
 
     // Queue before writing so the reader can match a fast response.
     const acknowledged = new Promise<void>((resolve, reject) => {
-      pending.push({ resolve, reject });
+      pending.push({ resolve, reject, onOk: prefixUpdate ? () => this.applyNamespacePrefix(rid, options.namespacePrefix!) : undefined });
     });
     this.pendingRequestUpdates.set(rid, pending);
     // A fire-and-forget update, or one the stream outlives, must not leave an unhandled rejection.
@@ -3944,7 +3973,7 @@ export class MOQTSession {
     namespace: string[],
     trackName: string,
     options?: SubscribeOptions,
-    onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void,
+    onObject?: SubscriptionObjectCallback,
     onEndOfGroup?: (groupId: number) => void
   ): Promise<number> {
     if (!this.isReady) {
@@ -5122,6 +5151,51 @@ export class MOQTSession {
   }
 
   /**
+   * The per-Object cache duration to send: draft-16 only. From draft-18 it is
+   * a Track Property sent in PUBLISH, and ObjectExtension's 0x02 is
+   * OBJECT_DELIVERY_TIMEOUT there.
+   */
+  private legacyCacheDuration(ms: number | undefined): number | undefined {
+    return this.isDraft18 ? undefined : ms;
+  }
+
+  /**
+   * Change the prefix of a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS with a
+   * REQUEST_UPDATE (TRACK_NAMESPACE_PREFIX, draft-22 §9.20.20); resolves on
+   * REQUEST_UPDATE_OK. Later NAMESPACE and PUBLISH match the new prefix.
+   */
+  async updateNamespacePrefix(subscriptionId: number, namespacePrefix: string[]): Promise<void> {
+    const subscription = this.namespaceSubscriptions.get(subscriptionId);
+    if (!subscription) {
+      throw new Error(`updateNamespacePrefix: no namespace subscription ${subscriptionId}`);
+    }
+    assertNotReservedNamespace(namespacePrefix, 'TRACK_NAMESPACE_PREFIX of');
+    await this.sendRequestUpdate(subscription.requestId, true, { namespacePrefix });
+  }
+
+  /**
+   * Our namespace request's prefix changed (REQUEST_UPDATE_OK): later NAMESPACE
+   * suffixes are relative to it, so the namespaces announced so far are
+   * re-keyed to it, and those outside it are forgotten.
+   */
+  private applyNamespacePrefix(requestId: bigint, prefix: string[]): void {
+    const subscriptionId = this.namespaceSubscriptionByRequestId.get(requestId);
+    const subscription = subscriptionId !== undefined ? this.namespaceSubscriptions.get(subscriptionId) : undefined;
+    if (!subscription) {
+      return;
+    }
+    const request = this.outgoingRequests.get(requestId);
+    if (request) {
+      const rekeyed = [...request.announced]
+        .map((suffix) => [...subscription.namespacePrefix, ...(JSON.parse(suffix) as string[])])
+        .filter((full) => namespacePrefixMatches(prefix, full))
+        .map((full) => JSON.stringify(full.slice(prefix.length)));
+      request.announced = new Set(rekeyed);
+    }
+    subscription.namespacePrefix = prefix;
+  }
+
+  /**
    * Unsubscribe from a namespace
    *
    * @param subscriptionId - Namespace subscription ID
@@ -5193,7 +5267,7 @@ export class MOQTSession {
    */
   setSubscriptionCallback(
     subscriptionId: number,
-    onObject: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void
+    onObject: SubscriptionObjectCallback
   ): void {
     const subscription = this.subscriptionManager.get(subscriptionId);
     if (subscription) {
@@ -6628,14 +6702,11 @@ export class MOQTSession {
         groupId: metadata.groupId,
         subgroupId: 0,
         publisherPriority: priority ?? 128,
+        hasProperties: objectExtensions(metadata.properties, this.legacyCacheDuration(metadata.maxCacheDuration)) !== undefined,
       }, true /* endOfGroup */);
 
       // Build extensions map if maxCacheDuration is specified
-      let extensions: Map<number, number> | undefined;
-      if (metadata.maxCacheDuration !== undefined && metadata.maxCacheDuration > 0) {
-        extensions = new Map();
-        extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
-      }
+      const extensions = objectExtensions(metadata.properties, this.legacyCacheDuration(metadata.maxCacheDuration));
 
       const objectData = this.codec.encodeStreamObject(
         metadata.objectId,
@@ -6735,7 +6806,7 @@ export class MOQTSession {
         ObjectStatus.NORMAL,
         existing.previousObjectId,
         existing.hasExtensions,
-        maxCacheDuration ? new Map([[ObjectExtension.MAX_CACHE_DURATION, maxCacheDuration]]) : undefined,
+        objectExtensions(metadata.properties, this.legacyCacheDuration(maxCacheDuration)),
       );
 
       try {
@@ -6804,6 +6875,7 @@ export class MOQTSession {
       groupId: metadata.groupId,
       subgroupId: 0,
       publisherPriority: priority,
+      hasProperties: objectExtensions(metadata.properties, this.legacyCacheDuration(metadata.maxCacheDuration)) !== undefined,
       firstObject: !reopened,
     }, true /* endOfGroup */);
 
@@ -6814,7 +6886,7 @@ export class MOQTSession {
       ObjectStatus.NORMAL,
       -1, // first object on this stream
       hasExtensions,
-      maxCacheDuration ? new Map([[ObjectExtension.MAX_CACHE_DURATION, maxCacheDuration]]) : undefined,
+      objectExtensions(metadata.properties, this.legacyCacheDuration(maxCacheDuration)),
     );
 
     const combinedData = new Uint8Array(subgroupHeader.length + objectData.length);
@@ -6894,14 +6966,11 @@ export class MOQTSession {
           groupId: metadata.groupId,
           subgroupId: 0,
           publisherPriority: priority,
+          hasProperties: objectExtensions(metadata.properties, this.legacyCacheDuration(metadata.maxCacheDuration)) !== undefined,
         }, true /* endOfGroup */);
 
         // Build extensions map if maxCacheDuration is specified
-        let extensions: Map<number, number> | undefined;
-        if (metadata.maxCacheDuration !== undefined && metadata.maxCacheDuration > 0) {
-          extensions = new Map();
-          extensions.set(ObjectExtension.MAX_CACHE_DURATION, metadata.maxCacheDuration);
-        }
+        const extensions = objectExtensions(metadata.properties, this.legacyCacheDuration(metadata.maxCacheDuration));
 
         const objectData = this.codec.encodeStreamObject(
           metadata.objectId,
@@ -6999,11 +7068,7 @@ export class MOQTSession {
         }
 
         // Build extensions map if maxCacheDuration was set on the keyframe
-        let extensions: Map<number, number> | undefined;
-        if (existing.maxCacheDuration !== undefined && existing.maxCacheDuration > 0) {
-          extensions = new Map();
-          extensions.set(ObjectExtension.MAX_CACHE_DURATION, existing.maxCacheDuration);
-        }
+        const extensions = objectExtensions(metadata.properties, this.legacyCacheDuration(existing.maxCacheDuration));
 
         const objectData = this.codec.encodeStreamObject(
           metadata.objectId,

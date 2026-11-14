@@ -246,6 +246,12 @@ export interface ObjectMetadata {
   type?: string;
   /** Max cache duration in milliseconds - tells relay how long to cache this object */
   maxCacheDuration?: number;
+  /**
+   * Object Properties to send on a stream (draft-22 §11.1): a number for an
+   * even type, the bytes for an odd one. MAX_CACHE_DURATION comes from
+   * `maxCacheDuration`.
+   */
+  properties?: ReadonlyMap<number, number | Uint8Array>;
 }
 
 /**
@@ -665,11 +671,26 @@ export interface IncomingSubscribeTracksEvent {
 /**
  * Options for subscribing to a namespace
  */
+/**
+ * An Object's Properties as received (draft-22 §11.1): each value as its
+ * wire bytes, a varint for an even type and the raw bytes for an odd one
+ */
+export type ObjectProperties = ReadonlyMap<number, Uint8Array>;
+
+/** Receives each Object of a subscription; `properties` when the Object carries any */
+export type SubscriptionObjectCallback = (
+  data: Uint8Array,
+  groupId: number,
+  objectId: number,
+  timestamp: number,
+  properties?: ObjectProperties,
+) => void;
+
 export interface SubscribeNamespaceOptions {
   /** Subscriber priority (0-255, default 128) */
   priority?: number;
   /** Callback for received objects from tracks under this namespace */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: SubscriptionObjectCallback;
   /**
    * Draft-18 §10.2.10 EXPIRES (ms) advertised on the REQUEST_OK we send when
    * accepting an incoming PUBLISH under this namespace. `0` = no expiration,
@@ -691,7 +712,7 @@ export interface NamespaceSubscriptionInfo {
   /** Tracks discovered under this namespace */
   tracks: Map<string, IncomingPublishInfo>;
   /** Callback for received objects from tracks under this namespace */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: SubscriptionObjectCallback;
   /** §10.2.10 EXPIRES (ms) to advertise on REQUEST_OK for incoming PUBLISH matches. */
   expires?: number;
 }

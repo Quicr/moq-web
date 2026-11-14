@@ -2641,6 +2641,14 @@ export class MessageCodec {
  * for both stream and datagram delivery modes.
  * In Draft 14, subgroup-based streaming replaces track/group-based streaming.
  */
+/** Properties as their wire values: a varint for an even type, the bytes as given for an odd one */
+function wireProperties(properties: Map<number, number | Uint8Array>): Map<number, Uint8Array> {
+  return new Map([...properties].map(([type, value]) => [
+    type,
+    typeof value === 'number' ? MOQTVarInt.encode(BigInt(value)) : value,
+  ]));
+}
+
 export class ObjectCodec {
   /**
    * Encode an object header for datagram delivery
@@ -2860,9 +2868,11 @@ export class ObjectCodec {
         publisherPriority: header.publisherPriority,
         endOfGroup: endOfGroup ? true : undefined,
         firstObject: header.firstObject ?? true,
+        hasProperties: header.hasProperties ? true : undefined,
       };
       const encoded = Draft18StreamCodec.encodeSubgroupHeader(d18Header);
-      return [encoded, false]; // draft-18 uses properties, not extensions flag
+      // The PROPERTIES bit: every object on the stream then has a Properties field
+      return [encoded, header.hasProperties === true];
     }
 
     // Draft-16: Type | Track Alias | Group ID | [Subgroup ID] | [Publisher Priority]
@@ -3005,6 +3015,7 @@ export class ObjectCodec {
       const objHeader: ObjectHeaderDraft18 = {
         objectIdDelta: BigInt(objectIdDelta),
         payloadLength: BigInt(payload.length),
+        objectProperties: hasExtensions && extensions ? wireProperties(extensions) : undefined,
       };
       const headerBytes = Draft18StreamCodec.encodeObjectHeader(objHeader, hasExtensions);
 

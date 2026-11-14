@@ -1440,6 +1440,11 @@ export interface SubgroupHeader {
    * bit, d22 §11.3.1). Defaults to true; false for a stream reopened mid-subgroup.
    */
   firstObject?: boolean;
+  /**
+   * Draft-18+: the stream's objects carry a Properties field (PROPERTIES bit,
+   * d22 §11.3.1). Set when the stream's objects have Object Properties to send.
+   */
+  hasProperties?: boolean;
 }
 
 /**

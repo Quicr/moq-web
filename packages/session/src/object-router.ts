@@ -44,6 +44,12 @@ import { FetchObjectEndOfRange, FetchObjectMarker } from '@moq-web/core';
 import type { SubscriptionManager, InternalSubscription } from './subscription-manager.js';
 import { narrowBigIntToNumber } from './session-helpers.js';
 import { objectPropertyFault } from './track-properties.js';
+import type { ObjectProperties } from './types.js';
+
+/** A property map, or undefined when it holds none */
+function nonEmpty(properties: Map<number, Uint8Array> | undefined): ObjectProperties | undefined {
+  return properties && properties.size > 0 ? properties : undefined;
+}
 import { streamResetReason } from './stream-reset-reason.js';
 
 /**
@@ -439,7 +445,7 @@ export class ObjectRouter {
       }
 
       const timestamp = performance.now() * 1000; // microseconds
-      this.deliverObject(subscription, payload, header.groupId, header.objectId, timestamp);
+      this.deliverObject(subscription, payload, header.groupId, header.objectId, timestamp, nonEmpty(objectProperties));
 
       // END_OF_GROUP bit: no object after this one in the group (d22 §11.2.1)
       if (endOfGroup) {
@@ -655,7 +661,8 @@ export class ObjectRouter {
           }
 
           const [objectId, payload, status, bytesConsumed] = decoded;
-          const propertyFault = hasProperties ? this.objectPropertyFaultAt(buffer.subarray(offset)) : undefined;
+          const properties = hasProperties ? this.objectPropertiesAt(buffer.subarray(offset)) : undefined;
+          const propertyFault = objectPropertyFault(properties, this.isDraft23);
           if (propertyFault !== undefined) {
             throw new MalformedTrack({ trackAlias: subgroup.trackAlias }, propertyFault);
           }
@@ -685,7 +692,7 @@ export class ObjectRouter {
           }
 
           // Copy payload to avoid detaching the shared buffer when transferred via postMessage
-          this.deliverObject(subscription, new Uint8Array(payload), subgroup.groupId, objectId, performance.now() * 1000);
+          this.deliverObject(subscription, new Uint8Array(payload), subgroup.groupId, objectId, performance.now() * 1000, nonEmpty(properties));
         }
 
         if (done) {
@@ -722,9 +729,9 @@ export class ObjectRouter {
     }
   }
 
-  /** What makes the Properties of the object at the start of `bytes` a Malformed Track, if anything */
-  private objectPropertyFaultAt(bytes: Uint8Array): string | undefined {
-    return objectPropertyFault(Draft18StreamCodec.decodeObjectHeader(bytes, 0, true)[0].objectProperties, this.isDraft23);
+  /** The Properties of the object at the start of `bytes` */
+  private objectPropertiesAt(bytes: Uint8Array): Map<number, Uint8Array> | undefined {
+    return Draft18StreamCodec.decodeObjectHeader(bytes, 0, true)[0].objectProperties;
   }
 
   private countDecodeError(err: unknown): void {
@@ -1127,7 +1134,8 @@ export class ObjectRouter {
     data: Uint8Array,
     groupId: number,
     objectId: number,
-    timestamp: number
+    timestamp: number,
+    properties?: ObjectProperties,
   ): void {
     // Detect gaps in object delivery
     const last = this.lastDelivered.get(subscription.subscriptionId);
@@ -1163,7 +1171,7 @@ export class ObjectRouter {
 
     // Call subscription's object handler if set
     if (subscription.onObject) {
-      subscription.onObject(data, groupId, objectId, timestamp);
+      subscription.onObject(data, groupId, objectId, timestamp, properties);
     }
 
     // Call global callback

@@ -10,7 +10,7 @@
  */
 
 import { Logger, type GroupOrder } from '@moq-web/core';
-import type { SubscriptionInfo } from './types.js';
+import type { SubscriptionObjectCallback, SubscriptionInfo } from './types.js';
 
 const log = Logger.create('moqt:session:subscription-manager');
 
@@ -19,7 +19,7 @@ const log = Logger.create('moqt:session:subscription-manager');
  */
 export interface InternalSubscription extends SubscriptionInfo {
   /** Object handler callback */
-  onObject?: (data: Uint8Array, groupId: number, objectId: number, timestamp: number) => void;
+  onObject?: SubscriptionObjectCallback;
   /** End of group callback - called when END_OF_GROUP status is received */
   onEndOfGroup?: (groupId: number) => void;
   /** Buffer for objects that arrive before onObject is set */

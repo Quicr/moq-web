@@ -60,7 +60,9 @@
           ],
           "tests": [
             "04-subscribe-namespace",
-            "30-room-fanout"
+            "30-room-fanout",
+            "38-publish-namespace-lifecycle",
+            "45-namespace-discovery-flow"
           ],
           "match": "Message body shorter than its fields",
           "summary": "Its NAMESPACE message lacks the Number of Parameters field draft-23 added (#1858), so moq-web cannot decode it and closes the session with PROTOCOL_VIOLATION."

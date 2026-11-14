@@ -77,10 +77,27 @@ Current coverage:
 - 10-fetch-cancel — FETCH then FETCH_CANCEL
 - 11-goaway — client-initiated GOAWAY drives 'closing' state (draft-18)
 - 35-publish-forwarding — relay forwards PUBLISH to a namespace subscriber: SUBSCRIBE_NAMESPACE (namespaces only) and SUBSCRIBE_TRACKS (PUBLISH for existing and future tracks), subscribe-first and publish-first, with a plain SUBSCRIBE as control. `MOQ_RELAY_KNOWN_NO_PUBLISH_FWD=1` reports a missing forward without failing
+- 36-request-errors — SUBSCRIBE, FETCH, TRACK_STATUS for an unknown track get REQUEST_ERROR with the right code; FETCH past the Largest Object or of an empty track gets INVALID_RANGE
+- 37-subscribe-ok-largest — SUBSCRIBE_OK Largest Location before and after Objects are published
+- 38-publish-namespace-lifecycle — announce, cancel, re-announce as a namespace subscriber sees it (NAMESPACE, NAMESPACE_DONE, NAMESPACE)
+- 39-namespace-prefix-update — REQUEST_UPDATE with TRACK_NAMESPACE_PREFIX moves a SUBSCRIBE_NAMESPACE to a new prefix
+- 40-concurrent-requests — stream-credit flow control: requests over the open-stream limit fail cleanly and freed streams are reusable; 150 short-lived streams all deliver
+- 41-unknown-parameter — an unknown Message Parameter makes the relay close the session (INVALID_PARAMETER on draft-23)
+- 42-fill-subscribe — FILL_PARAMETERS on SUBSCRIBE (last N groups, then live) and on REQUEST_UPDATE (an absolute group range)
+- 43-fetch-from-cache — FETCH of whole groups, a partial range, descending order, after the publisher left, and across the live edge (ends at the Largest Object)
+- 44-new-group-request — NEW_GROUP_REQUEST reaches the publisher, whose new group reaches the subscriber
+- 45-namespace-discovery-flow — SUBSCRIBE_NAMESPACE, PUBLISH_NAMESPACE, SUBSCRIBE by name, late namespace subscriber, PUBLISH_DONE, NAMESPACE_DONE, field-wise prefix matching
+- 46-subscribe-tracks-flow — SUBSCRIBE_TRACKS forwards each track and its Objects, PUBLISH_DONE, no echo of own tracks, nothing after the cancel
+- 47-goaway-flow — subscriber and publisher GOAWAY mid-delivery: delivery continues, then clean close or PUBLISH_DONE
+- 48-track-properties — the publisher's Track Properties in SUBSCRIBE_OK and TRACK_STATUS
+- 49-object-properties — unknown Object Properties arrive unchanged on every Object
+- 50-setup-options-flow — advertised Setup Options are well formed; MAX_REQUEST_UPDATES outstanding REQUEST_UPDATEs are all answered in order
 
 Tests for draft-18 wire features (08, 11-23, 25-28, 33, 35) run on draft-18 and
-later, so draft-22 and draft-23 get them too; on draft-16 they skip. 34 runs
-only on draft-23. Everything else runs on every draft. Nightly CI runs the
+later, so draft-22 and draft-23 get them too; on draft-16 they skip. 36-50 run
+on draft-22 and later; `lib/flow.ts` has their shared helpers (a per-session
+trace of control messages, publishing runs of groups, checked receipt). 34
+runs only on draft-23. Everything else runs on every draft. Nightly CI runs the
 matrix; locally, override with `MOQT_VERSION=draft-16 pnpm --filter
 @moq-web/session-e2e test`.
 
