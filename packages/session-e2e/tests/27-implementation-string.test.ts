@@ -46,7 +46,16 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
       session.setAuthToken(profile.authToken, tokenType);
     }
 
-    record(task, { expected: 'Setup without MOQT_IMPLEMENTATION completes', inputs: { implementation: 'none' } });
+    record(task, {
+      flow: [
+        'Client: open WebTransport to the relay',
+        'Client: CLIENT_SETUP with no MOQT_IMPLEMENTATION option (the default, §13.8)',
+        'Relay → Client: SERVER_SETUP',
+        'Check: the session is ready',
+      ],
+      expected: 'Setup without MOQT_IMPLEMENTATION completes',
+      inputs: { implementation: 'none' },
+    });
     // No setImplementationString() call — default path.
     await session.setup();
     record(task, { observed: { ready: session.isReady } });
@@ -66,6 +75,13 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
     }
 
     record(task, {
+      flow: [
+        'Client: open WebTransport to the relay',
+        "Client: setImplementationString('moq-web e2e-27')",
+        'Client: CLIENT_SETUP carrying MOQT_IMPLEMENTATION = "moq-web e2e-27"',
+        'Relay → Client: SERVER_SETUP; the relay must ignore the option',
+        'Check: the session is ready',
+      ],
       expected: 'Setup carrying a MOQT_IMPLEMENTATION string completes; the relay ignores it',
       inputs: { implementation: 'moq-web e2e-27' },
     });
@@ -88,7 +104,16 @@ describe.skipIf(!isDraft18)('MOQT_IMPLEMENTATION opt-in (§13.8)', () => {
     }
 
     await session.setup();
-    record(task, { expected: 'setImplementationString() throws once setup() has run', inputs: { implementation: 'too-late' } });
+    record(task, {
+      flow: [
+        'Client: open WebTransport to the relay',
+        'Client: CLIENT_SETUP → Relay: SERVER_SETUP (session ready)',
+        "Client: setImplementationString('too-late') after setup",
+        'Check: the call throws "after setup()"; nothing is sent',
+      ],
+      expected: 'setImplementationString() throws once setup() has run',
+      inputs: { implementation: 'too-late' },
+    });
     let thrown: unknown;
     try {
       session.setImplementationString('too-late');

@@ -64,6 +64,14 @@ describe.skipIf(!isDraft22)('GOAWAY flows', () => {
     const trace = new Trace();
     const { namespace, sub, got, subscriptionId } = await flowing('goaway-sub', trace);
     record(task, {
+      flow: [
+        'Pub: PUBLISH ns/t, one Object (new group) every 100 ms',
+        'Sub: SUBSCRIBE ns/t, filter Largest Object; waits for 3 Objects',
+        'Sub: GOAWAY to the relay',
+        `Sub: keeps receiving for ${DRAIN_MS / 1000} s; GOAWAY leaves subscriptions intact (draft-23 §9.2)`,
+        'Sub: UNSUBSCRIBE, then closes its session',
+        `Check: at least 10 Objects arrived during the ${DRAIN_MS / 1000} s, and no unexpected error or close code`,
+      ],
       expected: `Objects keep arriving for ${DRAIN_MS / 1000} s after the subscriber's GOAWAY; it then unsubscribes and closes with no error event`,
       inputs: { track: `${namespace.join('/')}/t`, sendEveryMs: 100, drainMs: DRAIN_MS },
     });
@@ -88,6 +96,14 @@ describe.skipIf(!isDraft22)('GOAWAY flows', () => {
     const trace = new Trace();
     const { namespace, pub, sub, alias, got, subscriptionId } = await flowing('goaway-pub', trace);
     record(task, {
+      flow: [
+        'Pub: PUBLISH ns/t, one Object (new group) every 100 ms',
+        'Sub: SUBSCRIBE ns/t, filter Largest Object; waits for 3 Objects',
+        'Pub: GOAWAY to the relay',
+        `Pub: keeps sending for ${DRAIN_MS / 1000} s, then stops and ends the track`,
+        'Relay → Sub: PUBLISH_DONE',
+        `Check: at least 10 Objects in the ${DRAIN_MS / 1000} s, PUBLISH_DONE within 5 s, Sub's session still ready, no unexpected errors`,
+      ],
       expected: `The subscriber receives Objects for ${DRAIN_MS / 1000} s after the publisher's GOAWAY, then PUBLISH_DONE when the publisher ends the track; its session stays ready`,
       inputs: { track: `${namespace.join('/')}/t`, sendEveryMs: 100, drainMs: DRAIN_MS },
     });

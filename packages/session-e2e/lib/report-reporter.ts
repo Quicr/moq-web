@@ -4,7 +4,7 @@
 /**
  * Writes one JSON file per run for the interop report page. For each test
  * file, its title and description (the header comment); for each test, its
- * state and duration, what it expected, its inputs and what it observed
+ * line in the file, state and duration, the steps it takes, what it expected, its inputs and what it observed
  * (lib/record.ts) and, for a failure, the error and the last log lines the
  * test printed. The file goes to a public branch, so the auth token is
  * redacted and every text is capped.
@@ -35,8 +35,11 @@ export interface ReportTest {
   file: string;
   /** The describe blocks and the test title, joined by ' > ' */
   name: string;
+  /** Line of the test in its file, for a link to the source */
+  line?: number;
   state: 'passed' | 'failed' | 'skipped';
   durationMs: number;
+  flow?: string[];
   expected?: string;
   inputs?: Record<string, unknown>;
   observed?: Record<string, unknown>;
@@ -156,8 +159,10 @@ export class ReportReporter implements Reporter {
     const entry: ReportTest = {
       file,
       name: test.fullName,
+      line: test.location?.line,
       state,
       durationMs: Math.round(test.diagnostic()?.duration ?? 0),
+      flow: recorded?.flow?.map((step) => clip(this.redact(step), LINE_CHARS)),
       expected: recorded?.expected ? clip(this.redact(recorded.expected), RECORD_CHARS) : undefined,
       inputs: this.recordedFields(recorded?.inputs),
       observed: this.recordedFields(recorded?.observed),

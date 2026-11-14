@@ -39,6 +39,14 @@ describe('Room fan-out (studio-style N-peer topology)', () => {
     const peerIds = Array.from({ length: PEER_COUNT }, (_, i) => `peer${i + 1}`);
     const peerNamespaces = peerIds.map((id) => [...roomPrefix, id]);
     record(task, {
+      flow: [
+        `Open ${PEER_COUNT} sessions: ${peerIds.join(', ')}`,
+        `Each peer: SUBSCRIBE_NAMESPACE ${roomPrefix.join('/')}; wait ${SETTLE_MS} ms`,
+        `One peer at a time: PUBLISH_NAMESPACE ${roomPrefix.join('/')}/<peer>, then wait ${SETTLE_MS} ms`,
+        'Relay → every other peer: NAMESPACE for each announced peer, including peers that announced before',
+        `Wait ${SETTLE_MS * 2} ms for the fan-out to settle`,
+        `Check: each peer saw a NAMESPACE for all ${PEER_COUNT - 1} other peers`,
+      ],
       expected: `Each of the ${PEER_COUNT} peers sees namespace-announced for the other ${PEER_COUNT - 1}`,
       inputs: { peers: PEER_COUNT, roomPrefix: roomPrefix.join('/'), settleMs: SETTLE_MS },
     });

@@ -46,6 +46,12 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
     // If anything is broken (e.g., padding path aborts the session), close()
     // below will throw or the peer will send an error.
     record(task, {
+      flow: [
+        'Client: CLIENT_SETUP / SERVER_SETUP, session ready',
+        'Client: keepalive every 100 ms, sent as padding datagrams (§11.5, §13.6.1)',
+        'Wait 400 ms with no other traffic',
+        'Check: the session is still ready (the relay dropped the padding without error)',
+      ],
       expected: 'With a 100 ms keepalive, the session is still ready after 400 ms of padding datagrams',
       inputs: { keepaliveIntervalMs: 100, waitMs: 400 },
     });
@@ -71,6 +77,12 @@ describe.skipIf(!isDraft18)('idle connection: §13.6.1 configureIdle()', () => {
     });
 
     record(task, {
+      flow: [
+        'Client: CLIENT_SETUP / SERVER_SETUP, session ready',
+        'Client: local idle timeout 250 ms, then no traffic at all',
+        'Client: closes the session itself when the timer trips',
+        'Check: within 2 s a local session-terminated event with NO_ERROR and an "idle timeout" reason',
+      ],
       expected: 'With a 250 ms idle timeout, the session closes locally with NO_ERROR and an idle-timeout reason within 2 s',
       inputs: { idleTimeoutMs: 250 },
     });

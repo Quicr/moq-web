@@ -66,6 +66,16 @@ describe.each([
     const messages = Array.from(generateChat(track.payload));
     const half = Math.floor(messages.length / 2);
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} (${track.delivery})`,
+        'Sub: SUBSCRIBE the track; waits 250 ms',
+        `Pub: sends ${half} objects; waits 500 ms`,
+        'Check: some objects arrived',
+        'Sub: REQUEST_UPDATE Forward = 0 (pause); waits 250 ms',
+        'Sub: REQUEST_UPDATE Forward = 1 (resume)',
+        `Pub: sends the other ${messages.length - half} objects`,
+        'Check: more objects arrive within 5 s of resuming',
+      ],
       expected: 'Objects arrive before the pause, and more arrive within 5 s of resuming',
       inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, objectsBeforePause: half, objectsAfterResume: messages.length - half },
     });

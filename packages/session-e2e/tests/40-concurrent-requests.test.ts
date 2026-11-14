@@ -46,6 +46,15 @@ describe.skipIf(!isDraft22)('Stream-credit flow control', () => {
     const profile = resolveProfile(chatStream as Profile);
     const namespace = makeNamespace(profile, 'stream-credit');
     record(task, {
+      flow: [
+        `Pubs: PUBLISH ${TRACKS + FREED} tracks, ${PER_PUBLISHER} per publisher session, each publisher under its own namespace`,
+        `Sub: ${TRACKS} SUBSCRIBEs at once on one session, each its own bidi stream (no MAX_REQUEST_ID since draft-17)`,
+        'Relay → Sub: each SUBSCRIBE gets SUBSCRIBE_OK or fails (REQUEST_ERROR or stream refused) within 20 s',
+        `Sub: UNSUBSCRIBE ${FREED} of the answered ones; waits 1 s for stream credit to come back`,
+        `Sub: ${FREED} new SUBSCRIBEs to tracks not yet subscribed`,
+        'Check: no SUBSCRIBE went unanswered for 20 s, and the session was still ready after the burst',
+        `Check: all ${FREED} new SUBSCRIBEs succeeded`,
+      ],
       expected: `Of ${TRACKS} SUBSCRIBEs sent at once, each is answered or fails within 20 s, and the session stays ready; after ${FREED} UNSUBSCRIBEs, ${FREED} new SUBSCRIBEs succeed`,
       inputs: { namespace: namespace.join('/'), tracks: TRACKS, freed: FREED },
     });
@@ -98,6 +107,14 @@ describe.skipIf(!isDraft22)('Stream-credit flow control', () => {
     const profile = resolveProfile(chatStream as Profile);
     const namespace = makeNamespace(profile, 'uni-credit');
     record(task, {
+      flow: [
+        'Pub: PUBLISH ns/t (stream)',
+        'Sub: SUBSCRIBE ns/t, filter Largest Object; waits 300 ms',
+        `Pub: ${GROUPS} groups of one Object each, one unidirectional stream per group, sent back to back`,
+        'Relay → Sub: forwards each group on its own stream, needing fresh uni stream credit from both sides',
+        'Sub: waits up to 20 s for every group',
+        'Check: no publisher-side send failed and every group arrived',
+      ],
       expected: `All ${GROUPS} single-Object groups arrive within 20 s; each group is its own unidirectional stream, so this passes only if stream credit keeps being granted`,
       inputs: { track: `${namespace.join('/')}/t`, groups: GROUPS },
     });

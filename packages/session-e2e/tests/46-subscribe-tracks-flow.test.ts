@@ -42,6 +42,15 @@ describe.skipIf(!isDraft22)('SUBSCRIBE_TRACKS flow', () => {
     const namespace = [...prefix, 'pub'];
     const trace = new Trace();
     record(task, {
+      flow: [
+        'Sub: SUBSCRIBE_TRACKS prefix; Pub: SUBSCRIBE_TRACKS prefix too (to catch an echo)',
+        `Pub: PUBLISH prefix/pub/${TRACKS.join(', ')}, then one Object per track every 100 ms`,
+        `Relay → Sub: a PUBLISH for each of ${TRACKS.join(', ')}, then their Objects`,
+        'Pub: ends track a; Relay → Sub: PUBLISH_DONE for a',
+        'Sub: cancels its SUBSCRIBE_TRACKS; Pub: PUBLISH prefix/pub/d; waits 2 s',
+        `Check: a PUBLISH and Objects for each of ${TRACKS.join(', ')}, and PUBLISH_DONE for a`,
+        'Check: no PUBLISH for d after the cancel, and Pub never got its own tracks (draft-22 §6.1)',
+      ],
       expected: 'Sub gets a PUBLISH and Objects for a, b and c, PUBLISH_DONE for a, and no PUBLISH for d after cancelling; Pub never gets its own tracks back',
       inputs: { prefix: prefix.join('/'), namespace: namespace.join('/'), tracks: TRACKS, afterCancel: 'd' },
     });

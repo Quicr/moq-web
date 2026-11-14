@@ -80,6 +80,18 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
     const room = `room-${crypto.randomUUID().slice(0, 8)}`;
     const roomPrefix = [...profile.namespacePrefix, room];
     record(task, {
+      flow: [
+        `Open ${PEER_COUNT} sessions, peer1 … peer${PEER_COUNT}, each with a MediaSession and an MSFSession`,
+        `Each peer: SUBSCRIBE_NAMESPACE ${roomPrefix.join('/')}; wait ${SETTLE_MS} ms`,
+        `One peer at a time: PUBLISH timeline, video (stream) and audio (datagram) under ${roomPrefix.join('/')}/<peer>`,
+        `  …then PUBLISH ${CATALOG_TRACK_NAME} and send ONE catalog object listing video and audio (no republish: republishIntervalMs defaults to 0)`,
+        `  …then PUBLISH_NAMESPACE <peer>; wait ${SETTLE_MS} ms before the next peer joins`,
+        'Relay → other peers: NAMESPACE for the newly announced peer',
+        "On each NAMESPACE: the peer sends SUBSCRIBE_TRACKS for that peer's namespace",
+        `Relay → peer: a PUBLISH for each track, including ${CATALOG_TRACK_NAME}; the peer accepts it and reads catalog objects`,
+        `  Note: the catalog object was sent before this subscription existed; it arrives only if the relay delivers the latest cached object`,
+        `Wait ${SETTLE_MS * 4} ms, then Check: each peer has a parseable catalog with video and audio from all ${PEER_COUNT - 1} other peers`,
+      ],
       expected: `Each of the ${PEER_COUNT} peers receives a FullCatalog listing video and audio from every other peer`,
       inputs: { peers: PEER_COUNT, roomPrefix: roomPrefix.join('/'), tracks: ['timeline', 'video', 'audio', CATALOG_TRACK_NAME], settleMs: SETTLE_MS },
     });

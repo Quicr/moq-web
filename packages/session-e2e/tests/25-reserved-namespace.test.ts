@@ -37,6 +37,11 @@ describe.skipIf(!isDraft18)('reserved namespace: leading \'.\' (§3.2.1)', () =>
     if (!track) throw new Error('profile has no tracks');
 
     record(task, {
+      flow: [
+        'Client: CLIENT_SETUP / SERVER_SETUP, session ready',
+        `Client: publish() .session/${track.name}, a namespace starting with '.' (§3.2.1)`,
+        'Check: publish() rejects locally citing §3.2.1; no PUBLISH is sent',
+      ],
       expected: 'publish() under a namespace starting with "." rejects locally, citing §3.2.1, before anything is sent',
       inputs: { namespace: '.session', track: track.name },
     });
@@ -61,6 +66,11 @@ describe.skipIf(!isDraft18)('reserved namespace: leading \'.\' (§3.2.1)', () =>
     if (!track) throw new Error('profile has no tracks');
 
     record(task, {
+      flow: [
+        'Client: CLIENT_SETUP / SERVER_SETUP, session ready',
+        `Client: subscribe() .reserved/${track.name}, a namespace starting with '.' (§3.2.1)`,
+        'Check: subscribe() rejects locally citing §3.2.1; no SUBSCRIBE is sent',
+      ],
       expected: 'subscribe() under a namespace starting with "." rejects locally, citing §3.2.1',
       inputs: { namespace: '.reserved', track: track.name },
     });

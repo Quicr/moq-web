@@ -33,6 +33,12 @@ describe.each([
     const namespace = makeNamespace(profile, `announce-${label}`);
 
     record(task, {
+      flow: [
+        'Pub: connects and completes setup',
+        'Pub: PUBLISH_NAMESPACE ' + namespace.join('/'),
+        'Relay → Pub: REQUEST_OK (or REQUEST_ERROR)',
+        'Check: announceNamespace() resolves, i.e. REQUEST_OK',
+      ],
       expected: 'The relay answers PUBLISH_NAMESPACE with REQUEST_OK, so announceNamespace() resolves',
       inputs: { namespace: namespace.join('/') },
     });

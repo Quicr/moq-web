@@ -44,6 +44,16 @@ describe.skipIf(!isDraft22)('Namespace discovery flow', () => {
     const sibling = [...prefix.slice(0, -1), `${prefix.at(-1)}x`, 'pub'];
     const trace = new Trace();
     record(task, {
+      flow: [
+        'Sub: SUBSCRIBE_NAMESPACE prefix',
+        'Pub: PUBLISH_NAMESPACE prefix/pub and the sibling …x/pub (matches field by field, so not under prefix)',
+        'Pub: PUBLISH prefix/pub/t, then one Object every 100 ms',
+        'Relay → Sub: NAMESPACE prefix/pub; Sub SUBSCRIBEs to t by name and receives Objects',
+        'Late: SUBSCRIBE_NAMESPACE prefix after the fact; gets NAMESPACE prefix/pub',
+        'Pub: stops and ends t; Relay → Sub: PUBLISH_DONE',
+        'Pub: cancels PUBLISH_NAMESPACE; Relay → Sub and Late: NAMESPACE_DONE',
+        'Check: every step happened within 5 s, neither saw the sibling, and no unexpected errors',
+      ],
       expected: 'Each step in order: NAMESPACE to Sub (not for the sibling), Objects on SUBSCRIBE, NAMESPACE to the late subscriber, PUBLISH_DONE after the track ends, NAMESPACE_DONE to both after the cancel',
       inputs: { prefix: prefix.join('/'), namespace: namespace.join('/'), sibling: sibling.join('/'), track: 't' },
     });

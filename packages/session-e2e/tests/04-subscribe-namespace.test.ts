@@ -42,6 +42,13 @@ describe.each([
     const prefix = namespace.slice(0, -1);
 
     record(task, {
+      flow: [
+        'Pub and Sub: connect and complete setup',
+        `Sub: SUBSCRIBE_NAMESPACE ${prefix.join('/')}, waits 200 ms`,
+        `Pub: PUBLISH_NAMESPACE ${namespace.join('/')}`,
+        'Relay → Sub: NAMESPACE for it on the SUBSCRIBE_NAMESPACE stream',
+        'Check: Sub sees exactly that namespace within 10 s (announcements from older runs are ignored)',
+      ],
       expected: 'After SUBSCRIBE_NAMESPACE on the prefix, the subscriber gets namespace-announced for the namespace the publisher announces, within 10 s',
       inputs: { prefix: prefix.join('/'), namespace: namespace.join('/') },
     });

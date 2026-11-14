@@ -43,6 +43,11 @@ describe.skipIf(!isDraft18)('§14 grease: receiver tolerance', () => {
 
   it('recognises the reserved codepoint pattern (sanity)', ({ task }) => {
     record(task, {
+      flow: [
+        'Local only: no relay traffic',
+        `Check: isGreaseCode(0x${GREASE_ODD.toString(16)}) and isGreaseCode(0x${GREASE_EVEN.toString(16)}) are true`,
+        'Check: isGreaseCode(0x40) is false',
+      ],
       expected: 'The two grease codepoints match 0x7f * N + 0x9D and 0x40 does not',
       inputs: { greaseOdd: `0x${GREASE_ODD.toString(16)}`, greaseEven: `0x${GREASE_EVEN.toString(16)}`, other: '0x40' },
       observed: { greaseOdd: isGreaseCode(GREASE_ODD), greaseEven: isGreaseCode(GREASE_EVEN), other: isGreaseCode(0x40) },
@@ -71,6 +76,13 @@ describe.skipIf(!isDraft18)('§14 grease: receiver tolerance', () => {
     ]));
 
     record(task, {
+      flow: [
+        'Client: open WebTransport to the relay',
+        `Client: CLIENT_SETUP with grease Setup Options 0x${GREASE_ODD.toString(16)} (bytes) and 0x${GREASE_EVEN.toString(16)} (varint 0xdead)`,
+        'Relay: must ignore the unknown options (§14)',
+        'Relay → Client: SERVER_SETUP',
+        'Check: the session is ready',
+      ],
       expected: 'The relay ignores grease-key Setup Options and setup completes',
       inputs: { options: [`0x${GREASE_ODD.toString(16)} = bytes`, `0x${GREASE_EVEN.toString(16)} = varint 0xdead`] },
     });

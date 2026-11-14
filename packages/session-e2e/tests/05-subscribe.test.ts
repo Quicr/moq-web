@@ -70,6 +70,14 @@ describe.each([
     const datagram = track.delivery === 'datagram';
     const atLeast = datagram ? Math.ceil(total * (1 - DATAGRAM_LOSS_ALLOWED)) : total;
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} (${track.delivery})`,
+        'Sub: SUBSCRIBE the track, default filter; waits 250 ms',
+        `Pub: sends ${total} objects, ${track.payload.objectsPerGroup ?? 10} per group`,
+        datagram ? `Sub: collects for up to ${DATAGRAM_WAIT_MS / 1000} s` : 'Sub: collects for up to 20 s',
+        datagram ? `Check: at least ${atLeast} of ${total} arrive (≤ ${DATAGRAM_LOSS_ALLOWED * 100}% loss)` : `Check: all ${total} arrive, in group/object order`,
+        'Check: every object is byte-identical to what was sent',
+      ],
       expected: datagram
         ? `The subscriber receives at least ${atLeast} of ${total} objects (datagrams can be lost), each byte for byte`
         : `The subscriber receives all ${total} objects, byte for byte, in order`,

@@ -50,7 +50,15 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
   }
 
   it('sets up over draft-23 framing', async ({ task }) => {
-    record(task, { expected: 'The session negotiates draft-23 and reaches ready' });
+    record(task, {
+      flow: [
+        'Client: open WebTransport, offering moqt-23',
+        'Client: CLIENT_SETUP over draft-23 vi64 control framing (§9)',
+        'Relay → Client: SERVER_SETUP',
+        'Check: the negotiated draft is draft-23 and the session is ready',
+      ],
+      expected: 'The session negotiates draft-23 and reaches ready',
+    });
     const { session } = await open();
     record(task, { observed: { draft: session.draft, ready: session.isReady } });
     expect(session.draft).toBe('draft-23');
@@ -89,6 +97,15 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
     ];
     const sent = [...generateChat(payload)].filter((m) => m.objectId % 3 !== 1);
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}, max cache 60 s (no subscriber)`,
+        `Pub: groups 0–2, objects 0–9, skipping IDs 1, 4, 7 (${sent.length} objects) so Object ID Deltas are non-zero (#2006); wait 500 ms`,
+        'Sub: FETCH 0/0..2/9',
+        'Relay → Sub: REQUEST_OK (not FETCH_OK, §9.3), then the fetch stream with draft-23 ID rules (§11.4)',
+        'If the relay refuses the FETCH: Check only that the session stays ready',
+        `Check: one fetch-complete; exactly the ${sent.length} published IDs, in order, byte for byte`,
+        'Check: the session stays ready',
+      ],
       expected: `FETCH of 0/0..2/9 completes with REQUEST_OK and returns exactly the ${sent.length} published objects at their IDs, byte for byte`,
       inputs: {
         namespace: namespace.join('/'),
@@ -137,6 +154,14 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
     const { session } = await open();
     const missing = makeNamespace(profile, `d23-missing-${Date.now()}`);
     record(task, {
+      flow: [
+        `Sub: SUBSCRIBE ${missing.join('/')}/nothing-here (never published)`,
+        'Relay → Sub: REQUEST_ERROR with Error Details (§9.4.2); waits up to 8 s',
+        'Tolerated: the relay accepts or holds the SUBSCRIBE open (logged, not failed)',
+        'Check: a REQUEST_ERROR has a numeric error code',
+        'Sub: PUBLISH_NAMESPACE on the same session',
+        'Check: the session is still ready after the refusal and the next request',
+      ],
       expected: 'A SUBSCRIBE to an unpublished track is refused with a numeric REQUEST_ERROR code (or held open), and the session stays usable',
       inputs: { namespace: missing.join('/'), track: 'nothing-here' },
     });
@@ -167,6 +192,14 @@ describe.skipIf(MOQT_VERSION !== 'draft-23')('draft-23 interop', () => {
   it('the relay ignores the grease Error Detail in our REQUEST_ERRORs', async ({ task }) => {
     const namespace = makeNamespace(profile, 'd23-grease');
     record(task, {
+      flow: [
+        `Pub (grease on): PUBLISH_NAMESPACE ${namespace.join('/')}; publishes no track`,
+        `Sub: FETCH ${namespace.join('/')}/no-objects 0/0..1/0`,
+        'Relay → Pub: the FETCH, if the relay forwards it',
+        'Pub → Relay: REQUEST_ERROR carrying a grease Error Detail (§13)',
+        'Relay → Sub: a FETCH error; waits up to 8 s, then 500 ms',
+        'Check: neither the publisher nor the subscriber session was closed',
+      ],
       expected: 'Our REQUEST_ERROR carrying a grease Error Detail does not make the relay close either session',
       inputs: { namespace: namespace.join('/'), track: 'no-objects', grease: true },
     });

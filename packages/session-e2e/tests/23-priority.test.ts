@@ -52,6 +52,15 @@ describe.skipIf(!isDraft18)('priority scheduling (§7)', () => {
 
     const namespace = makeNamespace(profile, 'priority');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+        'Sub1: SUBSCRIBE with SUBSCRIBER_PRIORITY 16, GROUP_ORDER descending',
+        'Sub2: SUBSCRIBE with SUBSCRIBER_PRIORITY 240, GROUP_ORDER ascending',
+        'Wait 300 ms',
+        'Pub: 4 objects',
+        'Wait 800 ms',
+        'Check: each subscriber received at least one object (arrival order is not checked)',
+      ],
       expected: 'Both subscribers, with different priorities and group orders, receive at least one of the 4 objects',
       inputs: {
         namespace: namespace.join('/'),

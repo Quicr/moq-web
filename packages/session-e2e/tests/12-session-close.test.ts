@@ -41,6 +41,11 @@ describe.skipIf(!isDraft18).each([
     handle = await makeSession(profile);
 
     record(task, {
+      flow: [
+        'Client: connects and completes setup',
+        'Client: closes the session with NO_ERROR, reason "test done"',
+        'Check: close() resolves and the session state is none',
+      ],
       expected: 'close() with NO_ERROR resolves and the session ends in state none',
       inputs: { code: SessionErrorCodeDraft18.NO_ERROR, reason: 'test done' },
     });
@@ -55,6 +60,12 @@ describe.skipIf(!isDraft18).each([
     handle = await makeSession(profile);
 
     record(task, {
+      flow: [
+        'Client: connects and completes setup',
+        'Client: closes the session with PROTOCOL_VIOLATION, reason "e2e-injected"',
+        'The relay may abort the connection in reply; that is allowed',
+        'Check: close() resolves and the session state is none',
+      ],
       expected: 'close() with PROTOCOL_VIOLATION resolves and the session ends in state none',
       inputs: { code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason: 'e2e-injected' },
     });

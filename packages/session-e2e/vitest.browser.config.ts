@@ -21,6 +21,8 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // Each test's line, for the report's link to its source
+    includeTaskLocation: true,
     ...(REPORT_PATH ? { reporters: ['default', new ReportReporter(REPORT_PATH)] } : {}),
     env: {
       VITE_RELAY_URL: RELAY_URL,

@@ -72,6 +72,15 @@ describe('SUBSCRIBE_UPDATE per-request scope [chat-stream]', () => {
     const messages = Array.from(generateChat(track.payload));
     const first = Math.floor(messages.length / 3);
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${nsA.join('/')}/${track.name} (A) and ${nsB.join('/')}/${track.name} (B)`,
+        'Sub: SUBSCRIBE A and SUBSCRIBE B; wait 250 ms',
+        `Pub: ${first} objects on each of A and B`,
+        'Check: Sub received objects on both A and B',
+        'Sub: REQUEST_UPDATE on A only, forward=0 (pause); wait 250 ms',
+        `Pub: the remaining ${messages.length - first} objects on each of A and B`,
+        'Check: B keeps delivering within 5 s (pause is scoped to A\'s request)',
+      ],
       expected: 'Both tracks deliver; after pausing track A, track B keeps delivering within 5 s',
       inputs: { trackA: `${nsA.join('/')}/${track.name}`, trackB: `${nsB.join('/')}/${track.name}`, objectsBeforePause: first, objectsAfterPause: messages.length - first },
     });

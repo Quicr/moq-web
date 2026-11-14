@@ -65,6 +65,16 @@ describe.skipIf(!isDraft22)('FETCH from the relay cache', () => {
     const namespace = makeNamespace(profile, `fetch-${c.id}`);
     const trace = new Trace();
     record(task, {
+      flow: [
+        'Pub: PUBLISH ns/t (stream, MAX_CACHE_DURATION 60 s)',
+        'Holder: SUBSCRIBE ns/t so the relay keeps the track cached',
+        `Pub: groups 0..4, ${PER_GROUP} Objects each; waits 500 ms`,
+        ...(c.publisherLeaves ? ['Pub: closes its session; the holder gets its subscription cancelled'] : []),
+        `Sub: FETCH ns/t ${c.range.startGroup}/${c.range.startObject}..${c.range.endGroup}/${c.range.endObject}${c.descending ? ', group order descending' : ''}`,
+        ...(c.later ? [`Pub: groups 5..${4 + c.later} after the FETCH is sent; a FETCH ends at the Largest Object (draft-23 §3.2)`] : []),
+        `Relay → Sub: FETCH_OK and a fetch stream with ${c.wanted[0]}..${c.wanted.at(-1)}${c.publisherLeaves ? ', or REQUEST_ERROR DOES_NOT_EXIST with no Objects (allowed)' : ''}`,
+        `Check: no FETCH error, every wanted Object arrived byte for byte, none outside the range${c.descending ? ', groups in descending order' : ''}`,
+      ],
       expected: `FETCH returns ${c.wanted.length} objects (${c.wanted[0]}..${c.wanted.at(-1)}), byte for byte${c.descending ? ', groups in descending order' : ''}${c.publisherLeaves ? '; or DOES_NOT_EXIST, if the relay dropped the track with its publisher' : ''}${c.later ? '; groups published after the FETCH do not arrive on it' : ''}`,
       inputs: {
         track: `${namespace.join('/')}/t`, cached: 'groups 0..4', objectsPerGroup: PER_GROUP, range: c.range,

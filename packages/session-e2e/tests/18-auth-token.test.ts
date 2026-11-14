@@ -59,6 +59,13 @@ describe.skipIf(!isDraft18)('SUBSCRIBE with per-request AUTHORIZATION_TOKEN (§1
 
     const tokenBytes = new TextEncoder().encode('moq-web-e2e-authtok');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+        'Wait 250 ms for the relay to take the PUBLISH',
+        `Sub: SUBSCRIBE with AUTHORIZATION_TOKEN (type 0x63346d, ${tokenBytes.byteLength} bytes, §10.2.2)`,
+        'Relay → Sub: SUBSCRIBE_OK, or a SUBSCRIBE error refusing the token (tolerated)',
+        'Check: SUBSCRIBE_OK gave a subscription ID; any other failure (not a SUBSCRIBE error) fails the test',
+      ],
       expected: 'A SUBSCRIBE carrying an AUTHORIZATION_TOKEN parameter decodes at the relay: SUBSCRIBE_OK, or a SUBSCRIBE error if it refuses the token',
       inputs: { namespace: namespace.join('/'), track: track.name, tokenType: '0x63346d', tokenBytes: tokenBytes.byteLength },
     });

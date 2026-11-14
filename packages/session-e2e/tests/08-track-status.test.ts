@@ -45,6 +45,14 @@ describe.skipIf(!isDraft18).each([
     const namespace = makeNamespace(profile, `status-${label}`);
 
     record(task, {
+      flow: [
+        'Pub and Requester: connect and complete setup',
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}; waits 250 ms`,
+        'Requester: TRACK_STATUS for the track',
+        'Relay → Requester: REQUEST_OK or REQUEST_ERROR; both count as a valid answer',
+        'Check: it settles (no hang)',
+        'Check: on REQUEST_OK, a bigint Request ID, and bigint Largest group/object when present',
+      ],
       expected: 'TRACK_STATUS settles with REQUEST_OK (with a Request ID, and a bigint Largest Location if present) or REQUEST_ERROR',
       inputs: { namespace: namespace.join('/'), track: track.name },
     });

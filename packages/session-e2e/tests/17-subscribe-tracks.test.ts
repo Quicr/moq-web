@@ -43,6 +43,13 @@ describe.skipIf(!isDraft18)('SUBSCRIBE_TRACKS with full parameter set', () => {
     const prefix = namespace.slice(0, -1);
 
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+        'Wait 250 ms for the relay to take the PUBLISH',
+        `Sub: SUBSCRIBE_TRACKS ${prefix.join('/')} with FORWARD=1 and SUBSCRIPTION_FILTER=NEXT_GROUP_START (§10.19)`,
+        'Relay → Sub: REQUEST_OK, or REQUEST_ERROR (tolerated, test ends)',
+        'Check: REQUEST_OK gave a subscription ID',
+      ],
       expected: 'SUBSCRIBE_TRACKS with FORWARD=1 and SUBSCRIPTION_FILTER=NEXT_GROUP_START is answered with REQUEST_OK (REQUEST_ERROR tolerated)',
       inputs: { prefix: prefix.join('/'), published: `${namespace.join('/')}/${track.name}` },
     });

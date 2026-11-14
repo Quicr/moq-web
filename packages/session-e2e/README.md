@@ -58,7 +58,7 @@ is read from the environment and never committed — profiles reference it by na
 
 - `profiles/*.json` — test inputs. `chat-stream.json` and `chat-datagram.json` exercise the two delivery modes.
 - `lib/` — session factory, profile loader, chat payload generator, verifiers.
-- `lib/record.ts` — `record(task, { expected, inputs, observed })`: what a test expects, the inputs it chose and what it saw, for the interop report. Record `observed` before the assertions so a failure still reports it.
+- `lib/record.ts` — `record(task, { flow, expected, inputs, observed })`: the steps a test takes (shown first on the report, with a link to the test's source), what it expects, the inputs it chose and what it saw, for the interop report. Record `observed` before the assertions so a failure still reports it.
 - `lib/report-reporter.ts` — with `E2E_REPORT=<path>`, writes the run as JSON: each file's header comment as its description, and each test's state, record, failure and last log lines (auth token redacted).
 - `tests/NN-*.test.ts` — one file per MOQ API. Every applicable test runs against both profiles via `describe.each`, so both delivery paths get coverage.
 

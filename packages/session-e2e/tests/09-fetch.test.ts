@@ -84,6 +84,15 @@ describe.each([
       : { startGroup: 1, startObject: 0, endGroup: 1, endObject: perGroup - 1 };
     const expected = isLarge ? payload.messages : perGroup;
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} (${track.delivery}), max cache duration 60 s`,
+        `Pub: sends ${payload.messages} objects of ${payload.sizeBytes} B, ${perGroup} per group, with no subscriber`,
+        'Waits 500 ms for the relay to cache them',
+        `Sub: FETCH ${range.startGroup}/${range.startObject}..${range.endGroup}/${range.endObject}`,
+        'Relay → Sub: FETCH_OK and the objects on a fetch stream, from its cache',
+        'If the relay answers with an error, the test reports it and stops without failing',
+        `Check: all ${expected} objects arrive within 10 s, byte-identical`,
+      ],
       expected: `FETCH of groups ${range.startGroup}..${range.endGroup} returns all ${expected} objects, byte for byte (skipped if the relay refuses FETCH)`,
       inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, published: payload.messages, objectBytes: payload.sizeBytes, range },
     });

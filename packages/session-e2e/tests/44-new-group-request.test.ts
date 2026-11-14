@@ -34,6 +34,15 @@ describe.skipIf(!isDraft22)('NEW_GROUP_REQUEST', () => {
     const namespace = makeNamespace(profile, 'new-group');
     const trace = new Trace();
     record(task, {
+      flow: [
+        'Pub: PUBLISH ns/t (stream, DYNAMIC_GROUPS=1), then one Object every 100 ms in group 0',
+        'Sub: SUBSCRIBE ns/t, filter Largest Object',
+        'Relay → Sub: SUBSCRIBE_OK carrying DYNAMIC_GROUPS',
+        'Sub: waits for 3 Objects, then REQUEST_UPDATE with NEW_GROUP_REQUEST',
+        'Relay → Pub: NEW_GROUP_REQUEST; Pub moves to group 1',
+        'Relay → Sub: group 1 Objects',
+        'Check: DYNAMIC_GROUPS in SUBSCRIBE_OK, the update answered, the request reached Pub, and group 1 arrived within 3 s',
+      ],
       expected: 'SUBSCRIBE_OK carries DYNAMIC_GROUPS; the publisher gets the NEW_GROUP_REQUEST; group 1 reaches the subscriber within 3 s of the request',
       inputs: { track: `${namespace.join('/')}/t`, dynamicGroups: true, sendEveryMs: 100 },
     });

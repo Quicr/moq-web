@@ -47,6 +47,15 @@ describe.skipIf(!isDraft18)('padding streams & datagrams (§11.5)', () => {
 
     const namespace = makeNamespace(profile, 'padding');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+        'Sub: SUBSCRIBE the track; wait 250 ms',
+        'Pub: padding stream (64 bytes) and padding datagram (32 bytes) (§11.5)',
+        'Pub: 2 real objects',
+        'Pub: empty padding stream and empty padding datagram',
+        'Wait 500 ms',
+        'Check: the subscriber got at least the 2 real objects and no all-zero (padding) payload',
+      ],
       expected: 'With padding streams and datagrams interleaved, the subscriber still gets both real objects and no all-zero padding',
       inputs: { namespace: namespace.join('/'), track: track.name, realObjects: 2, paddingStreams: [64, 0], paddingDatagrams: [32, 0] },
     });

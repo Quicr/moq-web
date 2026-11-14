@@ -55,6 +55,13 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
 
       const namespace = makeNamespace(profile, `filter-${kind}`);
       record(task, {
+        flow: [
+          `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+          'Wait 250 ms for the relay to take the PUBLISH',
+          `Sub: SUBSCRIBE with the ${kind} filter (§10.2.9; LOCATION_FILTER on draft-22+)`,
+          'Relay → Sub: SUBSCRIBE_OK, or a SUBSCRIBE / REQUEST_ERROR refusal (tolerated, test ends)',
+          'Check: SUBSCRIBE_OK gave a subscription ID; a transport failure fails the test',
+        ],
         expected: `The relay accepts a SUBSCRIBE with the ${kind} filter (a REQUEST_ERROR is tolerated)`,
         inputs: { namespace: namespace.join('/'), track: track.name, options },
       });
@@ -123,6 +130,14 @@ describe.skipIf(!isDraft18)('SUBSCRIBE §10.2.9 filter variants', () => {
       const perGroup = track.payload.objectsPerGroup ?? 10;
       const expected = (lastGroup + 1) * perGroup;
       record(task, {
+        flow: [
+          `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+          `Sub: SUBSCRIBE with the ${kind} filter (start 0/0${kind === 'absolute-range' ? `, end group ${lastGroup}` : ''})`,
+          'Wait 250 ms',
+          `Pub: the profile's chat messages, ${perGroup} objects per group`,
+          `Check: all ${expected} objects of groups 0..${lastGroup} arrive within 20 s`,
+          `Wait 500 ms more, then Check: no object past group ${lastGroup} arrived`,
+        ],
         expected: `The ${kind} filter delivers all ${expected} objects of groups 0..${lastGroup} and nothing past group ${lastGroup}`,
         inputs: { namespace: namespace.join('/'), track: track.name, options, published: track.payload.messages, objectsPerGroup: perGroup },
       });

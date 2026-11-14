@@ -44,6 +44,16 @@ describe.skipIf(!isDraft22)('SUBSCRIBE_OK Largest Location', () => {
     const profile = resolveProfile(chatStream as Profile);
     const namespace = makeNamespace(profile, 'largest');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/t, max cache 60 s`,
+        'Early Sub: SUBSCRIBE t, filter Largest Object, before any object',
+        'Relay → Early Sub: SUBSCRIBE_OK; wait 200 ms',
+        'Pub: groups 0–2, 3 objects each; wait 500 ms',
+        'Late Sub (another session): SUBSCRIBE t, filter Largest Object',
+        'Relay → Late Sub: SUBSCRIBE_OK',
+        'Check: the first SUBSCRIBE_OK has no Largest Location',
+        'Check: the second has Largest Location 2/2 (the last object sent) and content exists',
+      ],
       expected: 'First SUBSCRIBE_OK (nothing published yet): no Largest Location. Second SUBSCRIBE_OK, after groups 0..2 of 3 Objects: Largest Location 2/2',
       inputs: { track: `${namespace.join('/')}/t`, published: 'groups 0..2, 3 objects each' },
     });

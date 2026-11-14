@@ -34,6 +34,14 @@ describe.skipIf(!isDraft22)('SUBSCRIBE_NAMESPACE prefix update', () => {
     const newPrefix = [...base, 'b'];
     const trace = new Trace();
     record(task, {
+      flow: [
+        'Sub: SUBSCRIBE_NAMESPACE for prefix …/a; waits 300 ms',
+        'Sub: REQUEST_UPDATE with TRACK_NAMESPACE_PREFIX = …/b (draft-22 §9.20.20)',
+        'Relay → Sub: REQUEST_UPDATE_OK within 5 s',
+        'Pub: PUBLISH_NAMESPACE …/a/late, then PUBLISH_NAMESPACE …/b/late',
+        'Sub: waits up to 5 s for NAMESPACE …/b/late, then 500 ms more',
+        'Check: the update was answered, …/b/late arrived, …/a/late did not, and no unexpected errors',
+      ],
       expected: 'REQUEST_UPDATE with TRACK_NAMESPACE_PREFIX is answered within 5 s; then …/b/late arrives and …/a/late does not',
       inputs: { oldPrefix: oldPrefix.join('/'), newPrefix: newPrefix.join('/'), announcedAfter: ['a/late', 'b/late'] },
     });

@@ -43,6 +43,14 @@ describe.skipIf(!isDraft22)('Object Properties', () => {
     const profile = resolveProfile(chatStream as Profile);
     const namespace = makeNamespace(profile, 'object-props');
     record(task, {
+      flow: [
+        'Pub: PUBLISH ns/t (stream)',
+        'Sub: SUBSCRIBE ns/t, filter Largest Object; waits 200 ms',
+        `Pub: ${GROUPS} groups of ${PER_GROUP} Objects, each with Object Properties 0x40 (varint group×100+object) and 0x41 (bytes "p<group>/<object>")`,
+        'Relay: must forward both unchanged; they are below the Mandatory range (draft-22 §11.1)',
+        'Sub: waits up to 5 s for every Object and decodes both properties on each',
+        'Check: every Object arrived with both properties and the right values',
+      ],
       expected: `All ${GROUPS * PER_GROUP} Objects arrive, each with property 0x40 = group×100+object and 0x41 = "p<group>/<object>"`,
       inputs: { track: `${namespace.join('/')}/t`, groups: GROUPS, objectsPerGroup: PER_GROUP, properties: { '0x40': 'varint g*100+o', '0x41': 'bytes "p<g>/<o>"' } },
     });

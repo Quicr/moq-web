@@ -43,6 +43,14 @@ describe.skipIf(!isDraft22)('Setup Options', () => {
     const limit = (sub.session as unknown as { peerMaxRequestUpdates: number }).peerMaxRequestUpdates;
     const updates = limit > 0 ? Math.min(limit, 4) : 4;
     record(task, {
+      flow: [
+        'Pub and Sub: connect; Relay → Sub: SERVER_SETUP with its Setup Options',
+        'Sub: reads each option; an even key must carry a varint, an odd key bytes',
+        'Pub: PUBLISH ns/t; Sub: SUBSCRIBE ns/t and waits for SUBSCRIBE_OK',
+        `Sub: ${updates} REQUEST_UPDATEs at once on that subscription, alternating pause and resume (relay MAX_REQUEST_UPDATES: ${limit || 'no limit'}, draft-22 §9.1.7)`,
+        'Relay → Sub: a REQUEST_UPDATE_OK for each, in order',
+        'Check: every option well formed, every update answered within 5 s, in the order sent',
+      ],
       expected: `Every advertised Setup Option has a varint for an even key and bytes for an odd one; ${updates} REQUEST_UPDATEs sent at once on one subscription each get a REQUEST_UPDATE_OK`,
       inputs: { track: `${namespace.join('/')}/t`, relayMaxRequestUpdates: limit || 'no limit', updatesSentAtOnce: updates },
     });

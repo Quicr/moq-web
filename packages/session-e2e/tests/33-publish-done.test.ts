@@ -37,6 +37,13 @@ describe.skipIf(!isDraft18Family)('PUBLISH_DONE delivery (§9.9)', () => {
 
     const namespace = makeNamespace(profile, 'publish-done');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} (no subscriber)`,
+        `Pub: ${OBJECT_COUNT} objects, one per group`,
+        "Pub: unpublish() — PUBLISH_DONE as the last message on the PUBLISH request stream, then the stream closes",
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}-2 on the same session`,
+        'Check: the second PUBLISH gets a Track Alias, so the relay kept the session open',
+      ],
       expected: 'After unpublish() sends PUBLISH_DONE, a second PUBLISH on the same session gets a Track Alias',
       inputs: { namespace: namespace.join('/'), track: track.name, objectsBeforeUnpublish: OBJECT_COUNT, secondTrack: `${track.name}-2` },
     });

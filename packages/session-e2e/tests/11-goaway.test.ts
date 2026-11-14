@@ -38,7 +38,15 @@ describe.skipIf(!isDraft18).each([
     const profile = resolveProfile(raw);
     handle = await makeSession(profile);
 
-    record(task, { expected: 'Sending GOAWAY moves the session to closing', inputs: { newSessionUri: 'none' } });
+    record(task, {
+      flow: [
+        'Client: connects and completes setup',
+        'Client: GOAWAY, no New Session URI',
+        'Check: the session state is closing',
+      ],
+      expected: 'Sending GOAWAY moves the session to closing',
+      inputs: { newSessionUri: 'none' },
+    });
     await handle.session.goAway();
 
     record(task, { observed: { state: handle.session.state } });

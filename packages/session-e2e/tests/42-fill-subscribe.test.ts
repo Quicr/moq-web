@@ -60,6 +60,15 @@ describe.skipIf(!isDraft22)('Fill with SUBSCRIBE', () => {
     const trace = new Trace();
     const { namespace, pub, sub, alias } = await trackWithHistory('fill-last', trace);
     record(task, {
+      flow: [
+        'Pub: PUBLISH ns/t (stream, MAX_CACHE_DURATION 60 s)',
+        'Holder: SUBSCRIBE ns/t so the relay keeps the track cached',
+        `Pub: groups 0..4, ${PER_GROUP} Objects each; waits 500 ms`,
+        'Sub: SUBSCRIBE ns/t, filter Largest Object, FILL_PARAMETERS last 3 groups (draft-22 §3.4)',
+        'Relay → Sub: SUBSCRIBE_OK, a fill stream with groups 2..4, and the live subscription',
+        `Pub: groups 5..6, ${PER_GROUP} Objects each`,
+        'Check: every Object of groups 2..6 arrived, none before group 2, all byte for byte',
+      ],
       expected: 'Groups 2..6 arrive (2..4 from the fill, 5..6 live); groups 0..1 do not',
       inputs: { track: `${namespace.join('/')}/t`, cached: 'groups 0..4', fill: { lastGroups: 3 }, publishedAfter: 'groups 5..6', objectsPerGroup: PER_GROUP },
     });
@@ -86,6 +95,15 @@ describe.skipIf(!isDraft22)('Fill with SUBSCRIBE', () => {
     const trace = new Trace();
     const { namespace, sub } = await trackWithHistory('fill-update', trace);
     record(task, {
+      flow: [
+        'Pub: PUBLISH ns/t (stream, MAX_CACHE_DURATION 60 s)',
+        'Holder: SUBSCRIBE ns/t so the relay keeps the track cached',
+        `Pub: groups 0..4, ${PER_GROUP} Objects each; waits 500 ms`,
+        'Sub: SUBSCRIBE ns/t, filter Largest Object, no fill',
+        'Sub: REQUEST_UPDATE with FILL_PARAMETERS startGroup 1, endGroup 2',
+        'Relay → Sub: REQUEST_UPDATE_OK and a fill stream with groups 1..2',
+        'Check: the update was answered, every Object of groups 1 and 2 arrived, and nothing else',
+      ],
       expected: 'After REQUEST_UPDATE with fill startGroup 1, endGroup 2, the objects of groups 1 and 2 arrive, and no others',
       inputs: { track: `${namespace.join('/')}/t`, cached: 'groups 0..4', fill: { startGroup: 1, endGroup: 2 }, objectsPerGroup: PER_GROUP },
     });

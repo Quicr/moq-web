@@ -36,6 +36,12 @@ describe.each([
 
     const namespace = makeNamespace(profile, `publish-${label}`);
     record(task, {
+      flow: [
+        'Pub: connects and completes setup',
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} (${track.delivery}), no subscriber yet`,
+        'Relay → Pub: REQUEST_OK; the client does not wait for Forward State = 1',
+        'Check: publish() returns a bigint Track Alias ≥ 0',
+      ],
       expected: 'The relay answers PUBLISH with REQUEST_OK and a non-negative Track Alias',
       inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, priority: track.priority },
     });

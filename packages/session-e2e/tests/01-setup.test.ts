@@ -31,6 +31,12 @@ describe.each([
   it('connects, runs setup, reaches ready state', async ({ task }) => {
     const profile = resolveProfile(raw);
     record(task, {
+      flow: [
+        'Client: opens WebTransport to the relay',
+        'Client: CLIENT_SETUP with the profile draft',
+        'Relay → Client: SERVER_SETUP',
+        'Check: setup resolves and the session reaches ready',
+      ],
       expected: 'CLIENT_SETUP and SERVER_SETUP complete and the session reaches ready',
       inputs: { profile: label, relay: profile.relayUrl },
     });

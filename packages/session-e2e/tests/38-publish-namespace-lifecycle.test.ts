@@ -34,6 +34,16 @@ describe.skipIf(!isDraft22)('PUBLISH_NAMESPACE lifecycle', () => {
     const namespace = [...prefix, 'pub'];
     const trace = new Trace();
     record(task, {
+      flow: [
+        `Sub: SUBSCRIBE_NAMESPACE ${prefix.join('/')}; wait 300 ms`,
+        `Pub: PUBLISH_NAMESPACE ${namespace.join('/')}`,
+        'Relay → Sub: NAMESPACE "pub" (waits up to 5 s)',
+        'Pub: withdraws the namespace by cancelling its PUBLISH_NAMESPACE request stream (draft-22 §4.1)',
+        'Relay → Sub: NAMESPACE_DONE "pub" (waits up to 5 s)',
+        `Pub: PUBLISH_NAMESPACE ${namespace.join('/')} again`,
+        'Relay → Sub: NAMESPACE "pub" (waits up to 5 s)',
+        'Check: Sub saw announced, done, announced, in that order; no unexpected errors or resets',
+      ],
       expected: 'Namespace events for the announced namespace, in order: announced, done, announced',
       inputs: { prefix: prefix.join('/'), namespace: namespace.join('/') },
     });

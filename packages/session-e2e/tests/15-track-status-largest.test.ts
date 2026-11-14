@@ -49,6 +49,14 @@ describe.skipIf(!isDraft18)('TRACK_STATUS LARGEST_OBJECT round-trip', () => {
     const namespace = makeNamespace(profile, 'largest');
 
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+        'Pub: objects 0/0, 1/0, 2/0 (one per group)',
+        'Wait 250 ms for the relay to take them in',
+        'Requester (second session): TRACK_STATUS for the track (§10.14)',
+        'Relay → Requester: REQUEST_OK with LARGEST_OBJECT (§10.2.9), or REQUEST_ERROR (tolerated, test ends)',
+        'Check: REQUEST_OK has a Request ID; Largest group and object, when present, are non-negative',
+      ],
       expected: 'TRACK_STATUS after 3 objects answers with a Request ID and, if present, a non-negative Largest Location (REQUEST_ERROR tolerated)',
       inputs: { namespace: namespace.join('/'), track: track.name, objectsSent: ['0/0', '1/0', '2/0'] },
     });

@@ -41,6 +41,13 @@ describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
     const profile = resolveProfile(chatStream as Profile);
     const namespace = makeNamespace(profile, 'err-subscribe');
     record(task, {
+      flow: [
+        'No publisher for the track',
+        `Sub: SUBSCRIBE ${namespace.join('/')}/nobody, rendezvous timeout 1 s`,
+        `Relay → Sub: REQUEST_ERROR within ${ANSWER_MS / 1000} s`,
+        'Check: the code is DOES_NOT_EXIST or TIMEOUT',
+        'Check: the session stays ready',
+      ],
       expected: 'REQUEST_ERROR DOES_NOT_EXIST or TIMEOUT within 5 s (rendezvous timeout 1 s), and the session stays ready',
       inputs: { track: `${namespace.join('/')}/nobody`, rendezvousTimeoutMs: 1000 },
     });
@@ -65,6 +72,13 @@ describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
     const namespace = makeNamespace(profile, 'err-fetch');
     const range = { startGroup: 0, startObject: 0, endGroup: 1, endObject: 0 };
     record(task, {
+      flow: [
+        'No publisher for the track',
+        `Sub: FETCH ${namespace.join('/')}/nobody 0/0..1/0`,
+        `Relay → Sub: REQUEST_ERROR within ${ANSWER_MS / 1000} s`,
+        'Check: the code is DOES_NOT_EXIST',
+        'Check: the session stays ready',
+      ],
       expected: 'REQUEST_ERROR DOES_NOT_EXIST within 5 s, and the session stays ready',
       inputs: { track: `${namespace.join('/')}/nobody`, range },
     });
@@ -91,6 +105,13 @@ describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
     const profile = resolveProfile(chatStream as Profile);
     const namespace = makeNamespace(profile, 'err-status');
     record(task, {
+      flow: [
+        'No publisher for the track',
+        `Sub: TRACK_STATUS ${namespace.join('/')}/nobody`,
+        `Relay → Sub: REQUEST_ERROR within ${ANSWER_MS / 1000} s`,
+        'Check: the code is DOES_NOT_EXIST',
+        'Check: the session stays ready',
+      ],
       expected: 'REQUEST_ERROR DOES_NOT_EXIST within 5 s, and the session stays ready',
       inputs: { track: `${namespace.join('/')}/nobody` },
     });
@@ -117,6 +138,15 @@ describe.skipIf(!isDraft22)('Requests the relay cannot serve', () => {
     const profile = resolveProfile(chatStream as Profile);
     const namespace = makeNamespace(profile, 'err-range');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/t, max cache 60 s`,
+        'Sub: SUBSCRIBE t, filter Largest Object, so the relay holds the objects; wait 200 ms',
+        c.groups ? `Pub: groups 0–${c.groups - 1}, 3 objects each; wait 300 ms` : 'Pub: sends nothing; wait 300 ms',
+        `Sub: FETCH ${c.range.startGroup}/${c.range.startObject}..${c.range.endGroup}/${c.range.endObject}, which ${c.label}`,
+        `Relay → Sub: REQUEST_ERROR within ${ANSWER_MS / 1000} s`,
+        'Check: the code is INVALID_RANGE (draft-23 §9.16)',
+        'Check: the session stays ready',
+      ],
       expected: `REQUEST_ERROR INVALID_RANGE within 5 s: the FETCH ${c.label} (draft-23 §9.16)`,
       inputs: { track: `${namespace.join('/')}/t`, published: c.groups ? `groups 0..${c.groups - 1}, 3 objects each` : 'nothing', range: c.range },
     });

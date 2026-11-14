@@ -47,7 +47,15 @@ describe.skipIf(!isDraft18).each([
     const events: Array<{ code: number; remote: boolean }> = [];
     handle.session.on('session-terminated', (e) => events.push(e));
 
-    record(task, { expected: 'A local close() emits no session-terminated event' });
+    record(task, {
+      flow: [
+        'Client: connects and completes setup',
+        'Client: closes the session itself',
+        'Waits 50 ms for the transport to settle',
+        'Check: no session-terminated event (it is for closes the client did not start)',
+      ],
+      expected: 'A local close() emits no session-terminated event',
+    });
     await handle.session.close();
     // Allow the transport `closed` promise a tick to settle.
     await new Promise((r) => setTimeout(r, 50));
@@ -61,6 +69,12 @@ describe.skipIf(!isDraft18).each([
     handle = await makeSession(profile);
 
     record(task, {
+      flow: [
+        'Client: connects and completes setup',
+        'Test: feeds the client a GOAWAY with New Session URI https://alt-relay.example/moq, timeout 5 s (no relay involved)',
+        'Check: pendingMigrationUri holds that URI',
+        'Check: the session state is closing',
+      ],
       expected: 'A GOAWAY carrying a New Session URI sets pendingMigrationUri and moves the session to closing',
       inputs: { newSessionUri: 'https://alt-relay.example/moq', timeoutMs: 5000 },
     });
@@ -88,6 +102,11 @@ describe.skipIf(!isDraft18).each([
     handle = await makeSession(profile);
 
     record(task, {
+      flow: [
+        'Client: connects and completes setup, on the main thread',
+        'Client: migrate("https://foo.example/moq")',
+        'Check: it rejects with an error naming worker mode (migration needs the worker)',
+      ],
       expected: 'migrate() rejects with an error naming worker mode',
       inputs: { uri: 'https://foo.example/moq' },
     });

@@ -137,7 +137,25 @@ describe.skipIf(!isDraft18)('Relay forwards PUBLISH to namespace subscribers', (
     const trace = new Trace();
 
     const fwdRequired = c.watch === 'subscribe-tracks';
+    const watchStep = c.watch === 'subscribe-tracks'
+      ? `Sub: SUBSCRIBE_TRACKS ${prefix.join('/')}`
+      : `Sub: SUBSCRIBE_NAMESPACE ${prefix.join('/')} (namespaces only, draft-18 §6.1)`;
+    const publishSteps = [
+      `Pub: PUBLISH ${namespace.join('/')}/${TRACK}`,
+      ...(c.announce ? [`Pub: PUBLISH_NAMESPACE ${namespace.join('/')}`] : []),
+      `Pub: one object every ${SEND_EVERY_MS} ms, a new group each`,
+    ];
     record(task, {
+      flow: [
+        ...(c.publishFirst ? [...publishSteps, 'Wait 500 ms', watchStep] : [watchStep, 'Wait 200 ms', ...publishSteps]),
+        fwdRequired
+          ? `Relay → Sub: PUBLISH for the track (§8, §10.19), then its objects within ${OBJECTS_MS / 1000} s`
+          : 'Relay → Sub: REQUEST_OK; a forwarded PUBLISH is reported but not required',
+        ...(c.announce ? ['Relay → Sub: NAMESPACE for the suffix "pub"'] : []),
+        `Watch Sub for ${WATCH_MS / 1000} s`,
+        `Control: a third session SUBSCRIBEs ${namespace.join('/')}/${TRACK} by name, filter Largest Object; needs objects within ${OBJECTS_MS / 1000} s`,
+        `Check: the control got objects (else inconclusive)${fwdRequired && !KNOWN_NO_PUBLISH_FWD ? '; Sub got the PUBLISH and objects in time' : ''}${c.announce ? '; Sub got the NAMESPACE' : ''}; no unexpected errors or resets`,
+      ],
       expected: fwdRequired
         ? 'The relay sends Sub a PUBLISH for the track (draft-18 §8, §10.19) and objects follow within 2 s; the control SUBSCRIBE gets objects'
         : c.announce

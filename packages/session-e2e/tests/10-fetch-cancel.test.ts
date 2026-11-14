@@ -50,6 +50,16 @@ describe.each([
     const lastGroup = messages[messages.length - 1]?.groupId ?? 0;
 
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} (${track.delivery}), max cache duration 60 s`,
+        `Pub: sends ${messages.length} objects of ${CANCEL_SIZE_BYTES} B; waits 500 ms`,
+        `Sub: FETCH 0/0..${lastGroup}/${perGroup - 1}`,
+        'If the relay answers with an error, the test reports it and stops without failing',
+        'Check: the first object arrives within 5 s',
+        'Sub: cancels the FETCH right after the first object; waits 500 ms, then counts',
+        'Check: no more objects in the next 1 s',
+        `Check: fewer than all ${messages.length} objects were delivered`,
+      ],
       expected: `After cancelFetch, no more objects arrive and fewer than all ${messages.length} are delivered (skipped if the relay refuses FETCH)`,
       inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, published: messages.length, range: `0/0..${lastGroup}/${perGroup - 1}` },
     });

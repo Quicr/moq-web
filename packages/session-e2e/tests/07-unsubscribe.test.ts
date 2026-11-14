@@ -58,6 +58,15 @@ describe.each([
     const messages = Array.from(generateChat(track.payload));
     const half = Math.floor(messages.length / 2);
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} (${track.delivery})`,
+        'Sub: SUBSCRIBE the track; waits 250 ms',
+        `Pub: sends ${half} objects; waits 500 ms`,
+        'Check: some objects arrived',
+        'Sub: UNSUBSCRIBE; waits 500 ms for in-flight objects, then counts',
+        `Pub: sends the other ${messages.length - half} objects; waits 1 s`,
+        'Check: no object arrived after the count',
+      ],
       expected: 'Objects arrive before UNSUBSCRIBE, and none arrive in the 1 s after it',
       inputs: { namespace: namespace.join('/'), track: track.name, delivery: track.delivery, objectsBefore: half, objectsAfter: messages.length - half },
     });

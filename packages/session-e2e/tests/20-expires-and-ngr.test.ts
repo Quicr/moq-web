@@ -42,6 +42,13 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
 
     const namespace = makeNamespace(profile, 'expires');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} with EXPIRES 30 s (§10.2.10)`,
+        'Wait 250 ms',
+        'Sub: SUBSCRIBE the track',
+        'Relay → Sub: SUBSCRIBE_OK',
+        'Check: the SUBSCRIBE resolved with a subscription ID',
+      ],
       expected: 'A SUBSCRIBE to a track published with EXPIRES resolves with a subscription ID',
       inputs: { namespace: namespace.join('/'), track: track.name, expiresMs: 30_000 },
     });
@@ -71,6 +78,14 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
 
     const namespace = makeNamespace(profile, 'ngr');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name} with DYNAMIC_GROUPS=1`,
+        'Wait 250 ms',
+        'Sub: SUBSCRIBE the track; Relay → Sub: SUBSCRIBE_OK',
+        'Check: the subscription exists',
+        'Sub: REQUEST_UPDATE with NEW_GROUP_REQUEST (§10.2.13), not waiting for REQUEST_UPDATE_OK',
+        'Check: sending it does not throw (delivery of a new group is test 44)',
+      ],
       expected: 'After SUBSCRIBE, a REQUEST_UPDATE with NEW_GROUP_REQUEST is sent without error',
       inputs: { namespace: namespace.join('/'), track: track.name, dynamicGroups: true, newGroupRequest: true },
     });
@@ -109,6 +124,13 @@ describe.skipIf(!isDraft18)('EXPIRES + NEW_GROUP_REQUEST', () => {
 
     const namespace = makeNamespace(profile, 'tnp');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+        'Wait 250 ms',
+        `Sub: SUBSCRIBE_TRACKS ${namespace.join('/')}`,
+        'Relay → Sub: REQUEST_OK, or a refusal / stream reset (tolerated)',
+        'Check: REQUEST_OK gave a subscription ID; any other failure, such as a session close, fails the test',
+      ],
       expected: 'SUBSCRIBE_TRACKS for the namespace resolves, or is refused without a protocol violation',
       inputs: { prefix: namespace.join('/'), track: track.name },
     });

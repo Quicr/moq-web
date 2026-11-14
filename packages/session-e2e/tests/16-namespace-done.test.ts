@@ -43,6 +43,13 @@ describe.skipIf(!isDraft18)('NAMESPACE_DONE end-of-batch', () => {
     const prefix = namespace.slice(0, -1);
 
     record(task, {
+      flow: [
+        `Sub: SUBSCRIBE_NAMESPACE ${prefix.join('/')}`,
+        'Relay → Sub: REQUEST_OK',
+        'Wait 500 ms for NAMESPACE messages and a closing NAMESPACE_DONE (§10.17)',
+        'Check: the request resolved with a Request ID',
+        'Recorded only: whether NAMESPACE_DONE arrived (a relay may keep the batch open)',
+      ],
       expected: 'SUBSCRIBE_NAMESPACE resolves with a request ID; a NAMESPACE_DONE, if the relay sends one, decodes',
       inputs: { prefix: prefix.join('/') },
     });

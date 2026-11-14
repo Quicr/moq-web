@@ -8,7 +8,11 @@
  * failing test still reports what it saw.
  *
  *   it('...', async ({ task }) => {
- *     record(task, { expected: 'every object arrives in order', inputs: { objects: 20 } });
+ *     record(task, {
+ *       flow: ['Pub: PUBLISH t', 'Sub: SUBSCRIBE t', 'Pub: 20 objects', 'Sub: receives all 20 in order'],
+ *       expected: 'every object arrives in order',
+ *       inputs: { objects: 20 },
+ *     });
  *     ...
  *     record(task, { observed: { received: received.length } });
  *     expect(received).toHaveLength(20);
@@ -16,6 +20,8 @@
  */
 
 export interface E2eRecord {
+  /** The steps the test takes, in order, as protocol messages: shown first on the report */
+  flow?: string[];
   /** The expected outcome, in a sentence */
   expected?: string;
   /** Parameters the test chose: namespaces, counts, options */
@@ -61,6 +67,7 @@ export function record(task: Recordable, fields: E2eRecord): void {
   const meta = task.meta as { e2e?: E2eRecord };
   const current = meta.e2e ?? {};
   meta.e2e = {
+    flow: fields.flow ?? current.flow,
     expected: fields.expected ?? current.expected,
     inputs: { ...current.inputs, ...(plain(fields.inputs) as Record<string, unknown> | undefined) },
     observed: { ...current.observed, ...(plain(fields.observed) as Record<string, unknown> | undefined) },

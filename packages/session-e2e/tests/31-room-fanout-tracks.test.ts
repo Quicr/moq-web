@@ -59,6 +59,16 @@ describe('Room fan-out with full studio sequence (subscribe + publish + announce
     const track = profile.tracks[0];
     if (!track) throw new Error('profile has no tracks');
     record(task, {
+      flow: [
+        `Open ${PEER_COUNT} sessions, peer1 … peer${PEER_COUNT}`,
+        `Each peer: SUBSCRIBE_NAMESPACE ${roomPrefix.join('/')}; wait ${SETTLE_MS} ms`,
+        `One peer at a time: PUBLISH ${TRACK_NAMES.join(', ')} under ${roomPrefix.join('/')}/<peer>, then PUBLISH_NAMESPACE <peer>; wait ${SETTLE_MS} ms`,
+        'Relay → other peers: NAMESPACE for the newly announced peer',
+        'On each NAMESPACE: the peer sends SUBSCRIBE_TRACKS for that peer\'s namespace',
+        'Relay → peer: a PUBLISH for each of that peer\'s tracks (existing and future)',
+        `Wait ${SETTLE_MS * 4} ms for the fan-out to settle`,
+        `Check: every peer saw NAMESPACE and a PUBLISH for all ${TRACK_NAMES.length} tracks of each of the other ${PEER_COUNT - 1} peers`,
+      ],
       expected: `Each of the ${PEER_COUNT} peers sees every other peer's announcement and an incoming-publish for each of its ${TRACK_NAMES.length} tracks`,
       inputs: { peers: PEER_COUNT, roomPrefix: roomPrefix.join('/'), tracks: TRACK_NAMES, settleMs: SETTLE_MS },
     });

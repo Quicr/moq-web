@@ -59,6 +59,12 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
     ]));
 
     record(task, {
+      flow: [
+        'Client: open WebTransport to the relay',
+        "Client: CLIENT_SETUP with unknown Setup Options 0x40 = varint 0x1234 and 0x41 = bytes 'moq-web-e2e'",
+        'Relay → Client: SERVER_SETUP (unknown options must be ignored, §3.2)',
+        'Check: the session is ready',
+      ],
       expected: 'The relay ignores the unknown SETUP extensions and setup completes',
       inputs: { extensions: ['0x40 = varint 0x1234', "0x41 = bytes 'moq-web-e2e'"] },
     });
@@ -86,6 +92,12 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
     // extensions, every value must satisfy the parity invariant.
     const peer = session.peerExtensions;
     record(task, {
+      flow: [
+        'Client: open WebTransport, CLIENT_SETUP',
+        'Relay → Client: SERVER_SETUP, with whatever Setup Options it advertises (none is fine)',
+        'Client: list the advertised options and the kind of each value',
+        'Check: every even key holds a varint and every odd key holds bytes',
+      ],
       expected: 'Every extension the relay advertises has a varint value for an even key and bytes for an odd key',
       observed: {
         peerExtensions: peer === undefined ? 'none' : [...peer].map(([key, value]) => `0x${key.toString(16)} ${'varint' in value ? 'varint' : 'bytes'}`),
@@ -114,7 +126,14 @@ describe.skipIf(!isDraft18)('SETUP extension advertisement (§3.2)', () => {
 
     await session.setup();
 
-    record(task, { expected: 'setClientExtensions() throws once setup() has run' });
+    record(task, {
+      flow: [
+        'Client: open WebTransport, CLIENT_SETUP, SERVER_SETUP received',
+        'Client: call setClientExtensions() with option 0x40 after setup',
+        'Check: the call throws "after setup()" (nothing is sent to the relay)',
+      ],
+      expected: 'setClientExtensions() throws once setup() has run',
+    });
     let thrown: unknown;
     try {
       session.setClientExtensions(new Map([[0x40, { varint: 1n }]]));

@@ -60,6 +60,14 @@ describe.skipIf(!isDraft22)('Track Properties', () => {
     const profile = resolveProfile(chatStream as Profile);
     const namespace = makeNamespace(profile, 'track-props');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ns/t with Track Properties: delivery timeout ${SENT.deliveryTimeout} ms, max cache ${SENT.maxCacheDuration} ms, priority ${SENT.priority}, group order descending, DYNAMIC_GROUPS`,
+        'Sub: SUBSCRIBE ns/t, filter Largest Object',
+        'Relay → Sub: SUBSCRIBE_OK with the Track Properties',
+        'Pub: one Object, so the track has a Largest Object',
+        'Sub: TRACK_STATUS ns/t; Relay → Sub: REQUEST_OK with the Track Properties (draft-22 §3.7)',
+        'Check: both carry the same five values the PUBLISH sent',
+      ],
       expected: 'SUBSCRIBE_OK and TRACK_STATUS both carry the five Track Properties the PUBLISH sent, with the same values',
       inputs: { track: `${namespace.join('/')}/t`, sent: { ...SENT, groupOrder: 'descending' } },
     });

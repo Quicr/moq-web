@@ -44,6 +44,15 @@ describe.skipIf(!isDraft18)('subgroup stream-reset (§11.4.3)', () => {
 
     const namespace = makeNamespace(profile, 'stream-reset');
     record(task, {
+      flow: [
+        `Pub: PUBLISH ${namespace.join('/')}/${track.name}`,
+        'Sub: SUBSCRIBE the track; wait 250 ms',
+        'Pub: 3 objects on one subgroup stream',
+        'Wait 100 ms for the stream to open',
+        "Pub: reset that stream with TOO_FAR_BEHIND, reason 'e2e-injected too-far-behind' (§11.4.3)",
+        'Check: exactly one publisher-side stream-reset event, with that code, reason and track alias',
+        "Not checked: whether the relay passes the reset on to the subscriber",
+      ],
       expected: 'Resetting the open subgroup stream emits exactly one publisher stream-reset with TOO_FAR_BEHIND and the given reason',
       inputs: { namespace: namespace.join('/'), track: track.name, objectsBeforeReset: 3, code: 'TOO_FAR_BEHIND', reason: 'e2e-injected too-far-behind' },
     });

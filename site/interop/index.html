@@ -234,6 +234,10 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .known-tests { color: var(--faint); }
 .kv-title a:hover { text-decoration: underline; }
 .expected { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+.flow { margin: 0; padding: 8px 10px 8px 32px; background: var(--surface-2); border-radius: 8px; font-size: 13px; }
+.flow li { margin: 2px 0; }
+.flow li::marker { color: var(--faint); font-variant-numeric: tabular-nums; }
+.src-link { font-size: 12px; font-weight: 400; margin-left: 8px; }
 table.kv { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 .kv td { padding: 4px 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .kv tr:first-child td { border-top: 0; }
@@ -750,6 +754,12 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     }
   }
 
+  /** A test file on GitHub at the run's commit, at a line when given */
+  function sourceUrl(file, line) {
+    const ref = /^[0-9a-f]{7,40}$/.test(state.run?.sha ?? '') ? state.run.sha : 'main';
+    return `${GH}/${REPO}/blob/${ref}/packages/session-e2e/${file}${line ? `#L${line}` : ''}`;
+  }
+
   function kvTable(fields) {
     const entries = Object.entries(fields || {});
     if (entries.length === 0) return null;
@@ -781,6 +791,11 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
     // Built on first open: a run can hold hundreds of tests with logs
     const fill = () => {
       if (body.childElementCount) return;
+      const src = sourceUrl(test.file, test.line);
+      body.append(el('div', {}, el('div', { class: 'kv-title' }, 'Flow',
+        el('a', { class: 'src-link', href: src, target: '_blank', rel: 'noopener', title: 'This test\'s source on GitHub, at the commit that ran' }, 'test source ↗')),
+        test.flow?.length ? el('ol', { class: 'flow' }, test.flow.map((step) => el('li', {}, step)))
+          : el('div', { class: 'none-recorded' }, 'Not recorded by this test; see its source.')));
       body.append(el('div', {}, el('div', { class: 'kv-title' }, 'Expected'),
         el('div', { class: 'expected' }, test.expected || title)));
       const inputs = kvTable(test.inputs);
@@ -883,7 +898,7 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       const section = el('div', { class: 'file' },
         el('div', { class: 'file-head' },
           el('span', { class: 'ftitle' }, info.title || file),
-          el('span', { class: 'fname' }, file.replace(/^tests\//, '')),
+          el('a', { class: 'fname', href: sourceUrl(file), target: '_blank', rel: 'noopener', title: 'This file on GitHub, at the commit that ran' }, file.replace(/^tests\//, '')),
           el('span', { class: 'fcount' }, `${passed}/${all.length} passed`)),
         info.description ? el('details', { class: 'file-desc' }, el('summary', {}, 'What this file tests'), info.description) : null,
         fileTests.map((t) => testNode(t, cell)));
