@@ -24,6 +24,17 @@ Relays the nightly matrix runs against are listed in `.github/e2e-relays.json`
 yours permanently, open a PR adding an entry there; for a one-off run, use
 *Test your relay* on the report page or the workflow's `relay_url` input.
 
+Starting a run needs write access. People listed in
+`.github/e2e-runners.json` can start one without it, with an `/e2e` line in a
+new issue or a comment (`.github/workflows/e2e-command.yml`); the run posts its
+link and results on the issue:
+
+```
+/e2e relays=cloudflare,meta drafts=draft-22
+/e2e url=https://relay.example/moq drafts=draft-18 name="My relay"
+/e2e help
+```
+
 | Relay | `RELAY_URL` | Drafts |
 |---|---|---|
 | openmoq | `https://moqx-main.ci.openmoq.org:4433/moq-relay` | d22, d18, d16 experimental (unreachable from runners as of 2026-11-11) |

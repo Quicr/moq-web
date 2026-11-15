@@ -437,6 +437,11 @@ footer { color: var(--faint); font-size: 12px; text-align: center; padding: 20px
       </div>
       <details class="note outside-help">
         <summary>Not a collaborator? Test your relay another way</summary>
+        <p><b>With an issue:</b> if you are on the
+        <a id="runners-list" target="_blank" rel="noopener">list of people who can start runs</a>,
+        <a id="e2e-issue" target="_blank" rel="noopener">open an issue</a> holding this command, built from the choices above
+        (or comment it on any issue). The run's link and its results are posted on the issue.</p>
+        <pre class="code" id="e2e-command"></pre>
         <p><b>On your machine:</b> clone the repository, then run</p>
         <pre class="code">pnpm install &amp;&amp; pnpm build
 RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
@@ -444,7 +449,7 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
         <p><b>In your fork:</b> fork the repository, enable Actions in the fork, and run the
         <i>e2e (live relay)</i> workflow there with your relay URL. Its report is published to your fork and shown on
         this page with <code>?repo=&lt;you&gt;/moq-web</code> added to the address.</p>
-        <p><b>Or ask:</b> <a id="ask-relay" target="_blank" rel="noopener">open an issue</a> with your relay URL and drafts, and a maintainer will add it.</p>
+        <p><b>Or ask:</b> <a id="ask-relay" target="_blank" rel="noopener">open an issue</a> with your relay URL and drafts, and a maintainer will add it, or add you to the list.</p>
       </details>
       <pre class="code" id="run-values"></pre>
       <div class="status-line" id="run-status"></div>
@@ -1084,6 +1089,19 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
     const inputs = dialogInputs();
     const lines = Object.entries(inputs).map(([k, v]) => `${k.padEnd(11)} ${v || '(empty)'}`);
     $('run-values').textContent = `Branch      main\n${lines.join('\n')}`;
+    const command = e2eCommand(inputs);
+    $('e2e-command').textContent = command;
+    $('e2e-issue').href = `${GH}/${REPO}/issues/new?title=${encodeURIComponent('e2e run')}&body=${encodeURIComponent(command)}`;
+  }
+
+  /** The /e2e line for e2e-command.yml that asks for these inputs */
+  function e2eCommand(inputs) {
+    const quote = (v) => (/[\s"]/.test(v) ? `"${v.replace(/"/g, '')}"` : v);
+    return ['/e2e',
+      inputs.relay_url ? `url=${inputs.relay_url}` : '',
+      inputs.relay_name ? `name=${quote(inputs.relay_name)}` : '',
+      inputs.relays ? `relays=${inputs.relays}` : '',
+      inputs.drafts ? `drafts=${inputs.drafts}` : ''].filter(Boolean).join(' ');
   }
 
   function openRunDialog(mode, cell) {
@@ -1215,6 +1233,7 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
     $('gh-link').href = `${GH}/${REPO}/actions/workflows/${WORKFLOW}`;
     $('run-open').href = `${GH}/${REPO}/actions/workflows/${WORKFLOW}`;
     $('add-relay').href = `${GH}/${REPO}/edit/main/.github/e2e-relays.json`;
+    $('runners-list').href = `${GH}/${REPO}/blob/main/.github/e2e-runners.json`;
     $('ask-relay').href = `${GH}/${REPO}/issues/new?title=${encodeURIComponent('Interop: please add my relay')}&body=${encodeURIComponent('Relay URL:\nDrafts:\nName to show:\n')}`;
     $('run-btn').addEventListener('click', () => openRunDialog('registered'));
     $('relay-btn').addEventListener('click', () => openRunDialog('custom'));

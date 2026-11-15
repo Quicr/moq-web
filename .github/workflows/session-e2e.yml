@@ -24,6 +24,10 @@ on:
         description: 'Only these drafts, comma separated, e.g. draft-22,draft-23 (empty: each relay its own)'
         required: false
         default: ''
+      reply_to:
+        description: 'Issue number to post the run link and results on (set by e2e-command.yml)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -32,6 +36,9 @@ jobs:
   plan:
     name: plan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -47,6 +54,13 @@ jobs:
           RELAYS: ${{ inputs.relays }}
           DRAFTS: ${{ inputs.drafts }}
         run: node .github/scripts/e2e-matrix.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Reply on the issue that asked for this run
+        if: inputs.reply_to != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPLY_TO: ${{ inputs.reply_to }}
+        run: node .github/scripts/e2e-reply.mjs started
 
   session-e2e:
     name: session-e2e (${{ matrix.relay }}, ${{ matrix.draft }})
@@ -136,6 +150,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      issues: write
     # One writer at a time: each publish starts from the branch's latest data
     concurrency:
       group: e2e-reports
@@ -167,6 +182,13 @@ jobs:
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
             commit -q -m "Interop report: run ${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT}"
           git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" e2e-reports
+
+      - name: Post the results on the issue that asked for this run
+        if: inputs.reply_to != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPLY_TO: ${{ inputs.reply_to }}
+        run: node .github/scripts/e2e-reply.mjs results "out/runs/${GITHUB_RUN_ID}.json"
 
   media-e2e:
     name: media-e2e (${{ matrix.draft }})

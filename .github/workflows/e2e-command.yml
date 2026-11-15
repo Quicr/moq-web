@@ -1,0 +1,46 @@
+name: e2e command
+
+# Starts a session-e2e run from an /e2e line in a new issue or a comment, for
+# people listed in .github/e2e-runners.json (and the repository's owners,
+# members and collaborators). They need no write access: this workflow runs
+# from the default branch and dispatches the run with its own token. Usage:
+# `/e2e help`, or see .github/scripts/e2e-command.mjs.
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    name: dispatch
+    # Issues only, not pull request comments; and only text with an /e2e line
+    if: >-
+      !github.event.issue.pull_request && (
+        (github.event_name == 'issues' && contains(github.event.issue.body, '/e2e')) ||
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/e2e')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+
+      - name: Start the run
+        # The command reaches the script through the environment, never the shell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TEXT: ${{ github.event_name == 'issues' && github.event.issue.body || github.event.comment.body }}
+          AUTHOR: ${{ github.event_name == 'issues' && github.event.issue.user.login || github.event.comment.user.login }}
+          ASSOCIATION: ${{ github.event_name == 'issues' && github.event.issue.author_association || github.event.comment.author_association }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: node .github/scripts/e2e-command.mjs

@@ -1,0 +1,4 @@
+{
+  "$comment": "GitHub logins allowed to start session-e2e runs with an /e2e command in an issue or comment (e2e-command.yml), without write access to the repository. The repository's owners, org members and collaborators may always. Add someone with a PR.",
+  "users": []
+}
