@@ -15,6 +15,10 @@
  * Job links and conclusions come from the Actions API. A re-run attempt
  * replaces the run's earlier attempt. Runs older than MAX_AGE_MS are dropped,
  * except the newest, so the page always has one.
+ *
+ * A failed test whose output matches one of its relay's `unsupported` entries
+ * in e2e-relays.json becomes state "unsupported": it leaves the failed count,
+ * and a cell whose only failures those were is "passed".
  */
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -37,6 +41,7 @@ const runId = Number(env.GITHUB_RUN_ID);
 const attempt = Number(env.GITHUB_RUN_ATTEMPT ?? 1);
 const server = env.GITHUB_SERVER_URL ?? 'https://github.com';
 const api = env.GITHUB_API_URL ?? 'https://api.github.com';
+const registry = readJson(new URL('../e2e-relays.json', import.meta.url), { relays: [] });
 
 function readJson(path, fallback) {
   try {
@@ -69,6 +74,27 @@ async function jobsByName() {
   return jobs;
 }
 
+/** Moves failures the relay's registry entry explains as an unsupported feature out of counts.failed */
+function classifyUnsupported(relayId, draft, tests, counts) {
+  const features = registry.relays.find((r) => r.id === relayId)?.unsupported ?? [];
+  let moved = 0;
+  for (const test of tests) {
+    if (test.state !== 'failed') {
+      continue;
+    }
+    const text = `${test.error ?? ''}\n${(test.logs ?? []).join('\n')}`;
+    const feature = features.find((u) => (!u.drafts || u.drafts.includes(draft))
+      && (!u.tests || u.tests.some((t) => test.file.includes(t)))
+      && text.includes(u.match));
+    if (feature) {
+      test.state = 'unsupported';
+      test.unsupported = { feature: feature.feature, summary: feature.summary, match: feature.match };
+      moved++;
+    }
+  }
+  return moved ? { ...counts, failed: counts.failed - moved, unsupported: moved } : counts;
+}
+
 function cellStatus(counts, conclusion, hasReport) {
   if (!hasReport) {
     return conclusion === 'cancelled' ? 'cancelled' : 'error';
@@ -99,7 +125,8 @@ for (const entry of readdirSync(artifactsDir, { withFileTypes: true })) {
   }
   const report = readJson(join(dir, 'report.json'), undefined);
   const job = jobs.get(`session-e2e (${cell.relay}, ${cell.draft})`);
-  const counts = report?.counts ?? { passed: 0, failed: 0, skipped: 0 };
+  const tests = report?.tests ?? [];
+  const counts = classifyUnsupported(cell.relay, cell.draft, tests, report?.counts ?? { passed: 0, failed: 0, skipped: 0 });
   cells.push({
     relay: cell.relay,
     name: cell.name,
@@ -115,7 +142,7 @@ for (const entry of readdirSync(artifactsDir, { withFileTypes: true })) {
     counts,
     errors: report?.errors ?? (report ? [] : ['No test report: the job ended before the tests ran. See the job log.']),
     files: report?.files ?? {},
-    tests: report?.tests ?? [],
+    tests,
   });
 }
 cells.sort((a, b) => a.relay.localeCompare(b.relay) || b.draft.localeCompare(a.draft));

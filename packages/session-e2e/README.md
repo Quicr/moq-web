@@ -32,7 +32,9 @@ yours permanently, open a PR adding an entry there; for a one-off run, use
 | aiomoqt (Marz Research) | `https://aiomoqt-relay.marzresearch.net:4443/` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | moqtail | `https://relay.moqtail.dev` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | laps (quicr) relay | `https://relay.us-west-2.m10x.org:33440/relay` | d18 experimental (libquicr: path `/relay` only) |
-| quichemoq | `https://quichemoq.dev` | d18 experimental |
+| quichemoq | `https://quichemoq.dev` | d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
+| stitcher-moq (Paramount) | `https://34-72-6-160.sslip.io/` | d22, d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported; keep the trailing `/`) |
+| xquic | `https://moq.xquic.org/moqt` | d22, d18 experimental (WebTransport handshake fails as of 2026-11-14) |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
 
 As of 2026-11-10 neither Cloudflare nor Meta offers `moqt-23` in
@@ -52,6 +54,12 @@ the same namespace (31, 32, 35 case 3); and 36, 37, 39, 41, 42 and 44.
 A relay's `knownIssues` in `.github/e2e-relays.json` name these gaps: the
 report labels a failed test with one when its file matches and its error or
 log contains the issue's `match` text.
+
+A relay's `unsupported` entries name features it does not implement, such as
+PUBLISH. A failed test whose error or log contains an entry's `match` text
+(within its `drafts` and `tests`, when given) is reported as *not supported*
+rather than failed: the report lists it under its own tab, and a cell whose
+only failures those are is green, without the full-interop medal.
 
 Both env vars are optional overrides for what's in the profile JSON. `MOQ_AUTH_TOKEN`
 is read from the environment and never committed — profiles reference it by name.
