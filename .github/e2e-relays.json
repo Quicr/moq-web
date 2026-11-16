@@ -101,13 +101,13 @@
     {
       "id": "stitcher-moq",
       "name": "stitcher-moq (Paramount)",
-      "url": "https://34-72-6-160.sslip.io/",
+      "url": "https://34-72-6-160.sslip.io",
       "drafts": [],
       "experimentalDrafts": [
         "draft-22",
         "draft-18"
       ],
-      "notes": "Added 2026-11-14. moq-dev moq-relay 0.17.15 in front of Paramount's MoQ sandbox. Anonymous subscribe everywhere; anonymous publish only under moq-web-e2e/** and moq-test/**. Does not offer moqt-23. The URL needs its trailing slash: without it the WebTransport handshake fails.",
+      "notes": "Added 2026-11-14. moq-dev moq-relay 0.17.15 in front of Paramount's MoQ sandbox. Anonymous subscribe everywhere; anonymous publish only under moq-web-e2e/** and moq-test/**. Does not offer moqt-23.",
       "unsupported": [
         {
           "feature": "PUBLISH",
@@ -130,7 +130,7 @@
         "draft-22",
         "draft-18"
       ],
-      "notes": "Added 2026-11-14. As of then the WebTransport handshake fails from Chrome for draft-16, 18, 22 and 23."
+      "notes": "Added 2026-11-14. As of 2026-11-15 browsers cannot open WebTransport: its HTTP/3 SETTINGS carry only SETTINGS_MAX_FIELD_SECTION_SIZE (no ENABLE_CONNECT_PROTOCOL, H3_DATAGRAM or WT_MAX_SESSIONS), so Chrome fails with ERR_METHOD_NOT_SUPPORTED. Its certificate verifies."
     },
     {
       "id": "lminiero",

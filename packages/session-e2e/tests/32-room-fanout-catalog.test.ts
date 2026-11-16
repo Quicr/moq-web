@@ -35,6 +35,14 @@ import chatStream from '../profiles/chat-stream.json';
 
 const PEER_COUNT = 4;
 const SETTLE_MS = 400;
+/**
+ * Each peer re-sends its catalog this often. A subscription starts at the
+ * next object, so a catalog sent once before a peer subscribed reaches it
+ * only if the relay hands out its latest cached object, which it need not.
+ */
+const REPUBLISH_MS = 500;
+/** How long to wait for every peer to have every other peer's catalog */
+const DELIVERY_MS = 10_000;
 
 const MEDIA_CONFIG: MediaConfig = {
   videoBitrate: 1_200_000,
@@ -85,16 +93,16 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
         `Open ${PEER_COUNT} sessions, peer1 … peer${PEER_COUNT}, each with a MediaSession and an MSFSession`,
         `Each peer: SUBSCRIBE_NAMESPACE ${roomPrefix.join('/')}; wait ${SETTLE_MS} ms`,
         `One peer at a time: PUBLISH timeline, video (stream) and audio (datagram) under ${roomPrefix.join('/')}/<peer>`,
-        `  …then PUBLISH ${CATALOG_TRACK_NAME} and send ONE catalog object listing video and audio (no republish: republishIntervalMs defaults to 0)`,
+        `  …then PUBLISH ${CATALOG_TRACK_NAME} and send a catalog object listing video and audio, re-sent as a new group every ${REPUBLISH_MS} ms`,
         `  …then PUBLISH_NAMESPACE <peer>; wait ${SETTLE_MS} ms before the next peer joins`,
         'Relay → other peers: NAMESPACE for the newly announced peer',
         "On each NAMESPACE: the peer sends SUBSCRIBE_TRACKS for that peer's namespace",
         `Relay → peer: a PUBLISH for each track, including ${CATALOG_TRACK_NAME}; the peer accepts it and reads catalog objects`,
-        `  Note: the catalog object was sent before this subscription existed; it arrives only if the relay delivers the latest cached object`,
-        `Wait ${SETTLE_MS * 4} ms, then Check: each peer has a parseable catalog with video and audio from all ${PEER_COUNT - 1} other peers`,
+        `  Note: the first catalog object was sent before this subscription existed; the re-sends reach it whether or not the relay delivers its latest cached object`,
+        `Wait until each peer has a parseable catalog with video and audio from all ${PEER_COUNT - 1} other peers, at most ${DELIVERY_MS / 1000} s`,
       ],
       expected: `Each of the ${PEER_COUNT} peers receives a FullCatalog listing video and audio from every other peer`,
-      inputs: { peers: PEER_COUNT, roomPrefix: roomPrefix.join('/'), tracks: ['timeline', 'video', 'audio', CATALOG_TRACK_NAME], settleMs: SETTLE_MS },
+      inputs: { peers: PEER_COUNT, roomPrefix: roomPrefix.join('/'), tracks: ['timeline', 'video', 'audio', CATALOG_TRACK_NAME], settleMs: SETTLE_MS, republishMs: REPUBLISH_MS, waitMs: DELIVERY_MS },
     });
 
     const peerIdFromNs = (ns: string[]): string | undefined => {
@@ -112,7 +120,7 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
       const ns = [...roomPrefix, id];
       const mediaSession = new MediaSession({ session: handle.session });
       mediaSession.setOwnNamespacePrefix(ns.join('/'));
-      const msfSession = new MSFSession(handle.session, ns);
+      const msfSession = new MSFSession(handle.session, ns, { catalogPublishOptions: { republishIntervalMs: REPUBLISH_MS } });
 
       const ctx: PeerCtx = {
         handle,
@@ -203,8 +211,17 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
       await new Promise((r) => setTimeout(r, SETTLE_MS));
     }
 
-    // Phase 4: let subscribeTracks + catalog objects settle.
-    await new Promise((r) => setTimeout(r, SETTLE_MS * 4));
+    // Phase 4: wait for every peer's catalog to reach every other peer.
+    const complete = (c: PeerCtx) => ctxs.every((other) => {
+      if (other === c) return true;
+      const names = new Set(c.peerCatalogs.get(other.id)?.tracks.map((t) => t.name));
+      return names.has('video') && names.has('audio');
+    });
+    const startWait = Date.now();
+    while (!ctxs.every(complete) && Date.now() - startWait < DELIVERY_MS) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const waitedMs = Date.now() - startWait;
 
     // Phase 5: assertion. Every peer must have received a parseable FullCatalog
     // with 'video' + 'audio' tracks from every OTHER peer.
@@ -235,6 +252,7 @@ describe('Room fan-out with full studio flow (MediaSession + MSFSession catalog)
           discovered: [...c.discoveredPeers],
         }])),
         failures: failures.slice(0, 10),
+        waitedMs,
       },
     });
     // One line per peer that missed something, e.g.

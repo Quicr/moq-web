@@ -540,10 +540,13 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
 
   /**
    * Failures caused by a feature the relay's registry entry says it does not support become
-   * "not supported": they leave the failed count, and a cell whose only failures they were is green
+   * "not supported": they leave the failed count, and a cell whose only failures they were is green.
+   * Skipped tests are left out: every skip is a test for another draft than the cell's.
    */
   function classify(run) {
     for (const cell of run.cells) {
+      cell.tests = cell.tests.filter((t) => t.state !== 'skipped');
+      cell.counts = { ...cell.counts, skipped: 0 };
       let moved = 0;
       for (const test of cell.tests) {
         if (test.state !== 'failed') continue;
@@ -741,8 +744,8 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
     const run = state.run;
     if (!run) return;
     const counts = run.cells.reduce((acc, c) => ({
-      passed: acc.passed + c.counts.passed, failed: acc.failed + c.counts.failed, skipped: acc.skipped + c.counts.skipped,
-    }), { passed: 0, failed: 0, skipped: 0 });
+      passed: acc.passed + c.counts.passed, failed: acc.failed + c.counts.failed, unsupported: acc.unsupported + (c.counts.unsupported ?? 0),
+    }), { passed: 0, failed: 0, unsupported: 0 });
     const cellsOk = run.cells.filter((c) => c.status === 'passed').length;
     const rate = ran(counts) ? Math.round((counts.passed / ran(counts)) * 100) : 0;
     const stat = (label, value, hint, color) => el('div', { class: 'card stat' },
@@ -752,7 +755,7 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
     box.append(
       stat('Run', `#${run.runNumber ?? run.runId}`, `${triggerLabel(run)} · ${when(run.publishedAt)}`),
       stat('Pass rate', `${rate}%`, `${counts.passed} of ${ran(counts)} tests that ran`, rate === 100 ? '--pass' : undefined),
-      stat('Failed tests', String(counts.failed), `${counts.skipped} skipped`, counts.failed ? '--fail' : undefined),
+      stat('Failed tests', String(counts.failed), counts.unsupported ? `${counts.unsupported} more not supported by their relay` : 'across all cells', counts.failed ? '--fail' : undefined),
       stat('Clean cells', `${cellsOk}/${run.cells.length}`, 'relay × draft combinations with no failure'),
     );
   }
@@ -765,7 +768,7 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
       type: 'button',
       class: `chip ${cell.status}${cellKey(cell) === state.cellKey ? ' selected' : ''}`,
       'data-draft': draftLabel(cell.draft),
-      title: `${cell.name} ${cell.draft}: ${cell.counts.passed} passed, ${cell.counts.failed} failed, ${cell.counts.skipped} skipped${cell.counts.unsupported ? `, ${cell.counts.unsupported} not supported by the relay` : ''}`,
+      title: `${cell.name} ${cell.draft}: ${cell.counts.passed} passed, ${cell.counts.failed} failed${cell.counts.unsupported ? `, ${cell.counts.unsupported} not supported by the relay` : ''}`,
       'aria-pressed': String(cellKey(cell) === state.cellKey),
       onclick: selectable ? () => toggleCell(cell) : undefined,
     }, cell.status === 'passed' ? '✓' : cell.status === 'failed' ? '✕' : '!', label, cell.experimental ? el('span', { class: 'exp' }, 'exp') : null);
@@ -982,9 +985,9 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
           el('span', { class: 'p', style: `width:${(cell.counts.passed / n) * 100}%` }),
           el('span', { class: 'f', style: `width:${(cell.counts.failed / n) * 100}%` }),
           el('span', { class: 'u', style: `width:${((cell.counts.unsupported ?? 0) / n) * 100}%` }),
-          el('span', { class: 's', style: `width:${(cell.counts.skipped / n) * 100}%` })),
+        ),
         el('div', { class: 'meta', style: 'color:var(--muted);font-size:12.5px;margin-top:6px' },
-          `${cell.counts.passed} passed · ${cell.counts.failed} failed${cell.counts.unsupported ? ` · ${cell.counts.unsupported} not supported` : ''} · ${cell.counts.skipped} skipped`,
+          `${cell.counts.passed} passed · ${cell.counts.failed} failed${cell.counts.unsupported ? ` · ${cell.counts.unsupported} not supported` : ''}`,
           (() => { const k = cell.tests.filter((t) => knownIssue(cell, t)).length; return k ? ` · ${k} of ${cell.counts.failed} failures are known relay issues` : ''; })(),
           cell.startedAt && cell.finishedAt ? ` · ${duration(new Date(cell.finishedAt) - new Date(cell.startedAt))}` : '')),
       el('div', { class: 'right' },
@@ -993,7 +996,7 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
         el('button', { class: 'btn', type: 'button', onclick: rerunFailed, title: 'Re-run the failed jobs of this run' }, '↻ Re-run failed'),
         el('button', { class: 'btn', type: 'button', onclick: closeCell, title: 'Close these results', 'aria-label': 'Close these results' }, '×'))));
 
-    const tabs = ['failed', 'all', 'passed', ...(cell.counts.unsupported ? ['unsupported'] : []), 'skipped'];
+    const tabs = ['failed', 'all', 'passed', ...(cell.counts.unsupported ? ['unsupported'] : [])];
     const seg = el('div', { class: 'seg', role: 'tablist' }, tabs.map((f) => {
       const count = f === 'all' ? cell.tests.length : cell.tests.filter((t) => t.state === f).length;
       return el('button', {

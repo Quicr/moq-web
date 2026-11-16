@@ -44,8 +44,8 @@ link and results on the issue:
 | moqtail | `https://relay.moqtail.dev` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | laps (quicr) relay | `https://relay.us-west-2.m10x.org:33440/relay` | d18 experimental (libquicr: path `/relay` only) |
 | quichemoq | `https://quichemoq.dev` | d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
-| stitcher-moq (Paramount) | `https://34-72-6-160.sslip.io/` | d22, d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported; keep the trailing `/`) |
-| xquic | `https://moq.xquic.org/moqt` | d22, d18 experimental (WebTransport handshake fails as of 2026-11-14) |
+| stitcher-moq (Paramount) | `https://34-72-6-160.sslip.io` | d22, d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
+| xquic | `https://moq.xquic.org/moqt` | d22, d18 experimental (no WebTransport in its HTTP/3 SETTINGS as of 2026-11-15) |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
 
 As of 2026-11-10 neither Cloudflare nor Meta offers `moqt-23` in
