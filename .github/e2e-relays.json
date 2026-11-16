@@ -27,10 +27,9 @@
         "draft-22"
       ],
       "experimentalDrafts": [
-        "draft-23",
         "draft-18"
       ],
-      "notes": "As of 2026-11-10 it does not offer moqt-23."
+      "notes": "As of 2026-11-15 it does not offer moqt-23, so it does not run draft-23."
     },
     {
       "id": "meta",
@@ -40,9 +39,8 @@
         "draft-22"
       ],
       "experimentalDrafts": [
-        "draft-23"
       ],
-      "notes": "As of 2026-11-10 it does not offer moqt-23."
+      "notes": "As of 2026-11-15 it does not offer moqt-23, so it does not run draft-23."
     },
     {
       "id": "aiomoqt",
@@ -50,10 +48,9 @@
       "url": "https://aiomoqt-relay.marzresearch.net:4443/",
       "drafts": [],
       "experimentalDrafts": [
-        "draft-23",
         "draft-22"
       ],
-      "notes": "Added 2026-11-14. As of then it does not offer moqt-23 (WebTransport handshake fails)."
+      "notes": "Added 2026-11-14. As of 2026-11-15 it does not offer moqt-23, so it does not run draft-23."
     },
     {
       "id": "moqtail",
@@ -61,10 +58,9 @@
       "url": "https://relay.moqtail.dev",
       "drafts": [],
       "experimentalDrafts": [
-        "draft-23",
         "draft-22"
       ],
-      "notes": "Added 2026-11-14. As of then it does not offer moqt-23 (WebTransport handshake fails)."
+      "notes": "Added 2026-11-14. As of 2026-11-15 it does not offer moqt-23, so it does not run draft-23."
     },
     {
       "id": "laps",
@@ -82,10 +78,9 @@
       "url": "https://quichemoq.dev",
       "drafts": [],
       "experimentalDrafts": [
-        "draft-22",
-        "draft-18"
+        "draft-22"
       ],
-      "notes": "Added 2026-11-14 for draft-18, draft-22 on 2026-11-15; accepts WebTransport on any path at port 443. Refuses a PUBLISH with UNINTERESTED until something subscribes, and does not support SUBSCRIBE_TRACKS.",
+      "notes": "Added 2026-11-14 for draft-18; draft-22 since 2026-11-15, draft-18 dropped; accepts WebTransport on any path at port 443. Refuses a PUBLISH with UNINTERESTED until something subscribes, and does not support SUBSCRIBE_TRACKS.",
       "unsupported": [
         {
           "feature": "PUBLISH",
@@ -128,13 +123,12 @@
       "url": "https://moq.xquic.org/moqt",
       "drafts": [],
       "experimentalDrafts": [
-        "draft-22",
-        "draft-18"
+        "draft-22"
       ],
       "chromiumArgs": [
         "--enable-features=EnableWebTransportDraft07"
       ],
-      "notes": "Added 2026-11-14. It speaks WebTransport draft-07, not the newer draft Chrome uses by default (whose SETTINGS it does not answer, so Chrome fails with ERR_METHOD_NOT_SUPPORTED); its runs enable Chrome's EnableWebTransportDraft07."
+      "notes": "Added 2026-11-14. It speaks WebTransport draft-07, not the newer draft Chrome uses by default (whose SETTINGS it does not answer, so Chrome fails with ERR_METHOD_NOT_SUPPORTED); its runs enable Chrome's EnableWebTransportDraft07. It refuses the WebTransport handshake for moqt-18, so it runs draft-22 only."
     },
     {
       "id": "lminiero",

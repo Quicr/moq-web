@@ -38,19 +38,18 @@ link and results on the issue:
 | Relay | `RELAY_URL` | Drafts |
 |---|---|---|
 | openmoq | `https://moqx-main.ci.openmoq.org:4433/moq-relay` | d22, d18, d16 experimental (unreachable from runners as of 2026-11-11) |
-| Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d18, d23 experimental |
-| Meta (mvfst) | `https://fb.mvfst.net:9448/moq-relay` | d22; d23 experimental |
-| aiomoqt (Marz Research) | `https://aiomoqt-relay.marzresearch.net:4443/` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
-| moqtail | `https://relay.moqtail.dev` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
+| Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d18 experimental |
+| Meta (mvfst) | `https://fb.mvfst.net:9448/moq-relay` | d22 |
+| aiomoqt (Marz Research) | `https://aiomoqt-relay.marzresearch.net:4443/` | d22 experimental |
+| moqtail | `https://relay.moqtail.dev` | d22 experimental |
 | laps (quicr) relay | `https://relay.us-west-2.m10x.org:33440/relay` | d18 experimental (libquicr: path `/relay` only) |
-| quichemoq | `https://quichemoq.dev` | d22, d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
+| quichemoq | `https://quichemoq.dev` | d22 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
 | stitcher-moq (Paramount) | `https://34-72-6-160.sslip.io` | d22, d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
-| xquic | `https://moq.xquic.org/moqt` | d22, d18 experimental (WebTransport draft-07: runs with `--enable-features=EnableWebTransportDraft07`) |
+| xquic | `https://moq.xquic.org/moqt` | d22 experimental (WebTransport draft-07: runs with `--enable-features=EnableWebTransportDraft07`) |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
 
-As of 2026-11-10 neither Cloudflare nor Meta offers `moqt-23` in
-WT-Available-Protocols (offered both, they select `moqt-22`), so draft-23 runs
-fail at the WebTransport handshake until the relays add it. Known relay-side
+Only lminiero runs draft-23: as of 2026-11-15 no other relay offers `moqt-23`
+in WT-Available-Protocols (offered both, they select `moqt-22`). Known relay-side
 failures on draft-22, also seen on `main`: Cloudflare returns only part of a
 large-payload FETCH (09-fetch); Meta does not resume delivery after a
 REQUEST_UPDATE resume (06) and misses catalogs in the 4-peer fan-out (32).
