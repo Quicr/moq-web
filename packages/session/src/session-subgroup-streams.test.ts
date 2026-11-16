@@ -87,6 +87,19 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('subgroup streams (
     expect(h.closed).toEqual([]);
   });
 
+  it('serializes concurrent stream opens and Object ID deltas', async () => {
+    const h = makeHarness(draft);
+    await Promise.all([0, 1, 2].map((objectId) =>
+      h.session.sendObject(TRACK_ALIAS, PAYLOAD, { groupId: GROUP, objectId, type: 'data' }),
+    ));
+
+    expect(h.created).toEqual([1]);
+    expect(h.writes.map((write) => write.streamId)).toEqual([1, 1, 1]);
+    for (const write of h.writes.slice(1)) {
+      expect(Array.from(write.data)).toEqual([0, PAYLOAD.length, ...PAYLOAD]);
+    }
+  });
+
   it('opens at the first object with FIRST_OBJECT set, and no second header', async () => {
     const h = makeHarness(draft);
 

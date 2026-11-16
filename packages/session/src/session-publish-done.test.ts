@@ -33,6 +33,7 @@ interface Harness {
     doSendControl: (bytes: Uint8Array) => Promise<void>;
     doCreateStream: (opts?: { sendOrder?: number }) => Promise<unknown>;
     doWriteStream: (info: unknown, data: Uint8Array, close?: boolean) => Promise<void>;
+    doCloseStream: (info: { streamId: number }) => Promise<void>;
   };
   controlSends: Uint8Array[];
   streamWrites: Uint8Array[];
@@ -119,6 +120,57 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('%s §9.9 PUBLISH_D
     await h.session.sendPublishDone(REQUEST_ID, 0, 0);
 
     expect(decodeDone(h.session, h.streamWrites[0]).streamCount).toBe(0n);
+  });
+
+  it('opens the next group while the old FIN drains and waits for both before PUBLISH_DONE', async () => {
+    const h = makeHarness(draft);
+    let created = 0;
+    h.internals.doCreateStream = async () => ({ streamId: ++created });
+    let commitOldFin!: () => void;
+    const oldFin = new Promise<void>((resolve) => { commitOldFin = resolve; });
+    const close = vi.fn(async ({ streamId }: { streamId: number }) => {
+      if (streamId === 1) await oldFin;
+    });
+    h.internals.doCloseStream = close;
+    const send = (groupId: number) =>
+      h.session.sendObject(TRACK_ALIAS, new Uint8Array([1]), { groupId, objectId: 0 });
+
+    await send(0);
+    const next = send(1);
+    try {
+      await vi.waitFor(() => expect(created).toBe(2));
+      const end = h.session.unpublish(TRACK_ALIAS);
+      const alsoEnd = h.session.unpublish(TRACK_ALIAS);
+      await send(2);
+      await vi.waitFor(() => expect(close.mock.calls.map(([s]) => s.streamId)).toEqual([1, 2]));
+      expect(h.streamWrites).toHaveLength(0);
+      expect(created).toBe(2);
+
+      commitOldFin();
+      await Promise.all([next, end, alsoEnd]);
+      expect(h.streamWrites).toHaveLength(1);
+      expect(decodeDone(h.session, h.streamWrites[0]).streamCount).toBe(2n);
+    } finally {
+      commitOldFin();
+    }
+  });
+
+  it('drains subgroup writes submitted before unpublish', async () => {
+    const h = makeHarness(draft);
+    const write = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn().mockResolvedValue(undefined);
+    h.internals.doWriteStream = write;
+    h.internals.doCloseStream = close;
+    const pending = [0, 1].map((objectId) =>
+      h.session.sendObjectViaStream(TRACK_ALIAS, new Uint8Array([1]), { groupId: 0, objectId }),
+    );
+
+    await Promise.all([...pending, h.session.unpublish(TRACK_ALIAS)]);
+
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(write.mock.invocationCallOrder[1]).toBeLessThan(close.mock.invocationCallOrder[0]);
+    expect(decodeDone(h.session, h.streamWrites[0]).streamCount).toBe(1n);
   });
 
   it('sets the unknown Stream Count sentinel of the negotiated draft', async () => {
