@@ -3,7 +3,7 @@
 
 /**
  * Prints the session-e2e matrix as a GitHub Actions output line:
- *   matrix=[{ relay, name, draft, relay_url, experimental }, ...]
+ *   matrix=[{ relay, name, draft, relay_url, experimental, chromium_args }, ...]
  *
  * Built from .github/e2e-relays.json, narrowed by the workflow_dispatch
  * inputs (read from the environment, never interpolated into a shell):
@@ -54,6 +54,18 @@ function checkedUrl(value) {
   return url.toString().replace(/\/$/, url.pathname === '/' ? '' : '/');
 }
 
+/** A relay's extra Chromium switches, space-separated; only --name or --name=value */
+function checkedChromiumArgs(relay) {
+  const args = relay.chromiumArgs ?? [];
+  for (const arg of args) {
+    if (!/^--[a-z0-9-]+(=[A-Za-z0-9,._-]+)?$/.test(arg)) {
+      fail(`Relay ${relay.id}: Chromium switch "${arg}" is not --name or --name=value`);
+    }
+  }
+
+  return args.join(' ');
+}
+
 /** A label safe for job and artifact names */
 function slug(value) {
   return value.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'custom';
@@ -66,7 +78,7 @@ if (process.env.CUSTOM_URL?.trim()) {
   const relayUrl = checkedUrl(process.env.CUSTOM_URL.trim());
   const name = (process.env.CUSTOM_NAME?.trim() || new URL(relayUrl).host).slice(0, 60);
   for (const draft of drafts.length > 0 ? drafts : DEFAULT_CUSTOM_DRAFTS) {
-    cells.push({ relay: slug(`custom-${name}`), name, draft, relay_url: relayUrl, experimental: true });
+    cells.push({ relay: slug(`custom-${name}`), name, draft, relay_url: relayUrl, experimental: true, chromium_args: '' });
   }
 } else {
   const only = new Set(list(process.env.RELAYS));
@@ -80,7 +92,7 @@ if (process.env.CUSTOM_URL?.trim()) {
     ];
     for (const { draft, experimental } of own) {
       if (drafts.length === 0 || drafts.includes(draft)) {
-        cells.push({ relay: relay.id, name: relay.name, draft, relay_url: relay.url, experimental });
+        cells.push({ relay: relay.id, name: relay.name, draft, relay_url: relay.url, experimental, chromium_args: checkedChromiumArgs(relay) });
       }
     }
   }

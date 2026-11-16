@@ -43,9 +43,9 @@ link and results on the issue:
 | aiomoqt (Marz Research) | `https://aiomoqt-relay.marzresearch.net:4443/` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | moqtail | `https://relay.moqtail.dev` | d22, d23 experimental (no `moqt-23` as of 2026-11-14) |
 | laps (quicr) relay | `https://relay.us-west-2.m10x.org:33440/relay` | d18 experimental (libquicr: path `/relay` only) |
-| quichemoq | `https://quichemoq.dev` | d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
+| quichemoq | `https://quichemoq.dev` | d22, d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
 | stitcher-moq (Paramount) | `https://34-72-6-160.sslip.io` | d22, d18 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |
-| xquic | `https://moq.xquic.org/moqt` | d22, d18 experimental (no WebTransport in its HTTP/3 SETTINGS as of 2026-11-15) |
+| xquic | `https://moq.xquic.org/moqt` | d22, d18 experimental (WebTransport draft-07: runs with `--enable-features=EnableWebTransportDraft07`) |
 | lminiero | `https://lminiero.it:9000` | d23 experimental |
 
 As of 2026-11-10 neither Cloudflare nor Meta offers `moqt-23` in
@@ -71,6 +71,12 @@ PUBLISH. A failed test whose error or log contains an entry's `match` text
 (within its `drafts` and `tests`, when given) is reported as *not supported*
 rather than failed: the report lists it under its own tab, and a cell whose
 only failures those are is green, without the full-interop medal.
+
+A relay's `chromiumArgs` are extra Chromium switches for its runs (the
+workflow passes them as `E2E_CHROMIUM_ARGS`), for example
+`--enable-features=EnableWebTransportDraft07` for a relay that speaks
+WebTransport draft-07. Locally:
+`E2E_CHROMIUM_ARGS="--enable-features=EnableWebTransportDraft07"`.
 
 Both env vars are optional overrides for what's in the profile JSON. `MOQ_AUTH_TOKEN`
 is read from the environment and never committed — profiles reference it by name.

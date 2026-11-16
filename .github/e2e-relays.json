@@ -1,5 +1,5 @@
 {
-  "$comment": "Relays the nightly session-e2e matrix runs against, and the interop report lists. To add yours, open a PR adding an entry. experimental: reported, but does not fail the run. knownIssues: relay-side gaps; the report labels a failed test with one when its file matches a tests entry and its error or log contains match (plain text). unsupported: features the relay does not implement; a failed test whose error or log contains match (and, when given, whose draft and file match drafts and tests) is reported as not supported instead of failed, so a cell whose only failures those are is green (but gets no full-interop medal).",
+  "$comment": "Relays the nightly session-e2e matrix runs against, and the interop report lists. To add yours, open a PR adding an entry. experimental: reported, but does not fail the run. knownIssues: relay-side gaps; the report labels a failed test with one when its file matches a tests entry and its error or log contains match (plain text). unsupported: features the relay does not implement; a failed test whose error or log contains match (and, when given, whose draft and file match drafts and tests) is reported as not supported instead of failed, so a cell whose only failures those are is green (but gets no full-interop medal). chromiumArgs: extra Chromium switches for this relay's runs, such as --enable-features=EnableWebTransportDraft07 for a relay that speaks an older WebTransport draft.",
   "drafts": [
     "draft-16",
     "draft-18",
@@ -82,9 +82,10 @@
       "url": "https://quichemoq.dev",
       "drafts": [],
       "experimentalDrafts": [
+        "draft-22",
         "draft-18"
       ],
-      "notes": "Added 2026-11-14 for draft-18; accepts WebTransport on any path at port 443. Refuses a PUBLISH with UNINTERESTED until something subscribes, and does not support SUBSCRIBE_TRACKS.",
+      "notes": "Added 2026-11-14 for draft-18, draft-22 on 2026-11-15; accepts WebTransport on any path at port 443. Refuses a PUBLISH with UNINTERESTED until something subscribes, and does not support SUBSCRIBE_TRACKS.",
       "unsupported": [
         {
           "feature": "PUBLISH",
@@ -130,7 +131,10 @@
         "draft-22",
         "draft-18"
       ],
-      "notes": "Added 2026-11-14. As of 2026-11-15 browsers cannot open WebTransport: its HTTP/3 SETTINGS carry only SETTINGS_MAX_FIELD_SECTION_SIZE (no ENABLE_CONNECT_PROTOCOL, H3_DATAGRAM or WT_MAX_SESSIONS), so Chrome fails with ERR_METHOD_NOT_SUPPORTED. Its certificate verifies."
+      "chromiumArgs": [
+        "--enable-features=EnableWebTransportDraft07"
+      ],
+      "notes": "Added 2026-11-14. It speaks WebTransport draft-07, not the newer draft Chrome uses by default (whose SETTINGS it does not answer, so Chrome fails with ERR_METHOD_NOT_SUPPORTED); its runs enable Chrome's EnableWebTransportDraft07."
     },
     {
       "id": "lminiero",

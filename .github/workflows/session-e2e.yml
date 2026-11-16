@@ -80,6 +80,8 @@ jobs:
       # optional and only forwarded when configured.
       MOQ_AUTH_TOKEN: ${{ secrets.MOQ_AUTH_TOKEN }}
       RELAY_URL: ${{ matrix.relay_url }}
+      # The relay's chromiumArgs from e2e-relays.json, e.g. an older WebTransport draft
+      E2E_CHROMIUM_ARGS: ${{ matrix.chromium_args }}
       E2E_REPORT: ${{ github.workspace }}/e2e-report/report.json
     steps:
       - name: Checkout

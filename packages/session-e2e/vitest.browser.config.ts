@@ -12,6 +12,8 @@ const AUTH_TOKEN = process.env.MOQ_AUTH_TOKEN ?? '';
 const MOQT_VERSION = process.env.MOQT_VERSION ?? 'draft-18';
 // E2E_REPORT=<path> also writes a JSON report for the e2e report page
 const REPORT_PATH = process.env.E2E_REPORT;
+// Extra Chromium switches, space-separated, e.g. --enable-features=EnableWebTransportDraft07
+const CHROMIUM_ARGS = (process.env.E2E_CHROMIUM_ARGS ?? '').split(/\s+/).filter(Boolean);
 
 export default defineConfig({
   define: {
@@ -43,6 +45,7 @@ export default defineConfig({
                 '--webtransport-developer-mode',
                 '--ignore-certificate-errors',
                 '--enable-experimental-web-platform-features',
+                ...CHROMIUM_ARGS,
               ],
             },
           }),
