@@ -38,9 +38,9 @@ link and results on the issue:
 | Relay | `RELAY_URL` | Drafts |
 |---|---|---|
 | openmoq | `https://moqx-main.ci.openmoq.org:4433/moq-relay` | d22, d18, d16 experimental (unreachable from runners as of 2026-11-11) |
-| Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d18 experimental |
+| Cloudflare | `https://moq-ng.cloudflare.mediaoverquic.com` | d22; d18, d23 experimental |
 | Meta (mvfst) | `https://fb.mvfst.net:9448/moq-relay` | d22 |
-| aiomoqt (Marz Research) | `https://aiomoqt-relay.marzresearch.net:4443/` | d22 experimental |
+| aiomoqt (Marz Research) | `https://aiomoqt-relay.marzresearch.net:4443/` | d22, d18, d16 |
 | moqtail | `https://relay.moqtail.dev` | d22 experimental |
 | laps (quicr) relay | `https://relay.us-west-2.m10x.org:33440/relay` | d18 experimental (libquicr: path `/relay` only) |
 | quichemoq | `https://quichemoq.dev` | d22 experimental (PUBLISH, SUBSCRIBE_TRACKS not supported) |

@@ -35,9 +35,10 @@
         "draft-22"
       ],
       "experimentalDrafts": [
-        "draft-18"
+        "draft-18",
+        "draft-23"
       ],
-      "notes": "As of 2026-11-15 it does not offer moqt-23, so it does not run draft-23."
+      "notes": "draft-23 added 2026-11-17, experimental."
     },
     {
       "id": "meta",
@@ -62,11 +63,13 @@
       "id": "aiomoqt",
       "name": "aiomoqt (Marz Research)",
       "url": "https://aiomoqt-relay.marzresearch.net:4443/",
-      "drafts": [],
-      "experimentalDrafts": [
-        "draft-22"
+      "drafts": [
+        "draft-22",
+        "draft-18",
+        "draft-16"
       ],
-      "notes": "Added 2026-11-14. As of 2026-11-15 it does not offer moqt-23, so it does not run draft-23."
+      "experimentalDrafts": [],
+      "notes": "Added 2026-11-14 with draft-22; draft-18 and draft-16 since 2026-11-17, none experimental. It does not offer moqt-23."
     },
     {
       "id": "moqtail",
