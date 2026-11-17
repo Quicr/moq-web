@@ -7,7 +7,7 @@
  * whose body disagrees with its Length, closes the session.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   MOQTransport,
   MessageTypeDraft18,
@@ -188,27 +188,57 @@ describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('received GOAWAY (%
 });
 
 describe.each(['draft-18', 'draft-22', 'draft-23'] as const)('peer control stream end (%s)', (draft) => {
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  /** Longer than the session's wait for the peer to close the session itself */
+  const GRACE_MS = 1000;
 
-  it('closes the session with PROTOCOL_VIOLATION (d22 §6.3)', async () => {
-    const { session, close } = makeSession(draft);
-    (session as unknown as { _state: string })._state = 'ready';
-    const transport = (session as unknown as { transport: MOQTransport }).transport;
-    (session as unknown as { setupTransportHandlers: () => void }).setupTransportHandlers();
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
 
-    (transport as unknown as { emit: (e: string, d: unknown) => void }).emit('setup-stream-ended', { reset: false });
-    await settle();
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function ready() {
+    const made = makeSession(draft);
+    (made.session as unknown as { _state: string })._state = 'ready';
+    const transport = (made.session as unknown as { transport: MOQTransport }).transport;
+    (made.session as unknown as { setupTransportHandlers: () => void }).setupTransportHandlers();
+    const emit = (e: string, d: unknown) => (transport as unknown as { emit: (e: string, d: unknown) => void }).emit(e, d);
+
+    return { ...made, emit };
+  }
+
+  it('closes the session with PROTOCOL_VIOLATION (d22 §6.3)', () => {
+    const { close, emit } = ready();
+
+    emit('setup-stream-ended', { reset: false });
+    vi.advanceTimersByTime(GRACE_MS);
 
     expect(close).toHaveBeenCalledWith(expect.objectContaining({ code: terminationCodeFor('closed-control-stream', draft) }));
   });
 
-  it('is ignored once the session is over', async () => {
-    const { session, close } = makeSession(draft);
-    const transport = (session as unknown as { transport: MOQTransport }).transport;
-    (session as unknown as { setupTransportHandlers: () => void }).setupTransportHandlers();
+  it('lets the peer close the session first, keeping its code', () => {
+    const { session, close, emit } = ready();
+    const terminated = vi.fn();
+    session.on('session-terminated', terminated);
 
-    (transport as unknown as { emit: (e: string, d: unknown) => void }).emit('setup-stream-ended', { reset: true });
-    await settle();
+    // A relay closing for an error resets the control stream just before its CLOSE_WEBTRANSPORT_SESSION
+    emit('setup-stream-ended', { reset: true });
+    vi.advanceTimersByTime(50);
+    emit('closed', { closeCode: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, reason: 'unknown parameter', remote: true });
+    vi.advanceTimersByTime(GRACE_MS);
+
+    expect(terminated).toHaveBeenCalledWith(expect.objectContaining({ code: SessionErrorCodeDraft18.PROTOCOL_VIOLATION, remote: true }));
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('is ignored once the session is over', () => {
+    const { session, close, emit } = ready();
+    (session as unknown as { _state: string })._state = 'none';
+
+    emit('setup-stream-ended', { reset: true });
+    vi.advanceTimersByTime(GRACE_MS);
 
     expect(close).not.toHaveBeenCalled();
   });

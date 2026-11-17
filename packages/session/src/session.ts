@@ -270,6 +270,13 @@ const DEFAULT_IMPLEMENTATION_STRING = 'moq-web';
 /** Delivery timeout the draft-14/16 PUBLISH advertised when the app set none */
 const LEGACY_DELIVERY_TIMEOUT_MS = 5000;
 
+/**
+ * How long a peer that ended its control stream has to close the session
+ * itself. A peer closing for an error often resets its streams just before
+ * CLOSE_WEBTRANSPORT_SESSION; closing first would lose its error code.
+ */
+const CONTROL_STREAM_END_GRACE_MS = 1000;
+
 /** The parts of an incoming draft-22 request that carry Range Filters (§3.3.2) */
 interface RangeFilteredRequest {
   requestId: bigint;
@@ -7577,7 +7584,7 @@ export class MOQTSession {
    * (draft-22 §6.3). Ignored once the session is over or being closed by us.
    */
   private handleControlStreamEnded(): void {
-    // A transport close ends the stream too; let that close arrive first
+    // A transport close ends the stream too; let the peer's close, and its code, arrive first
     setTimeout(() => {
       if (this.closeStarted || this._state === 'none' || this._state === 'error') {
         return;
@@ -7585,7 +7592,7 @@ export class MOQTSession {
 
       // Draft-23 §6.3: CLOSED_CONTROL_STREAM
       this.closeForViolation('closed-control-stream', 'The peer closed its control stream');
-    }, 0);
+    }, CONTROL_STREAM_END_GRACE_MS);
   }
 
   /**

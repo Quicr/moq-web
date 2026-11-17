@@ -17,6 +17,14 @@
         "draft-18",
         "draft-16"
       ],
+      "knownIssues": [
+        {
+          "drafts": ["draft-22", "draft-23"],
+          "tests": ["41-unknown-parameter"],
+          "match": "the connection was dropped instead",
+          "summary": "Its CLOSE_WEBTRANSPORT_SESSION follows a STOP_SENDING on the CONNECT stream in the same packet; Chrome acts on the STOP_SENDING and reports the session lost, so the close code never arrives (moxygen)."
+        }
+      ],
       "notes": "As of 2026-11-11 unreachable from GitHub runners (WebTransport opening handshake fails); experimental until it is back."
     },
     {
@@ -39,6 +47,14 @@
         "draft-22"
       ],
       "experimentalDrafts": [
+      ],
+      "knownIssues": [
+        {
+          "drafts": ["draft-22", "draft-23"],
+          "tests": ["41-unknown-parameter"],
+          "match": "the connection was dropped instead",
+          "summary": "Its CLOSE_WEBTRANSPORT_SESSION follows a STOP_SENDING on the CONNECT stream in the same packet; Chrome acts on the STOP_SENDING and reports the session lost, so the close code never arrives (moxygen)."
+        }
       ],
       "notes": "As of 2026-11-15 it does not offer moqt-23, so it does not run draft-23."
     },

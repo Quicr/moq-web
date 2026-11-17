@@ -8,6 +8,11 @@
  * objects, expects the incoming object stream to quiesce, then resumes and
  * expects more objects to arrive. This exercises the draft-18
  * REQUEST_UPDATE(forward=0/1) path.
+ *
+ * A relay may pass the pause on to the publisher (Forward = 0 upstream). Its
+ * REQUEST_OK for the resume can then reach the subscriber before the
+ * publisher sees Forward = 1, and objects sent in between are not forwarded;
+ * so when the publisher was paused, it waits to be resumed before sending.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -50,6 +55,20 @@ describe.each([
       skipForwardWait: true,
     });
 
+    // The publisher's Forward State, when the relay passes the pause on
+    let pubForward = 1;
+    let pubPaused = false;
+    const resumed: Array<() => void> = [];
+    pub.session.on('forward-state-change', (evt) => {
+      if (evt.trackAlias !== trackAlias) return;
+      pubForward = evt.forward;
+      if (evt.forward === 0) {
+        pubPaused = true;
+      } else {
+        resumed.splice(0).forEach((r) => r());
+      }
+    });
+
     let received = 0;
     const subscriptionId = await sub.session.subscribe(
       namespace,
@@ -73,6 +92,7 @@ describe.each([
         'Check: some objects arrived',
         'Sub: REQUEST_UPDATE Forward = 0 (pause); waits 250 ms',
         'Sub: REQUEST_UPDATE Forward = 1 (resume)',
+        'Pub: if the relay passed the pause on (Forward = 0 upstream), waits up to 5 s for Forward = 1',
         `Pub: sends the other ${messages.length - half} objects`,
         'Check: more objects arrive within 5 s of resuming',
       ],
@@ -102,6 +122,18 @@ describe.each([
     // buffered. Resume the subscription first, then send the second batch —
     // that batch is what proves delivery is live again.
     await sub.session.resumeSubscription(subscriptionId);
+
+    // Objects sent before the publisher is resumed are not forwarded
+    let pubResumeMs: number | undefined;
+    if (pubForward === 0) {
+      const t0 = Date.now();
+      await Promise.race([
+        new Promise<void>((r) => resumed.push(r)),
+        new Promise((r) => setTimeout(r, 5_000)),
+      ]);
+      pubResumeMs = Date.now() - t0;
+    }
+    record(task, { observed: { pauseReachedPublisher: pubPaused, publisherResumed: pubForward === 1, publisherResumeWaitMs: pubResumeMs } });
 
     for (const msg of messages.slice(half)) {
       await pub.session.sendObject(trackAlias, msg.bytes, {

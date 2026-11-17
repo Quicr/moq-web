@@ -51,8 +51,10 @@ link and results on the issue:
 Only lminiero runs draft-23: as of 2026-11-15 no other relay offers `moqt-23`
 in WT-Available-Protocols (offered both, they select `moqt-22`). Known relay-side
 failures on draft-22, also seen on `main`: Cloudflare returns only part of a
-large-payload FETCH (09-fetch); Meta does not resume delivery after a
-REQUEST_UPDATE resume (06) and misses catalogs in the 4-peer fan-out (32).
+large-payload FETCH (09-fetch). Meta and openmoq (both moxygen) send
+STOP_SENDING on the WebTransport CONNECT stream ahead of
+CLOSE_WEBTRANSPORT_SESSION in the same packet, so Chrome reports the session
+lost and never sees the close code (41).
 On Cloudflare, 06 is flaky under full-suite load (passes when run alone).
 
 lminiero (no path) offers `moqt-23`; as of 2026-11-14 it passes 91 of 101

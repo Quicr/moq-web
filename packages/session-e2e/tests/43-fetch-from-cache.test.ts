@@ -4,16 +4,18 @@
 /**
  * FETCH from the relay's cache, in several shapes.
  *
- * A holder subscription keeps groups 0..4 (3 Objects each) in the relay's
- * cache. A second session then fetches:
+ * A holder subscription keeps groups 0..2 (3 Objects each) in the relay's
+ * cache. The draft sets no cache size, so the track has only as many groups
+ * as the smallest cache seen keeps (moxygen: 3 per track). A second session
+ * then fetches:
  *
- * - whole groups 1..3;
- * - a partial range, 1/1 through 2/1 (the end is inclusive, draft-22 §9.11);
- * - groups 0..3 in descending group order: groups arrive 3, 2, 1, 0;
+ * - whole groups 1..2;
+ * - a partial range, 0/1 through 1/1 (the end is inclusive, draft-22 §9.11);
+ * - groups 0..2 in descending group order: groups arrive 2, 1, 0;
  * - groups 0..2 after the publisher has left: a relay may serve them from
  *   its cache or refuse with DOES_NOT_EXIST, but must not hang or send part;
- * - groups 3..6 while the track is at group 4: the response ends at the
- *   Largest Object, so 3..4 arrive and groups 5..6, published after the
+ * - groups 1..4 while the track is at group 2: the response ends at the
+ *   Largest Object, so 1..2 arrive and groups 3..4, published after the
  *   FETCH, do not (draft-23 §3.2).
  *
  * Every Object is checked byte for byte. Draft-22 and later.
@@ -29,6 +31,8 @@ import { resolveProfile, makeNamespace, type Profile } from '../lib/profile.js';
 import chatStream from '../profiles/chat-stream.json';
 
 const PER_GROUP = 3;
+/** Groups 0..2 are cached; a relay that keeps 3 groups per track holds them all */
+const GROUPS = 3;
 
 interface Case {
   id: string;
@@ -58,11 +62,11 @@ const whole = (from: number, to: number) =>
   Array.from({ length: (to - from + 1) * PER_GROUP }, (_, i) => `${from + Math.floor(i / PER_GROUP)}/${i % PER_GROUP}`);
 
 const CASES: Case[] = [
-  { id: 'whole', title: 'whole groups 1..3', range: { startGroup: 1, startObject: 0, endGroup: 3, endObject: 0 }, wanted: whole(1, 3) },
-  { id: 'partial', title: 'partial range 1/1..2/1', range: { startGroup: 1, startObject: 1, endGroup: 2, endObject: 1 }, wanted: ['1/1', '1/2', '2/0', '2/1'] },
-  { id: 'descending', title: 'groups 0..3 in descending order', range: { startGroup: 0, startObject: 0, endGroup: 3, endObject: 0 }, wanted: whole(0, 3), descending: true },
+  { id: 'whole', title: 'whole groups 1..2', range: { startGroup: 1, startObject: 0, endGroup: 2, endObject: 0 }, wanted: whole(1, 2) },
+  { id: 'partial', title: 'partial range 0/1..1/1', range: { startGroup: 0, startObject: 1, endGroup: 1, endObject: 1 }, wanted: ['0/1', '0/2', '1/0', '1/1'] },
+  { id: 'descending', title: 'groups 0..2 in descending order', range: { startGroup: 0, startObject: 0, endGroup: 2, endObject: 0 }, wanted: whole(0, 2), descending: true },
   { id: 'cache-only', title: 'groups 0..2 after the publisher left', range: { startGroup: 0, startObject: 0, endGroup: 2, endObject: 0 }, wanted: whole(0, 2), publisherLeaves: true },
-  { id: 'live-edge', title: 'groups 3..6 across the live edge end at the Largest Object', range: { startGroup: 3, startObject: 0, endGroup: 6, endObject: 0 }, wanted: whole(3, 4), later: 2 },
+  { id: 'live-edge', title: 'groups 1..4 across the live edge end at the Largest Object', range: { startGroup: 1, startObject: 0, endGroup: 4, endObject: 0 }, wanted: whole(1, 2), later: 2 },
 ];
 
 describe.skipIf(!isDraft22)('FETCH from the relay cache', () => {
@@ -81,17 +85,17 @@ describe.skipIf(!isDraft22)('FETCH from the relay cache', () => {
       flow: [
         'Pub: PUBLISH ns/t (stream, MAX_CACHE_DURATION 60 s)',
         'Holder: SUBSCRIBE ns/t so the relay keeps the track cached',
-        `Pub: groups 0..4, ${PER_GROUP} Objects each; waits 500 ms`,
+        `Pub: groups 0..${GROUPS - 1}, ${PER_GROUP} Objects each; waits 500 ms`,
         ...(c.publisherLeaves ? ['Pub: closes its session; the holder gets its subscription cancelled'] : []),
         `Sub: FETCH ns/t ${c.range.startGroup}/${c.range.startObject}..${c.range.endGroup}/${c.range.endObject}${c.descending ? ', group order descending' : ''}`,
-        ...(c.later ? [`Pub: groups 5..${4 + c.later} after the FETCH is sent; a FETCH ends at the Largest Object (draft-23 §3.2)`] : []),
+        ...(c.later ? [`Pub: groups ${GROUPS}..${GROUPS - 1 + c.later} after the FETCH is sent; a FETCH ends at the Largest Object (draft-23 §3.2)`] : []),
         `Relay → Sub: FETCH_OK and a fetch stream with ${c.wanted[0]}..${c.wanted.at(-1)}${c.publisherLeaves ? ', or REQUEST_ERROR DOES_NOT_EXIST with no Objects (allowed)' : ''}`,
         `Check: no FETCH error, every wanted Object arrived byte for byte, none outside the range${c.descending ? ', groups in descending order' : ''}`,
       ],
       expected: `FETCH returns ${c.wanted.length} objects (${c.wanted[0]}..${c.wanted.at(-1)}), byte for byte${c.descending ? ', groups in descending order' : ''}${c.publisherLeaves ? '; or DOES_NOT_EXIST, if the relay dropped the track with its publisher' : ''}${c.later ? '; groups published after the FETCH do not arrive on it' : ''}`,
       inputs: {
-        track: `${namespace.join('/')}/t`, cached: 'groups 0..4', objectsPerGroup: PER_GROUP, range: c.range,
-        groupOrder: c.descending ? 'descending' : 'ascending', publisherLeaves: c.publisherLeaves === true, publishedAfter: c.later ? `groups 5..${4 + c.later}` : 'none',
+        track: `${namespace.join('/')}/t`, cached: `groups 0..${GROUPS - 1}`, objectsPerGroup: PER_GROUP, range: c.range,
+        groupOrder: c.descending ? 'descending' : 'ascending', publisherLeaves: c.publisherLeaves === true, publishedAfter: c.later ? `groups ${GROUPS}..${GROUPS - 1 + c.later}` : 'none',
       },
     });
     const pub = await makeSession(profile);
@@ -103,7 +107,7 @@ describe.skipIf(!isDraft22)('FETCH from the relay cache', () => {
     const alias = await pub.session.publish(namespace, 't', { deliveryMode: 'stream', skipForwardWait: true, maxCacheDuration: 60_000 });
     await holder.session.subscribe(namespace, 't', { filterType: 'latest' }, () => undefined);
     await sleep(200);
-    await publishGroups(pub.session, alias, { groups: 5, perGroup: PER_GROUP });
+    await publishGroups(pub.session, alias, { groups: GROUPS, perGroup: PER_GROUP });
     await sleep(500);
     if (c.publisherLeaves) {
       trace.note('Pub', 'closing the publisher session');
@@ -125,7 +129,7 @@ describe.skipIf(!isDraft22)('FETCH from the relay cache', () => {
     }
     if (c.later) {
       await sleep(300);
-      await publishGroups(pub.session, alias, { groups: c.later, perGroup: PER_GROUP, first: 5 });
+      await publishGroups(pub.session, alias, { groups: c.later, perGroup: PER_GROUP, first: GROUPS });
     }
     await waitUntil(() => c.wanted.every((k) => got.has(k)) || fetchError !== 'none', 8_000);
     await sleep(300);
@@ -147,7 +151,7 @@ describe.skipIf(!isDraft22)('FETCH from the relay cache', () => {
       fetchError !== 'none' && `${fetchText}: the FETCH failed: ${fetchError}`,
       missing.length > 0 && (fetchError === 'none' || got.keys.length > 0)
         && `${fetchText}: expected ${c.wanted.length} Objects (${c.wanted[0]}..${c.wanted.at(-1)}), got ${c.wanted.length - missing.length}; missing ${objectsText(missing)}`,
-      extra.length > 0 && `${fetchText}: Objects outside the range arrived: ${objectsText(extra)}${c.later ? ' (groups 5 and later were published after the FETCH)' : ''}`,
+      extra.length > 0 && `${fetchText}: Objects outside the range arrived: ${objectsText(extra)}${c.later ? ` (groups ${GROUPS} and later were published after the FETCH)` : ''}`,
       got.corrupt.length > 0 && `${fetchText}: Objects with the wrong payload: ${got.corrupt.join(', ')}`,
       c.descending === true && order.join() !== [...order].sort((a, b) => b - a).join()
         && `${fetchText} in descending group order: groups arrived as ${order.join(', ')}`,
