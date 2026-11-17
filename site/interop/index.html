@@ -27,6 +27,8 @@
   --warn-soft: #fdf3e2;
   --skip: #6b7280;
   --skip-soft: #eef0f3;
+  --nearly: #4d7c0f;
+  --nearly-soft: #eef5dc;
   --code-bg: #f4f5f7;
   --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .06);
   --radius: 10px;
@@ -56,6 +58,8 @@
     --warn-soft: #362a10;
     --skip: #9ca3af;
     --skip-soft: #23272f;
+    --nearly: #bef264;
+    --nearly-soft: #26300f;
     --code-bg: #10141a;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3);
     color-scheme: dark;
@@ -79,6 +83,8 @@
   --warn-soft: #362a10;
   --skip: #9ca3af;
   --skip-soft: #23272f;
+  --nearly: #bef264;
+  --nearly-soft: #26300f;
   --code-bg: #10141a;
   --shadow: 0 1px 2px rgba(0, 0, 0, .3);
   color-scheme: dark;
@@ -164,6 +170,7 @@ table.matrix { border-collapse: separate; border-spacing: 0; width: 100%; min-wi
 .chip.failed { background: var(--fail-soft); color: var(--fail); }
 .chip.error, .chip.cancelled { background: var(--warn-soft); color: var(--warn); }
 .chip.skipped { background: var(--skip-soft); color: var(--skip); }
+.chip.nearly { background: var(--nearly-soft); color: var(--nearly); }
 .chip.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 button.chip:hover { filter: brightness(.95); box-shadow: 0 0 0 1px var(--border); }
 button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -213,6 +220,7 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .dots .failed { background: var(--fail); }
 .dots .error, .dots .cancelled { background: var(--warn); }
 .dots .skipped { background: var(--skip); }
+.dots .nearly { background: var(--nearly); }
 .run .score { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
 
 /* Detail */
@@ -747,6 +755,7 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
       passed: acc.passed + c.counts.passed, failed: acc.failed + c.counts.failed, unsupported: acc.unsupported + (c.counts.unsupported ?? 0),
     }), { passed: 0, failed: 0, unsupported: 0 });
     const cellsOk = run.cells.filter((c) => c.status === 'passed').length;
+    const nearly = run.cells.filter((c) => tone(c) === 'nearly').length;
     const rate = ran(counts) ? Math.round((counts.passed / ran(counts)) * 100) : 0;
     const stat = (label, value, hint, color) => el('div', { class: 'card stat' },
       el('div', { class: 'label' }, label),
@@ -756,9 +765,15 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
       stat('Run', `#${run.runNumber ?? run.runId}`, `${triggerLabel(run)} · ${when(run.publishedAt)}`),
       stat('Pass rate', `${rate}%`, `${counts.passed} of ${ran(counts)} tests that ran`, rate === 100 ? '--pass' : undefined),
       stat('Failed tests', String(counts.failed), counts.unsupported ? `${counts.unsupported} more not supported by their relay` : 'across all cells', counts.failed ? '--fail' : undefined),
-      stat('Clean cells', `${cellsOk}/${run.cells.length}`, 'relay × draft combinations with no failure'),
+      stat('Clean cells', `${cellsOk}/${run.cells.length}`, `relay × draft combinations with no failure${nearly ? `; ${nearly} more nearly passing (${NEARLY_MAX_FAILED} or fewer failures)` : ''}`),
     );
   }
+
+  /** At most this many failures, with some passes, shows as nearly passing rather than failed */
+  const NEARLY_MAX_FAILED = 3;
+
+  /** The cell's status, or 'nearly' for a failed cell with only a few failures */
+  const tone = (cell) => (cell.status === 'failed' && cell.counts.failed <= NEARLY_MAX_FAILED && cell.counts.passed > 0 ? 'nearly' : cell.status);
 
   function chipFor(cell, selectable = true) {
     const label = cell.status === 'error' ? 'no report'
@@ -766,12 +781,12 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
       : `${cell.counts.passed}/${ran(cell.counts)}`;
     return el('button', {
       type: 'button',
-      class: `chip ${cell.status}${cellKey(cell) === state.cellKey ? ' selected' : ''}`,
+      class: `chip ${tone(cell)}${cellKey(cell) === state.cellKey ? ' selected' : ''}`,
       'data-draft': draftLabel(cell.draft),
-      title: `${cell.name} ${cell.draft}: ${cell.counts.passed} passed, ${cell.counts.failed} failed${cell.counts.unsupported ? `, ${cell.counts.unsupported} not supported by the relay` : ''}`,
+      title: `${cell.name} ${cell.draft}: ${cell.counts.passed} passed, ${cell.counts.failed} failed${tone(cell) === 'nearly' ? ' (nearly passing)' : ''}${cell.counts.unsupported ? `, ${cell.counts.unsupported} not supported by the relay` : ''}`,
       'aria-pressed': String(cellKey(cell) === state.cellKey),
       onclick: selectable ? () => toggleCell(cell) : undefined,
-    }, cell.status === 'passed' ? '✓' : cell.status === 'failed' ? '✕' : '!', label, cell.experimental ? el('span', { class: 'exp' }, 'exp') : null);
+    }, cell.status === 'passed' ? '✓' : tone(cell) === 'nearly' ? '◐' : cell.status === 'failed' ? '✕' : '!', label, cell.experimental ? el('span', { class: 'exp' }, 'exp') : null);
   }
 
   /** Every test the cell ran passed, with nothing left out as not supported */
@@ -880,7 +895,7 @@ RELAY_URL=https://your.relay:4433/path MOQT_VERSION=draft-22 \
       },
         el('div', { class: 'when' }, when(run.publishedAt)),
         el('div', { class: 'trigger' }, el('span', { class: `tag${run.custom ? ' custom' : ''}` }, triggerLabel(run))),
-        el('div', { class: 'dots' }, run.cells.map((c) => el('span', { class: c.status, title: `${c.name} ${c.draft}: ${c.status}` }))),
+        el('div', { class: 'dots' }, run.cells.map((c) => el('span', { class: tone(c), title: `${c.name} ${c.draft}: ${tone(c) === 'nearly' ? `nearly passing, ${c.counts.failed} failed` : c.status}` }))),
         el('div', { class: 'score' }, `${counts.p}/${counts.r} passed`)));
     }
   }
