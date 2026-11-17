@@ -11,7 +11,8 @@
  *
  * - whole groups 1..2;
  * - a partial range, 0/1 through 1/1 (the end is inclusive, draft-22 §9.11);
- * - groups 0..2 in descending group order: groups arrive 2, 1, 0;
+ * - groups 0..1 in descending group order: groups arrive 1, 0 (short of
+ *   the Largest Object, as a range below the live edge);
  * - groups 0..2 after the publisher has left: a relay may serve them from
  *   its cache or refuse with DOES_NOT_EXIST, but must not hang or send part;
  * - groups 1..4 while the track is at group 2: the response ends at the
@@ -64,7 +65,7 @@ const whole = (from: number, to: number) =>
 const CASES: Case[] = [
   { id: 'whole', title: 'whole groups 1..2', range: { startGroup: 1, startObject: 0, endGroup: 2, endObject: 0 }, wanted: whole(1, 2) },
   { id: 'partial', title: 'partial range 0/1..1/1', range: { startGroup: 0, startObject: 1, endGroup: 1, endObject: 1 }, wanted: ['0/1', '0/2', '1/0', '1/1'] },
-  { id: 'descending', title: 'groups 0..2 in descending order', range: { startGroup: 0, startObject: 0, endGroup: 2, endObject: 0 }, wanted: whole(0, 2), descending: true },
+  { id: 'descending', title: 'groups 0..1 in descending order', range: { startGroup: 0, startObject: 0, endGroup: 1, endObject: 0 }, wanted: whole(0, 1), descending: true },
   { id: 'cache-only', title: 'groups 0..2 after the publisher left', range: { startGroup: 0, startObject: 0, endGroup: 2, endObject: 0 }, wanted: whole(0, 2), publisherLeaves: true },
   { id: 'live-edge', title: 'groups 1..4 across the live edge end at the Largest Object', range: { startGroup: 1, startObject: 0, endGroup: 4, endObject: 0 }, wanted: whole(1, 2), later: 2 },
 ];
