@@ -680,6 +680,10 @@ export class MOQTSession {
     hasExtensions: boolean; // Whether subgroup header has extensions bit set
     maxCacheDuration?: number; // Max cache duration in ms (from first keyframe)
   }>();
+  /** Order subgroup opens and Object ID deltas independently for each Track. */
+  private readonly subgroupWrites = new Map<string, Promise<void>>();
+  /** Older subgroups may still be closing while the next Group is sent. */
+  private readonly subgroupCloses = new Map<string, Set<Promise<void>>>();
   /** Announced namespaces (for announce flow) */
   private announcedNamespaces = new Map<string, AnnouncedNamespaceInfo>();
   /** Request ID to namespace mapping (for draft-16 PUBLISH_NAMESPACE_OK) */
@@ -3448,32 +3452,46 @@ export class MOQTSession {
     }
 
     const stream = this.activeRequestStreams.get(requestId);
-    if (!stream) {
-      throw new Error(`sendPublishDone(): no PUBLISH request stream for requestId ${requestId}`);
-    }
-
-    // §9.9 Stream Count: streams opened for this publication; unknown if we
-    // have no record of the publication.
     const publication = this.publicationManager.getByRequestId(requestId);
-    const streamCountUnknown = this.isDraft22 ? STREAM_COUNT_UNKNOWN_DRAFT22 : STREAM_COUNT_UNKNOWN_DRAFT18;
-    const streamCount = publication ? BigInt(publication.streamsOpened ?? 0) : streamCountUnknown;
+    const sendDone = async (): Promise<void> => {
+      if (publication) {
+        const alias = publication.trackAlias.toString();
+        await this.subgroupWrites.get(alias);
+        await Promise.all([
+          this.closeVideoGOPStream(alias),
+          ...(this.subgroupCloses.get(alias) ?? []),
+        ]);
+      }
+      if (!stream || this.activeRequestStreams.get(requestId) !== stream) {
+        throw new Error(`sendPublishDone(): no PUBLISH request stream for requestId ${requestId}`);
+      }
 
-    const publishDone: PublishDoneMessageDraft18 = {
-      type: MessageTypeDraft18.PUBLISH_DONE,
-      requestId,
-      finalLocation: { group: BigInt(finalGroup), object: BigInt(finalObject) },
-      statusCode: BigInt(statusCode ?? PublishDoneErrorCodeDraft18.TRACK_ENDED),
-      streamCount,
-      reasonPhrase,
+      // §9.9: count the data streams after all accepted subgroup writes.
+      const unknown = this.isDraft22 ? STREAM_COUNT_UNKNOWN_DRAFT22 : STREAM_COUNT_UNKNOWN_DRAFT18;
+      const streamCount = publication ? BigInt(publication.streamsOpened ?? 0) : unknown;
+      const publishDone: PublishDoneMessageDraft18 = {
+        type: MessageTypeDraft18.PUBLISH_DONE,
+        requestId,
+        finalLocation: { group: BigInt(finalGroup), object: BigInt(finalObject) },
+        statusCode: BigInt(statusCode ?? PublishDoneErrorCodeDraft18.TRACK_ENDED),
+        streamCount,
+        reasonPhrase,
+      };
+
+      const bytes = this.codec.encodeControlMessage(publishDone);
+      await stream.write(bytes);
+      await this.closeRequestStream(requestId);
+      // Drop routing state for any late REQUEST_UPDATE on the finished request.
+      this.incomingRequestKinds.delete(requestId);
+      log.info('Sent PUBLISH_DONE', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString(), streamCount: streamCount.toString() });
     };
 
-    const bytes = this.codec.encodeControlMessage(publishDone);
-    await stream.write(bytes);
-    await this.closeRequestStream(requestId);
-    // PUBLISH_DONE terminates the incoming subscription; drop routing state so
-    // any future REQUEST_UPDATE on this id doesn't route as §10.9.1 by default.
-    this.incomingRequestKinds.delete(requestId);
-    log.info('Sent PUBLISH_DONE', { requestId: requestId.toString(), finalGroup, finalObject, statusCode: publishDone.statusCode?.toString(), streamCount: streamCount.toString() });
+    if (!publication) return sendDone();
+    publication.publishDone ??= sendDone().catch((err: unknown) => {
+      publication.publishDone = undefined;
+      throw err;
+    });
+    return publication.publishDone;
   }
 
   /**
@@ -3837,12 +3855,15 @@ export class MOQTSession {
       log.debug('resetPublicationStream: no active stream', { trackAlias });
       return;
     }
+    this.activeVideoStreams.delete(trackAlias);
     // Include the symbolic enum name so the peer sees "TOO_FAR_BEHIND" rather
     // than an opaque number when it inspects the abort reason string.
     const codeName = StreamResetErrorCodeDraft18[code] ?? 'UNKNOWN';
     const abortReason = reason ?? `stream-reset code=${code} (${codeName})`;
     try {
-      await this.abortStreamHandle(existing, code);
+      const reset = this.abortStreamHandle(existing, code);
+      if (this.isDraft18) this.trackSubgroupClose(trackAlias, reset);
+      await reset;
       log.info('Reset publication stream', {
         trackAlias,
         code,
@@ -3872,7 +3893,6 @@ export class MOQTSession {
         groupId: existing.groupId,
       } as StreamResetEvent);
     } catch { /* alias may not parse as bigint in test fixtures */ }
-    this.activeVideoStreams.delete(trackAlias);
   }
 
   /**
@@ -6513,9 +6533,6 @@ export class MOQTSession {
 
     log.info('Stopping publish', { trackAlias: key });
 
-    // Close any active GOP stream
-    await this.closeVideoGOPStream(key);
-
     // Send PUBLISH_DONE to notify the relay/subscribers
     if (this.isDraft18) {
       await this.sendPublishDone(
@@ -6526,6 +6543,7 @@ export class MOQTSession {
         PublishDoneErrorCodeDraft18.TRACK_ENDED,
       ).catch(() => {});
     } else {
+      await this.closeVideoGOPStream(key);
       const publishDone: PublishDoneMessage = {
         type: MessageType.PUBLISH_DONE,
         requestId: publication.requestId,
@@ -6553,6 +6571,7 @@ export class MOQTSession {
     metadata: ObjectMetadata
   ): Promise<void> {
     const publication = this.publicationManager.get(trackAlias);
+    if (publication?.publishDone) return;
     const priority = publication?.priority ?? 128;
     const deliveryMode = publication?.deliveryMode ?? 'stream';
     const audioDeliveryMode = publication?.audioDeliveryMode ?? 'datagram';
@@ -6643,6 +6662,8 @@ export class MOQTSession {
     metadata: ObjectMetadata,
     priority?: number
   ): Promise<void> {
+    if (this.publicationManager.get(trackAlias)?.publishDone) return;
+
     const header: ObjectHeader = {
       trackAlias,
       groupId: metadata.groupId,
@@ -6782,7 +6803,33 @@ export class MOQTSession {
   ): Promise<void> {
     const aliasKey = trackAlias.toString();
     const receivedAt = performance.now();
+    const publication = this.publicationManager.get(trackAlias);
+    if (publication?.publishDone) return;
 
+    const previous = this.subgroupWrites.get(aliasKey);
+    const write = (previous ?? Promise.resolve()).then(async () => {
+      if (this.publicationManager.get(trackAlias) !== publication || publication?.forward === 0) return;
+      await this.writeSubgroupObject(trackAlias, data, metadata, priority, receivedAt);
+    });
+    const settled = write.catch(() => {});
+    this.subgroupWrites.set(aliasKey, settled);
+    try {
+      await write;
+    } finally {
+      if (this.subgroupWrites.get(aliasKey) === settled) {
+        this.subgroupWrites.delete(aliasKey);
+      }
+    }
+  }
+
+  private async writeSubgroupObject(
+    trackAlias: bigint,
+    data: Uint8Array,
+    metadata: ObjectMetadata,
+    priority: number,
+    receivedAt: number
+  ): Promise<void> {
+    const aliasKey = trackAlias.toString();
     // After an object timeout the subgroup is not reopened (d22 §5.2)
     if (this.publicationManager.get(trackAlias)?.expiredGroup === metadata.groupId) {
       log.debug('Dropping object of a subgroup reset for a delivery timeout', {
@@ -6796,7 +6843,9 @@ export class MOQTSession {
     try {
       let existing = this.activeVideoStreams.get(aliasKey);
       if (existing && existing.groupId !== metadata.groupId) {
-        await this.closeVideoGOPStream(aliasKey);
+        // Start the old FIN before opening the next Group. Its delivery can
+        // take an RTT and must not hold up writes to the new stream.
+        this.trackSubgroupClose(aliasKey, this.closeVideoGOPStream(aliasKey));
         existing = undefined;
       }
 
@@ -6826,6 +6875,8 @@ export class MOQTSession {
         existing.objectCount++;
         existing.previousObjectId = metadata.objectId;
       } catch (writeErr) {
+        // A pause or cancellation may have already reset this writer.
+        if (this.activeVideoStreams.get(aliasKey) !== existing) return;
         const errMsg = (writeErr as Error).message;
         if (!errMsg.includes('not found') && !errMsg.includes('STOP_SENDING')) {
           throw writeErr;
@@ -6848,7 +6899,7 @@ export class MOQTSession {
         objectId: metadata.objectId,
         error: (err as Error).message,
       });
-      this.activeVideoStreams.delete(aliasKey);
+      await this.resetPublicationStream(aliasKey, StreamResetErrorCodeDraft18.CANCELLED, 'subgroup write failed');
     }
   }
 
@@ -6867,20 +6918,6 @@ export class MOQTSession {
   ): Promise<void> {
     const publication = this.publicationManager.get(trackAlias);
     const reopened = publication?.lastStreamGroup === metadata.groupId;
-    if (publication) {
-      publication.lastStreamGroup = metadata.groupId;
-    }
-
-    const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
-    const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
-
-    // Opening the stream may have taken longer than the object may wait
-    if (this.objectExpired(trackAlias, receivedAt)) {
-      await this.abortStreamHandle(streamInfo, StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT).catch(() => {});
-      this.decrementOpenStreamCount();
-      this.noteObjectExpired(trackAlias, metadata);
-      return;
-    }
 
     const [subgroupHeader, hasExtensions] = this.codec.encodeSubgroupHeader({
       trackAlias,
@@ -6905,6 +6942,21 @@ export class MOQTSession {
     combinedData.set(subgroupHeader, 0);
     combinedData.set(objectData, subgroupHeader.length);
 
+    const sendOrder = this.deriveSendOrder(trackAlias, priority, metadata.groupId);
+    const streamInfo = await this.openSubgroupStream(trackAlias, sendOrder !== undefined ? { sendOrder } : undefined);
+
+    // The publication can be paused or cancelled while the transport opens a stream.
+    const cancelled = this.publicationManager.get(trackAlias) !== publication || publication?.forward === 0;
+    const expired = this.objectExpired(trackAlias, receivedAt);
+    if (cancelled || expired) {
+      const code = cancelled ? StreamResetErrorCodeDraft18.CANCELLED : StreamResetErrorCodeDraft18.DELIVERY_TIMEOUT;
+      await this.abortStreamHandle(streamInfo, code).catch(() => {});
+      this.decrementOpenStreamCount();
+      if (!cancelled) this.noteObjectExpired(trackAlias, metadata);
+      return;
+    }
+
+    if (publication) publication.lastStreamGroup = metadata.groupId;
     // Tracked before the write so a delivery timeout can reset a stalled first write
     this.activeVideoStreams.set(trackAlias.toString(), {
       writer: streamInfo.writer,
@@ -6916,6 +6968,21 @@ export class MOQTSession {
       maxCacheDuration,
     });
     await this.doWriteStream(streamInfo, combinedData);
+  }
+
+  private trackSubgroupClose(trackAlias: string, operation: Promise<void>): void {
+    let pending = this.subgroupCloses.get(trackAlias);
+    if (!pending) {
+      pending = new Set();
+      this.subgroupCloses.set(trackAlias, pending);
+    }
+    const closes = pending;
+    const settled = operation.catch(() => {});
+    closes.add(settled);
+    void settled.then(() => {
+      closes.delete(settled);
+      if (closes.size === 0) this.subgroupCloses.delete(trackAlias);
+    });
   }
 
   /**
@@ -7170,6 +7237,7 @@ export class MOQTSession {
   private async closeVideoGOPStream(trackAlias: string): Promise<void> {
     const existing = this.activeVideoStreams.get(trackAlias);
     if (existing) {
+      this.activeVideoStreams.delete(trackAlias);
       // §8: stream is closing cleanly — cancel the pending deadline.
       this.publisherDeliveryTimeouts.disarm(`pub-sg:${trackAlias}:${existing.groupId}:0`);
       const finishKey = this.armFinishTimer(trackAlias, existing);
@@ -7189,7 +7257,6 @@ export class MOQTSession {
       } finally {
         this.disarmFinishTimer(finishKey);
       }
-      this.activeVideoStreams.delete(trackAlias);
     }
   }
 
