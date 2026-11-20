@@ -48,6 +48,7 @@ import {
   StreamResetErrorCodeDraft18,
   normalizeSessionErrorCode,
   normalizeSessionErrorCodeDraft22,
+  normalizeSessionErrorCodeDraft23,
   StreamTypeDraft18,
   DatagramTypeDraft18,
   MOQTVarInt,
@@ -8781,7 +8782,9 @@ export class MOQTSession {
     // §14 grease: normalize unknown Session Termination codes to
     // INTERNAL_ERROR before emitting. Preserve the raw code on the event so
     // callers with newer registry knowledge can still inspect it if needed.
-    const normalizedCode = this.isDraft22
+    const normalizedCode = this.isDraft23
+      ? normalizeSessionErrorCodeDraft23(info.closeCode)
+      : this.isDraft22
       ? normalizeSessionErrorCodeDraft22(info.closeCode)
       : this.isDraft18
         ? normalizeSessionErrorCode(info.closeCode)

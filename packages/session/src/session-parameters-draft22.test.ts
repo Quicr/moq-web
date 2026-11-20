@@ -17,6 +17,7 @@ import {
   MessageTypeDraft22,
   RequestParameterDraft22,
   SessionErrorCodeDraft22,
+  SessionErrorCodeDraft23,
   type PublishMessageDraft22,
   type RequestUpdateMessageDraft22,
   type SubscribeTracksMessageDraft22,
@@ -180,5 +181,20 @@ describe('draft-22 error code registries (§12)', () => {
     });
 
     expect(codes).toEqual([SessionErrorCodeDraft22.TOO_MANY_REQUEST_UPDATES]);
+  });
+});
+
+describe('draft-23 Session Termination codes (§12.2)', () => {
+  it('keeps INVALID_PARAMETER (0x305) on session-terminated', () => {
+    const transport = new MOQTransport({ draft: 'draft-23' });
+    const session = new MOQTSession(transport);
+    const internals = session as unknown as Internals;
+    internals.handleError = vi.fn();
+    const codes: number[] = [];
+    session.on('session-terminated', (e: unknown) => codes.push((e as { code: number }).code));
+
+    internals.handleTransportClosed({ closeCode: SessionErrorCodeDraft23.INVALID_PARAMETER, reason: 'x', remote: true });
+
+    expect(codes).toEqual([SessionErrorCodeDraft23.INVALID_PARAMETER]);
   });
 });

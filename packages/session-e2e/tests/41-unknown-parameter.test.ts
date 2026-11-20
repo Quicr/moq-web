@@ -6,8 +6,8 @@
  *
  * Message Parameters are not greased: every one must be defined in the
  * negotiated version, and an endpoint that receives an unknown one MUST close
- * the session with INVALID_PARAMETER (draft-23 §9.2; PROTOCOL_VIOLATION
- * before draft-23). The test builds a TRACK_STATUS with our codec, adds one
+ * the session with INVALID_PARAMETER (draft-23 §9.19, code in §12.2;
+ * PROTOCOL_VIOLATION before draft-23). The test builds a TRACK_STATUS with our codec, adds one
  * parameter of undefined type 0x3C, checks our own decoder rejects only that
  * parameter, and sends it on a request stream of its own. Draft-22 and later.
  */
@@ -91,7 +91,7 @@ describe.skipIf(!isDraft22)('Unknown Message Parameter', () => {
         'Peer: encodes TRACK_STATUS for ns/t with our codec, then appends Message Parameter 0x3C = 1 (undefined in every draft)',
         'Check: our own decoder rejects the message for parameter 0x3C and nothing else',
         'Peer: sends it on a new bidi request stream',
-        `Relay: must close the session with ${isDraft23 ? 'INVALID_PARAMETER (0x305, draft-23 §9.2)' : 'PROTOCOL_VIOLATION (0x3)'}`,
+        `Relay: must close the session with ${isDraft23 ? 'INVALID_PARAMETER (0x305, draft-23 §9.19, §12.2)' : 'PROTOCOL_VIOLATION (0x3)'}`,
         'Check: the session is closed within 5 s with that code',
       ],
       expected: `The relay closes the session within 5 s with ${isDraft23 ? 'INVALID_PARAMETER (0x305)' : 'PROTOCOL_VIOLATION (0x3)'}`,
