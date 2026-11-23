@@ -49,6 +49,8 @@ export interface InternalPublication extends PublicationInfo {
   streamsOpened?: number;
   /** Group of the latest subgroup stream opened, to tell a reopen from a first open. */
   lastStreamGroup?: number;
+  /** Terminal operation shared by callers ending this publication. */
+  publishDone?: Promise<void>;
   /** Subscriber's delivery timeouts in ms, from its SUBSCRIBE or REQUEST_UPDATE (d22 §5.2) */
   subscriberSubgroupTimeoutMs?: number;
   subscriberObjectTimeoutMs?: number;
