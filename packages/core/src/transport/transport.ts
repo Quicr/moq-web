@@ -287,9 +287,12 @@ export class MOQTransport {
 
       // Add certificate hashes if provided (for self-signed certs)
       if (this.config.serverCertificateHashes.length > 0) {
+        // A Uint8Array view: browsers take any BufferSource, but WebTransport
+        // implementations for Node (e.g. @fails-components/webtransport) reject
+        // a bare ArrayBuffer
         options.serverCertificateHashes = this.config.serverCertificateHashes.map(hash => ({
           algorithm: 'sha-256',
-          value: hash,
+          value: new Uint8Array(hash),
         }));
         // Debug: log the hash being used
         const hashArray = new Uint8Array(this.config.serverCertificateHashes[0]);

@@ -3071,9 +3071,6 @@ export class MOQTSession {
    * @param namespacePrefix - Namespace prefix to match
    * @param onObject        - Callback for objects on matching tracks
    * @param options.forwardState        Whether the peer should forward objects (default `true`).
-   * @param options.filter              SUBSCRIPTION_FILTER variant (default `NEXT_GROUP_START`).
-   * @param options.startLocation       Absolute start (required for `ABSOLUTE_START` / `ABSOLUTE_RANGE`).
-   * @param options.endGroupDelta       End-group delta (required for `ABSOLUTE_RANGE`).
    * @param options.parameters          Additional raw KVP request parameters (§10.2).
    */
   async subscribeTracks(
@@ -3081,8 +3078,11 @@ export class MOQTSession {
     onObject?: SubscriptionObjectCallback,
     options?: {
       forwardState?: boolean;
+      /** @deprecated Not sent: SUBSCRIPTION_FILTER is not allowed in SUBSCRIBE_TRACKS (d18 §10.2.9). */
       filter?: SubscriptionFilterDraft18;
+      /** @deprecated Not sent, as `filter`. */
       startLocation?: { group: bigint; object: bigint };
+      /** @deprecated Not sent, as `filter`. */
       endGroupDelta?: bigint;
       parameters?: Map<number, Uint8Array>;
     }
