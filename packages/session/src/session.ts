@@ -1736,6 +1736,15 @@ export class MOQTSession {
         return;
       }
 
+      // The request ended while the read was pending (e.g. the peer's
+      // STOP_SENDING aborted it): a message the peer sent before that, such
+      // as a PUBLISH_DONE, is no longer for any request. Dispatching it would
+      // fail the allow-list and close the whole session.
+      if (this.activeRequestStreams.get(requestId) !== stream) {
+        log.debug('Dropping message on an ended request', { requestId: requestId.toString(), type: message.type });
+        return;
+      }
+
       try {
         await this.dispatchStreamMessage(requestId, message);
       } catch (err) {
