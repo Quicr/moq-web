@@ -135,8 +135,10 @@ import {
   terminationCodeFor,
   violationOf,
   DEFAULT_MAX_CONTROL_MESSAGE_SIZE,
+  Draft18StreamCodec,
   type Violation,
 } from '@moq-web/core';
+import { encodeFetchedObject, fetchEndLocation, fetchRequestRange, orderFetchedObjects } from './fetch-responder.js';
 import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
   Draft18RequestStream,
@@ -243,6 +245,7 @@ import type {
   SessionMigrationEvent,
   TrackStatusResult,
   SubscriptionObjectCallback,
+  FetchedObject,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -5386,6 +5389,7 @@ export class MOQTSession {
       // Draft-18/22: our PUBLISH sets the initial Forward State to 1 (§3.1.1); the
       // draft-14/16 PUBLISH_OK decides
       forward: this.isDraft18 ? 1 : 0,
+      fetchHandler: options?.fetchHandler,
     };
     this.publicationManager.add(publication);
 
@@ -8170,8 +8174,9 @@ export class MOQTSession {
   }
 
   /**
-   * Handle incoming FETCH on bidi stream. We keep no objects, so every FETCH
-   * is refused; the error says why (see `fetchRefusal`).
+   * Handle incoming FETCH on bidi stream. We keep no objects, so a FETCH is
+   * served only by a publication's `fetchHandler`; any other is refused and
+   * the error says why (see `fetchRefusal`).
    */
   private async handleIncomingFetchDraft18(
     message: FetchMessageDraft18 | FetchMessageDraft22,
@@ -8183,7 +8188,72 @@ export class MOQTSession {
     }
 
     const refusal = this.fetchRefusal(message);
+    const server = refusal.code === RequestErrorCodeDraft18.NOT_SUPPORTED ? this.fetchServer(message) : undefined;
+    if (server) {
+      await this.serveFetchDraft18(message as FetchMessageDraft18, writable, server);
+      return;
+    }
     await this.sendRequestErrorOnStream(writable, message.requestId, refusal.code, refusal.reason);
+  }
+
+  /** The publication that serves a FETCH: a draft-18 Standalone Fetch of a track with a `fetchHandler`. */
+  private fetchServer(message: FetchMessageDraft18 | FetchMessageDraft22): InternalPublication | undefined {
+    if (this.isDraft22) {
+      return undefined;
+    }
+    const fetch = message as FetchMessageDraft18;
+    const standalone = fetch.fetchType !== undefined ? fetch.fetchType === FetchTypeDraft18.STANDALONE : !fetch.joiningFlag;
+    if (!standalone) {
+      return undefined;
+    }
+    const publication = this.publicationManager.getByTrackName(fetch.trackNamespace ?? [], fetch.trackName ?? '');
+    return publication?.fetchHandler ? publication : undefined;
+  }
+
+  /**
+   * Serve a Standalone FETCH from the publication's `fetchHandler` (d18
+   * §10.12.3, §10.13, §11.4.4): FETCH_OK with the End Location clamped to the
+   * Largest Object, then the objects in the requested group order on one
+   * unidirectional stream ending with a FIN. Gaps mean the objects do not exist.
+   */
+  private async serveFetchDraft18(
+    message: FetchMessageDraft18,
+    writable: WritableStream<Uint8Array>,
+    publication: InternalPublication,
+  ): Promise<void> {
+    const { requestId } = message;
+    // fetchRefusal already checked there is a Largest Object at or after the Start Location
+    const largest = this.publicationManager.largestOf(publication.namespace, publication.trackName)!;
+    const endLocation = fetchEndLocation(message.endLocation, largest);
+    const request = fetchRequestRange(requestId, publication.namespace, publication.trackName, message.startLocation, endLocation);
+    const descending = message.groupOrder === GroupOrder.DESCENDING;
+
+    let objects: FetchedObject[];
+    try {
+      objects = orderFetchedObjects(await publication.fetchHandler!(request), request, descending);
+    } catch (err) {
+      log.warn('fetchHandler failed', { requestId: requestId.toString(), error: (err as Error).message });
+      await this.sendRequestErrorOnStream(writable, requestId, RequestErrorCodeDraft18.INTERNAL_ERROR, 'Fetch failed');
+      return;
+    }
+
+    const fetchOk: _FetchOkMessageDraft18 = { type: MessageTypeDraft18.FETCH_OK, requestId, endOfTrack: false, endLocation };
+    const writer = writable.getWriter();
+    await writer.write(this.codec.encodeControlMessage(fetchOk));
+    writer.releaseLock();
+
+    const stream = await this.doCreateStream();
+    try {
+      await this.doWriteStream(stream, Draft18StreamCodec.encodeFetchHeader(requestId));
+      let prior: FetchedObject | undefined;
+      for (const object of objects) {
+        await this.doWriteStream(stream, encodeFetchedObject(object, prior, publication.priority ?? 128, descending));
+        prior = object;
+      }
+    } finally {
+      await this.doCloseStream(stream);
+    }
+    log.info('Served FETCH', { requestId: requestId.toString(), objects: objects.length });
   }
 
   /**

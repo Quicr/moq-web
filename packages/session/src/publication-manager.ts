@@ -11,7 +11,7 @@ import { Logger, GroupOrder } from '@moq-web/core';
 import type { Location } from '@moq-web/core';
 import type { LocationRange } from './location-filter.js';
 import { namespacePrefixMatches } from './session-helpers.js';
-import type { PublicationInfo } from './types.js';
+import type { PublicationFetchHandler, PublicationInfo } from './types.js';
 
 const log = Logger.create('moqt:session:publication-manager');
 
@@ -56,6 +56,8 @@ export interface InternalPublication extends PublicationInfo {
   filter?: LocationRange;
   /** Group whose subgroup stream was reset for an object timeout: it gets no new stream (d22 §5.2) */
   expiredGroup?: number;
+  /** Serves Standalone FETCH for this track (`PublishOptions.fetchHandler`) */
+  fetchHandler?: PublicationFetchHandler;
 }
 
 /**
