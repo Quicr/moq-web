@@ -135,8 +135,19 @@ import {
   terminationCodeFor,
   violationOf,
   DEFAULT_MAX_CONTROL_MESSAGE_SIZE,
+  Draft18StreamCodec,
   type Violation,
 } from '@moq-web/core';
+import {
+  encodeFetchedObject,
+  fetchEndDraft22,
+  fetchEndLocation,
+  fetchRequest,
+  inclusiveEnd,
+  inclusiveEndLocation,
+  orderFetchedObjects,
+  type FetchEnd,
+} from './fetch-responder.js';
 import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
   Draft18RequestStream,
@@ -243,6 +254,7 @@ import type {
   SessionMigrationEvent,
   TrackStatusResult,
   SubscriptionObjectCallback,
+  FetchedObject,
 } from './types.js';
 
 const log = Logger.create('moqt:session');
@@ -1733,6 +1745,15 @@ export class MOQTSession {
         return;
       }
 
+      // The request ended while the read was pending (e.g. the peer's
+      // STOP_SENDING aborted it): a message the peer sent before that, such
+      // as a PUBLISH_DONE, is no longer for any request. Dispatching it would
+      // fail the allow-list and close the whole session.
+      if (this.activeRequestStreams.get(requestId) !== stream) {
+        log.debug('Dropping message on an ended request', { requestId: requestId.toString(), type: message.type });
+        return;
+      }
+
       try {
         await this.dispatchStreamMessage(requestId, message);
       } catch (err) {
@@ -3059,9 +3080,6 @@ export class MOQTSession {
    * @param namespacePrefix - Namespace prefix to match
    * @param onObject        - Callback for objects on matching tracks
    * @param options.forwardState        Whether the peer should forward objects (default `true`).
-   * @param options.filter              SUBSCRIPTION_FILTER variant (default `NEXT_GROUP_START`).
-   * @param options.startLocation       Absolute start (required for `ABSOLUTE_START` / `ABSOLUTE_RANGE`).
-   * @param options.endGroupDelta       End-group delta (required for `ABSOLUTE_RANGE`).
    * @param options.parameters          Additional raw KVP request parameters (§10.2).
    */
   async subscribeTracks(
@@ -3069,8 +3087,11 @@ export class MOQTSession {
     onObject?: SubscriptionObjectCallback,
     options?: {
       forwardState?: boolean;
+      /** @deprecated Not sent: SUBSCRIPTION_FILTER is not allowed in SUBSCRIBE_TRACKS (d18 §10.2.9). */
       filter?: SubscriptionFilterDraft18;
+      /** @deprecated Not sent, as `filter`. */
       startLocation?: { group: bigint; object: bigint };
+      /** @deprecated Not sent, as `filter`. */
       endGroupDelta?: bigint;
       parameters?: Map<number, Uint8Array>;
     }
@@ -5386,6 +5407,7 @@ export class MOQTSession {
       // Draft-18/22: our PUBLISH sets the initial Forward State to 1 (§3.1.1); the
       // draft-14/16 PUBLISH_OK decides
       forward: this.isDraft18 ? 1 : 0,
+      fetchHandler: options?.fetchHandler,
     };
     this.publicationManager.add(publication);
 
@@ -8170,8 +8192,9 @@ export class MOQTSession {
   }
 
   /**
-   * Handle incoming FETCH on bidi stream. We keep no objects, so every FETCH
-   * is refused; the error says why (see `fetchRefusal`).
+   * Handle incoming FETCH on bidi stream. We keep no objects, so a FETCH is
+   * served only by a publication's `fetchHandler`; any other is refused and
+   * the error says why (see `fetchRefusal`).
    */
   private async handleIncomingFetchDraft18(
     message: FetchMessageDraft18 | FetchMessageDraft22,
@@ -8183,7 +8206,98 @@ export class MOQTSession {
     }
 
     const refusal = this.fetchRefusal(message);
+    const server = refusal.code === RequestErrorCodeDraft18.NOT_SUPPORTED ? this.fetchServer(message) : undefined;
+    if (server) {
+      await this.serveFetch(message, writable, server);
+      return;
+    }
     await this.sendRequestErrorOnStream(writable, message.requestId, refusal.code, refusal.reason);
+  }
+
+  /**
+   * The publication that serves a FETCH: a Standalone Fetch of a track with a
+   * `fetchHandler`. Draft-22 and later have only Standalone Fetches.
+   */
+  private fetchServer(message: FetchMessageDraft18 | FetchMessageDraft22): InternalPublication | undefined {
+    if (!this.isDraft22) {
+      const fetch = message as FetchMessageDraft18;
+      const standalone = fetch.fetchType !== undefined ? fetch.fetchType === FetchTypeDraft18.STANDALONE : !fetch.joiningFlag;
+      if (!standalone) {
+        return undefined;
+      }
+    }
+    const publication = this.publicationManager.getByTrackName(message.trackNamespace ?? [], message.trackName ?? '');
+    return publication?.fetchHandler ? publication : undefined;
+  }
+
+  /**
+   * Serve a Standalone FETCH from the publication's `fetchHandler`: the
+   * response first (draft-18 FETCH_OK with an exclusive End Location, d18
+   * §10.13; draft-22 FETCH_OK with an inclusive one, d22 §9.12; draft-23
+   * REQUEST_OK with LARGEST_OBJECT when the Largest Object is in the range,
+   * d23 §3.2), then the objects in the requested group order on one
+   * unidirectional stream ending with a FIN. Gaps mean the objects do not exist.
+   */
+  private async serveFetch(
+    message: FetchMessageDraft18 | FetchMessageDraft22,
+    writable: WritableStream<Uint8Array>,
+    publication: InternalPublication,
+  ): Promise<void> {
+    const { requestId } = message;
+    // fetchRefusal already checked there is a Largest Object at or after the Start Location
+    const largest = this.publicationManager.largestOf(publication.namespace, publication.trackName)!;
+    const descending = message.groupOrder === GroupOrder.DESCENDING;
+
+    let start: Location;
+    let end: FetchEnd;
+    let respond: (served: FetchedObject[]) => ControlMessageDraft18;
+    if (this.isDraft22) {
+      const range = resolveLocationFilter((message as FetchMessageDraft22).locationFilter, largest);
+      const resolved = fetchEndDraft22(range, largest);
+      start = range.start;
+      end = resolved.end;
+      respond = this.isDraft23
+        ? () => ({ type: MessageTypeDraft18.REQUEST_OK, requestId, largestLocation: resolved.largestInRange ? largest : undefined })
+        : (served) => ({
+          type: MessageTypeDraft18.FETCH_OK,
+          requestId,
+          endOfTrack: false,
+          endLocation: inclusiveEndLocation(end, start, served),
+        } as _FetchOkMessageDraft18 as ControlMessageDraft18);
+    } else {
+      const endLocation = fetchEndLocation((message as FetchMessageDraft18).endLocation, largest);
+      start = (message as FetchMessageDraft18).startLocation;
+      end = inclusiveEnd(endLocation);
+      respond = () => ({ type: MessageTypeDraft18.FETCH_OK, requestId, endOfTrack: false, endLocation } as _FetchOkMessageDraft18 as ControlMessageDraft18);
+    }
+    const request = fetchRequest(requestId, publication.namespace, publication.trackName, start, end);
+
+    let objects: FetchedObject[];
+    try {
+      objects = orderFetchedObjects(await publication.fetchHandler!(request), request, descending);
+    } catch (err) {
+      log.warn('fetchHandler failed', { requestId: requestId.toString(), error: (err as Error).message });
+      await this.sendRequestErrorOnStream(writable, requestId, RequestErrorCodeDraft18.INTERNAL_ERROR, 'Fetch failed');
+      return;
+    }
+
+    const writer = writable.getWriter();
+    await writer.write(this.codec.encodeControlMessage(respond(objects)));
+    writer.releaseLock();
+
+    const rules = this.isDraft23 ? 'draft-23' : 'draft-18';
+    const stream = await this.doCreateStream();
+    try {
+      await this.doWriteStream(stream, Draft18StreamCodec.encodeFetchHeader(requestId));
+      let prior: FetchedObject | undefined;
+      for (const object of objects) {
+        await this.doWriteStream(stream, encodeFetchedObject(object, prior, publication.priority ?? 128, descending, rules));
+        prior = object;
+      }
+    } finally {
+      await this.doCloseStream(stream);
+    }
+    log.info('Served FETCH', { requestId: requestId.toString(), objects: objects.length });
   }
 
   /**

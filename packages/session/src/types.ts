@@ -229,7 +229,43 @@ export interface PublishOptions {
    * draft-23.
    */
   subscribeTracksId?: bigint;
+  /**
+   * Serve Standalone FETCH for this live track (draft-18 §10.12.1, §10.12.3).
+   * The session keeps no objects, so without it a valid FETCH is refused with
+   * NOT_SUPPORTED. Called with the requested range clamped to the Largest
+   * Object; returns the objects that exist in it. Draft-18 only.
+   */
+  fetchHandler?: PublicationFetchHandler;
 }
+
+/**
+ * A Standalone FETCH for a track this session publishes, with an inclusive
+ * range already clamped to the Largest Object (draft-18 §10.13).
+ */
+export interface PublicationFetchRequest {
+  /** 62-bit varint Request ID of the FETCH */
+  requestId: bigint;
+  namespace: string[];
+  trackName: string;
+  /** First Location requested */
+  start: { group: number; object: number };
+  /** Last Location to return; `object` undefined means the whole group */
+  end: { group: number; object?: number };
+}
+
+/** An object returned by a {@link PublicationFetchHandler} */
+export interface FetchedObject {
+  groupId: number;
+  objectId: number;
+  data: Uint8Array;
+}
+
+/**
+ * Returns the objects of a FETCH range that exist. Objects outside the range
+ * are dropped and the rest are sent in ascending Location order; gaps mean
+ * the objects do not exist (draft-18 §10.12.3).
+ */
+export type PublicationFetchHandler = (request: PublicationFetchRequest) => FetchedObject[] | Promise<FetchedObject[]>;
 
 /**
  * Metadata for sending objects
