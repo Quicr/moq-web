@@ -18,8 +18,10 @@ import {
   MessageTypeDraft18,
   RequestErrorCodeDraft18,
   SubscriptionFilterDraft18,
+  type FetchIdRules,
   type FetchOkMessageDraft18,
   type RequestErrorMessageDraft18,
+  type RequestOkMessageDraft18,
 } from '@moq-web/core';
 import { announce, makeSession, openIncoming, tick, type Draft, type SessionInternals } from './__tests__/incoming-peer.js';
 import { encodeFetchedObject, fetchEndLocation, orderFetchedObjects } from './fetch-responder.js';
@@ -67,7 +69,7 @@ function captureStreams(internals: SessionInternals) {
 }
 
 /** Decode a fetch stream: its Request ID and the objects with resolved IDs. */
-function decodeFetchStream(chunks: Uint8Array[], order = GroupOrder.ASCENDING) {
+function decodeFetchStream(chunks: Uint8Array[], order = GroupOrder.ASCENDING, rules: FetchIdRules = 'draft-18') {
   const buffer = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
   let offset = 0;
   for (const chunk of chunks) {
@@ -76,7 +78,7 @@ function decodeFetchStream(chunks: Uint8Array[], order = GroupOrder.ASCENDING) {
   }
 
   const [header, headerLength] = Draft18StreamCodec.decodeFetchHeader(buffer, 0);
-  const resolver = new FetchIdResolver('draft-18', order);
+  const resolver = new FetchIdResolver(rules, order);
   const objects: { group: number; object: number; priority: number; payload: string }[] = [];
   for (offset = headerLength; offset < buffer.byteLength; ) {
     const [decoded, length] = Draft18StreamCodec.decodeFetchObject(buffer, offset);
@@ -252,26 +254,102 @@ describe('FETCH served by a fetchHandler (draft-18)', () => {
   });
 });
 
-describe('FETCH with a fetchHandler after draft-18', () => {
-  it('is still refused with NOT_SUPPORTED on draft-22', async () => {
-    const draft = 'draft-22';
+describe.each(['draft-22', 'draft-23'] as const)('FETCH served by a fetchHandler (%s)', (draft) => {
+  const rules: FetchIdRules = draft === 'draft-23' ? 'draft-23' : 'draft-18';
+  // Draft-22+ FETCH has no Fetch Type; its range is the LOCATION_FILTER parameter (d22 §3.2)
+  const locationFetch = (locationFilter?: object, groupOrder = GroupOrder.ASCENDING) => ({
+    type: MessageTypeDraft18.FETCH,
+    requestId: FETCH_ID,
+    trackNamespace: NAMESPACE,
+    trackName: TRACK,
+    subscriberPriority: 128,
+    groupOrder,
+    ...(locationFilter ? { locationFilter } : {}),
+  });
+
+  async function serve(message: object, handler: PublicationFetchHandler = () => stored) {
     const { internals } = makeSession(draft);
-    const handler = vi.fn(() => stored);
-    await publication(internals, draft, handler);
-
-    const peer = openIncoming(internals, {
-      type: MessageTypeDraft18.FETCH,
-      requestId: FETCH_ID,
-      trackNamespace: NAMESPACE,
-      trackName: TRACK,
-      subscriberPriority: 128,
-      groupOrder: GroupOrder.ASCENDING,
-      locationFilter: { type: LocationFilterTypeDraft22.ABSOLUTE_START, startLocation: { group: 1n, object: 0n } },
+    const requests: PublicationFetchRequest[] = [];
+    await publication(internals, draft, (request) => {
+      requests.push(request);
+      return handler(request);
     });
+    const streams = captureStreams(internals);
+    const peer = openIncoming(internals, message);
     await peer.opened;
+    await tick();
+    return { requests, reply: peer.written()[0], streams };
+  }
 
-    expect((peer.written()[0] as RequestErrorMessageDraft18).errorCode).toBe(RequestErrorCodeDraft18.NOT_SUPPORTED);
-    expect(handler).not.toHaveBeenCalled();
+  it('serves the whole track up to the Largest Object when there is no Location Filter', async () => {
+    const { requests, reply, streams } = await serve(locationFetch());
+
+    expect(requests[0]).toMatchObject({ start: { group: 0, object: 0 }, end: { group: 5, object: 2 } });
+    if (draft === 'draft-23') {
+      // d23 §3.2: FETCH_OK is a REQUEST_OK, with LARGEST_OBJECT when Largest Object is in the range
+      expect(reply.type).toBe(MessageTypeDraft18.REQUEST_OK);
+      expect((reply as RequestOkMessageDraft18).largestLocation).toEqual(LARGEST);
+    } else {
+      // d22 §9.12: the End Location is inclusive
+      expect(reply.type).toBe(MessageTypeDraft18.FETCH_OK);
+      expect((reply as FetchOkMessageDraft18).endLocation).toEqual(LARGEST);
+    }
+    expect(decodeFetchStream(streams[0].chunks, GroupOrder.ASCENDING, rules).objects.map((o) => `${o.group}/${o.object} ${o.payload}`)).toEqual([
+      '0/0 before the range',
+      '1/0 g1o0',
+      '1/1 g1o1',
+      '3/0 g3o0',
+      '3/4 g3o4',
+      '5/2 g5o2',
+    ]);
+  });
+
+  it('ends at the requested End Location when it is before the Largest Object', async () => {
+    const filter = {
+      type: LocationFilterTypeDraft22.ABSOLUTE_RANGE,
+      startLocation: { group: 1n, object: 1n },
+      endGroupDelta: 2n,
+      endObject: 0n,
+    };
+    const { requests, reply, streams } = await serve(locationFetch(filter));
+
+    expect(requests[0]).toMatchObject({ start: { group: 1, object: 1 }, end: { group: 3, object: 0 } });
+    if (draft === 'draft-23') {
+      expect(reply.type).toBe(MessageTypeDraft18.REQUEST_OK);
+      expect((reply as RequestOkMessageDraft18).largestLocation).toBeUndefined();
+    } else {
+      expect((reply as FetchOkMessageDraft18).endLocation).toEqual({ group: 3n, object: 0n });
+    }
+    expect(decodeFetchStream(streams[0].chunks, GroupOrder.ASCENDING, rules).objects.map((o) => `${o.group}/${o.object}`)).toEqual(['1/1', '3/0']);
+  });
+
+  it('ends a range of whole groups at the last object served in its End Group', async () => {
+    const filter = { type: LocationFilterTypeDraft22.ABSOLUTE_START_GROUP_END, startLocation: { group: 1n, object: 0n }, endGroupDelta: 2n };
+    const { requests, reply, streams } = await serve(locationFetch(filter));
+
+    expect(requests[0].end).toEqual({ group: 3 });
+    if (draft === 'draft-22') {
+      expect((reply as FetchOkMessageDraft18).endLocation).toEqual({ group: 3n, object: 4n });
+    }
+    expect(decodeFetchStream(streams[0].chunks, GroupOrder.ASCENDING, rules).objects.map((o) => `${o.group}/${o.object}`)).toEqual(['1/0', '1/1', '3/0', '3/4']);
+  });
+
+  it('sends groups in descending order when asked', async () => {
+    const filter = { type: LocationFilterTypeDraft22.ABSOLUTE_START, startLocation: { group: 1n, object: 0n } };
+    const { streams } = await serve(locationFetch(filter, GroupOrder.DESCENDING));
+
+    const { objects } = decodeFetchStream(streams[0].chunks, GroupOrder.DESCENDING, rules);
+    expect(objects.map((o) => `${o.group}/${o.object}`)).toEqual(['5/2', '3/0', '3/4', '1/0', '1/1']);
+  });
+
+  it('still says INVALID_RANGE past the Largest Object, without calling the handler', async () => {
+    const handler = vi.fn(() => stored);
+    const filter = { type: LocationFilterTypeDraft22.ABSOLUTE_START, startLocation: { group: 5n, object: 3n } };
+    const { requests, reply, streams } = await serve(locationFetch(filter), handler);
+
+    expect((reply as RequestErrorMessageDraft18).errorCode).toBe(RequestErrorCodeDraft18.INVALID_RANGE);
+    expect(requests).toHaveLength(0);
+    expect(streams).toHaveLength(0);
   });
 });
 
@@ -300,5 +378,11 @@ describe('fetch-responder helpers', () => {
 
     const newGroup = Draft18StreamCodec.decodeFetchObject(encodeFetchedObject(stored[3], stored[2], 7, false))[0];
     expect(newGroup).toMatchObject({ groupIdDelta: 1n, objectIdDelta: 0n });
+  });
+
+  it('writes an Object ID Delta within a group as the gap, minus 2 in draft-23', () => {
+    // 3/0 then 3/4: draft-18/22 add the delta (4), draft-23 adds the delta + 2 (2)
+    expect(Draft18StreamCodec.decodeFetchObject(encodeFetchedObject(stored[4], stored[3], 7, false, 'draft-18'))[0].objectIdDelta).toBe(4n);
+    expect(Draft18StreamCodec.decodeFetchObject(encodeFetchedObject(stored[4], stored[3], 7, false, 'draft-23'))[0].objectIdDelta).toBe(2n);
   });
 });

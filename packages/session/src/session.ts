@@ -138,7 +138,16 @@ import {
   Draft18StreamCodec,
   type Violation,
 } from '@moq-web/core';
-import { encodeFetchedObject, fetchEndLocation, fetchRequestRange, orderFetchedObjects } from './fetch-responder.js';
+import {
+  encodeFetchedObject,
+  fetchEndDraft22,
+  fetchEndLocation,
+  fetchRequest,
+  inclusiveEnd,
+  inclusiveEndLocation,
+  orderFetchedObjects,
+  type FetchEnd,
+} from './fetch-responder.js';
 import { C4M_TOKEN_TYPE } from '@moq-web/cat';
 import {
   Draft18RequestStream,
@@ -8199,43 +8208,69 @@ export class MOQTSession {
     const refusal = this.fetchRefusal(message);
     const server = refusal.code === RequestErrorCodeDraft18.NOT_SUPPORTED ? this.fetchServer(message) : undefined;
     if (server) {
-      await this.serveFetchDraft18(message as FetchMessageDraft18, writable, server);
+      await this.serveFetch(message, writable, server);
       return;
     }
     await this.sendRequestErrorOnStream(writable, message.requestId, refusal.code, refusal.reason);
   }
 
-  /** The publication that serves a FETCH: a draft-18 Standalone Fetch of a track with a `fetchHandler`. */
+  /**
+   * The publication that serves a FETCH: a Standalone Fetch of a track with a
+   * `fetchHandler`. Draft-22 and later have only Standalone Fetches.
+   */
   private fetchServer(message: FetchMessageDraft18 | FetchMessageDraft22): InternalPublication | undefined {
-    if (this.isDraft22) {
-      return undefined;
+    if (!this.isDraft22) {
+      const fetch = message as FetchMessageDraft18;
+      const standalone = fetch.fetchType !== undefined ? fetch.fetchType === FetchTypeDraft18.STANDALONE : !fetch.joiningFlag;
+      if (!standalone) {
+        return undefined;
+      }
     }
-    const fetch = message as FetchMessageDraft18;
-    const standalone = fetch.fetchType !== undefined ? fetch.fetchType === FetchTypeDraft18.STANDALONE : !fetch.joiningFlag;
-    if (!standalone) {
-      return undefined;
-    }
-    const publication = this.publicationManager.getByTrackName(fetch.trackNamespace ?? [], fetch.trackName ?? '');
+    const publication = this.publicationManager.getByTrackName(message.trackNamespace ?? [], message.trackName ?? '');
     return publication?.fetchHandler ? publication : undefined;
   }
 
   /**
-   * Serve a Standalone FETCH from the publication's `fetchHandler` (d18
-   * §10.12.3, §10.13, §11.4.4): FETCH_OK with the End Location clamped to the
-   * Largest Object, then the objects in the requested group order on one
+   * Serve a Standalone FETCH from the publication's `fetchHandler`: the
+   * response first (draft-18 FETCH_OK with an exclusive End Location, d18
+   * §10.13; draft-22 FETCH_OK with an inclusive one, d22 §9.12; draft-23
+   * REQUEST_OK with LARGEST_OBJECT when the Largest Object is in the range,
+   * d23 §3.2), then the objects in the requested group order on one
    * unidirectional stream ending with a FIN. Gaps mean the objects do not exist.
    */
-  private async serveFetchDraft18(
-    message: FetchMessageDraft18,
+  private async serveFetch(
+    message: FetchMessageDraft18 | FetchMessageDraft22,
     writable: WritableStream<Uint8Array>,
     publication: InternalPublication,
   ): Promise<void> {
     const { requestId } = message;
     // fetchRefusal already checked there is a Largest Object at or after the Start Location
     const largest = this.publicationManager.largestOf(publication.namespace, publication.trackName)!;
-    const endLocation = fetchEndLocation(message.endLocation, largest);
-    const request = fetchRequestRange(requestId, publication.namespace, publication.trackName, message.startLocation, endLocation);
     const descending = message.groupOrder === GroupOrder.DESCENDING;
+
+    let start: Location;
+    let end: FetchEnd;
+    let respond: (served: FetchedObject[]) => ControlMessageDraft18;
+    if (this.isDraft22) {
+      const range = resolveLocationFilter((message as FetchMessageDraft22).locationFilter, largest);
+      const resolved = fetchEndDraft22(range, largest);
+      start = range.start;
+      end = resolved.end;
+      respond = this.isDraft23
+        ? () => ({ type: MessageTypeDraft18.REQUEST_OK, requestId, largestLocation: resolved.largestInRange ? largest : undefined })
+        : (served) => ({
+          type: MessageTypeDraft18.FETCH_OK,
+          requestId,
+          endOfTrack: false,
+          endLocation: inclusiveEndLocation(end, start, served),
+        } as _FetchOkMessageDraft18 as ControlMessageDraft18);
+    } else {
+      const endLocation = fetchEndLocation((message as FetchMessageDraft18).endLocation, largest);
+      start = (message as FetchMessageDraft18).startLocation;
+      end = inclusiveEnd(endLocation);
+      respond = () => ({ type: MessageTypeDraft18.FETCH_OK, requestId, endOfTrack: false, endLocation } as _FetchOkMessageDraft18 as ControlMessageDraft18);
+    }
+    const request = fetchRequest(requestId, publication.namespace, publication.trackName, start, end);
 
     let objects: FetchedObject[];
     try {
@@ -8246,17 +8281,17 @@ export class MOQTSession {
       return;
     }
 
-    const fetchOk: _FetchOkMessageDraft18 = { type: MessageTypeDraft18.FETCH_OK, requestId, endOfTrack: false, endLocation };
     const writer = writable.getWriter();
-    await writer.write(this.codec.encodeControlMessage(fetchOk));
+    await writer.write(this.codec.encodeControlMessage(respond(objects)));
     writer.releaseLock();
 
+    const rules = this.isDraft23 ? 'draft-23' : 'draft-18';
     const stream = await this.doCreateStream();
     try {
       await this.doWriteStream(stream, Draft18StreamCodec.encodeFetchHeader(requestId));
       let prior: FetchedObject | undefined;
       for (const object of objects) {
-        await this.doWriteStream(stream, encodeFetchedObject(object, prior, publication.priority ?? 128, descending));
+        await this.doWriteStream(stream, encodeFetchedObject(object, prior, publication.priority ?? 128, descending, rules));
         prior = object;
       }
     } finally {
